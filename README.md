@@ -1,2 +1,4 @@
 # cycles-server-admin
-cycles server administrative API for budget
+
+cycles server administrative API for budget management
+
