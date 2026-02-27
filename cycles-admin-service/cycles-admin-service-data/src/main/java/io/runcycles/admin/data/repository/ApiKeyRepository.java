@@ -1,0 +1,117 @@
+package io.runcycles.admin.data.repository;
+import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.service.KeyService;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.admin.model.auth.*;
+import org.slf4j.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Repository;
+import redis.clients.jedis.*;
+import java.time.Instant;
+import java.util.*;
+@Repository
+public class ApiKeyRepository {
+    private static final Logger LOG = LoggerFactory.getLogger(ApiKeyRepository.class);
+    @Autowired private JedisPool jedisPool;
+    @Autowired private ObjectMapper objectMapper;
+    @Autowired private KeyService keyService;
+    public ApiKeyCreateResponse create(ApiKeyCreateRequest request) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            String keyId = "key_" + UUID.randomUUID().toString().substring(0, 16);
+            String keySecret = keyService.generateKeySecret("gov");
+            String keyPrefix = keyService.extractPrefix(keySecret);
+            String keyHash = keyService.hashKey(keySecret);
+            ApiKey apiKey = ApiKey.builder()
+                .keyId(keyId)
+                .tenantId(request.getTenantId())
+                .keyPrefix(keyPrefix)
+                .keyHash(keyHash)
+                .name(request.getName())
+                .description(request.getDescription())
+                .permissions(request.getPermissions() != null ? request.getPermissions() : List.of("reservations:*", "balances:read"))
+                .scopeFilter(request.getScopeFilter())
+                .status(ApiKeyStatus.ACTIVE)
+                .createdAt(Instant.now())
+                .expiresAt(request.getExpiresAt())
+                .metadata(request.getMetadata())
+                .build();
+            jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(apiKey));
+            jedis.sadd("apikeys:" + request.getTenantId(), keyId);
+            jedis.set("apikey:lookup:" + keyPrefix, keyId);
+            return ApiKeyCreateResponse.builder()
+                .keyId(keyId)
+                .keySecret(keySecret)
+                .keyPrefix(keyPrefix)
+                .tenantId(request.getTenantId())
+                .permissions(apiKey.getPermissions())
+                .createdAt(apiKey.getCreatedAt())
+                .expiresAt(apiKey.getExpiresAt())
+                .build();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+    public List<ApiKey> list(String tenantId) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            Set<String> ids = jedis.smembers("apikeys:" + tenantId);
+            List<ApiKey> keys = new ArrayList<>();
+            for (String id : ids) {
+                try {
+                    String data = jedis.get("apikey:" + id);
+                    ApiKey key = objectMapper.readValue(data, ApiKey.class);
+                    key.setKeyHash(null); // Don't expose hash
+                    keys.add(key);
+                } catch (Exception e) {
+                    LOG.warn("Failed to parse key: {}", id);
+                }
+            }
+            return keys;
+        }
+    }
+    public ApiKey revoke(String keyId, String reason) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            String data = jedis.get("apikey:" + keyId);
+            if (data == null) throw GovernanceException.tenantNotFound(keyId);
+            ApiKey key = objectMapper.readValue(data, ApiKey.class);
+            key.setStatus(ApiKeyStatus.REVOKED);
+            key.setRevokedAt(Instant.now());
+            key.setRevokedReason(reason);
+            jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
+            return key;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+    public ApiKeyValidationResponse validate(String keySecret) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            String prefix = keyService.extractPrefix(keySecret);
+            String keyId = jedis.get("apikey:lookup:" + prefix);
+            if (keyId == null) {
+                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_NOT_FOUND").build();
+            }
+            String data = jedis.get("apikey:" + keyId);
+            ApiKey key = objectMapper.readValue(data, ApiKey.class);
+            if (key.getStatus() != ApiKeyStatus.ACTIVE) {
+                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_" + key.getStatus()).build();
+            }
+            if (key.getExpiresAt() != null && Instant.now().isAfter(key.getExpiresAt())) {
+                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_EXPIRED").build();
+            }
+            if (!keyService.verifyKey(keySecret, key.getKeyHash())) {
+                return ApiKeyValidationResponse.builder().valid(false).reason("INVALID_KEY").build();
+            }
+            key.setLastUsedAt(Instant.now());
+            jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
+            return ApiKeyValidationResponse.builder()
+                .valid(true)
+                .tenantId(key.getTenantId())
+                .keyId(key.getKeyId())
+                .permissions(key.getPermissions())
+                .scopeFilter(key.getScopeFilter())
+                .expiresAt(key.getExpiresAt())
+                .build();
+        } catch (Exception e) {
+            return ApiKeyValidationResponse.builder().valid(false).reason("INTERNAL_ERROR").build();
+        }
+    }
+}

@@ -1,0 +1,14 @@
+package io.runcycles.admin.model.tenant;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.validation.constraints.*;
+import lombok.*;
+import java.util.Map;
+@Data @NoArgsConstructor @AllArgsConstructor
+public class TenantCreateRequest {
+    @NotBlank @Pattern(regexp = "^[a-z0-9-]+$") @Size(min = 3, max = 64)
+    @JsonProperty("tenant_id") private String tenantId;
+    @NotBlank @Size(max = 256)
+    @JsonProperty("name") private String name;
+    @JsonProperty("parent_tenant_id") private String parentTenantId;
+    @JsonProperty("metadata") private Map<String, String> metadata;
+}
