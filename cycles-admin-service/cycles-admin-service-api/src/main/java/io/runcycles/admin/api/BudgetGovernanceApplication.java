@@ -4,7 +4,7 @@ import org.springframework.boot.*;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.ComponentScan;
 @SpringBootApplication
-@ComponentScan(basePackages = "com.budget.governance")
+@ComponentScan(basePackages = "io.runcycles.admin")
 public class BudgetGovernanceApplication {
     private static final Logger LOG = LoggerFactory.getLogger(BudgetGovernanceApplication.class);
     public static void main(String[] args) {
