@@ -9,6 +9,7 @@ import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.*;
+import redis.clients.jedis.params.SetParams;
 import java.time.Instant;
 import java.util.*;
 @Repository
@@ -20,9 +21,6 @@ public class TenantRepository {
         LOG.info("Creating tenant: {}", request.getTenantId());
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "tenant:" + request.getTenantId();
-            if (jedis.exists(key)) {
-                throw GovernanceException.duplicateResource("Tenant", request.getTenantId());
-            }
             Tenant tenant = Tenant.builder()
                 .tenantId(request.getTenantId())
                 .name(request.getName())
@@ -34,7 +32,11 @@ public class TenantRepository {
                 .metadata(request.getMetadata())
                 .createdAt(Instant.now())
                 .build();
-            jedis.set(key, objectMapper.writeValueAsString(tenant));
+            // Atomic set-if-not-exists: prevents TOCTOU race on duplicate check
+            String result = jedis.set(key, objectMapper.writeValueAsString(tenant), SetParams.setParams().nx());
+            if (result == null) {
+                throw GovernanceException.duplicateResource("Tenant", request.getTenantId());
+            }
             jedis.sadd("tenants", request.getTenantId());
             return tenant;
         } catch (GovernanceException e) {

@@ -21,6 +21,7 @@ public class AuditRepository {
             jedis.zadd("audit:logs:" + entry.getTenantId(), entry.getTimestamp().toEpochMilli(), logId);
         } catch (Exception e) {
             LOG.error("Failed to write audit log", e);
+            throw new RuntimeException("Audit log write failed", e);
         }
     }
     public List<AuditLogEntry> list(String tenantId, int limit) {

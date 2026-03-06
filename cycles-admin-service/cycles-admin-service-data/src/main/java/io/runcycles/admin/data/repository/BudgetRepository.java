@@ -10,8 +10,6 @@ import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.*;
-import redis.clients.jedis.params.ScanParams;
-import redis.clients.jedis.resps.ScanResult;
 
 import java.time.Instant;
 import java.util.*;
@@ -22,15 +20,63 @@ public class BudgetRepository {
     private static final Logger LOG = LoggerFactory.getLogger(BudgetRepository.class);
     @Autowired private JedisPool jedisPool;
     @Autowired private ObjectMapper objectMapper;
+
+    // Lua script for atomic budget funding — prevents race conditions on concurrent updates.
+    // Returns: {status, prev_allocated, new_allocated, prev_remaining, new_remaining, prev_debt, new_debt, is_over_limit}
+    private static final String FUND_LUA =
+        "local key = KEYS[1]\n" +
+        "if redis.call('EXISTS', key) == 0 then return {'NOT_FOUND'} end\n" +
+        "local op = ARGV[1]\n" +
+        "local amount = tonumber(ARGV[2])\n" +
+        "local now = ARGV[3]\n" +
+        "local allocated = tonumber(redis.call('HGET', key, 'allocated') or '0')\n" +
+        "local remaining = tonumber(redis.call('HGET', key, 'remaining') or '0')\n" +
+        "local reserved = tonumber(redis.call('HGET', key, 'reserved') or '0')\n" +
+        "local spent = tonumber(redis.call('HGET', key, 'spent') or '0')\n" +
+        "local debt = tonumber(redis.call('HGET', key, 'debt') or '0')\n" +
+        "local overdraft = tonumber(redis.call('HGET', key, 'overdraft_limit') or '0')\n" +
+        "local prev_allocated = allocated\n" +
+        "local prev_remaining = remaining\n" +
+        "local prev_debt = debt\n" +
+        "if op == 'CREDIT' then\n" +
+        "  allocated = allocated + amount\n" +
+        "  remaining = remaining + amount\n" +
+        "elseif op == 'DEBIT' then\n" +
+        "  if remaining < amount then return {'INSUFFICIENT_FUNDS'} end\n" +
+        "  allocated = allocated - amount\n" +
+        "  remaining = remaining - amount\n" +
+        "elseif op == 'RESET' then\n" +
+        "  allocated = amount\n" +
+        "  remaining = amount - reserved - spent - debt\n" +
+        "elseif op == 'REPAY_DEBT' then\n" +
+        "  local repayment = math.min(debt, amount)\n" +
+        "  debt = debt - repayment\n" +
+        "  if repayment < amount then\n" +
+        "    remaining = remaining + (amount - repayment)\n" +
+        "  end\n" +
+        "end\n" +
+        "local is_over = 'false'\n" +
+        "if debt > overdraft then is_over = 'true' end\n" +
+        "local function i(n) return string.format('%.0f', n) end\n" +
+        "redis.call('HMSET', key, 'allocated', i(allocated), 'remaining', i(remaining),\n" +
+        "  'debt', i(debt), 'reserved', i(reserved), 'spent', i(spent),\n" +
+        "  'is_over_limit', is_over, 'updated_at', now)\n" +
+        "return {'OK', i(prev_allocated), i(allocated), i(prev_remaining),\n" +
+        "  i(remaining), i(prev_debt), i(debt), is_over}\n";
+
+    // Lua script for atomic budget creation — prevents TOCTOU race on duplicate check.
+    private static final String CREATE_BUDGET_LUA =
+        "if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end\n" +
+        "redis.call('HMSET', KEYS[1], unpack(ARGV))\n" +
+        "redis.call('SADD', KEYS[2], KEYS[1])\n" +
+        "return 1\n";
     
     public BudgetLedger create(BudgetCreateRequest request) {
         LOG.info("Creating budget: scope={}, unit={}", request.getScope(), request.getUnit());
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "budget:" + request.getScope() + ":" + request.getUnit();
-            if (jedis.exists(key)) {
-                throw GovernanceException.duplicateResource("Budget", request.getScope());
-            }
-            
+            String indexKey = "budgets:" + request.getScope();
+
             BudgetLedger ledger = BudgetLedger.builder()
                 .ledgerId(UUID.randomUUID().toString())
                 .scope(request.getScope())
@@ -49,38 +95,41 @@ public class BudgetRepository {
                 .periodEnd(request.getPeriodEnd())
                 .createdAt(Instant.now())
                 .build();
-            
-            // ✅ FIXED: Store as Redis HASH using HMSET (not JSON string)
-            Map<String, String> budgetHash = new HashMap<>();
-            budgetHash.put("ledger_id", ledger.getLedgerId());
-            budgetHash.put("scope", ledger.getScope());
-            budgetHash.put("unit", ledger.getUnit().name());
-            budgetHash.put("allocated", String.valueOf(ledger.getAllocated().getAmount()));
-            budgetHash.put("remaining", String.valueOf(ledger.getRemaining().getAmount()));
-            budgetHash.put("reserved", String.valueOf(ledger.getReserved().getAmount()));
-            budgetHash.put("spent", String.valueOf(ledger.getSpent().getAmount()));
-            budgetHash.put("debt", String.valueOf(ledger.getDebt().getAmount()));
-            budgetHash.put("overdraft_limit", String.valueOf(ledger.getOverdraftLimit().getAmount()));
-            budgetHash.put("is_over_limit", String.valueOf(ledger.getIsOverLimit()));
-            budgetHash.put("status", ledger.getStatus().name());
-            budgetHash.put("created_at", String.valueOf(ledger.getCreatedAt().toEpochMilli()));
-            
+
+            // Build flat key-value list for HMSET via Lua
+            List<String> args = new ArrayList<>();
+            args.add("ledger_id"); args.add(ledger.getLedgerId());
+            args.add("scope"); args.add(ledger.getScope());
+            args.add("unit"); args.add(ledger.getUnit().name());
+            args.add("allocated"); args.add(String.valueOf(ledger.getAllocated().getAmount()));
+            args.add("remaining"); args.add(String.valueOf(ledger.getRemaining().getAmount()));
+            args.add("reserved"); args.add(String.valueOf(ledger.getReserved().getAmount()));
+            args.add("spent"); args.add(String.valueOf(ledger.getSpent().getAmount()));
+            args.add("debt"); args.add(String.valueOf(ledger.getDebt().getAmount()));
+            args.add("overdraft_limit"); args.add(String.valueOf(ledger.getOverdraftLimit().getAmount()));
+            args.add("is_over_limit"); args.add(String.valueOf(ledger.getIsOverLimit()));
+            args.add("status"); args.add(ledger.getStatus().name());
+            args.add("created_at"); args.add(String.valueOf(ledger.getCreatedAt().toEpochMilli()));
             if (ledger.getCommitOveragePolicy() != null) {
-                budgetHash.put("commit_overage_policy", ledger.getCommitOveragePolicy().name());
+                args.add("commit_overage_policy"); args.add(ledger.getCommitOveragePolicy().name());
             }
             if (ledger.getRolloverPolicy() != null) {
-                budgetHash.put("rollover_policy", ledger.getRolloverPolicy().name());
+                args.add("rollover_policy"); args.add(ledger.getRolloverPolicy().name());
             }
             if (ledger.getPeriodStart() != null) {
-                budgetHash.put("period_start", String.valueOf(ledger.getPeriodStart().toEpochMilli()));
+                args.add("period_start"); args.add(String.valueOf(ledger.getPeriodStart().toEpochMilli()));
             }
             if (ledger.getPeriodEnd() != null) {
-                budgetHash.put("period_end", String.valueOf(ledger.getPeriodEnd().toEpochMilli()));
+                args.add("period_end"); args.add(String.valueOf(ledger.getPeriodEnd().toEpochMilli()));
             }
-            
-            jedis.hset(key, budgetHash);
+
+            // Atomic create: EXISTS + HMSET + SADD in one Lua call
+            Object result = jedis.eval(CREATE_BUDGET_LUA, List.of(key, indexKey), args);
+            if (Long.valueOf(0).equals(result)) {
+                throw GovernanceException.duplicateResource("Budget", request.getScope());
+            }
             LOG.info("Created budget as HASH: {}", key);
-            
+
             return ledger;
         } catch (GovernanceException e) {
             throw e;
@@ -91,34 +140,21 @@ public class BudgetRepository {
 
     public List<BudgetLedger> list(String tenantId) {
         try (Jedis jedis = jedisPool.getResource()) {
+            Set<String> keys = jedis.smembers("budgets:" + tenantId);
             List<BudgetLedger> ledgers = new ArrayList<>();
-            ScanParams params = new ScanParams().match("budget:*").count(100);
-            String cursor = "0";
-            do {
-                ScanResult<String> result = jedis.scan(cursor, params);
-                for (String key : result.getResult()) {
-                    try {
-                        // ✅ FIXED: Read from Redis HASH using HGETALL
-                        String keyType = jedis.type(key);
-                        if (!"hash".equals(keyType)) {
-                            LOG.warn("Expected hash type but found '{}' for key: {}", keyType, key);
-                            continue;
-                        }
-                        
-                        Map<String, String> hash = jedis.hgetAll(key);
-                        if (hash.isEmpty()) continue;
-                        
-                        BudgetLedger ledger = hashToBudgetLedger(hash, key);
-                        LOG.info("Ledger built:key={}, ledger={}",key,ledger);
-                        if (tenantId == null || ledger.getScope().startsWith(tenantId + ":") || ledger.getScope().equals(tenantId)) {
-                            ledgers.add(ledger);
-                        }
-                    } catch (Exception e) {
-                        LOG.warn("Failed to parse budget: {}", key, e);
+            for (String key : keys) {
+                try {
+                    Map<String, String> hash = jedis.hgetAll(key);
+                    if (hash.isEmpty()) {
+                        LOG.warn("Budget data missing for key: {}, cleaning index", key);
+                        jedis.srem("budgets:" + tenantId, key);
+                        continue;
                     }
+                    ledgers.add(hashToBudgetLedger(hash, key));
+                } catch (Exception e) {
+                    LOG.warn("Failed to parse budget: {}", key, e);
                 }
-                cursor = result.getCursor();
-            } while (!"0".equals(cursor));
+            }
             return ledgers;
         }
     }
@@ -126,106 +162,63 @@ public class BudgetRepository {
     public BudgetFundingResponse fund(String scope, UnitEnum unit, BudgetFundingRequest request) {
         LOG.info("Funding budget: scope={}, unit={}, op={}", scope, unit, request.getOperation());
         try (Jedis jedis = jedisPool.getResource()) {
-            // Idempotency check: reject duplicate requests
-            String idempotencyKey = "idempotency:" + request.getIdempotencyKey();
-            String existing = jedis.get(idempotencyKey);
-            if (existing != null) {
+            // Idempotency check: return cached response for duplicate requests
+            String idempotencyRedisKey = "idempotency:" + request.getIdempotencyKey();
+            String cached = jedis.get(idempotencyRedisKey);
+            if (cached != null) {
                 try {
-                    return objectMapper.readValue(existing, BudgetFundingResponse.class);
+                    return objectMapper.readValue(cached, BudgetFundingResponse.class);
                 } catch (Exception e) {
                     LOG.warn("Failed to parse cached idempotency response", e);
                 }
             }
 
             String key = "budget:" + scope + ":" + unit;
-            String keyType = jedis.type(key);
-            if ("none".equals(keyType)) {
-                throw GovernanceException.budgetNotFound(scope);
-            }
-            if (!"hash".equals(keyType)) {
-                throw new RuntimeException("Budget key is not a hash: " + key + " (type: " + keyType + ")");
-            }
-            
-            Map<String, String> hash = jedis.hgetAll(key);
-            if (hash.isEmpty()) {
-                throw GovernanceException.budgetNotFound(scope);
-            }
-            
-            BudgetLedger ledger = hashToBudgetLedger(hash, key);
-            
-            Amount prevAllocated = ledger.getAllocated();
-            Amount prevRemaining = ledger.getRemaining();
-            Amount prevDebt = ledger.getDebt();
             long changeAmount = request.getAmount().getAmount();
-            
-            switch (request.getOperation()) {
-                case CREDIT:
-                    ledger.setAllocated(new Amount(unit, ledger.getAllocated().getAmount() + changeAmount));
-                    ledger.setRemaining(new Amount(unit, ledger.getRemaining().getAmount() + changeAmount));
-                    break;
-                case DEBIT:
-                    if (ledger.getRemaining().getAmount() < changeAmount) {
-                        throw GovernanceException.insufficientFunds(scope);
-                    }
-                    ledger.setAllocated(new Amount(unit, ledger.getAllocated().getAmount() - changeAmount));
-                    ledger.setRemaining(new Amount(unit, ledger.getRemaining().getAmount() - changeAmount));
-                    break;
-                case RESET:
-                    ledger.setAllocated(request.getAmount());
-                    long newRemaining = changeAmount - ledger.getReserved().getAmount() - ledger.getSpent().getAmount() - ledger.getDebt().getAmount();
-                    ledger.setRemaining(new Amount(unit, newRemaining));
-                    break;
-                case REPAY_DEBT:
-                    long debt = ledger.getDebt().getAmount();
-                    long repayment = Math.min(debt, changeAmount);
-                    ledger.setDebt(new Amount(unit, debt - repayment));
-                    if (repayment < changeAmount) {
-                        ledger.setRemaining(new Amount(unit, ledger.getRemaining().getAmount() + (changeAmount - repayment)));
-                    }
-                    // Check if we're no longer over-limit after debt repayment
-                    if (ledger.getDebt().getAmount() <= ledger.getOverdraftLimit().getAmount()) {
-                        ledger.setIsOverLimit(false);
-                    }
-                    break;
+            String now = String.valueOf(Instant.now().toEpochMilli());
+
+            // Atomic fund via Lua — read, compute, write in one step
+            @SuppressWarnings("unchecked")
+            List<String> result = (List<String>) jedis.eval(FUND_LUA,
+                List.of(key),
+                List.of(request.getOperation().name(), String.valueOf(changeAmount), now));
+
+            String status = result.get(0);
+            if ("NOT_FOUND".equals(status)) {
+                throw GovernanceException.budgetNotFound(scope);
             }
-            
-            ledger.setUpdatedAt(Instant.now());
-            
-            // ✅ FIXED: Update Redis HASH using HMSET
-            Map<String, String> updates = new HashMap<>();
-            updates.put("allocated", String.valueOf(ledger.getAllocated().getAmount()));
-            updates.put("remaining", String.valueOf(ledger.getRemaining().getAmount()));
-            updates.put("spent", String.valueOf(ledger.getSpent().getAmount()));
-            updates.put("debt", String.valueOf(ledger.getDebt().getAmount()));
-            updates.put("reserved", String.valueOf(ledger.getReserved().getAmount()));
-            updates.put("is_over_limit", String.valueOf(ledger.getIsOverLimit()));
-            updates.put("updated_at", String.valueOf(ledger.getUpdatedAt().toEpochMilli()));
-            
-            jedis.hset(key, updates);
-            LOG.info("Updated budget HASH: {}", key);
+            if ("INSUFFICIENT_FUNDS".equals(status)) {
+                throw GovernanceException.insufficientFunds(scope);
+            }
+
+            long prevAllocated = Long.parseLong(result.get(1));
+            long newAllocated = Long.parseLong(result.get(2));
+            long prevRemaining = Long.parseLong(result.get(3));
+            long newRemainingVal = Long.parseLong(result.get(4));
+            long prevDebtVal = Long.parseLong(result.get(5));
+            long newDebtVal = Long.parseLong(result.get(6));
 
             BudgetFundingResponse response = BudgetFundingResponse.builder()
                 .operation(request.getOperation())
-                .previousAllocated(prevAllocated)
-                .newAllocated(ledger.getAllocated())
-                .previousRemaining(prevRemaining)
-                .newRemaining(ledger.getRemaining())
-                .previousDebt(prevDebt)
-                .newDebt(ledger.getDebt())
+                .previousAllocated(new Amount(unit, prevAllocated))
+                .newAllocated(new Amount(unit, newAllocated))
+                .previousRemaining(new Amount(unit, prevRemaining))
+                .newRemaining(new Amount(unit, newRemainingVal))
+                .previousDebt(new Amount(unit, prevDebtVal))
+                .newDebt(new Amount(unit, newDebtVal))
                 .timestamp(Instant.now())
                 .build();
 
             // Cache response for idempotency (24h TTL)
             try {
-                jedis.setex(idempotencyKey, 86400, objectMapper.writeValueAsString(response));
+                jedis.setex(idempotencyRedisKey, 86400, objectMapper.writeValueAsString(response));
             } catch (Exception e) {
                 LOG.warn("Failed to cache idempotency response", e);
             }
 
+            LOG.info("Funded budget atomically: key={}, op={}", key, request.getOperation());
             return response;
         } catch (GovernanceException e) {
-            throw e;
-        } catch (RuntimeException e) {
             throw e;
         } catch (Exception e) {
             throw new RuntimeException(e);
