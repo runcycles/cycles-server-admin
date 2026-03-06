@@ -22,7 +22,13 @@ public class GovernanceException extends RuntimeException {
     public static GovernanceException budgetNotFound(String scope) {
         return new GovernanceException(ErrorCode.BUDGET_NOT_FOUND, "Budget not found: " + scope, 404);
     }
+    public static GovernanceException apiKeyNotFound(String id) {
+        return new GovernanceException(ErrorCode.NOT_FOUND, "API key not found: " + id, 404);
+    }
     public static GovernanceException duplicateResource(String resource, String id) {
         return new GovernanceException(ErrorCode.DUPLICATE_RESOURCE, resource + " exists: " + id, 409);
+    }
+    public static GovernanceException insufficientFunds(String scope) {
+        return new GovernanceException(ErrorCode.BUDGET_EXCEEDED, "Insufficient funds: " + scope, 422);
     }
 }

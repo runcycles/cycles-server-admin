@@ -1,9 +1,6 @@
 package io.runcycles.admin.model.budget;
 import io.runcycles.admin.model.shared.*;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import io.runcycles.admin.model.shared.Amount;
-import io.runcycles.admin.model.shared.CommitOveragePolicy;
-import io.runcycles.admin.model.shared.UnitEnum;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
 import lombok.*;
@@ -14,7 +11,7 @@ public class BudgetCreateRequest {
     @NotBlank @JsonProperty("scope") private String scope;
     @NotNull @JsonProperty("unit") private UnitEnum unit;
     @NotNull @Valid @JsonProperty("allocated") private Amount allocated;
-    @JsonProperty("overdraft_limit") private Amount overdraftLimit;
+    @Valid @JsonProperty("overdraft_limit") private Amount overdraftLimit;
     @JsonProperty("commit_overage_policy") private CommitOveragePolicy commitOveragePolicy;
     @JsonProperty("rollover_policy") private RolloverPolicy rolloverPolicy;
     @JsonProperty("period_start") private Instant periodStart;

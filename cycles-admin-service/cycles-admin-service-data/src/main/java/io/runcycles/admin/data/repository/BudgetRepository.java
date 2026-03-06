@@ -82,11 +82,13 @@ public class BudgetRepository {
             LOG.info("Created budget as HASH: {}", key);
             
             return ledger;
+        } catch (GovernanceException e) {
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
     }
-    
+
     public List<BudgetLedger> list(String tenantId) {
         try (Jedis jedis = jedisPool.getResource()) {
             List<BudgetLedger> ledgers = new ArrayList<>();
@@ -108,7 +110,7 @@ public class BudgetRepository {
                         
                         BudgetLedger ledger = hashToBudgetLedger(hash, key);
                         LOG.info("Ledger built:key={}, ledger={}",key,ledger);
-                        if (tenantId == null || ledger.getScope().contains(tenantId)) {
+                        if (tenantId == null || ledger.getScope().startsWith(tenantId + ":") || ledger.getScope().equals(tenantId)) {
                             ledgers.add(ledger);
                         }
                     } catch (Exception e) {
@@ -186,6 +188,7 @@ public class BudgetRepository {
             updates.put("remaining", String.valueOf(ledger.getRemaining().getAmount()));
             updates.put("spent", String.valueOf(ledger.getSpent().getAmount()));
             updates.put("debt", String.valueOf(ledger.getDebt().getAmount()));
+            updates.put("reserved", String.valueOf(ledger.getReserved().getAmount()));
             updates.put("is_over_limit", String.valueOf(ledger.getIsOverLimit()));
             updates.put("updated_at", String.valueOf(ledger.getUpdatedAt().toEpochMilli()));
             
@@ -193,7 +196,7 @@ public class BudgetRepository {
             LOG.info("Updated budget HASH: {}", key);
             
             return BudgetFundingResponse.builder()
-                .operation(request.getOperation().name())
+                .operation(request.getOperation())
                 .previousAllocated(prevAllocated)
                 .newAllocated(ledger.getAllocated())
                 .previousRemaining(prevRemaining)
@@ -202,11 +205,15 @@ public class BudgetRepository {
                 .newDebt(ledger.getDebt())
                 .timestamp(Instant.now())
                 .build();
+        } catch (GovernanceException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
     }
-    
+
     /**
      * Helper method to convert Redis HASH to BudgetLedger object
      */
@@ -215,8 +222,6 @@ public class BudgetRepository {
         //String scope = keyParts.length > 1 ? keyParts[1] : "";
         //Interesting why AI decided to extract stuff from key and use them instead of taking from internal data model
         String scope =hash.get("scope");
-        String unitStr = keyParts.length > 2 ? keyParts[2] : "";
-        
         UnitEnum unit = UnitEnum.valueOf(hash.get("unit"));
         
         return BudgetLedger.builder()

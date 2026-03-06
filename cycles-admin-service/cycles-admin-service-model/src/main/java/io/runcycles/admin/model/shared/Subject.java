@@ -9,6 +9,6 @@ public class Subject {
     @JsonProperty("app") private String app;
     @JsonProperty("workflow") private String workflow;
     @JsonProperty("agent") private String agent;
-    @JsonProperty("toolGroup") private String toolGroup;
+    @JsonProperty("tool_group") private String toolGroup;
     @JsonProperty("dimensions") private Map<String, String> dimensions;
 }

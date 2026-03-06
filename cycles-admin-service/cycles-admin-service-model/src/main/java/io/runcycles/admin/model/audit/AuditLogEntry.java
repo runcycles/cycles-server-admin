@@ -1,5 +1,8 @@
 package io.runcycles.admin.model.audit;
 import com.fasterxml.jackson.annotation.*;
+import io.runcycles.admin.model.shared.Action;
+import io.runcycles.admin.model.shared.Amount;
+import io.runcycles.admin.model.shared.Subject;
 import lombok.*;
 import java.time.Instant;
 import java.util.Map;
@@ -15,8 +18,8 @@ public class AuditLogEntry {
     @JsonProperty("request_id") private String requestId;
     @JsonProperty("status") private Integer status;
     @JsonProperty("error_code") private String errorCode;
-    @JsonProperty("subject") private Object subject;
-    @JsonProperty("action") private Object action;
-    @JsonProperty("amount") private Object amount;
+    @JsonProperty("subject") private Subject subject;
+    @JsonProperty("action") private Action action;
+    @JsonProperty("amount") private Amount amount;
     @JsonProperty("metadata") private Map<String, Object> metadata;
 }

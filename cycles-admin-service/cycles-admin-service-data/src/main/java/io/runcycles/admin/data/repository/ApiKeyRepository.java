@@ -58,11 +58,15 @@ public class ApiKeyRepository {
             for (String id : ids) {
                 try {
                     String data = jedis.get("apikey:" + id);
+                    if (data == null) {
+                        LOG.warn("API key data missing for id: {}", id);
+                        continue;
+                    }
                     ApiKey key = objectMapper.readValue(data, ApiKey.class);
                     key.setKeyHash(null); // Don't expose hash
                     keys.add(key);
                 } catch (Exception e) {
-                    LOG.warn("Failed to parse key: {}", id);
+                    LOG.warn("Failed to parse key: {}", id, e);
                 }
             }
             return keys;
@@ -71,13 +75,16 @@ public class ApiKeyRepository {
     public ApiKey revoke(String keyId, String reason) {
         try (Jedis jedis = jedisPool.getResource()) {
             String data = jedis.get("apikey:" + keyId);
-            if (data == null) throw GovernanceException.tenantNotFound(keyId);
+            if (data == null) throw GovernanceException.apiKeyNotFound(keyId);
             ApiKey key = objectMapper.readValue(data, ApiKey.class);
             key.setStatus(ApiKeyStatus.REVOKED);
             key.setRevokedAt(Instant.now());
             key.setRevokedReason(reason);
             jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
+            key.setKeyHash(null);
             return key;
+        } catch (GovernanceException e) {
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -90,6 +97,9 @@ public class ApiKeyRepository {
                 return ApiKeyValidationResponse.builder().valid(false).reason("KEY_NOT_FOUND").build();
             }
             String data = jedis.get("apikey:" + keyId);
+            if (data == null) {
+                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_NOT_FOUND").build();
+            }
             ApiKey key = objectMapper.readValue(data, ApiKey.class);
             if (key.getStatus() != ApiKeyStatus.ACTIVE) {
                 return ApiKeyValidationResponse.builder().valid(false).reason("KEY_" + key.getStatus()).build();
@@ -111,6 +121,7 @@ public class ApiKeyRepository {
                 .expiresAt(key.getExpiresAt())
                 .build();
         } catch (Exception e) {
+            LOG.error("Key validation failed", e);
             return ApiKeyValidationResponse.builder().valid(false).reason("INTERNAL_ERROR").build();
         }
     }
