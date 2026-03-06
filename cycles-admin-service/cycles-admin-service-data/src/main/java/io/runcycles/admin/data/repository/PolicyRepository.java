@@ -44,9 +44,13 @@ public class PolicyRepository {
             for (String id : ids) {
                 try {
                     String data = jedis.get("policy:" + id);
+                    if (data == null) {
+                        LOG.warn("Policy data missing for id: {}", id);
+                        continue;
+                    }
                     policies.add(objectMapper.readValue(data, Policy.class));
                 } catch (Exception e) {
-                    LOG.warn("Failed to parse policy: {}", id);
+                    LOG.warn("Failed to parse policy: {}", id, e);
                 }
             }
             return policies;

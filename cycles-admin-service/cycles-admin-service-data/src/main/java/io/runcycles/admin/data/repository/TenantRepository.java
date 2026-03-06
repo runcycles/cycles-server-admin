@@ -60,13 +60,18 @@ public class TenantRepository {
             List<Tenant> tenants = new ArrayList<>();
             for (String id : ids) {
                 try {
-                    Tenant t = get(id);
+                    String data = jedis.get("tenant:" + id);
+                    if (data == null) {
+                        LOG.warn("Tenant data missing for id: {}", id);
+                        continue;
+                    }
+                    Tenant t = objectMapper.readValue(data, Tenant.class);
                     if (status == null || t.getStatus() == status) {
                         tenants.add(t);
                         if (tenants.size() >= limit) break;
                     }
                 } catch (Exception e) {
-                    LOG.warn("Failed to load tenant: {}", id);
+                    LOG.warn("Failed to load tenant: {}", id, e);
                 }
             }
             return tenants;
@@ -81,6 +86,8 @@ public class TenantRepository {
             tenant.setUpdatedAt(Instant.now());
             jedis.set("tenant:" + tenantId, objectMapper.writeValueAsString(tenant));
             return tenant;
+        } catch (GovernanceException e) {
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException(e);
         }

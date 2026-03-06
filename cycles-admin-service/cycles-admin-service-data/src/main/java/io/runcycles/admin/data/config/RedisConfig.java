@@ -16,7 +16,7 @@ public class RedisConfig {
         LOG.info("Budget Governance v0.1.23 - Redis: {}:{}", host, port);
         JedisPoolConfig config = new JedisPoolConfig();
         config.setMaxTotal(50);
-        return password.isEmpty() ? new JedisPool(config, host, port) : new JedisPool(config, host, port, 2000, password);
+        return (password == null || password.isEmpty()) ? new JedisPool(config, host, port) : new JedisPool(config, host, port, 2000, password);
     }
     @Bean
     public ObjectMapper objectMapper() {

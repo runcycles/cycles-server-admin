@@ -24,15 +24,22 @@ public class AuditRepository {
         }
     }
     public List<AuditLogEntry> list(String tenantId, int limit) {
+        if (limit <= 0) {
+            return new ArrayList<>();
+        }
         try (Jedis jedis = jedisPool.getResource()) {
             List<String> ids = jedis.zrevrange("audit:logs:" + tenantId, 0, limit - 1);
             List<AuditLogEntry> logs = new ArrayList<>();
             for (String id : ids) {
                 try {
                     String data = jedis.get("audit:log:" + id);
+                    if (data == null) {
+                        LOG.warn("Audit log data missing for id: {}", id);
+                        continue;
+                    }
                     logs.add(objectMapper.readValue(data, AuditLogEntry.class));
                 } catch (Exception e) {
-                    LOG.warn("Failed to parse log: {}", id);
+                    LOG.warn("Failed to parse log: {}", id, e);
                 }
             }
             return logs;
