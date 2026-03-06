@@ -126,9 +126,18 @@ public class BudgetRepository {
     public BudgetFundingResponse fund(String scope, UnitEnum unit, BudgetFundingRequest request) {
         LOG.info("Funding budget: scope={}, unit={}, op={}", scope, unit, request.getOperation());
         try (Jedis jedis = jedisPool.getResource()) {
+            // Idempotency check: reject duplicate requests
+            String idempotencyKey = "idempotency:" + request.getIdempotencyKey();
+            String existing = jedis.get(idempotencyKey);
+            if (existing != null) {
+                try {
+                    return objectMapper.readValue(existing, BudgetFundingResponse.class);
+                } catch (Exception e) {
+                    LOG.warn("Failed to parse cached idempotency response", e);
+                }
+            }
+
             String key = "budget:" + scope + ":" + unit;
-            
-            // ✅ FIXED: Read from Redis HASH
             String keyType = jedis.type(key);
             if ("none".equals(keyType)) {
                 throw GovernanceException.budgetNotFound(scope);
@@ -156,7 +165,7 @@ public class BudgetRepository {
                     break;
                 case DEBIT:
                     if (ledger.getRemaining().getAmount() < changeAmount) {
-                        throw new RuntimeException("Insufficient funds");
+                        throw GovernanceException.insufficientFunds(scope);
                     }
                     ledger.setAllocated(new Amount(unit, ledger.getAllocated().getAmount() - changeAmount));
                     ledger.setRemaining(new Amount(unit, ledger.getRemaining().getAmount() - changeAmount));
@@ -194,8 +203,8 @@ public class BudgetRepository {
             
             jedis.hset(key, updates);
             LOG.info("Updated budget HASH: {}", key);
-            
-            return BudgetFundingResponse.builder()
+
+            BudgetFundingResponse response = BudgetFundingResponse.builder()
                 .operation(request.getOperation())
                 .previousAllocated(prevAllocated)
                 .newAllocated(ledger.getAllocated())
@@ -205,6 +214,15 @@ public class BudgetRepository {
                 .newDebt(ledger.getDebt())
                 .timestamp(Instant.now())
                 .build();
+
+            // Cache response for idempotency (24h TTL)
+            try {
+                jedis.setex(idempotencyKey, 86400, objectMapper.writeValueAsString(response));
+            } catch (Exception e) {
+                LOG.warn("Failed to cache idempotency response", e);
+            }
+
+            return response;
         } catch (GovernanceException e) {
             throw e;
         } catch (RuntimeException e) {
@@ -218,11 +236,12 @@ public class BudgetRepository {
      * Helper method to convert Redis HASH to BudgetLedger object
      */
     private BudgetLedger hashToBudgetLedger(Map<String, String> hash, String key) {
-        String[] keyParts = key.split(":");
-        //String scope = keyParts.length > 1 ? keyParts[1] : "";
-        //Interesting why AI decided to extract stuff from key and use them instead of taking from internal data model
-        String scope =hash.get("scope");
-        UnitEnum unit = UnitEnum.valueOf(hash.get("unit"));
+        String scope = hash.get("scope");
+        String unitStr = hash.get("unit");
+        if (scope == null || unitStr == null) {
+            throw new IllegalStateException("Corrupt budget hash for key: " + key + " (missing scope or unit)");
+        }
+        UnitEnum unit = UnitEnum.valueOf(unitStr);
         
         return BudgetLedger.builder()
             .ledgerId(hash.get("ledger_id"))

@@ -11,6 +11,7 @@ public class AuditController {
     @Autowired private AuditRepository repository;
     @GetMapping("/logs") @Operation(operationId = "listAuditLogs")
     public ResponseEntity<Map<String, Object>> list(@RequestParam(required = false) String tenant_id, @RequestParam(defaultValue = "50") int limit) {
-        return ResponseEntity.ok(Map.of("logs", repository.list(tenant_id != null ? tenant_id : "SYSTEM", limit), "has_more", false));
+        var logs = repository.list(tenant_id != null ? tenant_id : "SYSTEM", limit);
+        return ResponseEntity.ok(Map.of("logs", logs, "has_more", logs.size() >= limit));
     }
 }

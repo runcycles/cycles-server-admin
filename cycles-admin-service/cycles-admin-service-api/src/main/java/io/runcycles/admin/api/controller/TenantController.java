@@ -20,7 +20,8 @@ public class TenantController {
     }
     @GetMapping @Operation(operationId = "listTenants")
     public ResponseEntity<Map<String, Object>> list(@RequestParam(required = false) TenantStatus status, @RequestParam(defaultValue = "50") int limit) {
-        return ResponseEntity.ok(Map.of("tenants", repository.list(status, limit), "has_more", false));
+        var tenants = repository.list(status, limit);
+        return ResponseEntity.ok(Map.of("tenants", tenants, "has_more", tenants.size() >= limit));
     }
     @GetMapping("/{tenant_id}") @Operation(operationId = "getTenant")
     public ResponseEntity<Tenant> get(@PathVariable("tenant_id") String tenantId) {
