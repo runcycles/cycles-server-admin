@@ -9,7 +9,6 @@ import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.*;
-import redis.clients.jedis.params.SetParams;
 import java.time.Instant;
 import java.util.*;
 @Repository
@@ -17,6 +16,12 @@ public class TenantRepository {
     private static final Logger LOG = LoggerFactory.getLogger(TenantRepository.class);
     @Autowired private JedisPool jedisPool;
     @Autowired private ObjectMapper objectMapper;
+    // Lua script for atomic tenant creation: SET NX + SADD in one call
+    private static final String CREATE_TENANT_LUA =
+        "if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end\n" +
+        "redis.call('SET', KEYS[1], ARGV[1])\n" +
+        "redis.call('SADD', KEYS[2], ARGV[2])\n" +
+        "return 1\n";
     public Tenant create(TenantCreateRequest request) {
         LOG.info("Creating tenant: {}", request.getTenantId());
         try (Jedis jedis = jedisPool.getResource()) {
@@ -32,12 +37,14 @@ public class TenantRepository {
                 .metadata(request.getMetadata())
                 .createdAt(Instant.now())
                 .build();
-            // Atomic set-if-not-exists: prevents TOCTOU race on duplicate check
-            String result = jedis.set(key, objectMapper.writeValueAsString(tenant), SetParams.setParams().nx());
-            if (result == null) {
+            // Atomic create: EXISTS + SET + SADD in one Lua call
+            String json = objectMapper.writeValueAsString(tenant);
+            Object result = jedis.eval(CREATE_TENANT_LUA,
+                List.of(key, "tenants"),
+                List.of(json, request.getTenantId()));
+            if (Long.valueOf(0).equals(result)) {
                 throw GovernanceException.duplicateResource("Tenant", request.getTenantId());
             }
-            jedis.sadd("tenants", request.getTenantId());
             return tenant;
         } catch (GovernanceException e) {
             throw e;

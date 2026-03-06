@@ -31,4 +31,10 @@ public class GovernanceException extends RuntimeException {
     public static GovernanceException insufficientFunds(String scope) {
         return new GovernanceException(ErrorCode.BUDGET_EXCEEDED, "Insufficient funds: " + scope, 422);
     }
+    public static GovernanceException budgetFrozen(String scope) {
+        return new GovernanceException(ErrorCode.BUDGET_FROZEN, "Budget is frozen: " + scope, 422);
+    }
+    public static GovernanceException budgetClosed(String scope) {
+        return new GovernanceException(ErrorCode.BUDGET_NOT_FOUND, "Budget is closed: " + scope, 422);
+    }
 }
