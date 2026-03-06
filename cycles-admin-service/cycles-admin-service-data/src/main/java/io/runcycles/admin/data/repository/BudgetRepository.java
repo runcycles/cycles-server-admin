@@ -26,6 +26,9 @@ public class BudgetRepository {
     private static final String FUND_LUA =
         "local key = KEYS[1]\n" +
         "if redis.call('EXISTS', key) == 0 then return {'NOT_FOUND'} end\n" +
+        "local status = redis.call('HGET', key, 'status') or 'ACTIVE'\n" +
+        "if status == 'FROZEN' then return {'BUDGET_FROZEN'} end\n" +
+        "if status == 'CLOSED' then return {'BUDGET_CLOSED'} end\n" +
         "local op = ARGV[1]\n" +
         "local amount = tonumber(ARGV[2])\n" +
         "local now = ARGV[3]\n" +
@@ -75,7 +78,7 @@ public class BudgetRepository {
         LOG.info("Creating budget: scope={}, unit={}", request.getScope(), request.getUnit());
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "budget:" + request.getScope() + ":" + request.getUnit();
-            String indexKey = "budgets:" + request.getScope();
+            String indexKey = "budgets:" + request.getTenantId();
 
             BudgetLedger ledger = BudgetLedger.builder()
                 .ledgerId(UUID.randomUUID().toString())
@@ -189,6 +192,12 @@ public class BudgetRepository {
             }
             if ("INSUFFICIENT_FUNDS".equals(status)) {
                 throw GovernanceException.insufficientFunds(scope);
+            }
+            if ("BUDGET_FROZEN".equals(status)) {
+                throw GovernanceException.budgetFrozen(scope);
+            }
+            if ("BUDGET_CLOSED".equals(status)) {
+                throw GovernanceException.budgetClosed(scope);
             }
 
             long prevAllocated = Long.parseLong(result.get(1));
