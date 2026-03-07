@@ -15,6 +15,12 @@ public class ApiKeyRepository {
     @Autowired private JedisPool jedisPool;
     @Autowired private ObjectMapper objectMapper;
     @Autowired private KeyService keyService;
+    // Lua script for atomic API key creation: SET key + SADD index + SET lookup in one call
+    private static final String CREATE_KEY_LUA =
+        "redis.call('SET', KEYS[1], ARGV[1])\n" +
+        "redis.call('SADD', KEYS[2], ARGV[2])\n" +
+        "redis.call('SET', KEYS[3], ARGV[2])\n" +
+        "return 1\n";
     public ApiKeyCreateResponse create(ApiKeyCreateRequest request) {
         try (Jedis jedis = jedisPool.getResource()) {
             String keyId = "key_" + UUID.randomUUID().toString().substring(0, 16);
@@ -35,9 +41,11 @@ public class ApiKeyRepository {
                 .expiresAt(request.getExpiresAt())
                 .metadata(request.getMetadata())
                 .build();
-            jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(apiKey));
-            jedis.sadd("apikeys:" + request.getTenantId(), keyId);
-            jedis.set("apikey:lookup:" + keyPrefix, keyId);
+            // Atomic create: SET key + SADD index + SET lookup in one Lua call
+            String json = objectMapper.writeValueAsString(apiKey);
+            jedis.eval(CREATE_KEY_LUA,
+                List.of("apikey:" + keyId, "apikeys:" + request.getTenantId(), "apikey:lookup:" + keyPrefix),
+                List.of(json, keyId));
             return ApiKeyCreateResponse.builder()
                 .keyId(keyId)
                 .keySecret(keySecret)

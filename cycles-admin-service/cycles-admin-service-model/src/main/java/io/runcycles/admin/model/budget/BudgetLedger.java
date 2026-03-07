@@ -9,6 +9,7 @@ import java.time.Instant;
 @Data @Builder @NoArgsConstructor @AllArgsConstructor @JsonInclude(JsonInclude.Include.NON_NULL)
 public class BudgetLedger {
     @JsonProperty("ledger_id") private String ledgerId;
+    @JsonProperty("tenant_id") private String tenantId;
     @JsonProperty("scope") private String scope;
     @JsonProperty("scope_path") private String scopePath;
     @JsonProperty("unit") private UnitEnum unit;
