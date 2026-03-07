@@ -10,7 +10,7 @@ import java.util.*;
 public class BalanceController {
     @Autowired private BudgetRepository repository;
     @GetMapping @Operation(operationId = "queryBalances")
-    public ResponseEntity<Map<String, Object>> query(@RequestParam(required = true) String tenant) {
-        return ResponseEntity.ok(Map.of("balances", repository.list(tenant), "has_more", false));
+    public ResponseEntity<Map<String, Object>> query(@RequestParam(required = true) String tenant_id) {
+        return ResponseEntity.ok(Map.of("balances", repository.list(tenant_id), "has_more", false));
     }
 }

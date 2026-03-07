@@ -82,6 +82,7 @@ public class BudgetRepository {
 
             BudgetLedger ledger = BudgetLedger.builder()
                 .ledgerId(UUID.randomUUID().toString())
+                .tenantId(request.getTenantId())
                 .scope(request.getScope())
                 .unit(request.getUnit())
                 .allocated(request.getAllocated())
@@ -102,6 +103,7 @@ public class BudgetRepository {
             // Build flat key-value list for HMSET via Lua
             List<String> args = new ArrayList<>();
             args.add("ledger_id"); args.add(ledger.getLedgerId());
+            args.add("tenant_id"); args.add(ledger.getTenantId());
             args.add("scope"); args.add(ledger.getScope());
             args.add("unit"); args.add(ledger.getUnit().name());
             args.add("allocated"); args.add(String.valueOf(ledger.getAllocated().getAmount()));
@@ -247,6 +249,7 @@ public class BudgetRepository {
         
         return BudgetLedger.builder()
             .ledgerId(hash.get("ledger_id"))
+            .tenantId(hash.get("tenant_id"))
             .scope(scope)
             .unit(unit)
             .allocated(new Amount(unit, Long.parseLong(hash.getOrDefault("allocated", "0"))))
