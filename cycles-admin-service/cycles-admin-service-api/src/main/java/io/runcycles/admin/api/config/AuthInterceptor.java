@@ -14,6 +14,8 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
+import io.runcycles.admin.api.filter.RequestIdFilter;
+
 import java.util.UUID;
 
 @Component
@@ -73,11 +75,11 @@ public class AuthInterceptor implements HandlerInterceptor {
     private boolean validateAdminKey(HttpServletRequest request, HttpServletResponse response) throws Exception {
         String key = request.getHeader(ADMIN_KEY_HEADER);
         if (key == null || key.isBlank()) {
-            writeError(response, 401, ErrorCode.UNAUTHORIZED, "Missing " + ADMIN_KEY_HEADER + " header");
+            writeError(request, response, 401, ErrorCode.UNAUTHORIZED, "Missing " + ADMIN_KEY_HEADER + " header");
             return false;
         }
         if (adminApiKey != null && !adminApiKey.isBlank() && !adminApiKey.equals(key)) {
-            writeError(response, 403, ErrorCode.FORBIDDEN, "Invalid admin API key");
+            writeError(request, response, 403, ErrorCode.FORBIDDEN, "Invalid admin API key");
             return false;
         }
         return true;
@@ -86,12 +88,12 @@ public class AuthInterceptor implements HandlerInterceptor {
     private boolean validateApiKey(HttpServletRequest request, HttpServletResponse response) throws Exception {
         String key = request.getHeader(API_KEY_HEADER);
         if (key == null || key.isBlank()) {
-            writeError(response, 401, ErrorCode.UNAUTHORIZED, "Missing " + API_KEY_HEADER + " header");
+            writeError(request, response, 401, ErrorCode.UNAUTHORIZED, "Missing " + API_KEY_HEADER + " header");
             return false;
         }
         ApiKeyValidationResponse validation = apiKeyRepository.validate(key);
         if (!Boolean.TRUE.equals(validation.getValid())) {
-            writeError(response, 403, ErrorCode.FORBIDDEN, "Invalid API key: " + (validation.getReason() != null ? validation.getReason() : "UNKNOWN"));
+            writeError(request, response, 403, ErrorCode.FORBIDDEN, "Invalid API key: " + (validation.getReason() != null ? validation.getReason() : "UNKNOWN"));
             return false;
         }
         // Store validated tenant_id in request attributes for controllers
@@ -102,13 +104,14 @@ public class AuthInterceptor implements HandlerInterceptor {
         return true;
     }
 
-    private void writeError(HttpServletResponse response, int status, ErrorCode code, String message) throws Exception {
+    private void writeError(HttpServletRequest request, HttpServletResponse response, int status, ErrorCode code, String message) throws Exception {
         response.setStatus(status);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        Object reqId = request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE);
         ErrorResponse error = ErrorResponse.builder()
             .error(code)
             .message(message)
-            .requestId(UUID.randomUUID().toString())
+            .requestId(reqId != null ? reqId.toString() : UUID.randomUUID().toString())
             .build();
         response.getWriter().write(objectMapper.writeValueAsString(error));
     }
