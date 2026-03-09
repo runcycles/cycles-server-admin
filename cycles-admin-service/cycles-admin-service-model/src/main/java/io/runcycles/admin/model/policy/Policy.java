@@ -8,6 +8,7 @@ import java.time.Instant;
 @Data @Builder @NoArgsConstructor @AllArgsConstructor @JsonInclude(JsonInclude.Include.NON_NULL)
 public class Policy {
     @JsonProperty("policy_id") private String policyId;
+    @JsonIgnore private String tenantId;
     @JsonProperty("name") private String name;
     @JsonProperty("description") private String description;
     @JsonProperty("scope_pattern") private String scopePattern;

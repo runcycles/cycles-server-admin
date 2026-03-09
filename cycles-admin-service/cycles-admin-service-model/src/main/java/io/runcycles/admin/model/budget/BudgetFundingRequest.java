@@ -10,6 +10,6 @@ public class BudgetFundingRequest {
     @NotNull @JsonProperty("operation") private FundingOperation operation;
     @NotNull @Valid @JsonProperty("amount") private Amount amount;
     @Size(max = 512) @JsonProperty("reason") private String reason;
-    @Size(max = 256) @JsonProperty("idempotency_key") private String idempotencyKey;
+    @Size(min = 1, max = 256) @JsonProperty("idempotency_key") private String idempotencyKey;
     @JsonProperty("metadata") private Map<String, Object> metadata;
 }

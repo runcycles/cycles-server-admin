@@ -14,11 +14,12 @@ public class PolicyRepository {
     private static final Logger LOG = LoggerFactory.getLogger(PolicyRepository.class);
     @Autowired private JedisPool jedisPool;
     @Autowired private ObjectMapper objectMapper;
-    public Policy create(PolicyCreateRequest request) {
+    public Policy create(String tenantId, PolicyCreateRequest request) {
         try (Jedis jedis = jedisPool.getResource()) {
             String policyId = "pol_" + UUID.randomUUID().toString().substring(0, 16);
             Policy policy = Policy.builder()
                 .policyId(policyId)
+                .tenantId(tenantId)
                 .name(request.getName())
                 .description(request.getDescription())
                 .scopePattern(request.getScopePattern())
@@ -33,15 +34,15 @@ public class PolicyRepository {
                 .createdAt(Instant.now())
                 .build();
             jedis.set("policy:" + policyId, objectMapper.writeValueAsString(policy));
-            jedis.sadd("policies", policyId);
+            jedis.sadd("policies:" + tenantId, policyId);
             return policy;
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
     }
-    public List<Policy> list(String scopePattern, PolicyStatus status, String cursor, int limit) {
+    public List<Policy> list(String tenantId, String scopePattern, PolicyStatus status, String cursor, int limit) {
         try (Jedis jedis = jedisPool.getResource()) {
-            Set<String> ids = jedis.smembers("policies");
+            Set<String> ids = jedis.smembers("policies:" + tenantId);
             List<String> sortedIds = new ArrayList<>(ids);
             Collections.sort(sortedIds);
             List<Policy> policies = new ArrayList<>();

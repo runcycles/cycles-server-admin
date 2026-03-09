@@ -27,6 +27,9 @@ public class ApiKeyRepository {
             String keySecret = keyService.generateKeySecret("gov");
             String keyPrefix = keyService.extractPrefix(keySecret);
             String keyHash = keyService.hashKey(keySecret);
+            Instant expiresAt = request.getExpiresAt() != null
+                ? request.getExpiresAt()
+                : Instant.now().plus(java.time.Duration.ofDays(90));
             ApiKey apiKey = ApiKey.builder()
                 .keyId(keyId)
                 .tenantId(request.getTenantId())
@@ -38,7 +41,7 @@ public class ApiKeyRepository {
                 .scopeFilter(request.getScopeFilter())
                 .status(ApiKeyStatus.ACTIVE)
                 .createdAt(Instant.now())
-                .expiresAt(request.getExpiresAt())
+                .expiresAt(expiresAt)
                 .metadata(request.getMetadata())
                 .build();
             // Atomic create: SET key + SADD index + SET lookup in one Lua call
@@ -78,7 +81,6 @@ public class ApiKeyRepository {
                         continue;
                     }
                     ApiKey key = objectMapper.readValue(data, ApiKey.class);
-                    key.setKeyHash(null); // Don't expose hash
                     if (statusFilter != null && key.getStatus() != statusFilter) continue;
                     keys.add(key);
                     if (keys.size() >= limit) break;
@@ -101,7 +103,6 @@ public class ApiKeyRepository {
             key.setRevokedAt(Instant.now());
             key.setRevokedReason(reason);
             jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
-            key.setKeyHash(null);
             return key;
         } catch (GovernanceException e) {
             throw e;
