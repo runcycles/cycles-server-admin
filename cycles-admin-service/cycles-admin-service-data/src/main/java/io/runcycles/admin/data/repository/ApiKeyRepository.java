@@ -1,7 +1,9 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.service.KeyService;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.runcycles.admin.model.auth.*;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -18,6 +20,21 @@ public class ApiKeyRepository {
     private static final List<String> DEFAULT_PERMISSIONS = List.of(
         "reservations:create", "reservations:commit", "reservations:release",
         "reservations:extend", "reservations:list", "balances:read");
+    // key_hash is @JsonIgnore on ApiKey to prevent accidental API exposure,
+    // so we handle it manually for Redis persistence
+    private String serializeKey(ApiKey key) throws Exception {
+        ObjectNode node = objectMapper.valueToTree(key);
+        node.put("key_hash", key.getKeyHash());
+        return objectMapper.writeValueAsString(node);
+    }
+    private ApiKey deserializeKey(String json) throws Exception {
+        JsonNode node = objectMapper.readTree(json);
+        ApiKey key = objectMapper.treeToValue(node, ApiKey.class);
+        if (node.has("key_hash")) {
+            key.setKeyHash(node.get("key_hash").asText());
+        }
+        return key;
+    }
     // Lua script for atomic API key creation: SET key + SADD index + SET lookup in one call
     private static final String CREATE_KEY_LUA =
         "redis.call('SET', KEYS[1], ARGV[1])\n" +
@@ -67,7 +84,7 @@ public class ApiKeyRepository {
                 .metadata(request.getMetadata())
                 .build();
             // Atomic create: SET key + SADD index + SET lookup in one Lua call
-            String json = objectMapper.writeValueAsString(apiKey);
+            String json = serializeKey(apiKey);
             jedis.eval(CREATE_KEY_LUA,
                 List.of("apikey:" + keyId, "apikeys:" + request.getTenantId(), "apikey:lookup:" + keyPrefix),
                 List.of(json, keyId));
@@ -102,7 +119,7 @@ public class ApiKeyRepository {
                         LOG.warn("API key data missing for id: {}", id);
                         continue;
                     }
-                    ApiKey key = objectMapper.readValue(data, ApiKey.class);
+                    ApiKey key = deserializeKey(data);
                     if (statusFilter != null && key.getStatus() != statusFilter) continue;
                     keys.add(key);
                     if (keys.size() >= limit) break;
@@ -120,11 +137,11 @@ public class ApiKeyRepository {
         try (Jedis jedis = jedisPool.getResource()) {
             String data = jedis.get("apikey:" + keyId);
             if (data == null) throw GovernanceException.apiKeyNotFound(keyId);
-            ApiKey key = objectMapper.readValue(data, ApiKey.class);
+            ApiKey key = deserializeKey(data);
             key.setStatus(ApiKeyStatus.REVOKED);
             key.setRevokedAt(Instant.now());
             key.setRevokedReason(reason);
-            jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
+            jedis.set("apikey:" + keyId, serializeKey(key));
             return key;
         } catch (GovernanceException e) {
             throw e;
@@ -143,7 +160,7 @@ public class ApiKeyRepository {
             if (data == null) {
                 return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_FOUND").build();
             }
-            ApiKey key = objectMapper.readValue(data, ApiKey.class);
+            ApiKey key = deserializeKey(data);
             if (key.getStatus() != ApiKeyStatus.ACTIVE) {
                 return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("KEY_" + key.getStatus()).build();
             }
@@ -167,7 +184,7 @@ public class ApiKeyRepository {
                 }
             }
             key.setLastUsedAt(Instant.now());
-            jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
+            jedis.set("apikey:" + keyId, serializeKey(key));
             return ApiKeyValidationResponse.builder()
                 .valid(true)
                 .tenantId(key.getTenantId())
