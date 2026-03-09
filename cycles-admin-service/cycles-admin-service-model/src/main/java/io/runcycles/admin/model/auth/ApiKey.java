@@ -1,14 +1,26 @@
 package io.runcycles.admin.model.auth;
-import com.fasterxml.jackson.annotation.*;
-import lombok.*;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
 import java.time.Instant;
-import java.util.*;
-@Data @Builder @NoArgsConstructor @AllArgsConstructor @JsonInclude(JsonInclude.Include.NON_NULL)
+import java.util.List;
+import java.util.Map;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class ApiKey {
     @JsonProperty("key_id") private String keyId;
     @JsonProperty("tenant_id") private String tenantId;
     @JsonProperty("key_prefix") private String keyPrefix;
-    @JsonIgnore private String keyHash;
+    @JsonProperty("key_hash") private String keyHash;
     @JsonProperty("name") private String name;
     @JsonProperty("description") private String description;
     @JsonProperty("permissions") private List<String> permissions;

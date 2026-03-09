@@ -10,6 +10,8 @@
     <artifactId>cycles-admin-service</artifactId>
     <version>0.1.23</version>
     <packaging>pom</packaging>
+    <name>Cycles Admin Service</name>
+    <description>Cycles Admin Service API v0.1.23</description>
     <modules>
         <module>cycles-admin-service-model</module>
         <module>cycles-admin-service-data</module>

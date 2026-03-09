@@ -2,7 +2,6 @@ package io.runcycles.admin.data.repository;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.service.KeyService;
@@ -124,9 +123,7 @@ class ApiKeyRepositoryTest {
                 .permissions(List.of("balances:read"))
                 .expiresAt(Instant.now().plusSeconds(3600))
                 .createdAt(Instant.now()).build();
-        ObjectNode node = objectMapper.valueToTree(key);
-        node.put("key_hash", "$2a$12$hash");
-        String keyJson = objectMapper.writeValueAsString(node);
+        String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_123")).thenReturn(keyJson);
 
         when(keyService.verifyKey(keySecret, "$2a$12$hash")).thenReturn(true);
@@ -158,9 +155,7 @@ class ApiKeyRepositoryTest {
         ApiKey key = ApiKey.builder()
                 .keyId("key_rev").tenantId("t1").keyHash("hash")
                 .status(ApiKeyStatus.REVOKED).createdAt(Instant.now()).build();
-        ObjectNode node = objectMapper.valueToTree(key);
-        node.put("key_hash", "hash");
-        String keyJson = objectMapper.writeValueAsString(node);
+        String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_rev")).thenReturn(keyJson);
 
         ApiKeyValidationResponse response = repository.validate("gov_revoked");
@@ -179,9 +174,7 @@ class ApiKeyRepositoryTest {
                 .status(ApiKeyStatus.ACTIVE)
                 .expiresAt(Instant.now().minusSeconds(3600))
                 .createdAt(Instant.now()).build();
-        ObjectNode node = objectMapper.valueToTree(key);
-        node.put("key_hash", "hash");
-        String keyJson = objectMapper.writeValueAsString(node);
+        String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_exp")).thenReturn(keyJson);
 
         ApiKeyValidationResponse response = repository.validate("gov_expired");
@@ -200,9 +193,7 @@ class ApiKeyRepositoryTest {
                 .status(ApiKeyStatus.ACTIVE)
                 .expiresAt(Instant.now().plusSeconds(3600))
                 .createdAt(Instant.now()).build();
-        ObjectNode node = objectMapper.valueToTree(key);
-        node.put("key_hash", "$2a$12$real");
-        String keyJson = objectMapper.writeValueAsString(node);
+        String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_w")).thenReturn(keyJson);
         when(keyService.verifyKey("gov_wrong", "$2a$12$real")).thenReturn(false);
 
@@ -222,9 +213,7 @@ class ApiKeyRepositoryTest {
                 .status(ApiKeyStatus.ACTIVE)
                 .expiresAt(Instant.now().plusSeconds(3600))
                 .createdAt(Instant.now()).build();
-        ObjectNode node = objectMapper.valueToTree(key);
-        node.put("key_hash", "$2a$12$hash");
-        String keyJson = objectMapper.writeValueAsString(node);
+        String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_s")).thenReturn(keyJson);
         when(keyService.verifyKey("gov_susp", "$2a$12$hash")).thenReturn(true);
         when(jedis.get("tenant:t1")).thenReturn("{\"status\":\"SUSPENDED\"}");
@@ -245,9 +234,7 @@ class ApiKeyRepositoryTest {
                 .status(ApiKeyStatus.ACTIVE)
                 .expiresAt(Instant.now().plusSeconds(3600))
                 .createdAt(Instant.now()).build();
-        ObjectNode node = objectMapper.valueToTree(key);
-        node.put("key_hash", "$2a$12$hash");
-        String keyJson = objectMapper.writeValueAsString(node);
+        String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_c")).thenReturn(keyJson);
         when(keyService.verifyKey("gov_closed", "$2a$12$hash")).thenReturn(true);
         when(jedis.get("tenant:t1")).thenReturn("{\"status\":\"CLOSED\"}");
@@ -263,9 +250,7 @@ class ApiKeyRepositoryTest {
         ApiKey key = ApiKey.builder()
                 .keyId("key_1").tenantId("t1").keyHash("hash")
                 .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
-        ObjectNode node = objectMapper.valueToTree(key);
-        node.put("key_hash", "hash");
-        String keyJson = objectMapper.writeValueAsString(node);
+        String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_1")).thenReturn(keyJson);
 
         ApiKey result = repository.revoke("key_1", "No longer needed");
@@ -295,10 +280,8 @@ class ApiKeyRepositoryTest {
 
         ApiKey k1 = ApiKey.builder().keyId("key_1").tenantId("t1").keyHash("h1").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
         ApiKey k2 = ApiKey.builder().keyId("key_2").tenantId("t1").keyHash("h2").status(ApiKeyStatus.REVOKED).createdAt(Instant.now()).build();
-        ObjectNode n1 = objectMapper.valueToTree(k1); n1.put("key_hash", "h1");
-        ObjectNode n2 = objectMapper.valueToTree(k2); n2.put("key_hash", "h2");
-        String k1Json = objectMapper.writeValueAsString(n1);
-        String k2Json = objectMapper.writeValueAsString(n2);
+        String k1Json = objectMapper.writeValueAsString(k1);
+        String k2Json = objectMapper.writeValueAsString(k2);
         when(jedis.get("apikey:key_1")).thenReturn(k1Json);
         when(jedis.get("apikey:key_2")).thenReturn(k2Json);
 
@@ -314,10 +297,8 @@ class ApiKeyRepositoryTest {
 
         ApiKey k1 = ApiKey.builder().keyId("key_1").tenantId("t1").keyHash("h1").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
         ApiKey k2 = ApiKey.builder().keyId("key_2").tenantId("t1").keyHash("h2").status(ApiKeyStatus.REVOKED).createdAt(Instant.now()).build();
-        ObjectNode n1 = objectMapper.valueToTree(k1); n1.put("key_hash", "h1");
-        ObjectNode n2 = objectMapper.valueToTree(k2); n2.put("key_hash", "h2");
-        String k1Json = objectMapper.writeValueAsString(n1);
-        String k2Json = objectMapper.writeValueAsString(n2);
+        String k1Json = objectMapper.writeValueAsString(k1);
+        String k2Json = objectMapper.writeValueAsString(k2);
         when(jedis.get("apikey:key_1")).thenReturn(k1Json);
         when(jedis.get("apikey:key_2")).thenReturn(k2Json);
 
