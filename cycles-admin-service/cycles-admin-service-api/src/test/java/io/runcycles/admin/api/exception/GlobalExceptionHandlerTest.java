@@ -11,6 +11,8 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.BeanPropertyBindingResult;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import jakarta.servlet.http.HttpServletRequest;
 
@@ -98,6 +100,31 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(response.getBody().getError()).isEqualTo(ErrorCode.INVALID_REQUEST);
         assertThat(response.getBody().getMessage()).isEqualTo("Malformed request body");
+    }
+
+    @Test
+    void handleMissingParam_returns400() throws Exception {
+        MissingServletRequestParameterException ex =
+                new MissingServletRequestParameterException("tenant_id", "String");
+
+        ResponseEntity<ErrorResponse> response = handler.handleMissingParam(ex, mockRequest);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().getError()).isEqualTo(ErrorCode.INVALID_REQUEST);
+        assertThat(response.getBody().getMessage()).contains("tenant_id");
+    }
+
+    @Test
+    void handleTypeMismatch_returns400() {
+        MethodArgumentTypeMismatchException ex = new MethodArgumentTypeMismatchException(
+                "abc", Integer.class, "limit", null, new NumberFormatException("For input string: \"abc\""));
+
+        ResponseEntity<ErrorResponse> response = handler.handleTypeMismatch(ex, mockRequest);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().getError()).isEqualTo(ErrorCode.INVALID_REQUEST);
+        assertThat(response.getBody().getMessage()).contains("limit");
+        assertThat(response.getBody().getMessage()).contains("abc");
     }
 
     @Test
