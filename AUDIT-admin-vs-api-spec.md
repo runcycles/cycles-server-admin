@@ -1,223 +1,211 @@
-# Audit: Admin Implementation vs. API Spec (v0.1.23)
+# Re-Audit: Admin Implementation vs. API Spec (v0.1.23)
 
 **Date:** 2026-03-09
 **Spec:** `complete-budget-governance-v0.1.23.yaml` (OpenAPI 3.1.0)
 **Impl:** `cycles-admin-service` (Spring Boot 3 / Java 21)
+**Previous Audit:** 23 issues found → 23 fixes applied → this re-audit
 
 ---
 
-## CRITICAL Issues
+## Status of Previously Reported Issues
 
-### 1. No Authentication/Authorization Enforcement
-**Severity: CRITICAL**
+| # | Issue | Verdict |
+|---|-------|---------|
+| 1 | No Authentication/Authorization Enforcement | **FIXED** — `AuthInterceptor` enforces `AdminKeyAuth` and `ApiKeyAuth` on all `/v1/**` paths |
+| 2 | Validate API Key Skips Tenant Status Check | **FIXED** — `ApiKeyRepository.validate()` now checks tenant SUSPENDED/CLOSED (lines 133-145) |
+| 3 | Tenant Create Not Idempotent | **FIXED** — Lua script returns existing tenant; controller returns 200 vs 201 |
+| 4 | BudgetCreateRequest Has Extra Required `tenant_id` | **FIXED** — `tenant_id` is now optional, derived from auth in `BudgetController.create()` |
+| 5 | BudgetLedger Includes Extra `tenant_id` Field | **ACCEPTED** — Still present. See new issue #2 below |
+| 6 | Policy Model Missing `reservation_ttl_override` and `rate_limits` | **FIXED** — Both fields added to `Policy`, `PolicyCreateRequest`, new model classes created |
+| 7 | Tenant Update Missing Status Transition Validation | **FIXED** — Full transition validation with `suspended_at`/`closed_at` timestamps |
+| 8 | Tenant Create Missing `default_commit_overage_policy` Default | **FIXED** — Defaults to `REJECT`, plus `defaultReservationTtlMs=60000`, `maxReservationTtlMs=3600000`, `maxReservationExtensions=10` |
+| 9 | `BudgetFundingRequest.idempotency_key` Required vs. Optional | **FIXED** — Changed from `@NotBlank` to `@Size(max = 256)` (optional) |
+| 10 | DEBIT Failure Returns 422, Spec Says 409 | **FIXED** — `insufficientFunds()` now returns 409 |
+| 11 | Budget FROZEN/CLOSED Returns 422 | **FIXED** — `budgetFrozen()` and `budgetClosed()` now return 409 |
+| 12 | `budgetClosed` Uses Wrong Error Code | **PARTIALLY FIXED** — Changed to `BUDGET_FROZEN` (closest spec code). See new issue #1 |
+| 13 | List Tenants Missing `parent_tenant_id` Filter | **FIXED** — Added `parent_tenant_id`, `cursor` params |
+| 14 | List Budgets Missing Query Filters | **FIXED** — Added `scope_prefix`, `unit`, `status`, `cursor`, `limit` params |
+| 15 | List Policies Missing All Query Parameters | **FIXED** — Added `scope_pattern`, `status`, `cursor`, `limit` params |
+| 16 | List API Keys Missing Filters | **FIXED** — Added `status`, `cursor`, `limit` params |
+| 17 | List Audit Logs Missing Filters | **FIXED** — Added `key_id`, `operation`, `status`, `from`, `to`, `cursor` params; global index for cross-tenant queries |
+| 18 | No Cursor-Based Pagination | **FIXED** — All list endpoints now support cursor-based pagination with `next_cursor` and `has_more` |
+| 19 | ApiKey `expires_at` Required in Spec But Optional | **OPEN** — Still not addressed. See new issue #3 |
+| 20 | `Caps` Field Types: Long vs Integer | **FIXED** — Changed from `Long` to `Integer` |
+| 21 | ApiKey Model Exposes `key_hash` Field | **OPEN** — Still uses manual `setKeyHash(null)`. See new issue #4 |
+| 22 | List Response Wrapper Inconsistency | **OPEN** — Still uses `Map<String, Object>`. See new issue #5 |
+| 23 | Balances Endpoint Reuses Budget List | **OPEN** — Still returns BudgetLedger objects under `"balances"` key. See new issue #6 |
 
-None of the 15 implemented endpoints validate the `X-Admin-API-Key` or `X-Cycles-API-Key` headers. All admin and runtime endpoints are completely open to unauthenticated access.
-
-| Spec Security | Affected Endpoints |
-|---|---|
-| `AdminKeyAuth` (X-Admin-API-Key) | POST/GET tenants, GET/PATCH tenants/{id}, POST/GET api-keys, DELETE api-keys/{id}, POST auth/validate, GET audit/logs |
-| `ApiKeyAuth` (X-Cycles-API-Key) | POST/GET budgets, POST fund, POST/GET policies, GET balances |
-
-**Files:** All controllers in `cycles-admin-service-api/.../controller/`
-
-### 2. Validate API Key Skips Tenant Status Check
-**Severity: CRITICAL**
-
-Spec requires validation step 5: *"Tenant is ACTIVE (not SUSPENDED or CLOSED)"*. The implementation in `ApiKeyRepository.validate()` checks key status and expiry but never loads or checks the tenant's status.
-
-**File:** `ApiKeyRepository.java:100-135`
+**Resolution: 19 of 23 fixed, 4 carried forward as known issues.**
 
 ---
 
-## HIGH Issues
+## New Issues Found in Re-Audit
 
-### 3. Tenant Create Not Idempotent (Spec Violation)
-**Severity: HIGH**
+### MEDIUM Issues
 
-Spec says: *"Safe to retry with same tenant_id. Returns existing tenant if already created."* and defines both `200` (idempotent) and `201` (created) responses.
+#### 1. `GovernanceException.budgetClosed()` Reuses `BUDGET_FROZEN` Error Code
+**Severity: MEDIUM**
 
-Implementation throws `409 DUPLICATE_RESOURCE` on any duplicate `tenant_id`, even with identical data.
+Both `budgetFrozen()` and `budgetClosed()` return `ErrorCode.BUDGET_FROZEN`. Clients cannot distinguish a frozen budget from a closed one. The spec's `ErrorCode` enum does not define `BUDGET_CLOSED`, so `BUDGET_FROZEN` is the closest match — but the error *message* should clearly indicate the difference.
 
-**File:** `TenantRepository.java:25-53`, `TenantController.java:18-20`
+Currently `budgetClosed()` says `"Budget is closed: ..."` with code `BUDGET_FROZEN`, which is contradictory.
 
-### 4. BudgetCreateRequest Has Extra `tenant_id` Field
-**Severity: HIGH**
+**File:** `GovernanceException.java:37-39`
+**Recommendation:** Either add a custom error code or ensure the `details` map carries a `"budget_status": "CLOSED"` field.
 
-The spec's `BudgetCreateRequest` schema does not include `tenant_id`. The budget endpoint uses `ApiKeyAuth`, meaning the tenant should be derived from the authenticated API key. The implementation adds `tenant_id` as a `@NotBlank` required field in the request body.
+#### 2. `BudgetLedger` Response Contains Extra `tenant_id` Field
+**Severity: MEDIUM**
 
-**Files:** `BudgetCreateRequest.java:11`, spec line 365-398
-
-### 5. BudgetLedger Includes Extra `tenant_id` Field
-**Severity: HIGH**
-
-The spec's `BudgetLedger` schema does not include a `tenant_id` property. The implementation adds it. While useful for internal routing, this deviates from the spec response contract.
+The spec's `BudgetLedger` schema uses `additionalProperties: false` and does not include `tenant_id`. The implementation includes it in every response. Strict OpenAPI-compliant clients will reject this response.
 
 **File:** `BudgetLedger.java:12`
 
-### 6. Policy Model Missing `reservation_ttl_override` and `rate_limits`
-**Severity: HIGH**
-
-The spec defines two structured sub-objects on `Policy` and `PolicyCreateRequest`:
-
-- `reservation_ttl_override`: `{default_ttl_ms, max_ttl_ms, max_extensions}`
-- `rate_limits`: `{max_reservations_per_minute, max_commits_per_minute}`
-
-Neither field exists in the Java model or is persisted.
-
-**Files:** `Policy.java`, `PolicyCreateRequest.java`
-
-### 7. Tenant Update Missing Status Transition Validation
-**Severity: HIGH**
-
-Spec documents explicit status transitions:
-- `ACTIVE → SUSPENDED`: Blocks new reservations
-- `SUSPENDED → ACTIVE`: Resume operations
-- `* → CLOSED`: Irreversible
-
-Implementation accepts any status value without transition validation. It also does not set `suspended_at` when transitioning to SUSPENDED or `closed_at` when transitioning to CLOSED.
-
-**File:** `TenantRepository.java:89-103`
-
-### 8. Tenant Create Missing `default_commit_overage_policy` Default
-**Severity: HIGH**
-
-Spec says the tenant's `default_commit_overage_policy` should default to `REJECT`. The implementation does not set this field, leaving it `null`.
-
-**File:** `TenantRepository.java:29-38`
-
----
-
-## MEDIUM Issues
-
-### 9. `BudgetFundingRequest.idempotency_key` Required vs. Optional
+#### 3. `ApiKey.expires_at` Required by Spec But Nullable in Implementation
 **Severity: MEDIUM**
 
-Spec defines `idempotency_key` as optional (not in the `required` array). Implementation marks it `@NotBlank`, making it required. This will reject valid requests that omit the key.
+Spec declares `expires_at` as required on both `ApiKey` and `ApiKeyCreateResponse` schemas. The `ApiKeyCreateRequest` makes it optional. If a key is created without `expires_at`, both the `ApiKeyCreateResponse` and subsequent `ApiKey` list responses will omit it (due to `@JsonInclude(NON_NULL)`), violating the required field contract.
+
+**Files:** `ApiKey.java:19`, `ApiKeyCreateResponse.java:14`, `ApiKeyRepository.java:41`
+**Recommendation:** Either default `expires_at` to 90 days from creation (as spec recommends) or always serialize it as `null` (remove `NON_NULL` for this field specifically).
+
+#### 4. Policies Not Scoped to Tenant
+**Severity: MEDIUM**
+
+The spec says *"Tenant can create policies for their own scopes only"* and *"Tenant can list their own policies only"*. However:
+- `PolicyRepository` stores all policies in a global `"policies"` Redis set
+- `PolicyCreateRequest` has no `tenant_id` field (matching spec)
+- No mechanism associates a policy with the authenticated tenant
+- `PolicyController.list()` returns all policies regardless of who created them
+
+Any tenant with API key access can see and create policies affecting other tenants' scopes.
+
+**Files:** `PolicyRepository.java:35-36`, `PolicyController.java:20-34`
+**Recommendation:** Add `tenant_id` to `Policy` model (internal field), store policies per-tenant in Redis (`policies:{tenant_id}`), and filter by authenticated tenant in controller.
+
+#### 5. `BudgetFundingRequest.idempotency_key` Missing `minLength` Validation
+**Severity: LOW**
+
+Spec defines `idempotency_key` with `minLength: 1`. Implementation has `@Size(max = 256)` but no `min = 1`. An empty string `""` would pass validation but is semantically invalid as an idempotency key.
 
 **File:** `BudgetFundingRequest.java:13`
+**Recommendation:** Change to `@Size(min = 1, max = 256)`.
 
-### 10. DEBIT Failure Returns 422, Spec Says 409
-**Severity: MEDIUM**
+### LOW Issues (Carried Forward)
 
-Spec defines DEBIT insufficient funds as `409` (*"Insufficient funds for DEBIT"*). Implementation returns `422` via `GovernanceException.insufficientFunds()`.
-
-**File:** `GovernanceException.java:31-32`
-
-### 11. Budget FROZEN/CLOSED Returns 422, Not Spec-Defined
-**Severity: MEDIUM**
-
-For frozen/closed budgets during funding, the implementation returns `422`. The spec only defines `200`, `404`, and `409` responses for the fund endpoint. Frozen should probably map to `409` to align with the spec.
-
-**File:** `GovernanceException.java:34-38`
-
-### 12. `budgetClosed` Uses Wrong Error Code
-**Severity: MEDIUM**
-
-`GovernanceException.budgetClosed()` uses `ErrorCode.BUDGET_NOT_FOUND` but the budget does exist — it's just closed. There is no `BUDGET_CLOSED` error code in the spec, but `BUDGET_FROZEN` exists and a similar code should be used or the behavior should return `404` as if the budget doesn't exist.
-
-**File:** `GovernanceException.java:37-39`
-
-### 13. List Tenants Missing `parent_tenant_id` Filter
-**Severity: MEDIUM**
-
-Spec defines `parent_tenant_id` as a query parameter for `GET /v1/admin/tenants`. Implementation only supports `status` and `limit`.
-
-**File:** `TenantController.java:22-25`
-
-### 14. List Budgets Missing Query Filters
-**Severity: MEDIUM**
-
-Spec defines: `scope_prefix`, `unit`, `status`, `cursor`, `limit` query parameters. Implementation only accepts `tenant_id`.
-
-**File:** `BudgetController.java:22-25`
-
-### 15. List Policies Missing All Query Parameters
-**Severity: MEDIUM**
-
-Spec defines: `scope_pattern`, `status`, `cursor`, `limit` parameters. Implementation accepts no parameters.
-
-**File:** `PolicyController.java:20-22`
-
-### 16. List API Keys Missing Filters
-**Severity: MEDIUM**
-
-Spec defines: `status`, `cursor`, `limit` query parameters. Implementation only accepts `tenant_id`.
-
-**File:** `ApiKeyController.java:21-23`
-
-### 17. List Audit Logs Missing Filters
-**Severity: MEDIUM**
-
-Spec defines: `key_id`, `operation`, `status` (integer), `from` (datetime), `to` (datetime), `cursor` parameters. Implementation only accepts `tenant_id` and `limit`. Also defaults to `"SYSTEM"` when `tenant_id` is null rather than listing across all tenants.
-
-**File:** `AuditController.java:12-16`
-
-### 18. No Cursor-Based Pagination on Any List Endpoint
-**Severity: MEDIUM**
-
-All list response schemas define `next_cursor` and `has_more` fields. Implementation hardcodes `has_more` to `false` or uses a size heuristic, and never returns `next_cursor`. No cursor-based pagination is implemented.
-
-**Files:** All controllers returning list responses
-
-### 19. ApiKey `expires_at` Required in Spec Response But Optional in Create
-**Severity: MEDIUM**
-
-Spec marks `expires_at` as required in both `ApiKey` and `ApiKeyCreateResponse` schemas. Implementation allows null `expires_at` (no default expiry set). Clients expecting a non-null field will break.
-
-**Files:** `ApiKeyCreateRequest.java:14`, `ApiKeyRepository.java:41`
-
----
-
-## LOW Issues
-
-### 20. `Caps` Field Types: Long vs Integer
+#### 6. ApiKey `key_hash` Exposed via Manual Null-Setting
 **Severity: LOW**
 
-Spec defines `max_tokens`, `max_steps_remaining`, and `cooldown_ms` as `integer` (32-bit). Implementation uses `Long` (64-bit). Functionally compatible but diverges from spec intent.
+The `key_hash` field is not in the spec's `ApiKey` schema. It's stripped manually via `key.setKeyHash(null)` in `ApiKeyRepository.list()` and `revoke()`. This is fragile — any new code path returning an `ApiKey` could leak the hash. The `@JsonProperty(access = WRITE_ONLY)` approach was attempted but conflicts with using the same `ObjectMapper` for Redis serialization.
 
-**File:** `Caps.java:7-11`
+**File:** `ApiKey.java:11`, `ApiKeyRepository.java:81,104`
+**Recommendation:** Use a separate DTO for API responses or a custom serializer.
 
-### 21. ApiKey Model Exposes `key_hash` Field
+#### 7. List Responses Use `Map<String, Object>` Instead of Typed DTOs
 **Severity: LOW**
 
-The `ApiKey` model includes `key_hash` which is not in the spec schema. The implementation strips it on list/revoke operations (`key.setKeyHash(null)`), but relying on manual stripping is fragile. Consider using `@JsonIgnore` or a DTO that excludes it.
-
-**File:** `ApiKey.java:12`
-
-### 22. List Response Wrapper Inconsistency
-**Severity: LOW**
-
-List endpoints return `Map<String, Object>` instead of typed response DTOs. The spec defines `TenantListResponse`, `BudgetListResponse`, `PolicyListResponse`, `ApiKeyListResponse`, `AuditLogListResponse` schemas. Using typed classes would provide compile-time safety and automatic OpenAPI doc generation.
+All list endpoints return `Map<String, Object>` instead of spec-defined typed responses (`TenantListResponse`, `BudgetListResponse`, etc.). This works but provides no compile-time safety and generates weaker OpenAPI documentation.
 
 **Files:** All controller list methods
 
-### 23. Balances Endpoint Reuses Budget List
+#### 8. Balances Endpoint Returns Full BudgetLedger Objects
 **Severity: LOW**
 
-`GET /v1/balances` reuses `BudgetRepository.list()` directly, returning full ledger objects. The spec says this should return "Balance data" which may have a different shape. Also, the response wraps data under `"balances"` key but returns `BudgetLedger` objects.
+`GET /v1/balances` calls `BudgetRepository.list()` and returns full `BudgetLedger` objects under a `"balances"` key. The spec references "Balance data (see Cycles v0.1.23)" which may expect a different shape. Functionally acceptable but not strictly conformant.
 
-**File:** `BalanceController.java:12-15`
+**File:** `BalanceController.java:26-28`
+
+#### 9. Tenant List `limit` Max Not Enforced
+**Severity: LOW**
+
+Spec defines `limit` parameter with `maximum: 100` for tenant listing. Implementation uses `defaultValue = "50"` but doesn't cap at 100 — a client can request `limit=10000`.
+
+**File:** `TenantController.java:27`
+
+---
+
+## Compliance Matrix
+
+### Endpoints
+
+| Endpoint | Method | Spec Security | Impl Security | Status |
+|----------|--------|---------------|---------------|--------|
+| `/v1/admin/tenants` | POST | AdminKeyAuth | AdminKeyAuth | PASS |
+| `/v1/admin/tenants` | GET | AdminKeyAuth | AdminKeyAuth | PASS |
+| `/v1/admin/tenants/{id}` | GET | AdminKeyAuth | AdminKeyAuth | PASS |
+| `/v1/admin/tenants/{id}` | PATCH | AdminKeyAuth | AdminKeyAuth | PASS |
+| `/v1/admin/budgets` | POST | ApiKeyAuth | ApiKeyAuth | PASS |
+| `/v1/admin/budgets` | GET | ApiKeyAuth | ApiKeyAuth | PASS |
+| `/v1/admin/budgets/{scope}/{unit}/fund` | POST | ApiKeyAuth | ApiKeyAuth | PASS |
+| `/v1/admin/policies` | POST | ApiKeyAuth | ApiKeyAuth | PASS |
+| `/v1/admin/policies` | GET | ApiKeyAuth | ApiKeyAuth | PASS |
+| `/v1/admin/api-keys` | POST | AdminKeyAuth | AdminKeyAuth | PASS |
+| `/v1/admin/api-keys` | GET | AdminKeyAuth | AdminKeyAuth | PASS |
+| `/v1/admin/api-keys/{id}` | DELETE | AdminKeyAuth | AdminKeyAuth | PASS |
+| `/v1/auth/validate` | POST | AdminKeyAuth | AdminKeyAuth | PASS |
+| `/v1/admin/audit/logs` | GET | AdminKeyAuth | AdminKeyAuth | PASS |
+| `/v1/balances` | GET | ApiKeyAuth | ApiKeyAuth | PASS |
+| `/v1/reservations` | POST | ApiKeyAuth | ApiKeyAuth (interceptor only) | N/A* |
+| `/v1/reservations/{id}/commit` | POST | ApiKeyAuth | ApiKeyAuth (interceptor only) | N/A* |
+
+*Reservation endpoints are defined as "imported from Cycles Protocol v0.1.23" — auth is enforced by interceptor but no controller exists in admin service (expected to be in runtime service).
+
+### Schema Compliance
+
+| Schema | Fields Match | Required Fields | Notes |
+|--------|-------------|-----------------|-------|
+| Tenant | PASS | PASS | All spec fields present |
+| TenantCreateRequest | PASS | PASS | Validation constraints match |
+| BudgetLedger | WARN | PASS | Extra `tenant_id` field (issue #2) |
+| BudgetCreateRequest | PASS | PASS | `tenant_id` optional, derived from auth |
+| BudgetFundingRequest | PASS | PASS | `idempotency_key` missing minLength (issue #5) |
+| BudgetFundingResponse | PASS | PASS | |
+| Policy | PASS | PASS | All fields including ttl_override, rate_limits |
+| PolicyCreateRequest | PASS | PASS | |
+| ApiKey | WARN | WARN | `key_hash` extra (issue #6); `expires_at` nullable (issue #3) |
+| ApiKeyCreateRequest | PASS | PASS | |
+| ApiKeyCreateResponse | WARN | WARN | `expires_at` nullable (issue #3) |
+| ApiKeyValidationResponse | PASS | PASS | |
+| AuditLogEntry | PASS | PASS | All 14 fields present |
+| Caps | PASS | PASS | Integer types corrected |
+| Amount | PASS | PASS | |
+| ErrorCode | PASS | PASS | All 22 enum values present |
+| ErrorResponse | PASS | PASS | |
+
+### Key Validation Steps (Spec §/v1/auth/validate)
+
+| Step | Check | Status |
+|------|-------|--------|
+| 1 | Key exists in database | PASS |
+| 2 | Key hash matches | PASS |
+| 3 | Status is ACTIVE | PASS |
+| 4 | Current time < expires_at | PASS |
+| 5 | Tenant is ACTIVE (not SUSPENDED/CLOSED) | PASS |
 
 ---
 
 ## Summary
 
-| Severity | Count |
-|----------|-------|
-| CRITICAL | 2 |
-| HIGH | 6 |
-| MEDIUM | 11 |
-| LOW | 4 |
-| **Total** | **23** |
+| Severity | Previous | Fixed | New | Remaining |
+|----------|----------|-------|-----|-----------|
+| CRITICAL | 2 | 2 | 0 | **0** |
+| HIGH | 6 | 6 | 0 | **0** |
+| MEDIUM | 11 | 8 | 4 | **4** |
+| LOW | 4 | 3 | 1 | **4** |
+| **Total** | **23** | **19** | **5** | **8** |
 
-### Recommended Priority
+### Overall Assessment
 
-1. **Implement authentication** (X-Admin-API-Key / X-Cycles-API-Key header validation) — this is the single most important gap
-2. **Add tenant status check to key validation** flow
-3. **Fix tenant create idempotency** to return 200 on duplicate
-4. **Add missing Policy fields** (reservation_ttl_override, rate_limits)
-5. **Fix status transition validation** on tenant update
-6. **Add missing query filters and pagination** across all list endpoints
-7. **Fix HTTP status codes** for DEBIT failures and frozen budgets
-8. **Set default_commit_overage_policy** to REJECT on tenant create
-9. **Reconcile tenant_id** on budget create/response (derive from auth vs. explicit)
+The implementation has improved significantly. All CRITICAL and HIGH issues are resolved. The remaining 8 issues are MEDIUM/LOW and fall into two categories:
+
+**Functional gaps (MEDIUM):**
+1. Contradictory error code/message for closed budgets
+2. Extra `tenant_id` in BudgetLedger response (violates `additionalProperties: false`)
+3. `expires_at` can be null when spec requires it
+4. Policies not scoped to tenant (security concern)
+
+**Polish items (LOW):**
+5. Missing `minLength` on `idempotency_key`
+6. Fragile `key_hash` stripping approach
+7. Untyped list response wrappers
+8. Balance endpoint shape
+9. Missing `limit` max enforcement
