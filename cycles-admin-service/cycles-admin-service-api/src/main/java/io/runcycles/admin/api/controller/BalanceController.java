@@ -18,10 +18,8 @@ public class BalanceController {
             @RequestParam(required = false) String scope_prefix,
             @RequestParam(required = false) UnitEnum unit,
             HttpServletRequest httpRequest) {
-        String effectiveTenantId = tenant_id;
-        if (effectiveTenantId == null || effectiveTenantId.isBlank()) {
-            effectiveTenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
-        }
+        // Enforce tenant scoping: always use authenticated tenant, ignore user-supplied tenant_id
+        String effectiveTenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         var ledgers = repository.list(effectiveTenantId, scope_prefix, unit, BudgetStatus.ACTIVE, null, 1000);
         BalanceQueryResponse response = BalanceQueryResponse.builder()
             .balances(ledgers)

@@ -29,14 +29,17 @@ public class BudgetController {
     }
     @GetMapping @Operation(operationId = "listBudgets")
     public ResponseEntity<BudgetListResponse> list(
-            @RequestParam(required = true) String tenant_id,
+            @RequestParam(required = false) String tenant_id,
             @RequestParam(required = false) String scope_prefix,
             @RequestParam(required = false) UnitEnum unit,
             @RequestParam(required = false) BudgetStatus status,
             @RequestParam(required = false) String cursor,
-            @RequestParam(defaultValue = "50") int limit) {
+            @RequestParam(defaultValue = "50") int limit,
+            HttpServletRequest httpRequest) {
+        // Enforce tenant scoping: always use authenticated tenant, ignore user-supplied tenant_id
+        String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
-        var ledgers = repository.list(tenant_id, scope_prefix, unit, status, cursor, effectiveLimit);
+        var ledgers = repository.list(tenantId, scope_prefix, unit, status, cursor, effectiveLimit);
         BudgetListResponse response = BudgetListResponse.builder()
             .ledgers(ledgers)
             .hasMore(ledgers.size() >= effectiveLimit)
@@ -47,7 +50,8 @@ public class BudgetController {
     @PostMapping("/{scope}/{unit}/fund") @Operation(operationId = "fundBudget")
     public ResponseEntity<BudgetFundingResponse> fund(@PathVariable String scope, @PathVariable UnitEnum unit,
             @Valid @RequestBody BudgetFundingRequest request, HttpServletRequest httpRequest) {
-        BudgetFundingResponse response = repository.fund(scope, unit, request);
+        String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
+        BudgetFundingResponse response = repository.fund(tenantId, scope, unit, request);
         auditRepository.log(AuditLogEntry.builder()
             .tenantId((String) httpRequest.getAttribute("authenticated_tenant_id"))
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))

@@ -25,6 +25,8 @@ public class BudgetRepository {
     private static final String FUND_LUA =
         "local key = KEYS[1]\n" +
         "if redis.call('EXISTS', key) == 0 then return {'NOT_FOUND'} end\n" +
+        "local tid = redis.call('HGET', key, 'tenant_id') or ''\n" +
+        "if ARGV[4] ~= '' and tid ~= ARGV[4] then return {'FORBIDDEN'} end\n" +
         "local status = redis.call('HGET', key, 'status') or 'ACTIVE'\n" +
         "if status == 'FROZEN' then return {'BUDGET_FROZEN'} end\n" +
         "if status == 'CLOSED' then return {'BUDGET_CLOSED'} end\n" +
@@ -179,8 +181,8 @@ public class BudgetRepository {
         return list(tenantId, null, null, null, null, 1000);
     }
 
-    public BudgetFundingResponse fund(String scope, UnitEnum unit, BudgetFundingRequest request) {
-        LOG.info("Funding budget: scope={}, unit={}, op={}", scope, unit, request.getOperation());
+    public BudgetFundingResponse fund(String tenantId, String scope, UnitEnum unit, BudgetFundingRequest request) {
+        LOG.info("Funding budget: scope={}, unit={}, op={}, tenant={}", scope, unit, request.getOperation(), tenantId);
         try (Jedis jedis = jedisPool.getResource()) {
             // Idempotency check: return cached response for duplicate requests (only if key provided)
             if (request.getIdempotencyKey() != null && !request.getIdempotencyKey().isBlank()) {
@@ -203,9 +205,14 @@ public class BudgetRepository {
             @SuppressWarnings("unchecked")
             List<String> result = (List<String>) jedis.eval(FUND_LUA,
                 List.of(key),
-                List.of(request.getOperation().name(), String.valueOf(changeAmount), now));
+                List.of(request.getOperation().name(), String.valueOf(changeAmount), now, tenantId != null ? tenantId : ""));
 
             String status = result.get(0);
+            if ("FORBIDDEN".equals(status)) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.FORBIDDEN,
+                    "Budget does not belong to authenticated tenant", 403);
+            }
             if ("NOT_FOUND".equals(status)) {
                 throw GovernanceException.budgetNotFound(scope);
             }
