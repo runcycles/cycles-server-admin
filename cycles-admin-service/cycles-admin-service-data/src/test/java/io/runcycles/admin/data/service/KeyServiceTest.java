@@ -66,16 +66,16 @@ class KeyServiceTest {
     void extractPrefix_returnsPortionBeforeAndAfterUnderscore() {
         String key = keyService.generateKeySecret("gov");
         String prefix = keyService.extractPrefix(key);
-        // prefix is substring(0, min(indexOf('_') + 12, key.length))
+        // prefix is substring(0, min(indexOf('_') + 6, key.length))
         assertThat(prefix).startsWith("gov_");
-        assertThat(prefix.length()).isLessThanOrEqualTo(key.length());
+        assertThat(prefix).hasSize(9); // "gov_" (4) + 5 chars after underscore
     }
 
     @Test
     void extractPrefix_handlesKeyWithoutUnderscore() {
         String prefix = keyService.extractPrefix("abcdefghijklmnopqrstuvwxyz");
-        // No underscore → substring(0, min(16, length))
-        assertThat(prefix).hasSize(16);
+        // No underscore → substring(0, min(10, length))
+        assertThat(prefix).hasSize(10);
     }
 
     @Test
