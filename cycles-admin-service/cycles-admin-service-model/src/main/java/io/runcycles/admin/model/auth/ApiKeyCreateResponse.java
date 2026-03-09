@@ -3,7 +3,7 @@ import com.fasterxml.jackson.annotation.*;
 import lombok.*;
 import java.time.Instant;
 import java.util.List;
-@Data @Builder @NoArgsConstructor @AllArgsConstructor @JsonInclude(JsonInclude.Include.NON_NULL)
+@Data @Builder @NoArgsConstructor @AllArgsConstructor
 public class ApiKeyCreateResponse {
     @JsonProperty("key_id") private String keyId;
     @JsonProperty("key_secret") private String keySecret;

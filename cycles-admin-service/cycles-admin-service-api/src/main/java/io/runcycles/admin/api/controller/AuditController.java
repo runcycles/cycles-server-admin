@@ -20,7 +20,7 @@ public class AuditController {
             @RequestParam(required = false) Instant to,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit) {
-        int effectiveLimit = Math.min(limit, 100);
+        int effectiveLimit = Math.max(1, Math.min(limit, 100));
         var logs = repository.list(tenant_id, key_id, operation, status, from, to, cursor, effectiveLimit);
         AuditLogListResponse response = AuditLogListResponse.builder()
             .logs(logs)

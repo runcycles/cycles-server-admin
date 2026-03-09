@@ -73,15 +73,15 @@ public class BudgetRepository {
         "redis.call('SADD', KEYS[2], KEYS[1])\n" +
         "return 1\n";
 
-    public BudgetLedger create(BudgetCreateRequest request) {
+    public BudgetLedger create(String tenantId, BudgetCreateRequest request) {
         LOG.info("Creating budget: scope={}, unit={}", request.getScope(), request.getUnit());
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "budget:" + request.getScope() + ":" + request.getUnit();
-            String indexKey = "budgets:" + request.getTenantId();
+            String indexKey = "budgets:" + tenantId;
 
             BudgetLedger ledger = BudgetLedger.builder()
                 .ledgerId(UUID.randomUUID().toString())
-                .tenantId(request.getTenantId())
+                .tenantId(tenantId)
                 .scope(request.getScope())
                 .unit(request.getUnit())
                 .allocated(request.getAllocated())

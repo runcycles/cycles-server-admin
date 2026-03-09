@@ -10,5 +10,5 @@ public class TenantCreateRequest {
     @NotBlank @Size(max = 256)
     @JsonProperty("name") private String name;
     @JsonProperty("parent_tenant_id") private String parentTenantId;
-    @JsonProperty("metadata") private Map<String, String> metadata;
+    @Size(max = 32) @JsonProperty("metadata") private Map<String, String> metadata;
 }

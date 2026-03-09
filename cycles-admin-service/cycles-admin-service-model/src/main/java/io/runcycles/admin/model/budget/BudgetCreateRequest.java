@@ -8,7 +8,6 @@ import java.time.Instant;
 import java.util.Map;
 @Data @NoArgsConstructor @AllArgsConstructor
 public class BudgetCreateRequest {
-    @JsonProperty("tenant_id") private String tenantId;
     @NotBlank @JsonProperty("scope") private String scope;
     @NotNull @JsonProperty("unit") private UnitEnum unit;
     @NotNull @Valid @JsonProperty("allocated") private Amount allocated;

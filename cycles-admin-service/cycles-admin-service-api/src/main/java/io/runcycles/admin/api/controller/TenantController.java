@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.controller;
+import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.TenantRepository;
+import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.tenant.Tenant;
 import io.runcycles.admin.model.tenant.TenantCreateRequest;
 import io.runcycles.admin.model.tenant.TenantListResponse;
@@ -14,10 +16,17 @@ import org.springframework.web.bind.annotation.*;
 @RestController @RequestMapping("/v1/admin/tenants") @Tag(name = "Tenants")
 public class TenantController {
     @Autowired private TenantRepository repository;
+    @Autowired private AuditRepository auditRepository;
     @PostMapping @Operation(operationId = "createTenant")
     public ResponseEntity<Tenant> create(@Valid @RequestBody TenantCreateRequest request) {
         var result = repository.create(request);
-        return ResponseEntity.status(result.created() ? 201 : 200).body(result.tenant());
+        int httpStatus = result.created() ? 201 : 200;
+        auditRepository.log(AuditLogEntry.builder()
+            .tenantId(request.getTenantId())
+            .operation("createTenant")
+            .status(httpStatus)
+            .build());
+        return ResponseEntity.status(httpStatus).body(result.tenant());
     }
     @GetMapping @Operation(operationId = "listTenants")
     public ResponseEntity<TenantListResponse> list(
@@ -25,7 +34,7 @@ public class TenantController {
             @RequestParam(required = false) String parent_tenant_id,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit) {
-        int effectiveLimit = Math.min(limit, 100);
+        int effectiveLimit = Math.max(1, Math.min(limit, 100));
         var tenants = repository.list(status, parent_tenant_id, cursor, effectiveLimit);
         TenantListResponse response = TenantListResponse.builder()
             .tenants(tenants)
@@ -40,6 +49,12 @@ public class TenantController {
     }
     @PatchMapping("/{tenant_id}") @Operation(operationId = "updateTenant")
     public ResponseEntity<Tenant> update(@PathVariable("tenant_id") String tenantId, @Valid @RequestBody TenantUpdateRequest request) {
-        return ResponseEntity.ok(repository.update(tenantId, request));
+        Tenant updated = repository.update(tenantId, request);
+        auditRepository.log(AuditLogEntry.builder()
+            .tenantId(tenantId)
+            .operation("updateTenant")
+            .status(200)
+            .build());
+        return ResponseEntity.ok(updated);
     }
 }

@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.controller;
+import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
+import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.auth.ApiKeyCreateRequest;
 import io.runcycles.admin.model.auth.ApiKeyCreateResponse;
 import io.runcycles.admin.model.auth.ApiKeyListResponse;
@@ -15,9 +17,16 @@ import java.util.stream.Collectors;
 @RestController @RequestMapping("/v1/admin/api-keys") @Tag(name = "API Keys")
 public class ApiKeyController {
     @Autowired private ApiKeyRepository repository;
+    @Autowired private AuditRepository auditRepository;
     @PostMapping @Operation(operationId = "createApiKey")
     public ResponseEntity<ApiKeyCreateResponse> create(@Valid @RequestBody ApiKeyCreateRequest request) {
-        return ResponseEntity.status(201).body(repository.create(request));
+        ApiKeyCreateResponse response = repository.create(request);
+        auditRepository.log(AuditLogEntry.builder()
+            .tenantId(request.getTenantId())
+            .operation("createApiKey")
+            .status(201)
+            .build());
+        return ResponseEntity.status(201).body(response);
     }
     @GetMapping @Operation(operationId = "listApiKeys")
     public ResponseEntity<ApiKeyListResponse> list(
@@ -25,7 +34,7 @@ public class ApiKeyController {
             @RequestParam(required = false) ApiKeyStatus status,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit) {
-        int effectiveLimit = Math.min(limit, 100);
+        int effectiveLimit = Math.max(1, Math.min(limit, 100));
         var keys = repository.list(tenant_id, status, cursor, effectiveLimit);
         var responses = keys.stream().map(ApiKeyResponse::from).collect(Collectors.toList());
         ApiKeyListResponse response = ApiKeyListResponse.builder()
@@ -37,6 +46,13 @@ public class ApiKeyController {
     }
     @DeleteMapping("/{key_id}") @Operation(operationId = "revokeApiKey")
     public ResponseEntity<ApiKeyResponse> revoke(@PathVariable("key_id") String keyId, @RequestParam(required = false) String reason) {
-        return ResponseEntity.ok(ApiKeyResponse.from(repository.revoke(keyId, reason)));
+        ApiKeyResponse response = ApiKeyResponse.from(repository.revoke(keyId, reason));
+        auditRepository.log(AuditLogEntry.builder()
+            .tenantId(response.getTenantId())
+            .keyId(keyId)
+            .operation("revokeApiKey")
+            .status(200)
+            .build());
+        return ResponseEntity.ok(response);
     }
 }
