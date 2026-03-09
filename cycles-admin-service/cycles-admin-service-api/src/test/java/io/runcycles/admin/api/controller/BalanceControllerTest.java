@@ -44,7 +44,7 @@ class BalanceControllerTest {
                 .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .remaining(new Amount(UnitEnum.USD_MICROCENTS, 800L))
                 .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(budgetRepository.list(eq("t1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(1000)))
+        when(budgetRepository.list(eq("t1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(50)))
                 .thenReturn(List.of(ledger));
 
         mockMvc.perform(get("/v1/balances")
@@ -57,7 +57,7 @@ class BalanceControllerTest {
     @Test
     void queryBalances_emptyResult_returnsEmptyList() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("t1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(1000)))
+        when(budgetRepository.list(eq("t1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(50)))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/balances")
@@ -76,7 +76,7 @@ class BalanceControllerTest {
     @Test
     void queryBalances_usesScopePrefixFilter() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("t1"), eq("org/"), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(1000)))
+        when(budgetRepository.list(eq("t1"), eq("org/"), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(50)))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/balances")
@@ -84,6 +84,6 @@ class BalanceControllerTest {
                         .param("scope_prefix", "org/"))
                 .andExpect(status().isOk());
 
-        verify(budgetRepository).list(eq("t1"), eq("org/"), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(1000));
+        verify(budgetRepository).list(eq("t1"), eq("org/"), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(50));
     }
 }
