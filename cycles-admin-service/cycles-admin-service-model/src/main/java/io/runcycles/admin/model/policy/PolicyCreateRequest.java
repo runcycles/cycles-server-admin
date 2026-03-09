@@ -3,6 +3,7 @@ import io.runcycles.admin.model.shared.*;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.runcycles.admin.model.shared.Caps;
 import io.runcycles.admin.model.shared.CommitOveragePolicy;
+import jakarta.validation.*;
 import jakarta.validation.constraints.*;
 import lombok.*;
 import java.time.Instant;
@@ -12,10 +13,10 @@ public class PolicyCreateRequest {
     @JsonProperty("description") private String description;
     @NotBlank @JsonProperty("scope_pattern") private String scopePattern;
     @JsonProperty("priority") private Integer priority;
-    @JsonProperty("caps") private Caps caps;
+    @Valid @JsonProperty("caps") private Caps caps;
     @JsonProperty("commit_overage_policy") private CommitOveragePolicy commitOveragePolicy;
-    @JsonProperty("reservation_ttl_override") private ReservationTtlOverride reservationTtlOverride;
-    @JsonProperty("rate_limits") private RateLimits rateLimits;
+    @Valid @JsonProperty("reservation_ttl_override") private ReservationTtlOverride reservationTtlOverride;
+    @Valid @JsonProperty("rate_limits") private RateLimits rateLimits;
     @JsonProperty("effective_from") private Instant effectiveFrom;
     @JsonProperty("effective_until") private Instant effectiveUntil;
 }
