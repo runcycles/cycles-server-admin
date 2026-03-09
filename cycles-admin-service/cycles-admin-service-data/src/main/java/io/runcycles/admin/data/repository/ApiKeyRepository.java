@@ -29,9 +29,14 @@ public class ApiKeyRepository {
     }
     private ApiKey deserializeKey(String json) throws Exception {
         JsonNode node = objectMapper.readTree(json);
-        ApiKey key = objectMapper.treeToValue(node, ApiKey.class);
+        String keyHash = null;
         if (node.has("key_hash")) {
-            key.setKeyHash(node.get("key_hash").asText());
+            keyHash = node.get("key_hash").asText();
+            ((ObjectNode) node).remove("key_hash");
+        }
+        ApiKey key = objectMapper.treeToValue(node, ApiKey.class);
+        if (keyHash != null) {
+            key.setKeyHash(keyHash);
         }
         return key;
     }

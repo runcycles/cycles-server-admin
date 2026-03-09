@@ -1,0 +1,208 @@
+package io.runcycles.admin.data.repository;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.runcycles.admin.model.audit.AuditLogEntry;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.Spy;
+import org.mockito.junit.jupiter.MockitoExtension;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
+
+import java.time.Instant;
+import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class AuditRepositoryTest {
+
+    @Mock private JedisPool jedisPool;
+    @Mock private Jedis jedis;
+    @Spy private ObjectMapper objectMapper = createObjectMapper();
+    @InjectMocks private AuditRepository repository;
+
+    private static ObjectMapper createObjectMapper() {
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.registerModule(new JavaTimeModule());
+        mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        return mapper;
+    }
+
+    @BeforeEach
+    void setUp() {
+        lenient().when(jedisPool.getResource()).thenReturn(jedis);
+    }
+
+    @Test
+    void log_setsLogIdAndTimestamp() {
+        AuditLogEntry entry = AuditLogEntry.builder()
+                .tenantId("t1")
+                .operation("createTenant")
+                .status(201)
+                .build();
+
+        repository.log(entry);
+
+        assertThat(entry.getLogId()).startsWith("log_");
+        assertThat(entry.getTimestamp()).isNotNull();
+        verify(jedis).set(startsWith("audit:log:log_"), anyString());
+        verify(jedis).zadd(eq("audit:logs:t1"), anyDouble(), startsWith("log_"));
+        verify(jedis).zadd(eq("audit:logs:_all"), anyDouble(), startsWith("log_"));
+    }
+
+    @Test
+    void log_persistsAllFields() throws Exception {
+        AuditLogEntry entry = AuditLogEntry.builder()
+                .tenantId("t1")
+                .keyId("key_1")
+                .operation("fundBudget")
+                .status(200)
+                .userAgent("test-agent")
+                .sourceIp("127.0.0.1")
+                .build();
+
+        repository.log(entry);
+
+        verify(jedis).set(startsWith("audit:log:"), argThat(json -> {
+            try {
+                AuditLogEntry stored = objectMapper.readValue(json, AuditLogEntry.class);
+                return "key_1".equals(stored.getKeyId()) && "test-agent".equals(stored.getUserAgent());
+            } catch (Exception e) {
+                return false;
+            }
+        }));
+    }
+
+    @Test
+    void list_returnsByTenantId() throws Exception {
+        List<String> logIds = List.of("log_1", "log_2");
+        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
+
+        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("t1").operation("create").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("t1").operation("update").status(200).timestamp(Instant.now()).build();
+        String e1Json = objectMapper.writeValueAsString(e1);
+        String e2Json = objectMapper.writeValueAsString(e2);
+        when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
+        when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
+
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, 50);
+
+        assertThat(result).hasSize(2);
+    }
+
+    @Test
+    void list_filtersByKeyId() throws Exception {
+        List<String> logIds = List.of("log_1", "log_2");
+        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
+
+        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("t1").keyId("key_A").operation("create").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("t1").keyId("key_B").operation("update").status(200).timestamp(Instant.now()).build();
+        String e1Json = objectMapper.writeValueAsString(e1);
+        String e2Json = objectMapper.writeValueAsString(e2);
+        when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
+        when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
+
+        List<AuditLogEntry> result = repository.list("t1", "key_A", null, null, null, null, null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getKeyId()).isEqualTo("key_A");
+    }
+
+    @Test
+    void list_filtersByOperation() throws Exception {
+        List<String> logIds = List.of("log_1", "log_2");
+        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
+
+        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("t1").operation("create").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("t1").operation("update").status(200).timestamp(Instant.now()).build();
+        String e1Json = objectMapper.writeValueAsString(e1);
+        String e2Json = objectMapper.writeValueAsString(e2);
+        when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
+        when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
+
+        List<AuditLogEntry> result = repository.list("t1", null, "create", null, null, null, null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getOperation()).isEqualTo("create");
+    }
+
+    @Test
+    void list_filtersByStatus() throws Exception {
+        List<String> logIds = List.of("log_1", "log_2");
+        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
+
+        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("t1").operation("create").status(201).timestamp(Instant.now()).build();
+        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("t1").operation("create").status(400).timestamp(Instant.now()).build();
+        String e1Json = objectMapper.writeValueAsString(e1);
+        String e2Json = objectMapper.writeValueAsString(e2);
+        when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
+        when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
+
+        List<AuditLogEntry> result = repository.list("t1", null, null, 201, null, null, null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getStatus()).isEqualTo(201);
+    }
+
+    @Test
+    void list_usesGlobalIndexWhenNoTenantId() throws Exception {
+        List<String> logIds = List.of("log_1");
+        when(jedis.zrevrangeByScore(eq("audit:logs:_all"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
+
+        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("t1").operation("create").status(200).timestamp(Instant.now()).build();
+        String e1Json = objectMapper.writeValueAsString(e1);
+        when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
+
+        List<AuditLogEntry> result = repository.list(null, null, null, null, null, null, null, 50);
+
+        assertThat(result).hasSize(1);
+        verify(jedis).zrevrangeByScore(eq("audit:logs:_all"), anyDouble(), anyDouble(), eq(0), anyInt());
+    }
+
+    @Test
+    void list_respectsLimit() throws Exception {
+        List<String> logIds = List.of("log_1", "log_2");
+        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
+
+        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("t1").operation("create").status(200).timestamp(Instant.now()).build();
+        String e1Json = objectMapper.writeValueAsString(e1);
+        when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
+
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, 1);
+
+        assertThat(result).hasSize(1);
+    }
+
+    @Test
+    void list_withZeroLimit_returnsEmpty() {
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, 0);
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    void list_respectsCursor() throws Exception {
+        List<String> logIds = List.of("log_1", "log_2", "log_3");
+        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
+
+        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("t1").operation("op").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry e3 = AuditLogEntry.builder().logId("log_3").tenantId("t1").operation("op").status(200).timestamp(Instant.now()).build();
+        String e2Json = objectMapper.writeValueAsString(e2);
+        String e3Json = objectMapper.writeValueAsString(e3);
+        when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
+        when(jedis.get("audit:log:log_3")).thenReturn(e3Json);
+
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, "log_1", 50);
+
+        assertThat(result).hasSize(2);
+        assertThat(result.get(0).getLogId()).isEqualTo("log_2");
+    }
+}
