@@ -35,6 +35,6 @@ public class GovernanceException extends RuntimeException {
         return new GovernanceException(ErrorCode.BUDGET_FROZEN, "Budget is frozen: " + scope, 409);
     }
     public static GovernanceException budgetClosed(String scope) {
-        return new GovernanceException(ErrorCode.BUDGET_FROZEN, "Budget is closed: " + scope, 409);
+        return new GovernanceException(ErrorCode.BUDGET_CLOSED, "Budget is closed: " + scope, 409);
     }
 }
