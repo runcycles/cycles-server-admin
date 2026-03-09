@@ -10,7 +10,9 @@ import org.slf4j.*;
 import org.springframework.http.*;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -50,6 +52,20 @@ public class GlobalExceptionHandler {
             .collect(Collectors.joining(", "));
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
             .body(ErrorResponse.builder().error(ErrorCode.INVALID_REQUEST).message("Validation failed: " + message).requestId(resolveRequestId(request)).build());
+    }
+
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ErrorResponse> handleMissingParam(MissingServletRequestParameterException ex, HttpServletRequest request) {
+        String message = "Missing required parameter: " + ex.getParameterName();
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+            .body(ErrorResponse.builder().error(ErrorCode.INVALID_REQUEST).message(message).requestId(resolveRequestId(request)).build());
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ErrorResponse> handleTypeMismatch(MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
+        String message = "Invalid value for parameter '" + ex.getName() + "': " + ex.getValue();
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+            .body(ErrorResponse.builder().error(ErrorCode.INVALID_REQUEST).message(message).requestId(resolveRequestId(request)).build());
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)

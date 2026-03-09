@@ -20,7 +20,7 @@ public class GovernanceException extends RuntimeException {
         return new GovernanceException(ErrorCode.TENANT_NOT_FOUND, "Tenant not found: " + id, 404);
     }
     public static GovernanceException budgetNotFound(String scope) {
-        return new GovernanceException(ErrorCode.NOT_FOUND, "Budget not found for provided scope: " + scope, 404);
+        return new GovernanceException(ErrorCode.BUDGET_NOT_FOUND, "Budget not found for provided scope: " + scope, 404);
     }
     public static GovernanceException apiKeyNotFound(String id) {
         return new GovernanceException(ErrorCode.NOT_FOUND, "API key not found: " + id, 404);

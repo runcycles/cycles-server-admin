@@ -137,7 +137,7 @@ class BudgetRepositoryTest {
 
         assertThatThrownBy(() -> repository.fund("t1", "missing", UnitEnum.USD_MICROCENTS, request))
                 .isInstanceOf(GovernanceException.class)
-                .satisfies(e -> assertThat(((GovernanceException) e).getErrorCode()).isEqualTo(ErrorCode.NOT_FOUND));
+                .satisfies(e -> assertThat(((GovernanceException) e).getErrorCode()).isEqualTo(ErrorCode.BUDGET_NOT_FOUND));
     }
 
     @Test

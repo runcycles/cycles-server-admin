@@ -18,7 +18,7 @@ public class Tenant {
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("max_reservation_ttl_ms") private Long maxReservationTtlMs;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("max_reservation_extensions") private Integer maxReservationExtensions;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("reservation_expiry_policy") private ReservationExpiryPolicy reservationExpiryPolicy;
-    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("metadata") private Map<String, String> metadata;
+    @jakarta.validation.constraints.Size(max = 32) @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("metadata") private Map<String, String> metadata;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("updated_at") private Instant updatedAt;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("suspended_at") private Instant suspendedAt;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("closed_at") private Instant closedAt;

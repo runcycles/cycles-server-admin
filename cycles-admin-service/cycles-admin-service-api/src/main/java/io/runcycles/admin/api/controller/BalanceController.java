@@ -22,7 +22,7 @@ public class BalanceController {
             @RequestParam(required = false) String tenant_id,
             @RequestParam(required = false) String scope_prefix,
             @RequestParam(required = false) UnitEnum unit,
-            @RequestParam(defaultValue = "50") @Min(1) @Max(200) int limit,
+            @RequestParam(defaultValue = "50") @Min(1) @Max(100) int limit,
             @RequestParam(required = false) String cursor,
             HttpServletRequest httpRequest) {
         // Enforce tenant scoping: always use authenticated tenant, ignore user-supplied tenant_id
