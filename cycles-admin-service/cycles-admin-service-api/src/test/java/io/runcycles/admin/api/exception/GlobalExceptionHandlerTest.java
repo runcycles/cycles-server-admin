@@ -12,6 +12,8 @@ import org.springframework.validation.BeanPropertyBindingResult;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 
+import jakarta.servlet.http.HttpServletRequest;
+
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -20,17 +22,19 @@ import static org.mockito.Mockito.mock;
 class GlobalExceptionHandlerTest {
 
     private GlobalExceptionHandler handler;
+    private HttpServletRequest mockRequest;
 
     @BeforeEach
     void setUp() {
         handler = new GlobalExceptionHandler();
+        mockRequest = mock(HttpServletRequest.class);
     }
 
     @Test
     void handleGovernanceException_returnsCorrectStatusAndBody() {
         GovernanceException ex = GovernanceException.tenantNotFound("t1");
 
-        ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex);
+        ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex, mockRequest);
 
         assertThat(response.getStatusCode().value()).isEqualTo(404);
         assertThat(response.getBody().getError()).isEqualTo(ErrorCode.TENANT_NOT_FOUND);
@@ -44,7 +48,7 @@ class GlobalExceptionHandlerTest {
                 ErrorCode.BUDGET_EXCEEDED, "Over limit", 409,
                 Map.of("scope", "org/team1"));
 
-        ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex);
+        ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex, mockRequest);
 
         assertThat(response.getStatusCode().value()).isEqualTo(409);
         assertThat(response.getBody().getDetails()).containsEntry("scope", "org/team1");
@@ -54,7 +58,7 @@ class GlobalExceptionHandlerTest {
     void handleGovernanceException_budgetFrozen_returns409() {
         GovernanceException ex = GovernanceException.budgetFrozen("scope1");
 
-        ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex);
+        ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex, mockRequest);
 
         assertThat(response.getStatusCode().value()).isEqualTo(409);
         assertThat(response.getBody().getError()).isEqualTo(ErrorCode.BUDGET_FROZEN);
@@ -64,7 +68,7 @@ class GlobalExceptionHandlerTest {
     void handleGovernanceException_duplicateResource_returns409() {
         GovernanceException ex = GovernanceException.duplicateResource("Tenant", "t1");
 
-        ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex);
+        ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex, mockRequest);
 
         assertThat(response.getStatusCode().value()).isEqualTo(409);
         assertThat(response.getBody().getError()).isEqualTo(ErrorCode.DUPLICATE_RESOURCE);
@@ -77,7 +81,7 @@ class GlobalExceptionHandlerTest {
         bindingResult.addError(new FieldError("request", "scope", "must not be null"));
         MethodArgumentNotValidException ex = new MethodArgumentNotValidException(null, bindingResult);
 
-        ResponseEntity<ErrorResponse> response = handler.handleValidationException(ex);
+        ResponseEntity<ErrorResponse> response = handler.handleValidationException(ex, mockRequest);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(response.getBody().getError()).isEqualTo(ErrorCode.INVALID_REQUEST);
@@ -89,7 +93,7 @@ class GlobalExceptionHandlerTest {
     void handleMalformedJson_returns400() {
         HttpMessageNotReadableException ex = mock(HttpMessageNotReadableException.class);
 
-        ResponseEntity<ErrorResponse> response = handler.handleMalformedJson(ex);
+        ResponseEntity<ErrorResponse> response = handler.handleMalformedJson(ex, mockRequest);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(response.getBody().getError()).isEqualTo(ErrorCode.INVALID_REQUEST);
@@ -100,7 +104,7 @@ class GlobalExceptionHandlerTest {
     void handleGenericException_returns500() {
         Exception ex = new RuntimeException("unexpected");
 
-        ResponseEntity<ErrorResponse> response = handler.handleGenericException(ex);
+        ResponseEntity<ErrorResponse> response = handler.handleGenericException(ex, mockRequest);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
         assertThat(response.getBody().getError()).isEqualTo(ErrorCode.INTERNAL_ERROR);
