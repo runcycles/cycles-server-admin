@@ -139,27 +139,26 @@ public class ApiKeyRepository {
             String prefix = keyService.extractPrefix(keySecret);
             String keyId = jedis.get("apikey:lookup:" + prefix);
             if (keyId == null) {
-                return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_FOUND").build();
+                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_NOT_FOUND").build();
             }
             String data = jedis.get("apikey:" + keyId);
             if (data == null) {
-                return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_FOUND").build();
+                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_NOT_FOUND").build();
             }
             ApiKey key = objectMapper.readValue(data, ApiKey.class);
-            // Check tenant ownership (consistent with cycles-server authority)
-            if (key.getTenantId() == null || key.getTenantId().isBlank()) {
-                return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_OWNED_BY_TENANT").build();
-            }
             if (key.getStatus() != ApiKeyStatus.ACTIVE) {
-                return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("KEY_" + key.getStatus()).build();
+                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_" + key.getStatus()).build();
             }
             if (key.getExpiresAt() != null && Instant.now().isAfter(key.getExpiresAt())) {
-                return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("KEY_EXPIRED").build();
+                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_EXPIRED").build();
             }
             if (!keyService.verifyKey(keySecret, key.getKeyHash())) {
-                return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("INVALID_KEY").build();
+                return ApiKeyValidationResponse.builder().valid(false).reason("INVALID_KEY").build();
             }
-            // Check tenant status (spec validation step 5)
+            if (key.getTenantId() == null || key.getTenantId().isBlank()) {
+                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_NOT_OWNED_BY_TENANT").build();
+            }
+            // Check tenant status (admin-specific: validates tenant is not suspended/closed)
             String tenantData = jedis.get("tenant:" + key.getTenantId());
             if (tenantData != null) {
                 @SuppressWarnings("unchecked")
@@ -174,8 +173,9 @@ public class ApiKeyRepository {
             }
             // Coerce null permissions to empty list (consistent with cycles-server authority)
             List<String> permissions = key.getPermissions() != null ? key.getPermissions() : Collections.emptyList();
-            key.setLastUsedAt(Instant.now());
-            jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
+            //Not sure do we need such update on access
+            //key.setLastUsedAt(Instant.now());
+            //jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
             return ApiKeyValidationResponse.builder()
                 .valid(true)
                 .tenantId(key.getTenantId())
@@ -185,8 +185,7 @@ public class ApiKeyRepository {
                 .expiresAt(key.getExpiresAt())
                 .build();
         } catch (Exception e) {
-            LOG.error("Key validation failed", e);
-            return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("INTERNAL_ERROR").build();
+            return ApiKeyValidationResponse.builder().valid(false).reason("INTERNAL_ERROR").build();
         }
     }
 }
