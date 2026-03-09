@@ -8,7 +8,7 @@ public class ApiKey {
     @JsonProperty("key_id") private String keyId;
     @JsonProperty("tenant_id") private String tenantId;
     @JsonProperty("key_prefix") private String keyPrefix;
-    @JsonProperty("key_hash") private String keyHash;
+    @JsonIgnore private String keyHash;
     @JsonProperty("name") private String name;
     @JsonProperty("description") private String description;
     @JsonProperty("permissions") private List<String> permissions;

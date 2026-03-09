@@ -29,12 +29,12 @@ public class GovernanceException extends RuntimeException {
         return new GovernanceException(ErrorCode.DUPLICATE_RESOURCE, resource + " exists: " + id, 409);
     }
     public static GovernanceException insufficientFunds(String scope) {
-        return new GovernanceException(ErrorCode.BUDGET_EXCEEDED, "Insufficient funds: " + scope, 422);
+        return new GovernanceException(ErrorCode.BUDGET_EXCEEDED, "Insufficient funds: " + scope, 409);
     }
     public static GovernanceException budgetFrozen(String scope) {
-        return new GovernanceException(ErrorCode.BUDGET_FROZEN, "Budget is frozen: " + scope, 422);
+        return new GovernanceException(ErrorCode.BUDGET_FROZEN, "Budget is frozen: " + scope, 409);
     }
     public static GovernanceException budgetClosed(String scope) {
-        return new GovernanceException(ErrorCode.BUDGET_NOT_FOUND, "Budget is closed: " + scope, 422);
+        return new GovernanceException(ErrorCode.BUDGET_FROZEN, "Budget is closed: " + scope, 409);
     }
 }

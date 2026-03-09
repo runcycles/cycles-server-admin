@@ -1,7 +1,9 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.service.KeyService;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.runcycles.admin.model.auth.*;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,6 +17,24 @@ public class ApiKeyRepository {
     @Autowired private JedisPool jedisPool;
     @Autowired private ObjectMapper objectMapper;
     @Autowired private KeyService keyService;
+    private static final List<String> DEFAULT_PERMISSIONS = List.of(
+        "reservations:create", "reservations:commit", "reservations:release",
+        "reservations:extend", "reservations:list", "balances:read");
+    // key_hash is @JsonIgnore on ApiKey to prevent accidental API exposure,
+    // so we handle it manually for Redis persistence
+    private String serializeKey(ApiKey key) throws Exception {
+        ObjectNode node = objectMapper.valueToTree(key);
+        node.put("key_hash", key.getKeyHash());
+        return objectMapper.writeValueAsString(node);
+    }
+    private ApiKey deserializeKey(String json) throws Exception {
+        JsonNode node = objectMapper.readTree(json);
+        ApiKey key = objectMapper.treeToValue(node, ApiKey.class);
+        if (node.has("key_hash")) {
+            key.setKeyHash(node.get("key_hash").asText());
+        }
+        return key;
+    }
     // Lua script for atomic API key creation: SET key + SADD index + SET lookup in one call
     private static final String CREATE_KEY_LUA =
         "redis.call('SET', KEYS[1], ARGV[1])\n" +
@@ -22,11 +42,33 @@ public class ApiKeyRepository {
         "redis.call('SET', KEYS[3], ARGV[2])\n" +
         "return 1\n";
     public ApiKeyCreateResponse create(ApiKeyCreateRequest request) {
+        // Validate tenant exists and is active before creating key
         try (Jedis jedis = jedisPool.getResource()) {
+            String tenantData = jedis.get("tenant:" + request.getTenantId());
+            if (tenantData == null) {
+                throw GovernanceException.tenantNotFound(request.getTenantId());
+            }
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> tenantMap = objectMapper.readValue(tenantData, Map.class);
+                String tenantStatus = (String) tenantMap.get("status");
+                if ("SUSPENDED".equals(tenantStatus) || "CLOSED".equals(tenantStatus)) {
+                    throw new GovernanceException(
+                        io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                        "Tenant is " + tenantStatus + ": " + request.getTenantId(), 400);
+                }
+            } catch (GovernanceException e) {
+                throw e;
+            } catch (Exception e) {
+                LOG.warn("Failed to parse tenant data for validation", e);
+            }
             String keyId = "key_" + UUID.randomUUID().toString().substring(0, 16);
             String keySecret = keyService.generateKeySecret("gov");
             String keyPrefix = keyService.extractPrefix(keySecret);
             String keyHash = keyService.hashKey(keySecret);
+            Instant expiresAt = request.getExpiresAt() != null
+                ? request.getExpiresAt()
+                : Instant.now().plus(java.time.Duration.ofDays(90));
             ApiKey apiKey = ApiKey.builder()
                 .keyId(keyId)
                 .tenantId(request.getTenantId())
@@ -34,15 +76,15 @@ public class ApiKeyRepository {
                 .keyHash(keyHash)
                 .name(request.getName())
                 .description(request.getDescription())
-                .permissions(request.getPermissions() != null ? request.getPermissions() : List.of("reservations:*", "balances:read"))
+                .permissions(request.getPermissions() != null ? request.getPermissions() : DEFAULT_PERMISSIONS)
                 .scopeFilter(request.getScopeFilter())
                 .status(ApiKeyStatus.ACTIVE)
                 .createdAt(Instant.now())
-                .expiresAt(request.getExpiresAt())
+                .expiresAt(expiresAt)
                 .metadata(request.getMetadata())
                 .build();
             // Atomic create: SET key + SADD index + SET lookup in one Lua call
-            String json = objectMapper.writeValueAsString(apiKey);
+            String json = serializeKey(apiKey);
             jedis.eval(CREATE_KEY_LUA,
                 List.of("apikey:" + keyId, "apikeys:" + request.getTenantId(), "apikey:lookup:" + keyPrefix),
                 List.of(json, keyId));
@@ -59,20 +101,28 @@ public class ApiKeyRepository {
             throw new RuntimeException(e);
         }
     }
-    public List<ApiKey> list(String tenantId) {
+    public List<ApiKey> list(String tenantId, ApiKeyStatus statusFilter, String cursor, int limit) {
         try (Jedis jedis = jedisPool.getResource()) {
             Set<String> ids = jedis.smembers("apikeys:" + tenantId);
+            List<String> sortedIds = new ArrayList<>(ids);
+            Collections.sort(sortedIds);
             List<ApiKey> keys = new ArrayList<>();
-            for (String id : ids) {
+            boolean pastCursor = (cursor == null || cursor.isBlank());
+            for (String id : sortedIds) {
+                if (!pastCursor) {
+                    if (id.equals(cursor)) pastCursor = true;
+                    continue;
+                }
                 try {
                     String data = jedis.get("apikey:" + id);
                     if (data == null) {
                         LOG.warn("API key data missing for id: {}", id);
                         continue;
                     }
-                    ApiKey key = objectMapper.readValue(data, ApiKey.class);
-                    key.setKeyHash(null); // Don't expose hash
+                    ApiKey key = deserializeKey(data);
+                    if (statusFilter != null && key.getStatus() != statusFilter) continue;
                     keys.add(key);
+                    if (keys.size() >= limit) break;
                 } catch (Exception e) {
                     LOG.warn("Failed to parse key: {}", id, e);
                 }
@@ -80,16 +130,18 @@ public class ApiKeyRepository {
             return keys;
         }
     }
+    public List<ApiKey> list(String tenantId) {
+        return list(tenantId, null, null, 1000);
+    }
     public ApiKey revoke(String keyId, String reason) {
         try (Jedis jedis = jedisPool.getResource()) {
             String data = jedis.get("apikey:" + keyId);
             if (data == null) throw GovernanceException.apiKeyNotFound(keyId);
-            ApiKey key = objectMapper.readValue(data, ApiKey.class);
+            ApiKey key = deserializeKey(data);
             key.setStatus(ApiKeyStatus.REVOKED);
             key.setRevokedAt(Instant.now());
             key.setRevokedReason(reason);
-            jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
-            key.setKeyHash(null);
+            jedis.set("apikey:" + keyId, serializeKey(key));
             return key;
         } catch (GovernanceException e) {
             throw e;
@@ -102,24 +154,37 @@ public class ApiKeyRepository {
             String prefix = keyService.extractPrefix(keySecret);
             String keyId = jedis.get("apikey:lookup:" + prefix);
             if (keyId == null) {
-                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_NOT_FOUND").build();
+                return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_FOUND").build();
             }
             String data = jedis.get("apikey:" + keyId);
             if (data == null) {
-                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_NOT_FOUND").build();
+                return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_FOUND").build();
             }
-            ApiKey key = objectMapper.readValue(data, ApiKey.class);
+            ApiKey key = deserializeKey(data);
             if (key.getStatus() != ApiKeyStatus.ACTIVE) {
-                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_" + key.getStatus()).build();
+                return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("KEY_" + key.getStatus()).build();
             }
             if (key.getExpiresAt() != null && Instant.now().isAfter(key.getExpiresAt())) {
-                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_EXPIRED").build();
+                return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("KEY_EXPIRED").build();
             }
             if (!keyService.verifyKey(keySecret, key.getKeyHash())) {
-                return ApiKeyValidationResponse.builder().valid(false).reason("INVALID_KEY").build();
+                return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("INVALID_KEY").build();
+            }
+            // Check tenant status (spec validation step 5)
+            String tenantData = jedis.get("tenant:" + key.getTenantId());
+            if (tenantData != null) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> tenantMap = objectMapper.readValue(tenantData, Map.class);
+                String tenantStatus = (String) tenantMap.get("status");
+                if ("SUSPENDED".equals(tenantStatus)) {
+                    return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("TENANT_SUSPENDED").build();
+                }
+                if ("CLOSED".equals(tenantStatus)) {
+                    return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("TENANT_CLOSED").build();
+                }
             }
             key.setLastUsedAt(Instant.now());
-            jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
+            jedis.set("apikey:" + keyId, serializeKey(key));
             return ApiKeyValidationResponse.builder()
                 .valid(true)
                 .tenantId(key.getTenantId())
@@ -130,7 +195,7 @@ public class ApiKeyRepository {
                 .build();
         } catch (Exception e) {
             LOG.error("Key validation failed", e);
-            return ApiKeyValidationResponse.builder().valid(false).reason("INTERNAL_ERROR").build();
+            return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("INTERNAL_ERROR").build();
         }
     }
 }

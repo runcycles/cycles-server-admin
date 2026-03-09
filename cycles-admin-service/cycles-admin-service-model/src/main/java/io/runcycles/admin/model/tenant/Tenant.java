@@ -4,20 +4,22 @@ import com.fasterxml.jackson.annotation.*;
 import lombok.*;
 import java.time.Instant;
 import java.util.Map;
-@Data @Builder @NoArgsConstructor @AllArgsConstructor @JsonInclude(JsonInclude.Include.NON_NULL)
+@Data @Builder @NoArgsConstructor @AllArgsConstructor
 public class Tenant {
+    // Required per spec: tenant_id, name, status, created_at (always serialized)
     @JsonProperty("tenant_id") private String tenantId;
     @JsonProperty("name") private String name;
     @JsonProperty("status") private TenantStatus status;
-    @JsonProperty("parent_tenant_id") private String parentTenantId;
-    @JsonProperty("default_commit_overage_policy") private CommitOveragePolicy defaultCommitOveragePolicy;
-    @JsonProperty("default_reservation_ttl_ms") private Long defaultReservationTtlMs;
-    @JsonProperty("max_reservation_ttl_ms") private Long maxReservationTtlMs;
-    @JsonProperty("max_reservation_extensions") private Integer maxReservationExtensions;
-    @JsonProperty("reservation_expiry_policy") private ReservationExpiryPolicy reservationExpiryPolicy;
-    @JsonProperty("metadata") private Map<String, String> metadata;
     @JsonProperty("created_at") private Instant createdAt;
-    @JsonProperty("updated_at") private Instant updatedAt;
-    @JsonProperty("suspended_at") private Instant suspendedAt;
-    @JsonProperty("closed_at") private Instant closedAt;
+    // Optional fields (omit when null)
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("parent_tenant_id") private String parentTenantId;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("default_commit_overage_policy") private CommitOveragePolicy defaultCommitOveragePolicy;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("default_reservation_ttl_ms") private Long defaultReservationTtlMs;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("max_reservation_ttl_ms") private Long maxReservationTtlMs;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("max_reservation_extensions") private Integer maxReservationExtensions;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("reservation_expiry_policy") private ReservationExpiryPolicy reservationExpiryPolicy;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("metadata") private Map<String, String> metadata;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("updated_at") private Instant updatedAt;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("suspended_at") private Instant suspendedAt;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("closed_at") private Instant closedAt;
 }

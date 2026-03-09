@@ -19,31 +19,52 @@ public class AuditRepository {
             entry.setTimestamp(Instant.now());
             jedis.set("audit:log:" + logId, objectMapper.writeValueAsString(entry));
             jedis.zadd("audit:logs:" + entry.getTenantId(), entry.getTimestamp().toEpochMilli(), logId);
+            // Also add to global index for cross-tenant queries
+            jedis.zadd("audit:logs:_all", entry.getTimestamp().toEpochMilli(), logId);
         } catch (Exception e) {
             LOG.error("Failed to write audit log", e);
             throw new RuntimeException("Audit log write failed", e);
         }
     }
-    public List<AuditLogEntry> list(String tenantId, int limit) {
+    public List<AuditLogEntry> list(String tenantId, String keyId, String operation, Integer status,
+                                     Instant from, Instant to, String cursor, int limit) {
         if (limit <= 0) {
             return new ArrayList<>();
         }
         try (Jedis jedis = jedisPool.getResource()) {
-            List<String> ids = jedis.zrevrange("audit:logs:" + tenantId, 0, limit - 1);
+            // Determine the time range for the sorted set query
+            double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
+            double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
+            // Use tenant-specific or global index
+            String indexKey = (tenantId != null) ? "audit:logs:" + tenantId : "audit:logs:_all";
+            List<String> ids = jedis.zrevrangeByScore(indexKey, maxScore, minScore, 0, limit * 3);
             List<AuditLogEntry> logs = new ArrayList<>();
+            boolean pastCursor = (cursor == null || cursor.isBlank());
             for (String id : ids) {
+                if (!pastCursor) {
+                    if (id.equals(cursor)) pastCursor = true;
+                    continue;
+                }
                 try {
                     String data = jedis.get("audit:log:" + id);
                     if (data == null) {
                         LOG.warn("Audit log data missing for id: {}", id);
                         continue;
                     }
-                    logs.add(objectMapper.readValue(data, AuditLogEntry.class));
+                    AuditLogEntry entry = objectMapper.readValue(data, AuditLogEntry.class);
+                    if (keyId != null && !keyId.equals(entry.getKeyId())) continue;
+                    if (operation != null && !operation.equals(entry.getOperation())) continue;
+                    if (status != null && !status.equals(entry.getStatus())) continue;
+                    logs.add(entry);
+                    if (logs.size() >= limit) break;
                 } catch (Exception e) {
                     LOG.warn("Failed to parse log: {}", id, e);
                 }
             }
             return logs;
         }
+    }
+    public List<AuditLogEntry> list(String tenantId, int limit) {
+        return list(tenantId, null, null, null, null, null, null, limit);
     }
 }

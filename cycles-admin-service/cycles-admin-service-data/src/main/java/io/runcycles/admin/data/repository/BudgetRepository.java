@@ -22,10 +22,11 @@ public class BudgetRepository {
     @Autowired private ObjectMapper objectMapper;
 
     // Lua script for atomic budget funding — prevents race conditions on concurrent updates.
-    // Returns: {status, prev_allocated, new_allocated, prev_remaining, new_remaining, prev_debt, new_debt, is_over_limit}
     private static final String FUND_LUA =
         "local key = KEYS[1]\n" +
         "if redis.call('EXISTS', key) == 0 then return {'NOT_FOUND'} end\n" +
+        "local tid = redis.call('HGET', key, 'tenant_id') or ''\n" +
+        "if ARGV[4] ~= '' and tid ~= ARGV[4] then return {'FORBIDDEN'} end\n" +
         "local status = redis.call('HGET', key, 'status') or 'ACTIVE'\n" +
         "if status == 'FROZEN' then return {'BUDGET_FROZEN'} end\n" +
         "if status == 'CLOSED' then return {'BUDGET_CLOSED'} end\n" +
@@ -73,16 +74,16 @@ public class BudgetRepository {
         "redis.call('HMSET', KEYS[1], unpack(ARGV))\n" +
         "redis.call('SADD', KEYS[2], KEYS[1])\n" +
         "return 1\n";
-    
-    public BudgetLedger create(BudgetCreateRequest request) {
+
+    public BudgetLedger create(String tenantId, BudgetCreateRequest request) {
         LOG.info("Creating budget: scope={}, unit={}", request.getScope(), request.getUnit());
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "budget:" + request.getScope() + ":" + request.getUnit();
-            String indexKey = "budgets:" + request.getTenantId();
+            String indexKey = "budgets:" + tenantId;
 
             BudgetLedger ledger = BudgetLedger.builder()
                 .ledgerId(UUID.randomUUID().toString())
-                .tenantId(request.getTenantId())
+                .tenantId(tenantId)
                 .scope(request.getScope())
                 .unit(request.getUnit())
                 .allocated(request.getAllocated())
@@ -143,11 +144,14 @@ public class BudgetRepository {
         }
     }
 
-    public List<BudgetLedger> list(String tenantId) {
+    public List<BudgetLedger> list(String tenantId, String scopePrefix, UnitEnum unitFilter, BudgetStatus statusFilter, String cursor, int limit) {
         try (Jedis jedis = jedisPool.getResource()) {
             Set<String> keys = jedis.smembers("budgets:" + tenantId);
+            List<String> sortedKeys = new ArrayList<>(keys);
+            Collections.sort(sortedKeys);
             List<BudgetLedger> ledgers = new ArrayList<>();
-            for (String key : keys) {
+            boolean pastCursor = (cursor == null || cursor.isBlank());
+            for (String key : sortedKeys) {
                 try {
                     Map<String, String> hash = jedis.hgetAll(key);
                     if (hash.isEmpty()) {
@@ -155,7 +159,16 @@ public class BudgetRepository {
                         jedis.srem("budgets:" + tenantId, key);
                         continue;
                     }
-                    ledgers.add(hashToBudgetLedger(hash, key));
+                    BudgetLedger ledger = hashToBudgetLedger(hash, key);
+                    if (!pastCursor) {
+                        if (ledger.getLedgerId().equals(cursor)) pastCursor = true;
+                        continue;
+                    }
+                    if (scopePrefix != null && !ledger.getScope().startsWith(scopePrefix)) continue;
+                    if (unitFilter != null && ledger.getUnit() != unitFilter) continue;
+                    if (statusFilter != null && ledger.getStatus() != statusFilter) continue;
+                    ledgers.add(ledger);
+                    if (ledgers.size() >= limit) break;
                 } catch (Exception e) {
                     LOG.warn("Failed to parse budget: {}", key, e);
                 }
@@ -163,18 +176,24 @@ public class BudgetRepository {
             return ledgers;
         }
     }
-    
-    public BudgetFundingResponse fund(String scope, UnitEnum unit, BudgetFundingRequest request) {
-        LOG.info("Funding budget: scope={}, unit={}, op={}", scope, unit, request.getOperation());
+
+    public List<BudgetLedger> list(String tenantId) {
+        return list(tenantId, null, null, null, null, 1000);
+    }
+
+    public BudgetFundingResponse fund(String tenantId, String scope, UnitEnum unit, BudgetFundingRequest request) {
+        LOG.info("Funding budget: scope={}, unit={}, op={}, tenant={}", scope, unit, request.getOperation(), tenantId);
         try (Jedis jedis = jedisPool.getResource()) {
-            // Idempotency check: return cached response for duplicate requests
-            String idempotencyRedisKey = "idempotency:" + request.getIdempotencyKey();
-            String cached = jedis.get(idempotencyRedisKey);
-            if (cached != null) {
-                try {
-                    return objectMapper.readValue(cached, BudgetFundingResponse.class);
-                } catch (Exception e) {
-                    LOG.warn("Failed to parse cached idempotency response", e);
+            // Idempotency check: return cached response for duplicate requests (only if key provided)
+            if (request.getIdempotencyKey() != null && !request.getIdempotencyKey().isBlank()) {
+                String idempotencyRedisKey = "idempotency:" + request.getIdempotencyKey();
+                String cached = jedis.get(idempotencyRedisKey);
+                if (cached != null) {
+                    try {
+                        return objectMapper.readValue(cached, BudgetFundingResponse.class);
+                    } catch (Exception e) {
+                        LOG.warn("Failed to parse cached idempotency response", e);
+                    }
                 }
             }
 
@@ -186,9 +205,14 @@ public class BudgetRepository {
             @SuppressWarnings("unchecked")
             List<String> result = (List<String>) jedis.eval(FUND_LUA,
                 List.of(key),
-                List.of(request.getOperation().name(), String.valueOf(changeAmount), now));
+                List.of(request.getOperation().name(), String.valueOf(changeAmount), now, tenantId != null ? tenantId : ""));
 
             String status = result.get(0);
+            if ("FORBIDDEN".equals(status)) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.FORBIDDEN,
+                    "Budget does not belong to authenticated tenant", 403);
+            }
             if ("NOT_FOUND".equals(status)) {
                 throw GovernanceException.budgetNotFound(scope);
             }
@@ -220,11 +244,14 @@ public class BudgetRepository {
                 .timestamp(Instant.now())
                 .build();
 
-            // Cache response for idempotency (24h TTL)
-            try {
-                jedis.setex(idempotencyRedisKey, 86400, objectMapper.writeValueAsString(response));
-            } catch (Exception e) {
-                LOG.warn("Failed to cache idempotency response", e);
+            // Cache response for idempotency (24h TTL) if key provided
+            if (request.getIdempotencyKey() != null && !request.getIdempotencyKey().isBlank()) {
+                try {
+                    String idempotencyRedisKey = "idempotency:" + request.getIdempotencyKey();
+                    jedis.setex(idempotencyRedisKey, 86400, objectMapper.writeValueAsString(response));
+                } catch (Exception e) {
+                    LOG.warn("Failed to cache idempotency response", e);
+                }
             }
 
             LOG.info("Funded budget atomically: key={}, op={}", key, request.getOperation());
@@ -236,9 +263,6 @@ public class BudgetRepository {
         }
     }
 
-    /**
-     * Helper method to convert Redis HASH to BudgetLedger object
-     */
     private BudgetLedger hashToBudgetLedger(Map<String, String> hash, String key) {
         String scope = hash.get("scope");
         String unitStr = hash.get("unit");
@@ -246,7 +270,7 @@ public class BudgetRepository {
             throw new IllegalStateException("Corrupt budget hash for key: " + key + " (missing scope or unit)");
         }
         UnitEnum unit = UnitEnum.valueOf(unitStr);
-        
+
         return BudgetLedger.builder()
             .ledgerId(hash.get("ledger_id"))
             .tenantId(hash.get("tenant_id"))
@@ -259,18 +283,18 @@ public class BudgetRepository {
             .debt(new Amount(unit, Long.parseLong(hash.getOrDefault("debt", "0"))))
             .overdraftLimit(new Amount(unit, Long.parseLong(hash.getOrDefault("overdraft_limit", "0"))))
             .isOverLimit(Boolean.parseBoolean(hash.getOrDefault("is_over_limit", "false")))
-            .commitOveragePolicy(hash.containsKey("commit_overage_policy") ? 
+            .commitOveragePolicy(hash.containsKey("commit_overage_policy") ?
                 CommitOveragePolicy.valueOf(hash.get("commit_overage_policy")) : null)
             .status(BudgetStatus.valueOf(hash.getOrDefault("status", "ACTIVE")))
-            .rolloverPolicy(hash.containsKey("rollover_policy") ? 
+            .rolloverPolicy(hash.containsKey("rollover_policy") ?
                 RolloverPolicy.valueOf(hash.get("rollover_policy")) : null)
-            .periodStart(hash.containsKey("period_start") ? 
+            .periodStart(hash.containsKey("period_start") ?
                 Instant.ofEpochMilli(Long.parseLong(hash.get("period_start"))) : null)
-            .periodEnd(hash.containsKey("period_end") ? 
+            .periodEnd(hash.containsKey("period_end") ?
                 Instant.ofEpochMilli(Long.parseLong(hash.get("period_end"))) : null)
-            .createdAt(hash.containsKey("created_at") ? 
+            .createdAt(hash.containsKey("created_at") ?
                 Instant.ofEpochMilli(Long.parseLong(hash.get("created_at"))) : Instant.now())
-            .updatedAt(hash.containsKey("updated_at") ? 
+            .updatedAt(hash.containsKey("updated_at") ?
                 Instant.ofEpochMilli(Long.parseLong(hash.get("updated_at"))) : null)
             .build();
     }
