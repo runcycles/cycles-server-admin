@@ -1,12 +1,17 @@
 package io.runcycles.admin.model.shared;
+
 import com.fasterxml.jackson.annotation.*;
+import jakarta.validation.constraints.*;
 import lombok.*;
 import java.util.List;
-@Data @Builder @NoArgsConstructor @AllArgsConstructor @JsonInclude(JsonInclude.Include.NON_NULL)
+
+@Data @Builder @NoArgsConstructor @AllArgsConstructor
+@JsonInclude(JsonInclude.Include.NON_NULL)
+@JsonIgnoreProperties(ignoreUnknown = false)
 public class Caps {
-    @JsonProperty("max_tokens") private Integer maxTokens;
-    @JsonProperty("max_steps_remaining") private Integer maxStepsRemaining;
-    @JsonProperty("tool_allowlist") private List<String> toolAllowlist;
-    @JsonProperty("tool_denylist") private List<String> toolDenylist;
-    @JsonProperty("cooldown_ms") private Integer cooldownMs;
+    @Min(0) @JsonProperty("max_tokens") private Integer maxTokens;
+    @Min(0) @JsonProperty("max_steps_remaining") private Integer maxStepsRemaining;
+    @JsonProperty("tool_allowlist") private List<@Size(max = 256) String> toolAllowlist;
+    @JsonProperty("tool_denylist") private List<@Size(max = 256) String> toolDenylist;
+    @Min(0) @JsonProperty("cooldown_ms") private Integer cooldownMs;
 }
