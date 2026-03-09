@@ -3,6 +3,7 @@ import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.model.auth.ApiKey;
 import io.runcycles.admin.model.auth.ApiKeyCreateRequest;
 import io.runcycles.admin.model.auth.ApiKeyCreateResponse;
+import io.runcycles.admin.model.auth.ApiKeyStatus;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -18,8 +19,19 @@ public class ApiKeyController {
         return ResponseEntity.status(201).body(repository.create(request));
     }
     @GetMapping @Operation(operationId = "listApiKeys")
-    public ResponseEntity<Map<String, Object>> list(@RequestParam(required = true) String tenant_id) {
-        return ResponseEntity.ok(Map.of("keys", repository.list(tenant_id), "has_more", false));
+    public ResponseEntity<Map<String, Object>> list(
+            @RequestParam(required = true) String tenant_id,
+            @RequestParam(required = false) ApiKeyStatus status,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(defaultValue = "50") int limit) {
+        var keys = repository.list(tenant_id, status, cursor, limit);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("keys", keys);
+        response.put("has_more", keys.size() >= limit);
+        if (!keys.isEmpty() && keys.size() >= limit) {
+            response.put("next_cursor", keys.get(keys.size() - 1).getKeyId());
+        }
+        return ResponseEntity.ok(response);
     }
     @DeleteMapping("/{key_id}") @Operation(operationId = "revokeApiKey")
     public ResponseEntity<ApiKey> revoke(@PathVariable("key_id") String keyId, @RequestParam(required = false) String reason) {

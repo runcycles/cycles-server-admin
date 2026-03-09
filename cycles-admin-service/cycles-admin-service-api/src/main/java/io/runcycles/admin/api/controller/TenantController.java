@@ -16,12 +16,23 @@ public class TenantController {
     @Autowired private TenantRepository repository;
     @PostMapping @Operation(operationId = "createTenant")
     public ResponseEntity<Tenant> create(@Valid @RequestBody TenantCreateRequest request) {
-        return ResponseEntity.status(201).body(repository.create(request));
+        var result = repository.create(request);
+        return ResponseEntity.status(result.created() ? 201 : 200).body(result.tenant());
     }
     @GetMapping @Operation(operationId = "listTenants")
-    public ResponseEntity<Map<String, Object>> list(@RequestParam(required = false) TenantStatus status, @RequestParam(defaultValue = "50") int limit) {
-        var tenants = repository.list(status, limit);
-        return ResponseEntity.ok(Map.of("tenants", tenants, "has_more", tenants.size() >= limit));
+    public ResponseEntity<Map<String, Object>> list(
+            @RequestParam(required = false) TenantStatus status,
+            @RequestParam(required = false) String parent_tenant_id,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(defaultValue = "50") int limit) {
+        var tenants = repository.list(status, parent_tenant_id, cursor, limit);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("tenants", tenants);
+        response.put("has_more", tenants.size() >= limit);
+        if (!tenants.isEmpty() && tenants.size() >= limit) {
+            response.put("next_cursor", tenants.get(tenants.size() - 1).getTenantId());
+        }
+        return ResponseEntity.ok(response);
     }
     @GetMapping("/{tenant_id}") @Operation(operationId = "getTenant")
     public ResponseEntity<Tenant> get(@PathVariable("tenant_id") String tenantId) {

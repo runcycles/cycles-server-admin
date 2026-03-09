@@ -14,6 +14,8 @@ public class PolicyCreateRequest {
     @JsonProperty("priority") private Integer priority;
     @JsonProperty("caps") private Caps caps;
     @JsonProperty("commit_overage_policy") private CommitOveragePolicy commitOveragePolicy;
+    @JsonProperty("reservation_ttl_override") private ReservationTtlOverride reservationTtlOverride;
+    @JsonProperty("rate_limits") private RateLimits rateLimits;
     @JsonProperty("effective_from") private Instant effectiveFrom;
     @JsonProperty("effective_until") private Instant effectiveUntil;
 }

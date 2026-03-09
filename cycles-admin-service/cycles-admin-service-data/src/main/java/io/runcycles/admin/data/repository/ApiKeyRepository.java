@@ -59,11 +59,18 @@ public class ApiKeyRepository {
             throw new RuntimeException(e);
         }
     }
-    public List<ApiKey> list(String tenantId) {
+    public List<ApiKey> list(String tenantId, ApiKeyStatus statusFilter, String cursor, int limit) {
         try (Jedis jedis = jedisPool.getResource()) {
             Set<String> ids = jedis.smembers("apikeys:" + tenantId);
+            List<String> sortedIds = new ArrayList<>(ids);
+            Collections.sort(sortedIds);
             List<ApiKey> keys = new ArrayList<>();
-            for (String id : ids) {
+            boolean pastCursor = (cursor == null || cursor.isBlank());
+            for (String id : sortedIds) {
+                if (!pastCursor) {
+                    if (id.equals(cursor)) pastCursor = true;
+                    continue;
+                }
                 try {
                     String data = jedis.get("apikey:" + id);
                     if (data == null) {
@@ -72,13 +79,18 @@ public class ApiKeyRepository {
                     }
                     ApiKey key = objectMapper.readValue(data, ApiKey.class);
                     key.setKeyHash(null); // Don't expose hash
+                    if (statusFilter != null && key.getStatus() != statusFilter) continue;
                     keys.add(key);
+                    if (keys.size() >= limit) break;
                 } catch (Exception e) {
                     LOG.warn("Failed to parse key: {}", id, e);
                 }
             }
             return keys;
         }
+    }
+    public List<ApiKey> list(String tenantId) {
+        return list(tenantId, null, null, 1000);
     }
     public ApiKey revoke(String keyId, String reason) {
         try (Jedis jedis = jedisPool.getResource()) {
@@ -117,6 +129,19 @@ public class ApiKeyRepository {
             }
             if (!keyService.verifyKey(keySecret, key.getKeyHash())) {
                 return ApiKeyValidationResponse.builder().valid(false).reason("INVALID_KEY").build();
+            }
+            // Check tenant status (spec validation step 5)
+            String tenantData = jedis.get("tenant:" + key.getTenantId());
+            if (tenantData != null) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> tenantMap = objectMapper.readValue(tenantData, Map.class);
+                String tenantStatus = (String) tenantMap.get("status");
+                if ("SUSPENDED".equals(tenantStatus)) {
+                    return ApiKeyValidationResponse.builder().valid(false).reason("TENANT_SUSPENDED").build();
+                }
+                if ("CLOSED".equals(tenantStatus)) {
+                    return ApiKeyValidationResponse.builder().valid(false).reason("TENANT_CLOSED").build();
+                }
             }
             key.setLastUsedAt(Instant.now());
             jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));

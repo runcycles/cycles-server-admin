@@ -25,6 +25,8 @@ public class PolicyRepository {
                 .priority(request.getPriority() != null ? request.getPriority() : 0)
                 .caps(request.getCaps())
                 .commitOveragePolicy(request.getCommitOveragePolicy())
+                .reservationTtlOverride(request.getReservationTtlOverride())
+                .rateLimits(request.getRateLimits())
                 .status(PolicyStatus.ACTIVE)
                 .effectiveFrom(request.getEffectiveFrom())
                 .effectiveUntil(request.getEffectiveUntil())
@@ -37,18 +39,29 @@ public class PolicyRepository {
             throw new RuntimeException(e);
         }
     }
-    public List<Policy> list() {
+    public List<Policy> list(String scopePattern, PolicyStatus status, String cursor, int limit) {
         try (Jedis jedis = jedisPool.getResource()) {
             Set<String> ids = jedis.smembers("policies");
+            List<String> sortedIds = new ArrayList<>(ids);
+            Collections.sort(sortedIds);
             List<Policy> policies = new ArrayList<>();
-            for (String id : ids) {
+            boolean pastCursor = (cursor == null || cursor.isBlank());
+            for (String id : sortedIds) {
+                if (!pastCursor) {
+                    if (id.equals(cursor)) pastCursor = true;
+                    continue;
+                }
                 try {
                     String data = jedis.get("policy:" + id);
                     if (data == null) {
                         LOG.warn("Policy data missing for id: {}", id);
                         continue;
                     }
-                    policies.add(objectMapper.readValue(data, Policy.class));
+                    Policy p = objectMapper.readValue(data, Policy.class);
+                    if (status != null && p.getStatus() != status) continue;
+                    if (scopePattern != null && !scopePattern.equals(p.getScopePattern())) continue;
+                    policies.add(p);
+                    if (policies.size() >= limit) break;
                 } catch (Exception e) {
                     LOG.warn("Failed to parse policy: {}", id, e);
                 }
