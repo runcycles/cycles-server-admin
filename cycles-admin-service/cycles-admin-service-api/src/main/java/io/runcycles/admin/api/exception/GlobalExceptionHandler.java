@@ -1,5 +1,6 @@
 package io.runcycles.admin.api.exception;
 
+import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.ErrorResponse;
@@ -16,10 +17,9 @@ import java.util.stream.Collectors;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
     private static final Logger LOG = LoggerFactory.getLogger(GlobalExceptionHandler.class);
-    private static final String REQUEST_ID_ATTRIBUTE = "requestId";
 
     private String resolveRequestId(HttpServletRequest request) {
-        Object attr = request != null ? request.getAttribute(REQUEST_ID_ATTRIBUTE) : null;
+        Object attr = request != null ? request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE) : null;
         return attr != null ? attr.toString() : UUID.randomUUID().toString();
     }
 
