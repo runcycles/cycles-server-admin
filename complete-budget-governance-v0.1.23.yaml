@@ -1,0 +1,1589 @@
+openapi: 3.1.0
+info:
+  title: Complete Budget Governance System API
+  version: 0.1.23
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+  summary: >-
+    Complete budget governance protocol covering tenant management, authentication, 
+    and runtime enforcement (aligned with Cycles Protocol v0.1.23).
+  description: |-
+    PURPOSE:
+      This specification defines a complete, interoperable budget governance system
+      with three integrated pillars:
+      
+      1. TENANT & BUDGET MANAGEMENT (Configuration Plane)
+         - Tenant lifecycle: registration, hierarchy, metadata
+         - Budget lifecycle: creation, allocation, funding, expiry
+         - Policy configuration: caps, limits, quotas
+         - API key provisioning and management
+      
+      2. AUTHENTICATION & AUTHORIZATION (Identity Plane)
+         - API key validation and tenant resolution
+         - Permission and scope enforcement
+         - Key lifecycle: creation, rotation, revocation
+         - Audit logging and access tracking
+      
+      3. RUNTIME ENFORCEMENT (Reservation Plane)
+         - Budget reservations and commits (from Cycles Protocol v0.1.23)
+         - Real-time enforcement with overdraft support
+         - Balance queries and monitoring
+      
+    DESIGN PRINCIPLES:
+      - Interoperability: Standard schemas enable tool ecosystem
+      - Security-first: Explicit trust boundaries and validation
+      - Operational clarity: All workflows have defined endpoints
+      - Backward compatibility: Extends Cycles v0.1.23 without breaking changes
+
+    DEPLOYMENT MODELS:
+      - Single-service: All three pillars in one deployment
+      - Split-plane: Separate admin/auth services from runtime enforcement
+      - Federated: Multiple runtime enforcement instances, shared admin plane
+
+servers:
+  - url: https://api.budget-governance.local
+    description: Default server
+
+tags:
+  - name: Tenants
+    description: "Pillar 1: Tenant registration and lifecycle management"
+  - name: Budgets
+    description: "Pillar 1: Budget ledger creation, allocation, and funding"
+  - name: Policies
+    description: "Pillar 1: Policy and cap configuration"
+  - name: API Keys
+    description: "Pillar 2: API key provisioning and management"
+  - name: Authentication
+    description: "Pillar 2: Key validation and tenant resolution"
+  - name: Audit
+    description: "Pillar 2: Access logging and compliance"
+  - name: Reservations
+    description: "Pillar 3: Runtime budget enforcement (from Cycles v0.1.23)"
+  - name: Balances
+    description: "Pillar 3: Balance queries and monitoring"
+
+components:
+  securitySchemes:
+    AdminKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Admin-API-Key
+      description: Administrative API key with full system access
+    
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Cycles-API-Key
+      description: Tenant-scoped API key for runtime operations (consistent with Cycles Protocol)
+
+  schemas:
+    # ========================================================================
+    # SHARED SCHEMAS (aligned with Cycles Protocol v0.1.23)
+    # ========================================================================
+    
+    UnitEnum:
+      type: string
+      enum: [USD_MICROCENTS, TOKENS, CREDITS, RISK_POINTS]
+      description: Standard budget units from Cycles Protocol v0.1.23
+    
+    Amount:
+      type: object
+      required: [unit, amount]
+      additionalProperties: false
+      description: >-
+        Amount with explicit unit. Identical to Cycles Protocol v0.1.23.
+        This ensures structural alignment between governance and runtime.
+      properties:
+        unit:
+          $ref: '#/components/schemas/UnitEnum'
+        amount:
+          type: integer
+          format: int64
+          minimum: 0
+    
+    CommitOveragePolicy:
+      type: string
+      enum: [REJECT, ALLOW_IF_AVAILABLE, ALLOW_WITH_OVERDRAFT]
+      description: >-
+        How commits handle actual > reserved (from Cycles Protocol v0.1.23).
+        
+        REJECT: Fail if actual > reserved
+        ALLOW_IF_AVAILABLE: Charge delta from remaining budget if available
+        ALLOW_WITH_OVERDRAFT: Create debt up to overdraft_limit if budget exhausted
+        
+        This policy can be set at:
+        - Tenant level (default for all scopes)
+        - Budget ledger level (override for specific scope)
+        - Policy level (pattern-based override)
+        - Reservation level (per-request override)
+    
+    Caps:
+      type: object
+      additionalProperties: false
+      description: >-
+        Soft-landing constraints. Identical to Cycles Protocol v0.1.23 Caps schema.
+      properties:
+        max_tokens:
+          type: integer
+          minimum: 0
+        max_steps_remaining:
+          type: integer
+          minimum: 0
+        tool_allowlist:
+          type: array
+          items:
+            type: string
+            maxLength: 256
+        tool_denylist:
+          type: array
+          items:
+            type: string
+            maxLength: 256
+        cooldown_ms:
+          type: integer
+          minimum: 0
+    
+    # ========================================================================
+    # PILLAR 1: TENANT & BUDGET MANAGEMENT SCHEMAS
+    # ========================================================================
+    
+    Tenant:
+      type: object
+      description: >-
+        Tenant is the top-level isolation boundary. All budgets, keys, and 
+        reservations are scoped to a tenant.
+      required: [tenant_id, name, status, created_at]
+      additionalProperties: false
+      properties:
+        tenant_id:
+          type: string
+          pattern: '^[a-z0-9-]+$'
+          minLength: 3
+          maxLength: 64
+          description: >-
+            Globally unique tenant identifier. Immutable after creation.
+            Recommended format: kebab-case, e.g., "acme-corp", "demo-tenant"
+        name:
+          type: string
+          maxLength: 256
+          description: Human-readable tenant name
+        status:
+          type: string
+          enum: [ACTIVE, SUSPENDED, CLOSED]
+          description: >-
+            ACTIVE: Normal operations permitted
+            SUSPENDED: Read-only, no new reservations
+            CLOSED: Archived, no operations permitted
+        parent_tenant_id:
+          type: string
+          description: >-
+            Optional parent tenant for hierarchical organizations.
+            Enables budget delegation and consolidated billing.
+        default_commit_overage_policy:
+          $ref: '#/components/schemas/CommitOveragePolicy'
+          description: >-
+            Default commit overage policy for all reservations in this tenant.
+            Can be overridden at budget ledger, policy, or reservation level.
+            Default: REJECT
+        default_reservation_ttl_ms:
+          type: integer
+          minimum: 1000
+          maximum: 86400000
+          default: 60000
+          description: >-
+            Default TTL for reservations when not specified.
+            Range: 1s - 24h. Default: 60s
+        max_reservation_ttl_ms:
+          type: integer
+          minimum: 1000
+          maximum: 86400000
+          default: 3600000
+          description: >-
+            Maximum allowed TTL for reservations. Requests exceeding this are capped.
+            Default: 1h
+        max_reservation_extensions:
+          type: integer
+          minimum: 0
+          default: 10
+          description: >-
+            Maximum number of TTL extensions allowed per reservation.
+            Prevents infinite zombie reservations. Default: 10
+        reservation_expiry_policy:
+          type: string
+          enum: [AUTO_RELEASE, MANUAL_CLEANUP, GRACE_ONLY]
+          default: AUTO_RELEASE
+          description: >-
+            AUTO_RELEASE: Expired reservations auto-release after grace period
+            MANUAL_CLEANUP: Require explicit release or cleanup job
+            GRACE_ONLY: Allow commits during grace, then mark EXPIRED
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          maxProperties: 32
+          description: Custom key-value pairs for integration
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        suspended_at:
+          type: string
+          format: date-time
+        closed_at:
+          type: string
+          format: date-time
+    
+    TenantCreateRequest:
+      type: object
+      required: [tenant_id, name]
+      additionalProperties: false
+      properties:
+        tenant_id:
+          type: string
+          pattern: '^[a-z0-9-]+$'
+          minLength: 3
+          maxLength: 64
+        name:
+          type: string
+          maxLength: 256
+        parent_tenant_id:
+          type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+    
+    TenantListResponse:
+      type: object
+      required: [tenants]
+      properties:
+        tenants:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tenant'
+        next_cursor:
+          type: string
+        has_more:
+          type: boolean
+    
+    BudgetLedger:
+      type: object
+      description: >-
+        Budget ledger tracks allocated, remaining, reserved, spent, and debt 
+        for a specific (scope, unit) pair. This is the source of truth for 
+        balance queries.
+        
+        SCOPE HIERARCHY SEMANTICS:
+        - Each scope is independent (no automatic propagation)
+        - Parent scopes do NOT automatically aggregate child scope charges
+        - Hierarchical validation: if "tenant:acme/workspace:eng" has a budget,
+          both "tenant:acme" and "tenant:acme/workspace:eng" must exist
+        - Atomic guarantee: Operations on a scope do NOT affect parent/child scopes
+          unless explicitly specified via multi-scope reservation
+      required: [ledger_id, scope, unit, allocated, remaining, status, created_at]
+      additionalProperties: false
+      properties:
+        ledger_id:
+          type: string
+          description: Unique identifier for this ledger
+        scope:
+          type: string
+          description: >-
+            Canonical scope identifier, e.g., "tenant:acme-corp",
+            "workspace:eng", "agent:summarizer"
+        scope_path:
+          type: string
+          description: >-
+            Full hierarchical path, e.g., "tenant:acme-corp/workspace:eng/agent:summarizer"
+        unit:
+          $ref: '#/components/schemas/UnitEnum'
+        allocated:
+          $ref: '#/components/schemas/Amount'
+          description: >-
+            Total budget cap for this scope. Must have same unit as ledger.
+        remaining:
+          $ref: '#/components/schemas/Amount'
+          description: >-
+            Available for new reservations (can be negative with overdraft).
+            Must have same unit as ledger.
+        reserved:
+          $ref: '#/components/schemas/Amount'
+          description: >-
+            Currently locked by active reservations. Must have same unit as ledger.
+        spent:
+          $ref: '#/components/schemas/Amount'
+          description: >-
+            Successfully committed spend. Must have same unit as ledger.
+        debt:
+          $ref: '#/components/schemas/Amount'
+          description: >-
+            Overdraft amount from ALLOW_WITH_OVERDRAFT commits.
+            Must have same unit as ledger.
+        overdraft_limit:
+          $ref: '#/components/schemas/Amount'
+          description: >-
+            Maximum allowed debt (0 = no overdraft). Must have same unit as ledger.
+        is_over_limit:
+          type: boolean
+          description: True when debt > overdraft_limit
+        commit_overage_policy:
+          $ref: '#/components/schemas/CommitOveragePolicy'
+          description: >-
+            Default commit overage policy for reservations against this scope.
+            Overrides tenant default. Can be overridden by policy or per-reservation.
+            If not set, inherits from tenant.
+        status:
+          type: string
+          enum: [ACTIVE, FROZEN, CLOSED]
+          description: >-
+            ACTIVE: Normal operations
+            FROZEN: Read-only, no new reservations or commits
+            CLOSED: Archived
+        rollover_policy:
+          type: string
+          enum: [NONE, CARRY_FORWARD, CAP_AT_ALLOCATED]
+          description: >-
+            How unused budget is handled at period boundaries
+        period_start:
+          type: string
+          format: date-time
+          description: Start of current budget period
+        period_end:
+          type: string
+          format: date-time
+          description: End of current budget period
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    
+    BudgetCreateRequest:
+      type: object
+      required: [scope, unit, allocated]
+      additionalProperties: false
+      properties:
+        scope:
+          type: string
+          description: Canonical scope identifier
+        unit:
+          $ref: '#/components/schemas/UnitEnum'
+        allocated:
+          $ref: '#/components/schemas/Amount'
+          description: Initial allocation (must match unit)
+        overdraft_limit:
+          $ref: '#/components/schemas/Amount'
+          description: Maximum allowed debt (must match unit, default 0)
+        commit_overage_policy:
+          $ref: '#/components/schemas/CommitOveragePolicy'
+          description: >-
+            Default commit overage policy for this scope.
+            If not set, inherits from tenant.
+        rollover_policy:
+          type: string
+          enum: [NONE, CARRY_FORWARD, CAP_AT_ALLOCATED]
+          default: NONE
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          additionalProperties: true
+    
+    BudgetFundingRequest:
+      type: object
+      required: [operation, amount]
+      additionalProperties: false
+      properties:
+        operation:
+          type: string
+          enum: [CREDIT, DEBIT, RESET, REPAY_DEBT]
+          description: >-
+            CREDIT: Add funds to allocated and remaining
+            DEBIT: Remove funds (fails if would cause remaining < 0)
+            RESET: Set allocated to exact amount, adjust remaining
+            REPAY_DEBT: Reduce debt by amount (use remaining if needed)
+        amount:
+          $ref: '#/components/schemas/Amount'
+          description: Amount to credit/debit/reset (must match ledger unit)
+        reason:
+          type: string
+          maxLength: 512
+          description: Human-readable justification for audit trail
+        idempotency_key:
+          type: string
+          minLength: 1
+          maxLength: 256
+        metadata:
+          type: object
+          additionalProperties: true
+    
+    BudgetFundingResponse:
+      type: object
+      required: [operation, previous_allocated, new_allocated, previous_remaining, new_remaining]
+      properties:
+        operation:
+          type: string
+        previous_allocated:
+          $ref: '#/components/schemas/Amount'
+        new_allocated:
+          $ref: '#/components/schemas/Amount'
+        previous_remaining:
+          $ref: '#/components/schemas/Amount'
+        new_remaining:
+          $ref: '#/components/schemas/Amount'
+        previous_debt:
+          $ref: '#/components/schemas/Amount'
+        new_debt:
+          $ref: '#/components/schemas/Amount'
+        timestamp:
+          type: string
+          format: date-time
+    
+    BudgetListResponse:
+      type: object
+      required: [ledgers]
+      properties:
+        ledgers:
+          type: array
+          items:
+            $ref: '#/components/schemas/BudgetLedger'
+        next_cursor:
+          type: string
+        has_more:
+          type: boolean
+    
+    Policy:
+      type: object
+      description: >-
+        Policy defines caps, limits, and behavioral rules for scopes.
+        Policies are evaluated during reservation and commit operations.
+      required: [policy_id, scope_pattern, status, created_at]
+      additionalProperties: false
+      properties:
+        policy_id:
+          type: string
+          description: Unique policy identifier
+        name:
+          type: string
+          maxLength: 256
+        description:
+          type: string
+          maxLength: 1024
+        scope_pattern:
+          type: string
+          description: >-
+            Pattern for matching scopes. Examples:
+            - "tenant:acme-corp" (exact match)
+            - "tenant:acme-corp/*" (all descendant scopes)
+            - "agent:*" (all agents across all tenants)
+        priority:
+          type: integer
+          minimum: 0
+          description: Higher priority policies evaluated first
+        caps:
+          $ref: '#/components/schemas/Caps'
+          description: >-
+            Soft-landing constraints from Cycles v0.1.23.
+            Identical schema for consistency.
+        commit_overage_policy:
+          $ref: '#/components/schemas/CommitOveragePolicy'
+          description: >-
+            Override commit overage policy for matching scopes.
+            Overrides tenant and budget ledger defaults.
+        reservation_ttl_override:
+          type: object
+          additionalProperties: false
+          description: TTL governance for matching scopes
+          properties:
+            default_ttl_ms:
+              type: integer
+              minimum: 1000
+              maximum: 86400000
+            max_ttl_ms:
+              type: integer
+              minimum: 1000
+              maximum: 86400000
+            max_extensions:
+              type: integer
+              minimum: 0
+        rate_limits:
+          type: object
+          additionalProperties: false
+          description: Request rate limits per scope
+          properties:
+            max_reservations_per_minute:
+              type: integer
+              minimum: 1
+            max_commits_per_minute:
+              type: integer
+              minimum: 1
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED]
+        effective_from:
+          type: string
+          format: date-time
+        effective_until:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    
+    PolicyCreateRequest:
+      type: object
+      required: [name, scope_pattern]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        scope_pattern:
+          type: string
+        priority:
+          type: integer
+          default: 0
+        caps:
+          $ref: '#/components/schemas/Caps'
+        commit_overage_policy:
+          $ref: '#/components/schemas/CommitOveragePolicy'
+        reservation_ttl_override:
+          type: object
+          additionalProperties: false
+          properties:
+            default_ttl_ms:
+              type: integer
+            max_ttl_ms:
+              type: integer
+            max_extensions:
+              type: integer
+        rate_limits:
+          type: object
+        effective_from:
+          type: string
+          format: date-time
+        effective_until:
+          type: string
+          format: date-time
+    
+    PolicyListResponse:
+      type: object
+      required: [policies]
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/Policy'
+        next_cursor:
+          type: string
+        has_more:
+          type: boolean
+    
+    # ========================================================================
+    # PILLAR 2: AUTHENTICATION & AUTHORIZATION SCHEMAS
+    # ========================================================================
+    
+    ApiKey:
+      type: object
+      description: >-
+        API key binds authentication credentials to a tenant and defines
+        permissions. Keys are the trust boundary for tenant derivation.
+      required: [key_id, tenant_id, key_prefix, status, created_at, expires_at]
+      additionalProperties: false
+      properties:
+        key_id:
+          type: string
+          description: Unique key identifier (UUID)
+        tenant_id:
+          type: string
+          description: Tenant this key belongs to
+        key_prefix:
+          type: string
+          description: >-
+            Visible prefix for key identification (e.g., "cyc_live_abc123").
+            Full key is never returned after creation.
+        name:
+          type: string
+          maxLength: 256
+          description: Human-readable key name
+        description:
+          type: string
+          maxLength: 1024
+        permissions:
+          type: array
+          items:
+            type: string
+            enum: 
+              - 'reservations:create'
+              - 'reservations:commit'
+              - 'reservations:release'
+              - 'reservations:extend'
+              - 'reservations:list'
+              - 'balances:read'
+              - 'admin:read'
+              - 'admin:write'
+          description: >-
+            Granular permissions. Default for tenant keys:
+            [reservations:*, balances:read]
+        scope_filter:
+          type: array
+          items:
+            type: string
+          description: >-
+            Optional restriction to specific scopes.
+            Example: ["workspace:eng", "agent:*"] limits key to eng workspace
+        status:
+          type: string
+          enum: [ACTIVE, REVOKED, EXPIRED]
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+        revoked_reason:
+          type: string
+          maxLength: 512
+        metadata:
+          type: object
+          additionalProperties: true
+    
+    ApiKeyCreateRequest:
+      type: object
+      required: [tenant_id, name]
+      additionalProperties: false
+      properties:
+        tenant_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
+        scope_filter:
+          type: array
+          items:
+            type: string
+        expires_at:
+          type: string
+          format: date-time
+          description: Optional expiry (recommended for security)
+        metadata:
+          type: object
+    
+    ApiKeyCreateResponse:
+      type: object
+      required: [key_id, key_secret, key_prefix, tenant_id, created_at, expires_at]
+      properties:
+        key_id:
+          type: string
+        key_secret:
+          type: string
+          description: >-
+            CRITICAL: This is the only time the full key is returned.
+            Store securely. Cannot be retrieved again.
+        key_prefix:
+          type: string
+        tenant_id:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+    
+    ApiKeyListResponse:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiKey'
+        next_cursor:
+          type: string
+        has_more:
+          type: boolean
+    
+    ApiKeyValidationRequest:
+      type: object
+      required: [key_secret]
+      properties:
+        key_secret:
+          type: string
+          description: The full API key to validate
+    
+    ApiKeyValidationResponse:
+      type: object
+      required: [valid, tenant_id]
+      properties:
+        valid:
+          type: boolean
+        tenant_id:
+          type: string
+        key_id:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
+        scope_filter:
+          type: array
+          items:
+            type: string
+        expires_at:
+          type: string
+          format: date-time
+        reason:
+          type: string
+          description: Present if valid=false (e.g., "REVOKED", "EXPIRED")
+    
+    AuditLogEntry:
+      type: object
+      description: >-
+        Audit log captures all authenticated operations for compliance
+        and security monitoring.
+      required: [log_id, timestamp, tenant_id, operation, status]
+      properties:
+        log_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        tenant_id:
+          type: string
+        key_id:
+          type: string
+        user_agent:
+          type: string
+        source_ip:
+          type: string
+        operation:
+          type: string
+          description: >-
+            Operation performed, e.g., "POST /v1/reservations",
+            "POST /v1/budgets/fund"
+        request_id:
+          type: string
+        status:
+          type: integer
+          description: HTTP status code
+        error_code:
+          type: string
+        subject:
+          type: object
+          description: Subject from request (if applicable)
+        action:
+          type: object
+          description: Action from request (if applicable)
+        amount:
+          type: object
+          description: Amount from request (if applicable)
+        metadata:
+          type: object
+          additionalProperties: true
+    
+    AuditLogListResponse:
+      type: object
+      required: [logs]
+      properties:
+        logs:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLogEntry'
+        next_cursor:
+          type: string
+        has_more:
+          type: boolean
+    
+    # ========================================================================
+    # PILLAR 3: RUNTIME ENFORCEMENT SCHEMAS (from Cycles v0.1.23)
+    # ========================================================================
+    # Note: These schemas are imported from Cycles Protocol v0.1.23
+    # They are referenced here for completeness but defined in cycles-protocol-v0.yaml
+    
+    # Amount, Subject, Action, Caps, Balance, StandardMetrics
+    # ReservationCreateRequest, CommitRequest, ReleaseRequest, ReservationExtendRequest
+    # ReservationCreateResponse, CommitResponse, ReleaseResponse, ReservationExtendResponse
+    # ReservationSummary, ReservationListResponse
+    # ErrorCode, ErrorResponse
+    
+    ErrorCode:
+      type: string
+      enum:
+        # Cycles v0.1.23 codes
+        - INVALID_REQUEST
+        - UNAUTHORIZED
+        - FORBIDDEN
+        - NOT_FOUND
+        - BUDGET_EXCEEDED
+        - RESERVATION_EXPIRED
+        - RESERVATION_FINALIZED
+        - IDEMPOTENCY_MISMATCH
+        - UNIT_MISMATCH
+        - OVERDRAFT_LIMIT_EXCEEDED
+        - DEBT_OUTSTANDING
+        - INTERNAL_ERROR
+        # New governance codes
+        - TENANT_NOT_FOUND
+        - TENANT_SUSPENDED
+        - TENANT_CLOSED
+        - BUDGET_NOT_FOUND
+        - BUDGET_FROZEN
+        - POLICY_VIOLATION
+        - INSUFFICIENT_PERMISSIONS
+        - KEY_REVOKED
+        - KEY_EXPIRED
+        - DUPLICATE_RESOURCE
+    
+    ErrorResponse:
+      type: object
+      required: [error, message, request_id]
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+        request_id:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+
+# ============================================================================
+# API ENDPOINTS
+# ============================================================================
+
+paths:
+  # ==========================================================================
+  # PILLAR 1: TENANT & BUDGET MANAGEMENT
+  # ==========================================================================
+  
+  /v1/admin/tenants:
+    post:
+      tags: [Tenants]
+      operationId: createTenant
+      summary: Create a new tenant
+      description: >-
+        Registers a new tenant in the system. This is typically the first
+        operation in onboarding a new organization.
+        
+        AUTHORIZATION:
+        - Requires admin key (X-Admin-API-Key)
+        
+        IDEMPOTENCY:
+        - Safe to retry with same tenant_id. Returns existing tenant if already created.
+      security:
+        - AdminKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantCreateRequest'
+      responses:
+        '201':
+          description: Tenant created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '200':
+          description: Tenant already exists (idempotent)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Tenant ID conflicts with different tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    
+    get:
+      tags: [Tenants]
+      operationId: listTenants
+      summary: List all tenants
+      description: >-
+        Returns paginated list of all tenants. Useful for admin dashboards
+        and tenant discovery.
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [ACTIVE, SUSPENDED, CLOSED]
+        - name: parent_tenant_id
+          in: query
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Tenant list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantListResponse'
+  
+  /v1/admin/tenants/{tenant_id}:
+    get:
+      tags: [Tenants]
+      operationId: getTenant
+      summary: Get tenant details
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: tenant_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tenant details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '404':
+          description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    
+    patch:
+      tags: [Tenants]
+      operationId: updateTenant
+      summary: Update tenant properties
+      description: >-
+        Modify tenant metadata, status, or hierarchy.
+        
+        STATUS TRANSITIONS:
+        - ACTIVE → SUSPENDED: Blocks new reservations, existing active reservations can still commit/release
+        - SUSPENDED → ACTIVE: Resume normal operations
+        - * → CLOSED: Irreversible, archives tenant
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: tenant_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                status:
+                  type: string
+                  enum: [ACTIVE, SUSPENDED, CLOSED]
+                metadata:
+                  type: object
+      responses:
+        '200':
+          description: Tenant updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+  
+  /v1/admin/budgets:
+    post:
+      tags: [Budgets]
+      operationId: createBudget
+      summary: Create a budget ledger for a scope
+      description: >-
+        Initializes a new budget ledger for a (scope, unit) pair.
+        This must be done before any reservations can be made against the scope.
+        
+        AUTHORIZATION:
+        - Tenant can create budgets for their own scopes only
+        - Uses ApiKeyAuth (X-Cycles-API-Key) - tenant manages own budgets
+        
+        SCOPE VALIDATION:
+        - Scope must match pattern: tenant:* or tenant:*/workspace:* etc.
+        - Tenant must exist and be ACTIVE
+        - Cannot create duplicate (scope, unit) ledgers
+        
+        INITIAL STATE:
+        - allocated = requested amount
+        - remaining = allocated
+        - reserved = spent = debt = 0
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetCreateRequest'
+      responses:
+        '201':
+          description: Budget created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetLedger'
+        '400':
+          description: Invalid scope or tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Budget already exists for this (scope, unit)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    
+    get:
+      tags: [Budgets]
+      operationId: listBudgets
+      summary: List budget ledgers
+      description: >-
+        Query budget ledgers by tenant, scope pattern, or status.
+        Returns all units for matching scopes.
+        
+        AUTHORIZATION:
+        - Tenant can list their own budgets only (scoped by ApiKeyAuth)
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: tenant_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: scope_prefix
+          in: query
+          schema:
+            type: string
+          description: Filter by scope prefix, e.g., "tenant:acme-corp/workspace:eng"
+        - name: unit
+          in: query
+          schema:
+            type: string
+            enum: [USD_MICROCENTS, TOKENS, CREDITS, RISK_POINTS]
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [ACTIVE, FROZEN, CLOSED]
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Budget list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetListResponse'
+  
+  /v1/admin/budgets/{scope}/{unit}/fund:
+    post:
+      tags: [Budgets]
+      operationId: fundBudget
+      summary: Credit, debit, or adjust budget allocation
+      description: >-
+        Modifies budget allocation and remaining balance outside the
+        reservation flow. Common operations:
+        
+        AUTHORIZATION:
+        - Tenant can fund their own budgets only
+        
+        CREDIT (top-up):
+        - allocated += amount
+        - remaining += amount
+        - Use for: monthly allocations, bonus credits
+        
+        DEBIT (drain):
+        - allocated -= amount
+        - remaining -= amount (fails if would go negative)
+        - Use for: downgrades, refunds, policy enforcement
+        
+        RESET (reallocate):
+        - allocated = amount
+        - remaining = amount - reserved - spent - debt
+        - Use for: period rollovers, plan changes
+        
+        REPAY_DEBT:
+        - debt -= amount (use remaining if debt < amount)
+        - Use for: manual debt reconciliation
+        
+        IDEMPOTENCY:
+        - Required idempotency_key prevents double-funding
+        - Replayed requests return original response
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: scope
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: unit
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [USD_MICROCENTS, TOKENS, CREDITS, RISK_POINTS]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetFundingRequest'
+      responses:
+        '200':
+          description: Funding operation completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetFundingResponse'
+        '404':
+          description: Budget ledger not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Idempotency mismatch or insufficient funds for DEBIT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  
+  /v1/admin/policies:
+    post:
+      tags: [Policies]
+      operationId: createPolicy
+      summary: Create a policy with caps and limits
+      description: >-
+        Defines caps (soft-landing constraints) and rate limits for scopes.
+        Policies are evaluated during reservation requests.
+        
+        AUTHORIZATION:
+        - Tenant can create policies for their own scopes only
+        
+        SCOPE PATTERNS:
+        - "tenant:acme-corp" (exact match)
+        - "tenant:acme-corp/*" (all descendants)
+        - "agent:*" (all agents system-wide)
+        - "*/agent:summarizer" (agent across all tenants)
+        
+        PRIORITY:
+        - Higher priority policies override lower priority
+        - If multiple policies match, highest priority wins
+        
+        EFFECTIVE DATES:
+        - Optional time-bounded policies
+        - Useful for temporary restrictions or trials
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyCreateRequest'
+      responses:
+        '201':
+          description: Policy created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+    
+    get:
+      tags: [Policies]
+      operationId: listPolicies
+      summary: List policies
+      description: >-
+        AUTHORIZATION:
+        - Tenant can list their own policies only
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: scope_pattern
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [ACTIVE, DISABLED]
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Policy list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyListResponse'
+  
+  # ==========================================================================
+  # PILLAR 2: AUTHENTICATION & AUTHORIZATION
+  # ==========================================================================
+  
+  /v1/admin/api-keys:
+    post:
+      tags: [API Keys]
+      operationId: createApiKey
+      summary: Create an API key for a tenant
+      description: >-
+        Provisions a new API key bound to a tenant. This is the only time
+        the full key secret is returned. Store it securely.
+        
+        KEY FORMAT:
+        - Prefix: cyc_live_{random} or cyc_test_{random}
+        - Random part: 32 characters, cryptographically random
+        - Stored as: bcrypt hash of full key
+        
+        PERMISSIONS:
+        - Default for tenant keys: [reservations:*, balances:read]
+        - Admin keys: [admin:*, reservations:*, balances:*]
+        - Can be restricted to specific scopes via scope_filter
+        
+        EXPIRY:
+        - Recommended: 90 days for security
+        - Can be set indefinitely but not recommended
+        - Expired keys auto-fail validation
+      security:
+        - AdminKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiKeyCreateRequest'
+      responses:
+        '201':
+          description: API key created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyCreateResponse'
+        '400':
+          description: Invalid tenant or permissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    
+    get:
+      tags: [API Keys]
+      operationId: listApiKeys
+      summary: List API keys
+      description: >-
+        Returns keys for a tenant. Full key secrets are never returned,
+        only prefixes and metadata.
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: tenant_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [ACTIVE, REVOKED, EXPIRED]
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: API key list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyListResponse'
+  
+  /v1/admin/api-keys/{key_id}:
+    delete:
+      tags: [API Keys]
+      operationId: revokeApiKey
+      summary: Revoke an API key
+      description: >-
+        Immediately revokes a key. The key will fail validation from this
+        point forward. Active reservations using this key can still be
+        committed/released, but no new operations are permitted.
+        
+        REVOCATION IS PERMANENT:
+        - Cannot be undone
+        - Revoked keys remain in database for audit trail
+        - Status transitions: ACTIVE → REVOKED
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: reason
+          in: query
+          schema:
+            type: string
+            maxLength: 512
+      responses:
+        '200':
+          description: Key revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKey'
+        '404':
+          description: Key not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  
+  /v1/auth/validate:
+    post:
+      tags: [Authentication]
+      operationId: validateApiKey
+      summary: Validate an API key and resolve tenant
+      description: >-
+        Internal endpoint used by runtime enforcement layer to validate
+        keys and derive effective tenant.
+        
+        VALIDATION CHECKS:
+        1. Key exists in database
+        2. Key hash matches
+        3. Status is ACTIVE (not REVOKED or EXPIRED)
+        4. Current time < expires_at
+        5. Tenant is ACTIVE (not SUSPENDED or CLOSED)
+        
+        RESPONSE:
+        - If valid: returns tenant_id, permissions, scope_filter
+        - If invalid: returns valid=false with reason
+        
+        CACHING:
+        - Results should be cached with short TTL (60s)
+        - Invalidate cache on key revocation
+      security:
+        - AdminKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiKeyValidationRequest'
+      responses:
+        '200':
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyValidationResponse'
+  
+  /v1/admin/audit/logs:
+    get:
+      tags: [Audit]
+      operationId: listAuditLogs
+      summary: Query audit logs
+      description: >-
+        Returns audit trail of all authenticated operations.
+        Essential for compliance (SOC2, GDPR, etc.).
+        
+        RETENTION:
+        - Recommended: 90 days hot, 1 year cold storage
+        - Critical for security incident investigation
+        
+        FILTERING:
+        - By tenant, key, time range, operation, status
+        - Supports complex queries for forensics
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: tenant_id
+          in: query
+          schema:
+            type: string
+        - name: key_id
+          in: query
+          schema:
+            type: string
+        - name: operation
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: integer
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Audit log entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogListResponse'
+  
+  # ==========================================================================
+  # PILLAR 3: RUNTIME ENFORCEMENT (from Cycles v0.1.23)
+  # ==========================================================================
+  # Note: These endpoints are imported from Cycles Protocol v0.1.23
+  # They are included here for reference but fully defined in cycles-protocol-v0.yaml
+  
+  /v1/reservations:
+    post:
+      tags: [Reservations]
+      operationId: createReservation
+      summary: Create budget reservation (Cycles v0.1.23)
+      description: >-
+        See Cycles Protocol v0.1.23 specification.
+        
+        GOVERNANCE INTEGRATION:
+        1. Validates X-Cycles-API-Key via /v1/auth/validate
+        2. Derives effective tenant from key
+        3. Validates Subject.tenant matches effective tenant (403 if mismatch)
+        4. Checks tenant status (blocks if SUSPENDED or CLOSED)
+        5. Checks budget ledger exists for scope
+        6. Applies matching policies (caps, rate limits)
+        7. Executes Cycles reservation logic (reserve.lua)
+        8. Logs operation to audit trail
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Reservation created (see Cycles v0.1.23)
+        '403':
+          description: Tenant mismatch, suspended, or insufficient permissions
+        '409':
+          description: Budget exceeded, debt outstanding, or over-limit
+  
+  /v1/reservations/{reservation_id}/commit:
+    post:
+      tags: [Reservations]
+      operationId: commitReservation
+      summary: Commit actual spend (Cycles v0.1.23)
+      description: >-
+        See Cycles Protocol v0.1.23 specification.
+        
+        GOVERNANCE INTEGRATION:
+        - Validates key and tenant as in reservation
+        - Supports ALLOW_WITH_OVERDRAFT policy
+        - Creates debt if overdraft_limit configured
+        - Logs commit to audit trail
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Commit succeeded (see Cycles v0.1.23)
+  
+  /v1/balances:
+    get:
+      tags: [Balances]
+      operationId: queryBalances
+      summary: Query budget balances (Cycles v0.1.23)
+      description: >-
+        See Cycles Protocol v0.1.23 specification.
+        
+        GOVERNANCE INTEGRATION:
+        - Returns full ledger state including debt, overdraft_limit, is_over_limit
+        - Scoped to effective tenant
+        - Supports scope filtering via query params
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Balance data (see Cycles v0.1.23)
