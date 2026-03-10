@@ -1,66 +1,10 @@
 # Cycles Server Admin
 
-Budget governance for AI agents — reserve before you spend, commit what you use, never exceed what you have.
+Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.23](complete-budget-governance-v0.1.23.yaml).
 
-## What problem does Cycles solve?
+## Overview
 
-AI agents call paid APIs autonomously. Without governance, this means:
-
-- **Runaway spend** — a retry loop burns through your entire budget in minutes
-- **Silent overages** — you find out about cost spikes from your cloud bill, not your code
-- **No tenant isolation** — one noisy agent starves every other team's workload
-
-Cycles prevents all three with a reservation-based protocol that enforces budgets *before* work begins.
-
-## Who is this for?
-
-- **Platform teams** running multi-tenant AI infrastructure
-- **Agent developers** who need spend limits that actually stop execution
-- **Engineering leaders** who want per-team, per-agent budget visibility without building it themselves
-
-## How it works
-
-```
-1. RESERVE    Agent requests a budget hold before doing work
-2. EXECUTE    Agent runs (tokens, API calls, tool use)
-3. COMMIT     Agent reports actual spend against the reservation
-4. ENFORCE    Cycles adjusts balances, applies overdraft policy, logs everything
-```
-
-**Example — reserve $5.00 for a summarization task:**
-
-```json
-{
-  "subject": { "tenant": "acme-corp", "scope": "workspace:eng/agent:summarizer" },
-  "intent":  { "max_cost": { "unit": "USD_MICROCENTS", "amount": 500000000 } },
-  "ttl_ms":  30000
-}
-```
-
-The agent gets a reservation ID and a `caps` object (token limits, tool allow/deny lists). If the budget is exhausted, the request fails *before* any work starts.
-
-## Why not just...?
-
-| Approach | What it misses |
-|----------|---------------|
-| **Rate limiting** | Limits throughput, not cost. 10 req/min of GPT-4 ≠ 10 req/min of GPT-3.5 in dollar terms. |
-| **Observability / alerts** | Tells you *after* the money is spent. Cycles blocks the spend *before* it happens. |
-| **Provider-side budgets** | Per-account, not per-tenant or per-agent. No reservation semantics, no overdraft policy, no audit trail. |
-
-## Core guarantees
-
-- **Pre-spend enforcement** — no reservation, no execution
-- **Atomic balance updates** — reserve/commit/release are all-or-nothing (Redis + Lua)
-- **Tenant isolation** — every budget, key, and reservation is scoped to a tenant; one tenant cannot affect another
-- **Audit everything** — every authenticated operation is logged with tenant, key, scope, and timestamp
-
----
-
-## Technical Reference
-
-### Overview
-
-This service implements the governance system across three integrated pillars:
+This service implements a budget governance system built on three integrated pillars:
 
 | Pillar | Plane | Purpose |
 |--------|-------|---------|
@@ -68,7 +12,7 @@ This service implements the governance system across three integrated pillars:
 | **Authentication & Authorization** | Identity | API key validation, permission enforcement, audit logging |
 | **Runtime Enforcement** | Reservation | Budget reservations, commits, balance queries (Cycles Protocol v0.1.23) |
 
-### Architecture
+## Architecture
 
 ```
 cycles-admin-service/
@@ -83,22 +27,22 @@ cycles-admin-service/
 - **API Docs:** SpringDoc OpenAPI (Swagger UI)
 - **Testing:** JUnit 5 + TestContainers (Redis)
 
-### Prerequisites
+## Prerequisites
 
 - Java 21+
 - Maven 3.9+
 - Redis 7+ (or Docker for TestContainers)
 
-### Getting Started
+## Getting Started
 
-#### Build
+### Build
 
 ```bash
 cd cycles-admin-service
 mvn clean install
 ```
 
-#### Run
+### Run
 
 ```bash
 cd cycles-admin-service/cycles-admin-service-api
@@ -107,7 +51,7 @@ mvn spring-boot:run
 
 The server starts at `http://localhost:8080`. Swagger UI is available at `/swagger-ui.html`.
 
-#### Run with Integration Tests
+### Run with Integration Tests
 
 Integration tests use TestContainers to spin up a Redis instance automatically. Docker must be running.
 
@@ -116,7 +60,7 @@ cd cycles-admin-service
 mvn verify -P integration-tests
 ```
 
-### Authentication
+## Authentication
 
 The API uses two authentication schemes:
 
@@ -127,9 +71,9 @@ The API uses two authentication schemes:
 
 API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` (test), where the random part is 32 cryptographically random characters. Keys are stored as bcrypt hashes; the full secret is only returned once at creation time. Recommended expiry: 90 days.
 
-### API Endpoints
+## API Endpoints
 
-#### Pillar 1: Tenant & Budget Management
+### Pillar 1: Tenant & Budget Management
 
 | Method | Path | Operation | Auth |
 |--------|------|-----------|------|
@@ -143,7 +87,7 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 | `POST` | `/v1/admin/policies` | Create policy | ApiKey |
 | `GET` | `/v1/admin/policies` | List policies | ApiKey |
 
-#### Pillar 2: Authentication & Authorization
+### Pillar 2: Authentication & Authorization
 
 | Method | Path | Operation | Auth |
 |--------|------|-----------|------|
@@ -153,7 +97,7 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 | `POST` | `/v1/auth/validate` | Validate key & resolve tenant | Admin |
 | `GET` | `/v1/admin/audit/logs` | Query audit logs | Admin |
 
-#### Pillar 3: Runtime Enforcement (Cycles Protocol v0.1.23)
+### Pillar 3: Runtime Enforcement (Cycles Protocol v0.1.23)
 
 | Method | Path | Operation | Auth |
 |--------|------|-----------|------|
@@ -161,9 +105,9 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 | `POST` | `/v1/reservations/{reservation_id}/commit` | Commit actual spend | ApiKey |
 | `GET` | `/v1/balances` | Query budget balances | ApiKey |
 
-### Core Concepts
+## Core Concepts
 
-#### Tenants
+### Tenants
 
 Tenants are the top-level isolation boundary. All budgets, keys, and reservations are scoped to a tenant.
 
@@ -191,7 +135,7 @@ Tenants are the top-level isolation boundary. All budgets, keys, and reservation
 | `MANUAL_CLEANUP` | Require explicit release or cleanup job |
 | `GRACE_ONLY` | Allow commits during grace period, then mark `EXPIRED` |
 
-#### Budget Ledgers
+### Budget Ledgers
 
 A budget ledger tracks finances for a specific `(scope, unit)` pair. Each ledger maintains:
 
@@ -220,7 +164,7 @@ A budget ledger tracks finances for a specific `(scope, unit)` pair. Each ledger
 | `CARRY_FORWARD` | Unused budget carries to next period |
 | `CAP_AT_ALLOCATED` | Remaining is capped at the allocated amount |
 
-##### Scopes
+#### Scopes
 
 Scopes use hierarchical paths: `tenant:acme-corp/workspace:eng/agent:summarizer`
 
@@ -232,7 +176,7 @@ Scopes use hierarchical paths: `tenant:acme-corp/workspace:eng/agent:summarizer`
 
 **Initial state** when a budget is created: `remaining = allocated`, `reserved = spent = debt = 0`. A budget ledger must exist for a scope before any reservations can be made against it.
 
-#### Funding Operations
+### Funding Operations
 
 Use `POST /v1/admin/budgets/{scope}/{unit}/fund` with one of:
 
@@ -245,7 +189,7 @@ Use `POST /v1/admin/budgets/{scope}/{unit}/fund` with one of:
 
 All funding operations support `idempotency_key` (prevents double-funding; replayed requests return original response) and an optional `reason` field for the audit trail.
 
-#### Commit Overage Policies
+### Commit Overage Policies
 
 Controls behavior when actual spend exceeds the reserved amount:
 
@@ -257,7 +201,7 @@ Controls behavior when actual spend exceeds the reserved amount:
 
 Policy resolution order (highest priority wins): **Reservation** > **Policy** > **Budget Ledger** > **Tenant default**
 
-#### Policies
+### Policies
 
 Policies define caps, rate limits, and behavioral rules matched by scope patterns:
 
@@ -275,7 +219,7 @@ Policies support:
 - **TTL overrides** — `default_ttl_ms`, `max_ttl_ms`, `max_extensions` per matching scope
 - **Commit overage policy override** — overrides both tenant and budget ledger defaults
 
-#### Caps (Soft-Landing Constraints)
+### Caps (Soft-Landing Constraints)
 
 From Cycles Protocol v0.1.23:
 
@@ -289,7 +233,7 @@ From Cycles Protocol v0.1.23:
 }
 ```
 
-#### Permissions
+### Permissions
 
 API keys carry granular permissions:
 
@@ -310,7 +254,7 @@ Keys can be further restricted to specific scopes via `scope_filter` (e.g., `["w
 
 **Key revocation** (`DELETE /v1/admin/api-keys/{key_id}`) is permanent and cannot be undone. Revoked keys remain in the database for audit trail. Active reservations created with a revoked key can still be committed/released, but no new operations are permitted.
 
-#### API Key Validation
+### API Key Validation
 
 `POST /v1/auth/validate` performs these checks in order:
 
@@ -322,7 +266,7 @@ Keys can be further restricted to specific scopes via `scope_filter` (e.g., `["w
 
 On success, returns `tenant_id`, `permissions`, and `scope_filter`. On failure, returns `valid: false` with a `reason` (e.g., `"REVOKED"`, `"EXPIRED"`). Results should be cached with a short TTL (~60s) and invalidated on key revocation.
 
-#### Reservation Governance Flow
+### Reservation Governance Flow
 
 When `POST /v1/reservations` is called, the governance layer executes:
 
@@ -339,7 +283,7 @@ When `POST /v1/reservations` is called, the governance layer executes:
 
 **Balance governance** (`GET /v1/balances`): returns full ledger state including `debt`, `overdraft_limit`, and `is_over_limit`; scoped to the effective tenant; supports scope filtering via query params.
 
-#### Audit Logs
+### Audit Logs
 
 `GET /v1/admin/audit/logs` provides a compliance-ready audit trail (SOC2, GDPR).
 
@@ -347,7 +291,7 @@ When `POST /v1/reservations` is called, the governance layer executes:
 
 **Retention recommendation:** 90 days hot storage, 1 year cold storage.
 
-#### Pagination
+### Pagination
 
 All list endpoints use **cursor-based pagination**:
 
@@ -358,7 +302,7 @@ All list endpoints use **cursor-based pagination**:
 
 Responses include `next_cursor` and `has_more` fields.
 
-### Error Handling
+## Error Handling
 
 All errors return a standard `ErrorResponse`:
 
@@ -377,7 +321,7 @@ All errors return a standard `ErrorResponse`:
 **Governance error codes:**
 `TENANT_NOT_FOUND`, `TENANT_SUSPENDED`, `TENANT_CLOSED`, `BUDGET_NOT_FOUND`, `BUDGET_FROZEN`, `POLICY_VIOLATION`, `INSUFFICIENT_PERMISSIONS`, `KEY_REVOKED`, `KEY_EXPIRED`, `DUPLICATE_RESOURCE`
 
-### Deployment Models
+## Deployment Models
 
 | Model | Description |
 |-------|-------------|
@@ -385,7 +329,7 @@ All errors return a standard `ErrorResponse`:
 | **Split-plane** | Separate admin/auth services from runtime enforcement |
 | **Federated** | Multiple runtime enforcement instances, shared admin plane |
 
-### Protocol Specification
+## Protocol Specification
 
 The full OpenAPI 3.1.0 specification is in [`complete-budget-governance-v0.1.23.yaml`](complete-budget-governance-v0.1.23.yaml).
 
