@@ -69,7 +69,7 @@ The API uses two authentication schemes:
 | **AdminKeyAuth** | `X-Admin-API-Key` | System administration (tenant/key management, audit) |
 | **ApiKeyAuth** | `X-Cycles-API-Key` | Tenant-scoped operations (budgets, reservations, balances) |
 
-API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` (test). Keys are stored as bcrypt hashes; the full secret is only returned once at creation time.
+API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` (test), where the random part is 32 cryptographically random characters. Keys are stored as bcrypt hashes; the full secret is only returned once at creation time. Recommended expiry: 90 days.
 
 ## API Endpoints
 
@@ -113,7 +113,9 @@ Tenants are the top-level isolation boundary. All budgets, keys, and reservation
 
 - **ID format:** kebab-case, `^[a-z0-9-]+$`, 3-64 chars (e.g., `acme-corp`, `demo-tenant`)
 - **Status lifecycle:** `ACTIVE` → `SUSPENDED` ↔ `ACTIVE`, or `* → CLOSED` (irreversible)
+  - `SUSPENDED` blocks new reservations; existing active reservations can still commit/release
 - Supports hierarchical tenants via `parent_tenant_id` (enables budget delegation and consolidated billing)
+- **Tenant creation is idempotent** — retrying with the same `tenant_id` returns the existing tenant (200) rather than failing
 
 **Tenant-level reservation configuration:**
 
@@ -146,8 +148,11 @@ A budget ledger tracks finances for a specific `(scope, unit)` pair. Each ledger
 | `debt` | Overdraft amount from `ALLOW_WITH_OVERDRAFT` commits |
 | `overdraft_limit` | Maximum allowed debt (0 = no overdraft) |
 | `is_over_limit` | `true` when `debt > overdraft_limit` |
+| `commit_overage_policy` | Per-ledger overage policy override; inherits from tenant if unset |
 
 **Supported units:** `USD_MICROCENTS`, `TOKENS`, `CREDITS`, `RISK_POINTS`
+
+**Amount values** are `int64` integers (not floating-point). All `Amount` objects carry an explicit `unit` field to prevent mismatches.
 
 **Ledger status:** `ACTIVE` (normal operations) | `FROZEN` (read-only, no new reservations or commits) | `CLOSED` (archived)
 
@@ -168,6 +173,8 @@ Scopes use hierarchical paths: `tenant:acme-corp/workspace:eng/agent:summarizer`
 - Parent scopes do NOT automatically aggregate child scope charges
 - Hierarchical validation: if `tenant:acme/workspace:eng` has a budget, both `tenant:acme` and `tenant:acme/workspace:eng` must exist
 - Operations on a scope do NOT affect parent/child scopes unless explicitly specified via multi-scope reservation
+
+**Initial state** when a budget is created: `remaining = allocated`, `reserved = spent = debt = 0`. A budget ledger must exist for a scope before any reservations can be made against it.
 
 ### Funding Operations
 
@@ -202,6 +209,8 @@ Policies define caps, rate limits, and behavioral rules matched by scope pattern
 - `tenant:acme-corp/*` — all descendant scopes
 - `agent:*` — all agents across all tenants
 - `*/agent:summarizer` — specific agent across all tenants
+
+**Policy status:** `ACTIVE` | `DISABLED`
 
 Policies support:
 - **Priority ordering** — higher priority policies evaluated first; highest priority wins on conflict
@@ -243,6 +252,8 @@ API keys carry granular permissions:
 
 Keys can be further restricted to specific scopes via `scope_filter` (e.g., `["workspace:eng", "agent:*"]`).
 
+**Key revocation** (`DELETE /v1/admin/api-keys/{key_id}`) is permanent and cannot be undone. Revoked keys remain in the database for audit trail. Active reservations created with a revoked key can still be committed/released, but no new operations are permitted.
+
 ### API Key Validation
 
 `POST /v1/auth/validate` performs these checks in order:
@@ -253,7 +264,7 @@ Keys can be further restricted to specific scopes via `scope_filter` (e.g., `["w
 4. Current time < `expires_at`
 5. Tenant is `ACTIVE` (not `SUSPENDED` or `CLOSED`)
 
-Returns `tenant_id`, `permissions`, and `scope_filter` on success. Results should be cached with a short TTL (~60s) and invalidated on key revocation.
+On success, returns `tenant_id`, `permissions`, and `scope_filter`. On failure, returns `valid: false` with a `reason` (e.g., `"REVOKED"`, `"EXPIRED"`). Results should be cached with a short TTL (~60s) and invalidated on key revocation.
 
 ### Reservation Governance Flow
 
@@ -267,6 +278,18 @@ When `POST /v1/reservations` is called, the governance layer executes:
 6. Apply matching policies (caps, rate limits)
 7. Execute Cycles reservation logic
 8. Log operation to audit trail
+
+**Commit governance** (`POST /v1/reservations/{id}/commit`): validates key and tenant as above, applies `ALLOW_WITH_OVERDRAFT` policy (creates debt up to `overdraft_limit`), and logs to audit trail.
+
+**Balance governance** (`GET /v1/balances`): returns full ledger state including `debt`, `overdraft_limit`, and `is_over_limit`; scoped to the effective tenant; supports scope filtering via query params.
+
+### Audit Logs
+
+`GET /v1/admin/audit/logs` provides a compliance-ready audit trail (SOC2, GDPR).
+
+**Query filters:** `tenant_id`, `key_id`, `operation`, `status` (HTTP code), `from`/`to` (datetime range)
+
+**Retention recommendation:** 90 days hot storage, 1 year cold storage.
 
 ### Pagination
 
