@@ -111,9 +111,27 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 
 Tenants are the top-level isolation boundary. All budgets, keys, and reservations are scoped to a tenant.
 
-- **ID format:** kebab-case (`acme-corp`, `demo-tenant`)
+- **ID format:** kebab-case, `^[a-z0-9-]+$`, 3-64 chars (e.g., `acme-corp`, `demo-tenant`)
 - **Status lifecycle:** `ACTIVE` → `SUSPENDED` ↔ `ACTIVE`, or `* → CLOSED` (irreversible)
-- Supports hierarchical tenants via `parent_tenant_id`
+- Supports hierarchical tenants via `parent_tenant_id` (enables budget delegation and consolidated billing)
+
+**Tenant-level reservation configuration:**
+
+| Property | Default | Range | Description |
+|----------|---------|-------|-------------|
+| `default_commit_overage_policy` | `REJECT` | — | Default overage policy for all scopes |
+| `default_reservation_ttl_ms` | `60000` (60s) | 1s – 24h | Default TTL when not specified per-reservation |
+| `max_reservation_ttl_ms` | `3600000` (1h) | 1s – 24h | Maximum allowed TTL; requests exceeding this are capped |
+| `max_reservation_extensions` | `10` | 0+ | Max TTL extensions per reservation (prevents zombie reservations) |
+| `reservation_expiry_policy` | `AUTO_RELEASE` | — | How expired reservations are handled |
+
+**Reservation expiry policies:**
+
+| Policy | Behavior |
+|--------|----------|
+| `AUTO_RELEASE` | Expired reservations auto-release after grace period |
+| `MANUAL_CLEANUP` | Require explicit release or cleanup job |
+| `GRACE_ONLY` | Allow commits during grace period, then mark `EXPIRED` |
 
 ### Budget Ledgers
 
@@ -125,11 +143,31 @@ A budget ledger tracks finances for a specific `(scope, unit)` pair. Each ledger
 | `remaining` | Available for new reservations (can go negative with overdraft) |
 | `reserved` | Locked by active reservations |
 | `spent` | Successfully committed |
-| `debt` | Overdraft amount |
+| `debt` | Overdraft amount from `ALLOW_WITH_OVERDRAFT` commits |
+| `overdraft_limit` | Maximum allowed debt (0 = no overdraft) |
+| `is_over_limit` | `true` when `debt > overdraft_limit` |
 
 **Supported units:** `USD_MICROCENTS`, `TOKENS`, `CREDITS`, `RISK_POINTS`
 
-**Scopes** use hierarchical paths: `tenant:acme-corp/workspace:eng/agent:summarizer`
+**Ledger status:** `ACTIVE` (normal operations) | `FROZEN` (read-only, no new reservations or commits) | `CLOSED` (archived)
+
+**Budget periods:** Ledgers support optional `period_start` / `period_end` with a rollover policy:
+
+| Rollover Policy | Behavior |
+|-----------------|----------|
+| `NONE` | No rollover (default) |
+| `CARRY_FORWARD` | Unused budget carries to next period |
+| `CAP_AT_ALLOCATED` | Remaining is capped at the allocated amount |
+
+#### Scopes
+
+Scopes use hierarchical paths: `tenant:acme-corp/workspace:eng/agent:summarizer`
+
+**Scope hierarchy semantics:**
+- Each scope is **independent** — no automatic propagation between parent/child
+- Parent scopes do NOT automatically aggregate child scope charges
+- Hierarchical validation: if `tenant:acme/workspace:eng` has a budget, both `tenant:acme` and `tenant:acme/workspace:eng` must exist
+- Operations on a scope do NOT affect parent/child scopes unless explicitly specified via multi-scope reservation
 
 ### Funding Operations
 
@@ -137,12 +175,12 @@ Use `POST /v1/admin/budgets/{scope}/{unit}/fund` with one of:
 
 | Operation | Effect |
 |-----------|--------|
-| `CREDIT` | Add funds (`allocated += amount`, `remaining += amount`) |
-| `DEBIT` | Remove funds (fails if remaining would go negative) |
-| `RESET` | Set allocation to exact amount, adjust remaining |
-| `REPAY_DEBT` | Reduce outstanding debt |
+| `CREDIT` | `allocated += amount`, `remaining += amount` |
+| `DEBIT` | `allocated -= amount`, `remaining -= amount` (fails if remaining would go negative) |
+| `RESET` | `allocated = amount`, `remaining = amount - reserved - spent - debt` |
+| `REPAY_DEBT` | `debt -= amount` (uses remaining if debt < amount) |
 
-All funding operations support idempotency keys.
+All funding operations support `idempotency_key` (prevents double-funding; replayed requests return original response) and an optional `reason` field for the audit trail.
 
 ### Commit Overage Policies
 
@@ -151,8 +189,8 @@ Controls behavior when actual spend exceeds the reserved amount:
 | Policy | Behavior |
 |--------|----------|
 | `REJECT` | Fail if actual > reserved |
-| `ALLOW_IF_AVAILABLE` | Charge delta from remaining budget |
-| `ALLOW_WITH_OVERDRAFT` | Create debt up to `overdraft_limit` |
+| `ALLOW_IF_AVAILABLE` | Charge delta from remaining budget if available |
+| `ALLOW_WITH_OVERDRAFT` | Create debt up to `overdraft_limit` if budget exhausted |
 
 Policy resolution order (highest priority wins): **Reservation** > **Policy** > **Budget Ledger** > **Tenant default**
 
@@ -161,10 +199,16 @@ Policy resolution order (highest priority wins): **Reservation** > **Policy** > 
 Policies define caps, rate limits, and behavioral rules matched by scope patterns:
 
 - `tenant:acme-corp` — exact match
-- `tenant:acme-corp/*` — all descendants
-- `agent:*` — all agents system-wide
+- `tenant:acme-corp/*` — all descendant scopes
+- `agent:*` — all agents across all tenants
+- `*/agent:summarizer` — specific agent across all tenants
 
-Policies support priority ordering, effective date windows, and rate limits (`max_reservations_per_minute`, `max_commits_per_minute`).
+Policies support:
+- **Priority ordering** — higher priority policies evaluated first; highest priority wins on conflict
+- **Effective date windows** — `effective_from` / `effective_until` for time-bounded policies (trials, temporary restrictions)
+- **Rate limits** — `max_reservations_per_minute`, `max_commits_per_minute`
+- **TTL overrides** — `default_ttl_ms`, `max_ttl_ms`, `max_extensions` per matching scope
+- **Commit overage policy override** — overrides both tenant and budget ledger defaults
 
 ### Caps (Soft-Landing Constraints)
 
@@ -180,6 +224,61 @@ From Cycles Protocol v0.1.23:
 }
 ```
 
+### Permissions
+
+API keys carry granular permissions:
+
+| Permission | Description |
+|------------|-------------|
+| `reservations:create` | Create budget reservations |
+| `reservations:commit` | Commit actual spend |
+| `reservations:release` | Release unused reservations |
+| `reservations:extend` | Extend reservation TTL |
+| `reservations:list` | List reservations |
+| `balances:read` | Query budget balances |
+| `admin:read` | Read admin resources |
+| `admin:write` | Modify admin resources |
+
+**Defaults:** Tenant keys get `[reservations:*, balances:read]`. Admin keys get `[admin:*, reservations:*, balances:*]`.
+
+Keys can be further restricted to specific scopes via `scope_filter` (e.g., `["workspace:eng", "agent:*"]`).
+
+### API Key Validation
+
+`POST /v1/auth/validate` performs these checks in order:
+
+1. Key exists in database
+2. Key hash matches
+3. Status is `ACTIVE` (not `REVOKED` or `EXPIRED`)
+4. Current time < `expires_at`
+5. Tenant is `ACTIVE` (not `SUSPENDED` or `CLOSED`)
+
+Returns `tenant_id`, `permissions`, and `scope_filter` on success. Results should be cached with a short TTL (~60s) and invalidated on key revocation.
+
+### Reservation Governance Flow
+
+When `POST /v1/reservations` is called, the governance layer executes:
+
+1. Validate `X-Cycles-API-Key` via `/v1/auth/validate`
+2. Derive effective tenant from key
+3. Validate `Subject.tenant` matches effective tenant (403 if mismatch)
+4. Check tenant status (block if `SUSPENDED` or `CLOSED`)
+5. Check budget ledger exists for scope
+6. Apply matching policies (caps, rate limits)
+7. Execute Cycles reservation logic
+8. Log operation to audit trail
+
+### Pagination
+
+All list endpoints use **cursor-based pagination**:
+
+| Parameter | Description |
+|-----------|-------------|
+| `cursor` | Opaque cursor from previous response's `next_cursor` |
+| `limit` | Page size (default: 50, max: 100) |
+
+Responses include `next_cursor` and `has_more` fields.
+
 ## Error Handling
 
 All errors return a standard `ErrorResponse`:
@@ -188,11 +287,16 @@ All errors return a standard `ErrorResponse`:
 {
   "error": "BUDGET_EXCEEDED",
   "message": "Remaining budget insufficient for reservation",
-  "request_id": "req_abc123"
+  "request_id": "req_abc123",
+  "details": {}
 }
 ```
 
-Error codes include Cycles v0.1.23 codes (`BUDGET_EXCEEDED`, `RESERVATION_EXPIRED`, `OVERDRAFT_LIMIT_EXCEEDED`, etc.) and governance-specific codes (`TENANT_SUSPENDED`, `POLICY_VIOLATION`, `KEY_REVOKED`, etc.).
+**Cycles v0.1.23 error codes:**
+`INVALID_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `BUDGET_EXCEEDED`, `RESERVATION_EXPIRED`, `RESERVATION_FINALIZED`, `IDEMPOTENCY_MISMATCH`, `UNIT_MISMATCH`, `OVERDRAFT_LIMIT_EXCEEDED`, `DEBT_OUTSTANDING`, `INTERNAL_ERROR`
+
+**Governance error codes:**
+`TENANT_NOT_FOUND`, `TENANT_SUSPENDED`, `TENANT_CLOSED`, `BUDGET_NOT_FOUND`, `BUDGET_FROZEN`, `POLICY_VIOLATION`, `INSUFFICIENT_PERMISSIONS`, `KEY_REVOKED`, `KEY_EXPIRED`, `DUPLICATE_RESOURCE`
 
 ## Deployment Models
 
