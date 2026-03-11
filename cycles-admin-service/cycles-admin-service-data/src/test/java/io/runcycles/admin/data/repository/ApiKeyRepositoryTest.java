@@ -138,8 +138,8 @@ class ApiKeyRepositoryTest {
 
     @Test
     void validate_unknownPrefix_returnsInvalid() {
-        when(keyService.extractPrefix("unknown_key")).thenReturn("unknown_key1234");
-        when(jedis.get("apikey:lookup:unknown_key1234")).thenReturn(null);
+        when(keyService.extractPrefix("unknown_key")).thenReturn("unknown_key");
+        when(jedis.get("apikey:lookup:unknown_key")).thenReturn(null);
 
         ApiKeyValidationResponse response = repository.validate("unknown_key");
 
@@ -149,8 +149,8 @@ class ApiKeyRepositoryTest {
 
     @Test
     void validate_revokedKey_returnsInvalid() throws Exception {
-        when(keyService.extractPrefix("cyc_live_revoked")).thenReturn("cyc_live_revoked1234");
-        when(jedis.get("apikey:lookup:cyc_live_revoked1234")).thenReturn("key_rev");
+        when(keyService.extractPrefix("cyc_live_revoked")).thenReturn("cyc_live_revok");
+        when(jedis.get("apikey:lookup:cyc_live_revok")).thenReturn("key_rev");
 
         ApiKey key = ApiKey.builder()
                 .keyId("key_rev").tenantId("t1").keyHash("hash")
@@ -166,8 +166,8 @@ class ApiKeyRepositoryTest {
 
     @Test
     void validate_expiredKey_returnsInvalid() throws Exception {
-        when(keyService.extractPrefix("cyc_live_expired")).thenReturn("cyc_live_expired12345");
-        when(jedis.get("apikey:lookup:cyc_live_expired12345")).thenReturn("key_exp");
+        when(keyService.extractPrefix("cyc_live_expired")).thenReturn("cyc_live_expir");
+        when(jedis.get("apikey:lookup:cyc_live_expir")).thenReturn("key_exp");
 
         ApiKey key = ApiKey.builder()
                 .keyId("key_exp").tenantId("t1").keyHash("hash")
@@ -185,8 +185,8 @@ class ApiKeyRepositoryTest {
 
     @Test
     void validate_wrongSecret_returnsInvalid() throws Exception {
-        when(keyService.extractPrefix("cyc_live_wrong")).thenReturn("cyc_live_wrong123456");
-        when(jedis.get("apikey:lookup:cyc_live_wrong123456")).thenReturn("key_w");
+        when(keyService.extractPrefix("cyc_live_wrong")).thenReturn("cyc_live_wrong");
+        when(jedis.get("apikey:lookup:cyc_live_wrong")).thenReturn("key_w");
 
         ApiKey key = ApiKey.builder()
                 .keyId("key_w").tenantId("t1").keyHash("$2a$12$real")
@@ -205,8 +205,8 @@ class ApiKeyRepositoryTest {
 
     @Test
     void validate_suspendedTenant_returnsInvalid() throws Exception {
-        when(keyService.extractPrefix("cyc_live_susp")).thenReturn("cyc_live_susp12345678");
-        when(jedis.get("apikey:lookup:cyc_live_susp12345678")).thenReturn("key_s");
+        when(keyService.extractPrefix("cyc_live_susp")).thenReturn("cyc_live_susp1");
+        when(jedis.get("apikey:lookup:cyc_live_susp1")).thenReturn("key_s");
 
         ApiKey key = ApiKey.builder()
                 .keyId("key_s").tenantId("t1").keyHash("$2a$12$hash")
@@ -226,8 +226,8 @@ class ApiKeyRepositoryTest {
 
     @Test
     void validate_closedTenant_returnsInvalid() throws Exception {
-        when(keyService.extractPrefix("cyc_live_closed")).thenReturn("cyc_live_closed123456");
-        when(jedis.get("apikey:lookup:cyc_live_closed123456")).thenReturn("key_c");
+        when(keyService.extractPrefix("cyc_live_closed")).thenReturn("cyc_live_close");
+        when(jedis.get("apikey:lookup:cyc_live_close")).thenReturn("key_c");
 
         ApiKey key = ApiKey.builder()
                 .keyId("key_c").tenantId("t1").keyHash("$2a$12$hash")
