@@ -49,7 +49,7 @@ cd cycles-admin-service/cycles-admin-service-api
 mvn spring-boot:run
 ```
 
-The server starts at `http://localhost:8080`. Swagger UI is available at `/swagger-ui.html`.
+The server starts at `http://localhost:7979`. Swagger UI is available at `/swagger-ui.html`.
 
 ### Run with Integration Tests
 
@@ -298,7 +298,7 @@ All list endpoints use **cursor-based pagination**:
 | Parameter | Description |
 |-----------|-------------|
 | `cursor` | Opaque cursor from previous response's `next_cursor` |
-| `limit` | Page size (default: 50, max: 100) |
+| `limit` | Page size (default: 50, max: 200) |
 
 Responses include `next_cursor` and `has_more` fields.
 
