@@ -115,7 +115,7 @@ class ApiKeyRepositoryTest {
     void validate_validKey_returnsValidResponse() throws Exception {
         String keySecret = "cyc_live_abc123def456ghi";
         when(keyService.extractPrefix(keySecret)).thenReturn("cyc_live_abc12");
-        when(jedis.get("apikey:lookup:cyc_live_abc123def4")).thenReturn("key_123");
+        when(jedis.get("apikey:lookup:cyc_live_abc12")).thenReturn("key_123");
 
         ApiKey key = ApiKey.builder()
                 .keyId("key_123").tenantId("t1").keyPrefix("cyc_live_abc12")
