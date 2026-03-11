@@ -46,7 +46,7 @@ public class ApiKeyRepository {
                 LOG.warn("Failed to parse tenant data for validation", e);
             }
             String keyId = "key_" + UUID.randomUUID().toString().substring(0, 16);
-            String keySecret = keyService.generateKeySecret("gov");
+            String keySecret = keyService.generateKeySecret("cyc_live");
             String keyPrefix = keyService.extractPrefix(keySecret);
             String keyHash = keyService.hashKey(keySecret);
             Instant expiresAt = request.getExpiresAt() != null
