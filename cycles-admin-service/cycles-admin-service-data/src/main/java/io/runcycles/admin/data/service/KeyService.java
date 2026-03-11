@@ -22,7 +22,7 @@ public class KeyService {
         }
     }
     public String extractPrefix(String keySecret) {
-        int idx = keySecret.indexOf('_');
+        int idx = keySecret.lastIndexOf('_');
         return idx > 0 ? keySecret.substring(0, Math.min(idx + 6, keySecret.length())) : keySecret.substring(0, Math.min(10, keySecret.length()));
     }
 }

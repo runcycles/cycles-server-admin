@@ -51,9 +51,9 @@ class ApiKeyRepositoryTest {
     void create_validRequest_returnsApiKeyCreateResponse() throws Exception {
         // Tenant exists and is active
         when(jedis.get("tenant:test-tenant")).thenReturn("{\"status\":\"ACTIVE\",\"tenant_id\":\"test-tenant\"}");
-        when(keyService.generateKeySecret("gov")).thenReturn("gov_abc123def456ghi");
-        when(keyService.extractPrefix("gov_abc123def456ghi")).thenReturn("gov_abc123def4");
-        when(keyService.hashKey("gov_abc123def456ghi")).thenReturn("$2a$12$hashvalue");
+        when(keyService.generateKeySecret("cyc_live")).thenReturn("cyc_live_abc123def456ghi");
+        when(keyService.extractPrefix("cyc_live_abc123def456ghi")).thenReturn("cyc_live_abc12");
+        when(keyService.hashKey("cyc_live_abc123def456ghi")).thenReturn("$2a$12$hashvalue");
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
 
         ApiKeyCreateRequest request = new ApiKeyCreateRequest();
@@ -62,8 +62,8 @@ class ApiKeyRepositoryTest {
 
         ApiKeyCreateResponse response = repository.create(request);
 
-        assertThat(response.getKeySecret()).isEqualTo("gov_abc123def456ghi");
-        assertThat(response.getKeyPrefix()).isEqualTo("gov_abc123def4");
+        assertThat(response.getKeySecret()).isEqualTo("cyc_live_abc123def456ghi");
+        assertThat(response.getKeyPrefix()).isEqualTo("cyc_live_abc12");
         assertThat(response.getTenantId()).isEqualTo("test-tenant");
         assertThat(response.getPermissions()).isNotEmpty();
     }
@@ -96,8 +96,8 @@ class ApiKeyRepositoryTest {
     void create_withCustomExpiry_usesProvidedExpiry() throws Exception {
         Instant customExpiry = Instant.now().plusSeconds(3600);
         when(jedis.get("tenant:test-tenant")).thenReturn("{\"status\":\"ACTIVE\",\"tenant_id\":\"test-tenant\"}");
-        when(keyService.generateKeySecret("gov")).thenReturn("gov_abc123def456ghi");
-        when(keyService.extractPrefix(anyString())).thenReturn("gov_abc123def4");
+        when(keyService.generateKeySecret("cyc_live")).thenReturn("cyc_live_abc123def456ghi");
+        when(keyService.extractPrefix(anyString())).thenReturn("cyc_live_abc12");
         when(keyService.hashKey(anyString())).thenReturn("$2a$12$hash");
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
 
@@ -113,12 +113,12 @@ class ApiKeyRepositoryTest {
 
     @Test
     void validate_validKey_returnsValidResponse() throws Exception {
-        String keySecret = "gov_abc123def456ghi";
-        when(keyService.extractPrefix(keySecret)).thenReturn("gov_abc123def4");
-        when(jedis.get("apikey:lookup:gov_abc123def4")).thenReturn("key_123");
+        String keySecret = "cyc_live_abc123def456ghi";
+        when(keyService.extractPrefix(keySecret)).thenReturn("cyc_live_abc12");
+        when(jedis.get("apikey:lookup:cyc_live_abc123def4")).thenReturn("key_123");
 
         ApiKey key = ApiKey.builder()
-                .keyId("key_123").tenantId("t1").keyPrefix("gov_abc123def4")
+                .keyId("key_123").tenantId("t1").keyPrefix("cyc_live_abc12")
                 .keyHash("$2a$12$hash").status(ApiKeyStatus.ACTIVE)
                 .permissions(List.of("balances:read"))
                 .expiresAt(Instant.now().plusSeconds(3600))
@@ -149,8 +149,8 @@ class ApiKeyRepositoryTest {
 
     @Test
     void validate_revokedKey_returnsInvalid() throws Exception {
-        when(keyService.extractPrefix("gov_revoked")).thenReturn("gov_revoked1234");
-        when(jedis.get("apikey:lookup:gov_revoked1234")).thenReturn("key_rev");
+        when(keyService.extractPrefix("cyc_live_revoked")).thenReturn("cyc_live_revoked1234");
+        when(jedis.get("apikey:lookup:cyc_live_revoked1234")).thenReturn("key_rev");
 
         ApiKey key = ApiKey.builder()
                 .keyId("key_rev").tenantId("t1").keyHash("hash")
@@ -158,7 +158,7 @@ class ApiKeyRepositoryTest {
         String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_rev")).thenReturn(keyJson);
 
-        ApiKeyValidationResponse response = repository.validate("gov_revoked");
+        ApiKeyValidationResponse response = repository.validate("cyc_live_revoked");
 
         assertThat(response.getValid()).isFalse();
         assertThat(response.getReason()).isEqualTo("KEY_REVOKED");
@@ -166,8 +166,8 @@ class ApiKeyRepositoryTest {
 
     @Test
     void validate_expiredKey_returnsInvalid() throws Exception {
-        when(keyService.extractPrefix("gov_expired")).thenReturn("gov_expired12345");
-        when(jedis.get("apikey:lookup:gov_expired12345")).thenReturn("key_exp");
+        when(keyService.extractPrefix("cyc_live_expired")).thenReturn("cyc_live_expired12345");
+        when(jedis.get("apikey:lookup:cyc_live_expired12345")).thenReturn("key_exp");
 
         ApiKey key = ApiKey.builder()
                 .keyId("key_exp").tenantId("t1").keyHash("hash")
@@ -177,7 +177,7 @@ class ApiKeyRepositoryTest {
         String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_exp")).thenReturn(keyJson);
 
-        ApiKeyValidationResponse response = repository.validate("gov_expired");
+        ApiKeyValidationResponse response = repository.validate("cyc_live_expired");
 
         assertThat(response.getValid()).isFalse();
         assertThat(response.getReason()).isEqualTo("KEY_EXPIRED");
@@ -185,8 +185,8 @@ class ApiKeyRepositoryTest {
 
     @Test
     void validate_wrongSecret_returnsInvalid() throws Exception {
-        when(keyService.extractPrefix("gov_wrong")).thenReturn("gov_wrong123456");
-        when(jedis.get("apikey:lookup:gov_wrong123456")).thenReturn("key_w");
+        when(keyService.extractPrefix("cyc_live_wrong")).thenReturn("cyc_live_wrong123456");
+        when(jedis.get("apikey:lookup:cyc_live_wrong123456")).thenReturn("key_w");
 
         ApiKey key = ApiKey.builder()
                 .keyId("key_w").tenantId("t1").keyHash("$2a$12$real")
@@ -195,9 +195,9 @@ class ApiKeyRepositoryTest {
                 .createdAt(Instant.now()).build();
         String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_w")).thenReturn(keyJson);
-        when(keyService.verifyKey("gov_wrong", "$2a$12$real")).thenReturn(false);
+        when(keyService.verifyKey("cyc_live_wrong", "$2a$12$real")).thenReturn(false);
 
-        ApiKeyValidationResponse response = repository.validate("gov_wrong");
+        ApiKeyValidationResponse response = repository.validate("cyc_live_wrong");
 
         assertThat(response.getValid()).isFalse();
         assertThat(response.getReason()).isEqualTo("INVALID_KEY");
@@ -205,8 +205,8 @@ class ApiKeyRepositoryTest {
 
     @Test
     void validate_suspendedTenant_returnsInvalid() throws Exception {
-        when(keyService.extractPrefix("gov_susp")).thenReturn("gov_susp12345678");
-        when(jedis.get("apikey:lookup:gov_susp12345678")).thenReturn("key_s");
+        when(keyService.extractPrefix("cyc_live_susp")).thenReturn("cyc_live_susp12345678");
+        when(jedis.get("apikey:lookup:cyc_live_susp12345678")).thenReturn("key_s");
 
         ApiKey key = ApiKey.builder()
                 .keyId("key_s").tenantId("t1").keyHash("$2a$12$hash")
@@ -215,10 +215,10 @@ class ApiKeyRepositoryTest {
                 .createdAt(Instant.now()).build();
         String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_s")).thenReturn(keyJson);
-        when(keyService.verifyKey("gov_susp", "$2a$12$hash")).thenReturn(true);
+        when(keyService.verifyKey("cyc_live_susp", "$2a$12$hash")).thenReturn(true);
         when(jedis.get("tenant:t1")).thenReturn("{\"status\":\"SUSPENDED\"}");
 
-        ApiKeyValidationResponse response = repository.validate("gov_susp");
+        ApiKeyValidationResponse response = repository.validate("cyc_live_susp");
 
         assertThat(response.getValid()).isFalse();
         assertThat(response.getReason()).isEqualTo("TENANT_SUSPENDED");
@@ -226,8 +226,8 @@ class ApiKeyRepositoryTest {
 
     @Test
     void validate_closedTenant_returnsInvalid() throws Exception {
-        when(keyService.extractPrefix("gov_closed")).thenReturn("gov_closed123456");
-        when(jedis.get("apikey:lookup:gov_closed123456")).thenReturn("key_c");
+        when(keyService.extractPrefix("cyc_live_closed")).thenReturn("cyc_live_closed123456");
+        when(jedis.get("apikey:lookup:cyc_live_closed123456")).thenReturn("key_c");
 
         ApiKey key = ApiKey.builder()
                 .keyId("key_c").tenantId("t1").keyHash("$2a$12$hash")
@@ -236,10 +236,10 @@ class ApiKeyRepositoryTest {
                 .createdAt(Instant.now()).build();
         String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_c")).thenReturn(keyJson);
-        when(keyService.verifyKey("gov_closed", "$2a$12$hash")).thenReturn(true);
+        when(keyService.verifyKey("cyc_live_closed", "$2a$12$hash")).thenReturn(true);
         when(jedis.get("tenant:t1")).thenReturn("{\"status\":\"CLOSED\"}");
 
-        ApiKeyValidationResponse response = repository.validate("gov_closed");
+        ApiKeyValidationResponse response = repository.validate("cyc_live_closed");
 
         assertThat(response.getValid()).isFalse();
         assertThat(response.getReason()).isEqualTo("TENANT_CLOSED");
