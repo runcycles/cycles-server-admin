@@ -421,12 +421,12 @@ class BudgetRepositoryTest {
         request.setUnit(UnitEnum.TOKENS);
         request.setAllocated(new Amount(UnitEnum.TOKENS, 5000L));
         request.setRolloverPolicy(RolloverPolicy.CARRY_FORWARD);
-        request.setCommitOveragePolicy(io.runcycles.admin.model.shared.CommitOveragePolicy.ALLOW);
+        request.setCommitOveragePolicy(io.runcycles.admin.model.shared.CommitOveragePolicy.ALLOW_WITH_OVERDRAFT);
 
         BudgetLedger result = repository.create("tenant1", request);
 
         assertThat(result.getRolloverPolicy()).isEqualTo(RolloverPolicy.CARRY_FORWARD);
-        assertThat(result.getCommitOveragePolicy()).isEqualTo(io.runcycles.admin.model.shared.CommitOveragePolicy.ALLOW);
+        assertThat(result.getCommitOveragePolicy()).isEqualTo(io.runcycles.admin.model.shared.CommitOveragePolicy.ALLOW_WITH_OVERDRAFT);
     }
 
     @Test
