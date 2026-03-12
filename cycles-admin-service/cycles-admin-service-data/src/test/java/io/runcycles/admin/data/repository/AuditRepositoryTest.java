@@ -229,7 +229,8 @@ class AuditRepositoryTest {
 
         when(jedis.get("audit:log:log_1")).thenReturn(null);
         AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("t1").operation("op").status(200).timestamp(Instant.now()).build();
-        when(jedis.get("audit:log:log_2")).thenReturn(objectMapper.writeValueAsString(e2));
+        String e2Json = objectMapper.writeValueAsString(e2);
+        when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
 
         List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, 50);
 
@@ -257,7 +258,8 @@ class AuditRepositoryTest {
                 .thenReturn(logIds);
 
         AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("t1").operation("op").status(200).timestamp(Instant.now()).build();
-        when(jedis.get("audit:log:log_1")).thenReturn(objectMapper.writeValueAsString(e1));
+        String e1Json = objectMapper.writeValueAsString(e1);
+        when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
 
         List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, "nonexistent", 50);
 

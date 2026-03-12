@@ -325,7 +325,8 @@ class TenantRepositoryTest {
 
         when(jedis.get("tenant:t1")).thenReturn(null);
         Tenant t2 = Tenant.builder().tenantId("t2").name("B").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(jedis.get("tenant:t2")).thenReturn(objectMapper.writeValueAsString(t2));
+        String t2Json = objectMapper.writeValueAsString(t2);
+        when(jedis.get("tenant:t2")).thenReturn(t2Json);
 
         List<Tenant> result = repository.list(null, null, null, 50);
 
@@ -350,9 +351,12 @@ class TenantRepositoryTest {
         Tenant t1 = Tenant.builder().tenantId("t1").name("A").status(TenantStatus.ACTIVE).parentTenantId("parent1").createdAt(Instant.now()).build();
         Tenant t2 = Tenant.builder().tenantId("t2").name("B").status(TenantStatus.SUSPENDED).parentTenantId("parent1").createdAt(Instant.now()).build();
         Tenant t3 = Tenant.builder().tenantId("t3").name("C").status(TenantStatus.ACTIVE).parentTenantId("parent2").createdAt(Instant.now()).build();
-        when(jedis.get("tenant:t1")).thenReturn(objectMapper.writeValueAsString(t1));
-        when(jedis.get("tenant:t2")).thenReturn(objectMapper.writeValueAsString(t2));
-        when(jedis.get("tenant:t3")).thenReturn(objectMapper.writeValueAsString(t3));
+        String t1Json = objectMapper.writeValueAsString(t1);
+        String t2Json = objectMapper.writeValueAsString(t2);
+        String t3Json = objectMapper.writeValueAsString(t3);
+        when(jedis.get("tenant:t1")).thenReturn(t1Json);
+        when(jedis.get("tenant:t2")).thenReturn(t2Json);
+        when(jedis.get("tenant:t3")).thenReturn(t3Json);
 
         List<Tenant> result = repository.list(TenantStatus.ACTIVE, "parent1", null, 50);
 

@@ -187,7 +187,8 @@ class PolicyRepositoryTest {
 
         when(jedis.get("policy:pol_1")).thenReturn(null);
         Policy p2 = Policy.builder().policyId("pol_2").scopePattern("org/*").status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(jedis.get("policy:pol_2")).thenReturn(objectMapper.writeValueAsString(p2));
+        String p2Json = objectMapper.writeValueAsString(p2);
+        when(jedis.get("policy:pol_2")).thenReturn(p2Json);
 
         List<Policy> result = repository.list("tenant1", null, null, null, 50);
 
@@ -212,9 +213,12 @@ class PolicyRepositoryTest {
         Policy p1 = Policy.builder().policyId("pol_1").scopePattern("org/*").status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
         Policy p2 = Policy.builder().policyId("pol_2").scopePattern("org/*").status(PolicyStatus.DISABLED).createdAt(Instant.now()).build();
         Policy p3 = Policy.builder().policyId("pol_3").scopePattern("team/*").status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(jedis.get("policy:pol_1")).thenReturn(objectMapper.writeValueAsString(p1));
-        when(jedis.get("policy:pol_2")).thenReturn(objectMapper.writeValueAsString(p2));
-        when(jedis.get("policy:pol_3")).thenReturn(objectMapper.writeValueAsString(p3));
+        String p1Json = objectMapper.writeValueAsString(p1);
+        String p2Json = objectMapper.writeValueAsString(p2);
+        String p3Json = objectMapper.writeValueAsString(p3);
+        when(jedis.get("policy:pol_1")).thenReturn(p1Json);
+        when(jedis.get("policy:pol_2")).thenReturn(p2Json);
+        when(jedis.get("policy:pol_3")).thenReturn(p3Json);
 
         List<Policy> result = repository.list("tenant1", "org/*", PolicyStatus.ACTIVE, null, 50);
 
