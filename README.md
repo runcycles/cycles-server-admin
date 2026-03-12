@@ -27,13 +27,32 @@ cycles-admin-service/
 - **API Docs:** SpringDoc OpenAPI (Swagger UI)
 - **Testing:** JUnit 5 + TestContainers (Redis)
 
-## Prerequisites
+## Quick Start with Docker
+
+The fastest way to run the admin server — no Java or Maven required:
+
+```bash
+# Using pre-built image from GHCR
+docker compose -f docker-compose.prod.yml up -d
+```
+
+The server starts at `http://localhost:7979`. Swagger UI: http://localhost:7979/swagger-ui.html
+
+To run the full stack (Admin Server + Runtime Server + Redis):
+
+```bash
+docker compose -f docker-compose.full-stack.prod.yml up -d
+```
+
+> For the complete deployment walkthrough including tenant setup, API key creation, and budget allocation, see the [full stack deployment guide](https://runcycles.github.io/docs/quickstart/deploying-the-full-cycles-stack).
+
+## Prerequisites (for building from source)
 
 - Java 21+
 - Maven 3.9+
 - Redis 7+ (or Docker for TestContainers)
 
-## Getting Started
+## Building from Source
 
 ### Build
 
