@@ -54,12 +54,12 @@ public class TenantRepository {
         "    return {'INVALID_TRANSITION', 'Invalid status transition: ' .. old_status .. ' -> ' .. new_status}\n" +
         "  end\n" +
         "  tenant['status'] = new_status\n" +
-        "  if new_status == 'SUSPENDED' then tenant['suspendedAt'] = now_ms end\n" +
-        "  if new_status == 'CLOSED' then tenant['closedAt'] = now_ms end\n" +
+        "  if new_status == 'SUSPENDED' then tenant['suspended_at'] = now_ms end\n" +
+        "  if new_status == 'CLOSED' then tenant['closed_at'] = now_ms end\n" +
         "end\n" +
         // Apply metadata change
         "if new_metadata ~= '' then tenant['metadata'] = cjson.decode(new_metadata) end\n" +
-        "tenant['updatedAt'] = now_ms\n" +
+        "tenant['updated_at'] = now_ms\n" +
         "local updated = cjson.encode(tenant)\n" +
         "redis.call('SET', KEYS[1], updated)\n" +
         "return {'OK', updated}\n";

@@ -247,23 +247,23 @@ class ApiKeyRepositoryTest {
 
     @Test
     void revoke_existingKey_setsRevokedStatus() throws Exception {
-        ApiKey key = ApiKey.builder()
+        ApiKey revoked = ApiKey.builder()
                 .keyId("key_1").tenantId("t1").keyHash("hash")
-                .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
-        String keyJson = objectMapper.writeValueAsString(key);
-        when(jedis.get("apikey:key_1")).thenReturn(keyJson);
+                .status(ApiKeyStatus.REVOKED).revokedReason("No longer needed")
+                .revokedAt(Instant.now()).createdAt(Instant.now()).build();
+        String revokedJson = objectMapper.writeValueAsString(revoked);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", revokedJson));
 
         ApiKey result = repository.revoke("key_1", "No longer needed");
 
         assertThat(result.getStatus()).isEqualTo(ApiKeyStatus.REVOKED);
         assertThat(result.getRevokedReason()).isEqualTo("No longer needed");
         assertThat(result.getRevokedAt()).isNotNull();
-        verify(jedis).set(eq("apikey:key_1"), anyString());
     }
 
     @Test
     void revoke_missingKey_throwsNotFound() {
-        when(jedis.get("apikey:missing")).thenReturn(null);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("NOT_FOUND"));
 
         assertThatThrownBy(() -> repository.revoke("missing", "reason"))
                 .isInstanceOf(GovernanceException.class)

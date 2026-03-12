@@ -174,9 +174,9 @@ class TenantRepositoryTest {
 
     @Test
     void update_name_updatesSuccessfully() throws Exception {
-        Tenant tenant = Tenant.builder().tenantId("t1").name("Old").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
-        String tenantJson = objectMapper.writeValueAsString(tenant);
-        when(jedis.get("tenant:t1")).thenReturn(tenantJson);
+        Tenant updated = Tenant.builder().tenantId("t1").name("New Name").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        String updatedJson = objectMapper.writeValueAsString(updated);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
 
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setName("New Name");
@@ -184,14 +184,14 @@ class TenantRepositoryTest {
         Tenant result = repository.update("t1", req);
 
         assertThat(result.getName()).isEqualTo("New Name");
-        verify(jedis).set(eq("tenant:t1"), anyString());
     }
 
     @Test
     void update_statusActiveToSuspended_succeeds() throws Exception {
-        Tenant tenant = Tenant.builder().tenantId("t1").name("T").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
-        String tenantJson = objectMapper.writeValueAsString(tenant);
-        when(jedis.get("tenant:t1")).thenReturn(tenantJson);
+        Tenant updated = Tenant.builder().tenantId("t1").name("T").status(TenantStatus.SUSPENDED)
+                .suspendedAt(Instant.now()).createdAt(Instant.now()).build();
+        String updatedJson = objectMapper.writeValueAsString(updated);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
 
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setStatus(TenantStatus.SUSPENDED);
@@ -204,9 +204,10 @@ class TenantRepositoryTest {
 
     @Test
     void update_statusActiveToClosed_succeeds() throws Exception {
-        Tenant tenant = Tenant.builder().tenantId("t1").name("T").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
-        String tenantJson = objectMapper.writeValueAsString(tenant);
-        when(jedis.get("tenant:t1")).thenReturn(tenantJson);
+        Tenant updated = Tenant.builder().tenantId("t1").name("T").status(TenantStatus.CLOSED)
+                .closedAt(Instant.now()).createdAt(Instant.now()).build();
+        String updatedJson = objectMapper.writeValueAsString(updated);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
 
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setStatus(TenantStatus.CLOSED);
@@ -219,9 +220,9 @@ class TenantRepositoryTest {
 
     @Test
     void update_statusSuspendedToActive_succeeds() throws Exception {
-        Tenant tenant = Tenant.builder().tenantId("t1").name("T").status(TenantStatus.SUSPENDED).createdAt(Instant.now()).build();
-        String tenantJson = objectMapper.writeValueAsString(tenant);
-        when(jedis.get("tenant:t1")).thenReturn(tenantJson);
+        Tenant updated = Tenant.builder().tenantId("t1").name("T").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        String updatedJson = objectMapper.writeValueAsString(updated);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
 
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setStatus(TenantStatus.ACTIVE);
@@ -233,9 +234,8 @@ class TenantRepositoryTest {
 
     @Test
     void update_statusFromClosed_throwsInvalidRequest() throws Exception {
-        Tenant tenant = Tenant.builder().tenantId("t1").name("T").status(TenantStatus.CLOSED).createdAt(Instant.now()).build();
-        String tenantJson = objectMapper.writeValueAsString(tenant);
-        when(jedis.get("tenant:t1")).thenReturn(tenantJson);
+        when(jedis.eval(anyString(), anyList(), anyList()))
+                .thenReturn(List.of("INVALID_TRANSITION", "Cannot transition from CLOSED"));
 
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setStatus(TenantStatus.ACTIVE);
@@ -251,9 +251,10 @@ class TenantRepositoryTest {
 
     @Test
     void update_metadata_updatesSuccessfully() throws Exception {
-        Tenant tenant = Tenant.builder().tenantId("t1").name("T").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
-        String tenantJson = objectMapper.writeValueAsString(tenant);
-        when(jedis.get("tenant:t1")).thenReturn(tenantJson);
+        Tenant updated = Tenant.builder().tenantId("t1").name("T").status(TenantStatus.ACTIVE)
+                .metadata(Map.of("env", "prod")).createdAt(Instant.now()).build();
+        String updatedJson = objectMapper.writeValueAsString(updated);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
 
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setMetadata(Map.of("env", "prod"));

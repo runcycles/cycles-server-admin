@@ -56,8 +56,8 @@ class PolicyRepositoryTest {
         assertThat(result.getScopePattern()).isEqualTo("org/*");
         assertThat(result.getStatus()).isEqualTo(PolicyStatus.ACTIVE);
         assertThat(result.getCreatedAt()).isNotNull();
-        verify(jedis).set(startsWith("policy:pol_"), anyString());
-        verify(jedis).sadd(eq("policies:tenant1"), startsWith("pol_"));
+        // Policy creation now uses atomic Lua script (SET + SADD in one call)
+        verify(jedis).eval(anyString(), anyList(), anyList());
     }
 
     @Test

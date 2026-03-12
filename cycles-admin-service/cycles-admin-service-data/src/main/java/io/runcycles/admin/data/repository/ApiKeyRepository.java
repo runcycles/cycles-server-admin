@@ -35,8 +35,8 @@ public class ApiKeyRepository {
         "local key = cjson.decode(json)\n" +
         "if key['status'] == 'REVOKED' then return {'ALREADY_REVOKED', json} end\n" +
         "key['status'] = 'REVOKED'\n" +
-        "key['revokedAt'] = ARGV[2]\n" +
-        "if ARGV[1] ~= '' then key['revokedReason'] = ARGV[1] end\n" +
+        "key['revoked_at'] = ARGV[2]\n" +
+        "if ARGV[1] ~= '' then key['revoked_reason'] = ARGV[1] end\n" +
         "local updated = cjson.encode(key)\n" +
         "redis.call('SET', KEYS[1], updated)\n" +
         "return {'OK', updated}\n";
