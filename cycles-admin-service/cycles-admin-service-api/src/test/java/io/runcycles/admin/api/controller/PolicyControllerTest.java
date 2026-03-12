@@ -162,4 +162,17 @@ class PolicyControllerTest {
 
         verify(policyRepository).list(eq("t1"), any(), any(), any(), eq(100));
     }
+
+    @Test
+    void listPolicies_limitClampedToMin1() throws Exception {
+        setupApiKeyAuth();
+        when(policyRepository.list(eq("t1"), any(), any(), any(), eq(1))).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/policies")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("limit", "0"))
+                .andExpect(status().isOk());
+
+        verify(policyRepository).list(eq("t1"), any(), any(), any(), eq(1));
+    }
 }

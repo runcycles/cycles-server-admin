@@ -265,4 +265,23 @@ class AuditRepositoryTest {
 
         assertThat(result).hasSize(1);
     }
+
+    @Test
+    void list_withFromAndTo_usesTimeRangeAsScores() throws Exception {
+        Instant from = Instant.ofEpochMilli(1000);
+        Instant to = Instant.ofEpochMilli(2000);
+
+        List<String> logIds = List.of("log_1");
+        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), eq(2000.0), eq(1000.0), eq(0), anyInt()))
+                .thenReturn(logIds);
+
+        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("t1").operation("op").status(200).timestamp(Instant.now()).build();
+        String e1Json = objectMapper.writeValueAsString(e1);
+        when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
+
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, from, to, null, 50);
+
+        assertThat(result).hasSize(1);
+        verify(jedis).zrevrangeByScore(eq("audit:logs:t1"), eq(2000.0), eq(1000.0), eq(0), anyInt());
+    }
 }

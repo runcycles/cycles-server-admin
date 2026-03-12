@@ -251,4 +251,16 @@ class TenantControllerTest {
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error").value("TENANT_NOT_FOUND"));
     }
+
+    @Test
+    void listTenants_limitClampedToMin1() throws Exception {
+        when(tenantRepository.list(any(), any(), any(), eq(1))).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/tenants")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("limit", "0"))
+                .andExpect(status().isOk());
+
+        verify(tenantRepository).list(any(), any(), any(), eq(1));
+    }
 }

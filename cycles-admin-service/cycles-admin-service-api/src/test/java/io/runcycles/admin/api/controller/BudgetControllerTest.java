@@ -232,4 +232,31 @@ class BudgetControllerTest {
 
         verify(budgetRepository).list(eq("t1"), any(), any(), any(), any(), eq(100));
     }
+
+    @Test
+    void listBudgets_limitClampedToMin1() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("t1"), any(), any(), any(), any(), eq(1))).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("limit", "0"))
+                .andExpect(status().isOk());
+
+        verify(budgetRepository).list(eq("t1"), any(), any(), any(), any(), eq(1));
+    }
+
+    @Test
+    void fundBudget_notFound_returns404() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.fund(eq("t1"), eq("missing"), eq(UnitEnum.USD_MICROCENTS), any()))
+                .thenThrow(GovernanceException.budgetNotFound("missing"));
+
+        mockMvc.perform(post("/v1/admin/budgets/missing/USD_MICROCENTS/fund")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000}}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error").value("BUDGET_NOT_FOUND"));
+    }
 }
