@@ -17,13 +17,21 @@ public class TenantRepository {
     private static final Logger LOG = LoggerFactory.getLogger(TenantRepository.class);
     @Autowired private JedisPool jedisPool;
     @Autowired private ObjectMapper objectMapper;
-    // Lua script for atomic tenant creation: returns existing JSON if exists, otherwise creates
+    // Lua script for atomic tenant creation with conflict detection.
+    // Returns {'CREATED'} if new, {'EXISTS', json} if idempotent replay (same name),
+    // or {'CONFLICT', json} if tenant_id exists with a different name (spec: 409).
+    // KEYS[1] = tenant key, KEYS[2] = tenants index set
+    // ARGV[1] = new tenant JSON, ARGV[2] = tenant_id, ARGV[3] = request name for conflict check
     private static final String CREATE_TENANT_LUA =
         "local existing = redis.call('GET', KEYS[1])\n" +
-        "if existing then return existing end\n" +
+        "if existing then\n" +
+        "  local tenant = cjson.decode(existing)\n" +
+        "  if tenant['name'] ~= ARGV[3] then return {'CONFLICT', existing} end\n" +
+        "  return {'EXISTS', existing}\n" +
+        "end\n" +
         "redis.call('SET', KEYS[1], ARGV[1])\n" +
         "redis.call('SADD', KEYS[2], ARGV[2])\n" +
-        "return nil\n";
+        "return {'CREATED'}\n";
 
     // Lua script for atomic tenant update: reads, validates status transition, and writes in one step.
     // Prevents lost-update race conditions from concurrent read-modify-write cycles.
@@ -31,7 +39,7 @@ public class TenantRepository {
     // ARGV[1] = new_name (empty string = no change)
     // ARGV[2] = new_status (empty string = no change)
     // ARGV[3] = new_metadata_json (empty string = no change)
-    // ARGV[4] = now_ms (epoch millis for timestamps)
+    // ARGV[4] = now_iso (ISO-8601 timestamp, must match Jackson serialization format)
     // Returns: {'OK', updated_json} on success, or {'ERROR', error_message} on failure
     private static final String UPDATE_TENANT_LUA =
         "local json = redis.call('GET', KEYS[1])\n" +
@@ -40,7 +48,7 @@ public class TenantRepository {
         "local new_name = ARGV[1]\n" +
         "local new_status = ARGV[2]\n" +
         "local new_metadata = ARGV[3]\n" +
-        "local now_ms = ARGV[4]\n" +
+        "local now_iso = ARGV[4]\n" +
         // Apply name change
         "if new_name ~= '' then tenant['name'] = new_name end\n" +
         // Validate and apply status transition
@@ -54,12 +62,12 @@ public class TenantRepository {
         "    return {'INVALID_TRANSITION', 'Invalid status transition: ' .. old_status .. ' -> ' .. new_status}\n" +
         "  end\n" +
         "  tenant['status'] = new_status\n" +
-        "  if new_status == 'SUSPENDED' then tenant['suspended_at'] = now_ms end\n" +
-        "  if new_status == 'CLOSED' then tenant['closed_at'] = now_ms end\n" +
+        "  if new_status == 'SUSPENDED' then tenant['suspended_at'] = now_iso end\n" +
+        "  if new_status == 'CLOSED' then tenant['closed_at'] = now_iso end\n" +
         "end\n" +
         // Apply metadata change
         "if new_metadata ~= '' then tenant['metadata'] = cjson.decode(new_metadata) end\n" +
-        "tenant['updated_at'] = now_ms\n" +
+        "tenant['updated_at'] = now_iso\n" +
         "local updated = cjson.encode(tenant)\n" +
         "redis.call('SET', KEYS[1], updated)\n" +
         "return {'OK', updated}\n";
@@ -83,15 +91,24 @@ public class TenantRepository {
                 .createdAt(Instant.now())
                 .build();
             String json = objectMapper.writeValueAsString(tenant);
-            Object result = jedis.eval(CREATE_TENANT_LUA,
+            @SuppressWarnings("unchecked")
+            List<String> result = (List<String>) jedis.eval(CREATE_TENANT_LUA,
                 List.of(key, "tenants"),
-                List.of(json, request.getTenantId()));
-            if (result != null) {
-                // Tenant already exists — return it (idempotent 200)
-                Tenant existing = objectMapper.readValue((String) result, Tenant.class);
+                List.of(json, request.getTenantId(), request.getName()));
+            String status = result.get(0);
+            if ("CONFLICT".equals(status)) {
+                // Same tenant_id but different name → spec requires 409
+                throw GovernanceException.duplicateResource("Tenant", request.getTenantId());
+            }
+            if ("EXISTS".equals(status)) {
+                // Idempotent replay (same tenant_id and name) → 200
+                Tenant existing = objectMapper.readValue(result.get(1), Tenant.class);
                 return new TenantCreateResult(existing, false);
             }
+            // CREATED
             return new TenantCreateResult(tenant, true);
+        } catch (GovernanceException e) {
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException("Failed to create tenant", e);
         }
@@ -140,7 +157,7 @@ public class TenantRepository {
     public Tenant update(String tenantId, TenantUpdateRequest request) {
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "tenant:" + tenantId;
-            String nowMs = String.valueOf(Instant.now().toEpochMilli());
+            String nowIso = Instant.now().toString();
 
             @SuppressWarnings("unchecked")
             List<String> result = (List<String>) jedis.eval(UPDATE_TENANT_LUA,
@@ -149,7 +166,7 @@ public class TenantRepository {
                     request.getName() != null ? request.getName() : "",
                     request.getStatus() != null ? request.getStatus().name() : "",
                     request.getMetadata() != null ? objectMapper.writeValueAsString(request.getMetadata()) : "",
-                    nowMs
+                    nowIso
                 ));
 
             String status = result.get(0);

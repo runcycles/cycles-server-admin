@@ -18,16 +18,26 @@ public class ApiKeyRepository {
     private static final List<String> DEFAULT_PERMISSIONS = List.of(
         "reservations:create", "reservations:commit", "reservations:release",
         "reservations:extend", "reservations:list", "balances:read");
-    // Lua script for atomic API key creation: SET key + SADD index + SET lookup in one call
+    // Lua script for atomic API key creation with tenant validation.
+    // Validates tenant exists and is ACTIVE atomically, then creates key + index + lookup.
+    // KEYS[1] = apikey:<keyId>, KEYS[2] = apikeys:<tenantId>, KEYS[3] = apikey:lookup:<prefix>,
+    // KEYS[4] = tenant:<tenantId>
+    // ARGV[1] = key JSON, ARGV[2] = keyId
+    // Returns: {'CREATED'}, {'TENANT_NOT_FOUND'}, or {'TENANT_INACTIVE', status}
     private static final String CREATE_KEY_LUA =
+        "local tenant_json = redis.call('GET', KEYS[4])\n" +
+        "if not tenant_json then return {'TENANT_NOT_FOUND'} end\n" +
+        "local tenant = cjson.decode(tenant_json)\n" +
+        "local tenant_status = tenant['status'] or 'ACTIVE'\n" +
+        "if tenant_status ~= 'ACTIVE' then return {'TENANT_INACTIVE', tenant_status} end\n" +
         "redis.call('SET', KEYS[1], ARGV[1])\n" +
         "redis.call('SADD', KEYS[2], ARGV[2])\n" +
         "redis.call('SET', KEYS[3], ARGV[2])\n" +
-        "return 1\n";
+        "return {'CREATED'}\n";
 
     // Lua script for atomic API key revocation: reads, checks state, sets revoked fields in one call.
     // KEYS[1] = apikey:<keyId>
-    // ARGV[1] = reason, ARGV[2] = now_ms
+    // ARGV[1] = reason, ARGV[2] = now_iso (ISO-8601 timestamp, must match Jackson serialization format)
     // Returns: {'OK', updated_json} or {'NOT_FOUND'} or {'ALREADY_REVOKED', existing_json}
     private static final String REVOKE_KEY_LUA =
         "local json = redis.call('GET', KEYS[1])\n" +
@@ -41,26 +51,7 @@ public class ApiKeyRepository {
         "redis.call('SET', KEYS[1], updated)\n" +
         "return {'OK', updated}\n";
     public ApiKeyCreateResponse create(ApiKeyCreateRequest request) {
-        // Validate tenant exists and is active before creating key
         try (Jedis jedis = jedisPool.getResource()) {
-            String tenantData = jedis.get("tenant:" + request.getTenantId());
-            if (tenantData == null) {
-                throw GovernanceException.tenantNotFound(request.getTenantId());
-            }
-            try {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> tenantMap = objectMapper.readValue(tenantData, Map.class);
-                String tenantStatus = (String) tenantMap.get("status");
-                if ("SUSPENDED".equals(tenantStatus) || "CLOSED".equals(tenantStatus)) {
-                    throw new GovernanceException(
-                        io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
-                        "Tenant is " + tenantStatus + ": " + request.getTenantId(), 400);
-                }
-            } catch (GovernanceException e) {
-                throw e;
-            } catch (Exception e) {
-                LOG.warn("Failed to parse tenant data for validation", e);
-            }
             String keyId = "key_" + UUID.randomUUID().toString().substring(0, 16);
             String keySecret = keyService.generateKeySecret("cyc_live");
             String keyPrefix = keyService.extractPrefix(keySecret);
@@ -82,11 +73,22 @@ public class ApiKeyRepository {
                 .expiresAt(expiresAt)
                 .metadata(request.getMetadata())
                 .build();
-            // Atomic create: SET key + SADD index + SET lookup in one Lua call
+            // Atomic create with tenant validation: check tenant + SET key + SADD index + SET lookup
             String json = objectMapper.writeValueAsString(apiKey);
-            jedis.eval(CREATE_KEY_LUA,
-                List.of("apikey:" + keyId, "apikeys:" + request.getTenantId(), "apikey:lookup:" + keyPrefix),
+            @SuppressWarnings("unchecked")
+            List<String> result = (List<String>) jedis.eval(CREATE_KEY_LUA,
+                List.of("apikey:" + keyId, "apikeys:" + request.getTenantId(),
+                         "apikey:lookup:" + keyPrefix, "tenant:" + request.getTenantId()),
                 List.of(json, keyId));
+            String status = result.get(0);
+            if ("TENANT_NOT_FOUND".equals(status)) {
+                throw GovernanceException.tenantNotFound(request.getTenantId());
+            }
+            if ("TENANT_INACTIVE".equals(status)) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                    "Tenant is " + result.get(1) + ": " + request.getTenantId(), 400);
+            }
             return ApiKeyCreateResponse.builder()
                 .keyId(keyId)
                 .keySecret(keySecret)
@@ -136,12 +138,12 @@ public class ApiKeyRepository {
     }
     public ApiKey revoke(String keyId, String reason) {
         try (Jedis jedis = jedisPool.getResource()) {
-            String nowMs = String.valueOf(Instant.now().toEpochMilli());
+            String nowIso = Instant.now().toString();
 
             @SuppressWarnings("unchecked")
             List<String> result = (List<String>) jedis.eval(REVOKE_KEY_LUA,
                 List.of("apikey:" + keyId),
-                List.of(reason != null ? reason : "", nowMs));
+                List.of(reason != null ? reason : "", nowIso));
 
             String status = result.get(0);
             if ("NOT_FOUND".equals(status)) {

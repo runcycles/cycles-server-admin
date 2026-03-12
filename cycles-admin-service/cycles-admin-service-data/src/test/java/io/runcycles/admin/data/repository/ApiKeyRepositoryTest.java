@@ -49,12 +49,11 @@ class ApiKeyRepositoryTest {
 
     @Test
     void create_validRequest_returnsApiKeyCreateResponse() throws Exception {
-        // Tenant exists and is active
-        when(jedis.get("tenant:test-tenant")).thenReturn("{\"status\":\"ACTIVE\",\"tenant_id\":\"test-tenant\"}");
         when(keyService.generateKeySecret("cyc_live")).thenReturn("cyc_live_abc123def456ghi");
         when(keyService.extractPrefix("cyc_live_abc123def456ghi")).thenReturn("cyc_live_abc12");
         when(keyService.hashKey("cyc_live_abc123def456ghi")).thenReturn("$2a$12$hashvalue");
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        // Lua now validates tenant atomically and returns status list
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("CREATED"));
 
         ApiKeyCreateRequest request = new ApiKeyCreateRequest();
         request.setTenantId("test-tenant");
@@ -70,36 +69,53 @@ class ApiKeyRepositoryTest {
 
     @Test
     void create_tenantNotFound_throwsException() {
-        when(jedis.get("tenant:missing")).thenReturn(null);
+        when(keyService.generateKeySecret("cyc_live")).thenReturn("cyc_live_abc123def456ghi");
+        when(keyService.extractPrefix(anyString())).thenReturn("cyc_live_abc12");
+        when(keyService.hashKey(anyString())).thenReturn("$2a$12$hash");
+        // Lua returns TENANT_NOT_FOUND when tenant key doesn't exist in Redis
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("TENANT_NOT_FOUND"));
 
         ApiKeyCreateRequest request = new ApiKeyCreateRequest();
         request.setTenantId("missing");
         request.setName("Test Key");
 
         assertThatThrownBy(() -> repository.create(request))
-                .isInstanceOf(RuntimeException.class);
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.TENANT_NOT_FOUND);
+                    assertThat(ge.getHttpStatus()).isEqualTo(404);
+                });
     }
 
     @Test
     void create_tenantSuspended_throwsException() {
-        when(jedis.get("tenant:suspended")).thenReturn("{\"status\":\"SUSPENDED\",\"tenant_id\":\"suspended\"}");
+        when(keyService.generateKeySecret("cyc_live")).thenReturn("cyc_live_abc123def456ghi");
+        when(keyService.extractPrefix(anyString())).thenReturn("cyc_live_abc12");
+        when(keyService.hashKey(anyString())).thenReturn("$2a$12$hash");
+        // Lua returns TENANT_INACTIVE with status when tenant is not ACTIVE
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("TENANT_INACTIVE", "SUSPENDED"));
 
         ApiKeyCreateRequest request = new ApiKeyCreateRequest();
         request.setTenantId("suspended");
         request.setName("Test Key");
 
         assertThatThrownBy(() -> repository.create(request))
-                .isInstanceOf(RuntimeException.class);
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
+                    assertThat(ge.getHttpStatus()).isEqualTo(400);
+                });
     }
 
     @Test
     void create_withCustomExpiry_usesProvidedExpiry() throws Exception {
         Instant customExpiry = Instant.now().plusSeconds(3600);
-        when(jedis.get("tenant:test-tenant")).thenReturn("{\"status\":\"ACTIVE\",\"tenant_id\":\"test-tenant\"}");
         when(keyService.generateKeySecret("cyc_live")).thenReturn("cyc_live_abc123def456ghi");
         when(keyService.extractPrefix(anyString())).thenReturn("cyc_live_abc12");
         when(keyService.hashKey(anyString())).thenReturn("$2a$12$hash");
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("CREATED"));
 
         ApiKeyCreateRequest request = new ApiKeyCreateRequest();
         request.setTenantId("test-tenant");

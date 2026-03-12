@@ -45,7 +45,7 @@ class TenantRepositoryTest {
 
     @Test
     void create_newTenant_returnsCreatedTrue() {
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(null);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("CREATED"));
 
         TenantCreateRequest request = new TenantCreateRequest();
         request.setTenantId("test-tenant");
@@ -62,10 +62,10 @@ class TenantRepositoryTest {
     @Test
     void create_existingTenant_returnsCreatedFalse() throws Exception {
         Tenant existing = Tenant.builder()
-                .tenantId("test-tenant").name("Existing").status(TenantStatus.ACTIVE)
+                .tenantId("test-tenant").name("Test Tenant").status(TenantStatus.ACTIVE)
                 .createdAt(Instant.now()).build();
         String json = objectMapper.writeValueAsString(existing);
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(json);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("EXISTS", json));
 
         TenantCreateRequest request = new TenantCreateRequest();
         request.setTenantId("test-tenant");
@@ -74,7 +74,27 @@ class TenantRepositoryTest {
         var result = repository.create(request);
 
         assertThat(result.created()).isFalse();
-        assertThat(result.tenant().getName()).isEqualTo("Existing");
+        assertThat(result.tenant().getName()).isEqualTo("Test Tenant");
+    }
+
+    @Test
+    void create_conflictingTenant_throws409() {
+        Tenant existing = Tenant.builder()
+                .tenantId("test-tenant").name("Original Name").status(TenantStatus.ACTIVE)
+                .createdAt(Instant.now()).build();
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("CONFLICT", "{}"));
+
+        TenantCreateRequest request = new TenantCreateRequest();
+        request.setTenantId("test-tenant");
+        request.setName("Different Name");
+
+        assertThatThrownBy(() -> repository.create(request))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.DUPLICATE_RESOURCE);
+                    assertThat(ge.getHttpStatus()).isEqualTo(409);
+                });
     }
 
     @Test
