@@ -21,7 +21,7 @@ public class PolicyController {
     public ResponseEntity<Policy> create(@Valid @RequestBody PolicyCreateRequest request, HttpServletRequest httpRequest) {
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         Policy policy = repository.create(tenantId, request);
-        auditRepository.log(AuditLogEntry.builder()
+        auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
             .operation("createPolicy")
@@ -45,5 +45,12 @@ public class PolicyController {
             .nextCursor(policies.size() >= effectiveLimit ? policies.get(policies.size() - 1).getPolicyId() : null)
             .build();
         return ResponseEntity.ok(response);
+    }
+
+    private AuditLogEntry.AuditLogEntryBuilder buildAuditEntry(HttpServletRequest request) {
+        return AuditLogEntry.builder()
+            .requestId(request.getAttribute("requestId") != null ? request.getAttribute("requestId").toString() : null)
+            .sourceIp(request.getRemoteAddr())
+            .userAgent(request.getHeader("User-Agent"));
     }
 }

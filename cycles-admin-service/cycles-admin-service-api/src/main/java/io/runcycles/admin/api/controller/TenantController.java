@@ -9,6 +9,7 @@ import io.runcycles.admin.model.tenant.TenantStatus;
 import io.runcycles.admin.model.tenant.TenantUpdateRequest;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -18,10 +19,10 @@ public class TenantController {
     @Autowired private TenantRepository repository;
     @Autowired private AuditRepository auditRepository;
     @PostMapping @Operation(operationId = "createTenant")
-    public ResponseEntity<Tenant> create(@Valid @RequestBody TenantCreateRequest request) {
+    public ResponseEntity<Tenant> create(@Valid @RequestBody TenantCreateRequest request, HttpServletRequest httpRequest) {
         var result = repository.create(request);
         int httpStatus = result.created() ? 201 : 200;
-        auditRepository.log(AuditLogEntry.builder()
+        auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(request.getTenantId())
             .operation("createTenant")
             .status(httpStatus)
@@ -48,13 +49,20 @@ public class TenantController {
         return ResponseEntity.ok(repository.get(tenantId));
     }
     @PatchMapping("/{tenant_id}") @Operation(operationId = "updateTenant")
-    public ResponseEntity<Tenant> update(@PathVariable("tenant_id") String tenantId, @Valid @RequestBody TenantUpdateRequest request) {
+    public ResponseEntity<Tenant> update(@PathVariable("tenant_id") String tenantId, @Valid @RequestBody TenantUpdateRequest request, HttpServletRequest httpRequest) {
         Tenant updated = repository.update(tenantId, request);
-        auditRepository.log(AuditLogEntry.builder()
+        auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
             .operation("updateTenant")
             .status(200)
             .build());
         return ResponseEntity.ok(updated);
+    }
+
+    private AuditLogEntry.AuditLogEntryBuilder buildAuditEntry(HttpServletRequest request) {
+        return AuditLogEntry.builder()
+            .requestId(request.getAttribute("requestId") != null ? request.getAttribute("requestId").toString() : null)
+            .sourceIp(request.getRemoteAddr())
+            .userAgent(request.getHeader("User-Agent"));
     }
 }

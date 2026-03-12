@@ -9,6 +9,7 @@ import io.runcycles.admin.model.auth.ApiKeyResponse;
 import io.runcycles.admin.model.auth.ApiKeyStatus;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -19,9 +20,9 @@ public class ApiKeyController {
     @Autowired private ApiKeyRepository repository;
     @Autowired private AuditRepository auditRepository;
     @PostMapping @Operation(operationId = "createApiKey")
-    public ResponseEntity<ApiKeyCreateResponse> create(@Valid @RequestBody ApiKeyCreateRequest request) {
+    public ResponseEntity<ApiKeyCreateResponse> create(@Valid @RequestBody ApiKeyCreateRequest request, HttpServletRequest httpRequest) {
         ApiKeyCreateResponse response = repository.create(request);
-        auditRepository.log(AuditLogEntry.builder()
+        auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(request.getTenantId())
             .operation("createApiKey")
             .status(201)
@@ -45,14 +46,21 @@ public class ApiKeyController {
         return ResponseEntity.ok(response);
     }
     @DeleteMapping("/{key_id}") @Operation(operationId = "revokeApiKey")
-    public ResponseEntity<ApiKeyResponse> revoke(@PathVariable("key_id") String keyId, @RequestParam(required = false) String reason) {
+    public ResponseEntity<ApiKeyResponse> revoke(@PathVariable("key_id") String keyId, @RequestParam(required = false) String reason, HttpServletRequest httpRequest) {
         ApiKeyResponse response = ApiKeyResponse.from(repository.revoke(keyId, reason));
-        auditRepository.log(AuditLogEntry.builder()
+        auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(response.getTenantId())
             .keyId(keyId)
             .operation("revokeApiKey")
             .status(200)
             .build());
         return ResponseEntity.ok(response);
+    }
+
+    private AuditLogEntry.AuditLogEntryBuilder buildAuditEntry(HttpServletRequest request) {
+        return AuditLogEntry.builder()
+            .requestId(request.getAttribute("requestId") != null ? request.getAttribute("requestId").toString() : null)
+            .sourceIp(request.getRemoteAddr())
+            .userAgent(request.getHeader("User-Agent"));
     }
 }

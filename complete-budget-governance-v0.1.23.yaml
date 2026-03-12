@@ -811,7 +811,7 @@ components:
     
     AuditLogListResponse:
       type: object
-      required: [logs]
+      required: [logs, has_more]
       properties:
         logs:
           type: array
