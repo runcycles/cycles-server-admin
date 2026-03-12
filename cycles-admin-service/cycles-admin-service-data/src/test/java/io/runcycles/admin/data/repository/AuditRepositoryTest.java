@@ -210,4 +210,57 @@ class AuditRepositoryTest {
         assertThat(result).hasSize(2);
         assertThat(result.get(0).getLogId()).isEqualTo("log_2");
     }
+
+    @Test
+    void list_convenienceOverload_delegatesToFullMethod() {
+        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+                .thenReturn(List.of());
+
+        List<AuditLogEntry> result = repository.list("t1", 10);
+
+        assertThat(result).isEmpty();
+        verify(jedis).zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), eq(30));
+    }
+
+    @Test
+    void list_missingLogData_skipsGracefully() throws Exception {
+        List<String> logIds = List.of("log_1", "log_2");
+        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
+
+        when(jedis.get("audit:log:log_1")).thenReturn(null);
+        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("t1").operation("op").status(200).timestamp(Instant.now()).build();
+        when(jedis.get("audit:log:log_2")).thenReturn(objectMapper.writeValueAsString(e2));
+
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getLogId()).isEqualTo("log_2");
+    }
+
+    @Test
+    void log_exceptionIsSwallowed_doesNotThrow() {
+        when(jedisPool.getResource()).thenThrow(new RuntimeException("Redis down"));
+
+        AuditLogEntry entry = AuditLogEntry.builder()
+                .tenantId("t1").operation("op").status(200).build();
+
+        // Should not throw - audit failures are non-fatal
+        repository.log(entry);
+    }
+
+    @Test
+    void list_cursorNotFoundInIndex_usesDefaultMaxScore() throws Exception {
+        when(jedis.zscore("audit:logs:t1", "nonexistent")).thenReturn(null);
+
+        List<String> logIds = List.of("log_1");
+        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), eq(Double.POSITIVE_INFINITY), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt()))
+                .thenReturn(logIds);
+
+        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("t1").operation("op").status(200).timestamp(Instant.now()).build();
+        when(jedis.get("audit:log:log_1")).thenReturn(objectMapper.writeValueAsString(e1));
+
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, "nonexistent", 50);
+
+        assertThat(result).hasSize(1);
+    }
 }

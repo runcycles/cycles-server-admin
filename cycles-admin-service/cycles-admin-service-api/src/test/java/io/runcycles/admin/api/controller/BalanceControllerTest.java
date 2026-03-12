@@ -86,4 +86,45 @@ class BalanceControllerTest {
 
         verify(budgetRepository).list(eq("t1"), eq("org/"), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(50));
     }
+
+    @Test
+    void queryBalances_usesAuthenticatedTenantId_ignoresUserSupplied() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("t1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(50)))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/balances")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("tenant_id", "attacker-tenant"))
+                .andExpect(status().isOk());
+
+        verify(budgetRepository).list(eq("t1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(50));
+    }
+
+    @Test
+    void queryBalances_emptyResult_nextCursorIsNull() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("t1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(50)))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/balances")
+                        .header("X-Cycles-API-Key", "valid-api-key"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.has_more").value(false))
+                .andExpect(jsonPath("$.next_cursor").doesNotExist());
+    }
+
+    @Test
+    void queryBalances_withUnitFilter_passesUnitToRepository() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("t1"), any(), eq(UnitEnum.TOKENS), eq(BudgetStatus.ACTIVE), isNull(), eq(50)))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/balances")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("unit", "TOKENS"))
+                .andExpect(status().isOk());
+
+        verify(budgetRepository).list(eq("t1"), any(), eq(UnitEnum.TOKENS), eq(BudgetStatus.ACTIVE), isNull(), eq(50));
+    }
 }

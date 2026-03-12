@@ -179,4 +179,46 @@ class PolicyRepositoryTest {
 
         assertThat(result).hasSize(1);
     }
+
+    @Test
+    void list_missingPolicyData_skipsGracefully() throws Exception {
+        Set<String> ids = new LinkedHashSet<>(List.of("pol_1", "pol_2"));
+        when(jedis.smembers("policies:tenant1")).thenReturn(ids);
+
+        when(jedis.get("policy:pol_1")).thenReturn(null);
+        Policy p2 = Policy.builder().policyId("pol_2").scopePattern("org/*").status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(jedis.get("policy:pol_2")).thenReturn(objectMapper.writeValueAsString(p2));
+
+        List<Policy> result = repository.list("tenant1", null, null, null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getPolicyId()).isEqualTo("pol_2");
+    }
+
+    @Test
+    void list_emptyPolicySet_returnsEmptyList() {
+        when(jedis.smembers("policies:tenant1")).thenReturn(Collections.emptySet());
+
+        List<Policy> result = repository.list("tenant1", null, null, null, 50);
+
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    void list_combinedScopePatternAndStatusFilter() throws Exception {
+        Set<String> ids = new LinkedHashSet<>(List.of("pol_1", "pol_2", "pol_3"));
+        when(jedis.smembers("policies:tenant1")).thenReturn(ids);
+
+        Policy p1 = Policy.builder().policyId("pol_1").scopePattern("org/*").status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        Policy p2 = Policy.builder().policyId("pol_2").scopePattern("org/*").status(PolicyStatus.DISABLED).createdAt(Instant.now()).build();
+        Policy p3 = Policy.builder().policyId("pol_3").scopePattern("team/*").status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(jedis.get("policy:pol_1")).thenReturn(objectMapper.writeValueAsString(p1));
+        when(jedis.get("policy:pol_2")).thenReturn(objectMapper.writeValueAsString(p2));
+        when(jedis.get("policy:pol_3")).thenReturn(objectMapper.writeValueAsString(p3));
+
+        List<Policy> result = repository.list("tenant1", "org/*", PolicyStatus.ACTIVE, null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getPolicyId()).isEqualTo("pol_1");
+    }
 }

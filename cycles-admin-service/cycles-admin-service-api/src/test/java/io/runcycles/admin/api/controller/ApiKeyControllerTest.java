@@ -102,4 +102,85 @@ class ApiKeyControllerTest {
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error").value("NOT_FOUND"));
     }
+
+    @Test
+    void createApiKey_logsAuditEntry() throws Exception {
+        ApiKeyCreateResponse response = ApiKeyCreateResponse.builder()
+                .keyId("key_123").keySecret("gov_secret").keyPrefix("gov_secret1234")
+                .tenantId("t1").permissions(List.of("balances:read"))
+                .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(86400))
+                .build();
+        when(apiKeyRepository.create(any())).thenReturn(response);
+
+        mockMvc.perform(post("/v1/admin/api-keys")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tenant_id\":\"t1\",\"name\":\"My Key\"}"))
+                .andExpect(status().isCreated());
+
+        verify(auditRepository).log(argThat(entry ->
+                "createApiKey".equals(entry.getOperation()) &&
+                "t1".equals(entry.getTenantId()) &&
+                entry.getStatus() == 201));
+    }
+
+    @Test
+    void revokeApiKey_logsAuditEntry() throws Exception {
+        ApiKey revoked = ApiKey.builder()
+                .keyId("key_1").tenantId("t1").keyPrefix("gov_pre")
+                .status(ApiKeyStatus.REVOKED).revokedAt(Instant.now())
+                .revokedReason("test").createdAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(86400)).build();
+        when(apiKeyRepository.revoke("key_1", "test")).thenReturn(revoked);
+
+        mockMvc.perform(delete("/v1/admin/api-keys/key_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("reason", "test"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry ->
+                "revokeApiKey".equals(entry.getOperation()) &&
+                "t1".equals(entry.getTenantId()) &&
+                "key_1".equals(entry.getKeyId()) &&
+                entry.getStatus() == 200));
+    }
+
+    @Test
+    void listApiKeys_emptyResult_hasMoreFalseAndNoCursor() throws Exception {
+        when(apiKeyRepository.list(eq("t1"), any(), any(), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/api-keys")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("tenant_id", "t1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.keys").isEmpty())
+                .andExpect(jsonPath("$.has_more").value(false))
+                .andExpect(jsonPath("$.next_cursor").doesNotExist());
+    }
+
+    @Test
+    void listApiKeys_limitClampedToMax100() throws Exception {
+        when(apiKeyRepository.list(eq("t1"), any(), any(), eq(100))).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/api-keys")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("tenant_id", "t1")
+                        .param("limit", "500"))
+                .andExpect(status().isOk());
+
+        verify(apiKeyRepository).list(eq("t1"), any(), any(), eq(100));
+    }
+
+    @Test
+    void listApiKeys_limitClampedToMin1() throws Exception {
+        when(apiKeyRepository.list(eq("t1"), any(), any(), eq(1))).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/api-keys")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("tenant_id", "t1")
+                        .param("limit", "0"))
+                .andExpect(status().isOk());
+
+        verify(apiKeyRepository).list(eq("t1"), any(), any(), eq(1));
+    }
 }

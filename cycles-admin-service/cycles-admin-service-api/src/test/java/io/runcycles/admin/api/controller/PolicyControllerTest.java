@@ -103,4 +103,63 @@ class PolicyControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.policies").isEmpty());
     }
+
+    @Test
+    void createPolicy_logsAuditEntry() throws Exception {
+        setupApiKeyAuth();
+        Policy policy = Policy.builder()
+                .policyId("pol_123").scopePattern("org/*").name("Rate Limit")
+                .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(policyRepository.create(eq("t1"), any())).thenReturn(policy);
+
+        mockMvc.perform(post("/v1/admin/policies")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Rate Limit\",\"scope_pattern\":\"org/*\"}"))
+                .andExpect(status().isCreated());
+
+        verify(auditRepository).log(argThat(entry ->
+                "createPolicy".equals(entry.getOperation()) &&
+                "t1".equals(entry.getTenantId()) &&
+                "key_1".equals(entry.getKeyId()) &&
+                entry.getStatus() == 201));
+    }
+
+    @Test
+    void listPolicies_usesAuthenticatedTenantId() throws Exception {
+        setupApiKeyAuth();
+        when(policyRepository.list(eq("t1"), any(), any(), any(), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/policies")
+                        .header("X-Cycles-API-Key", "valid-api-key"))
+                .andExpect(status().isOk());
+
+        verify(policyRepository).list(eq("t1"), any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void listPolicies_emptyResult_hasMoreFalseAndNoCursor() throws Exception {
+        setupApiKeyAuth();
+        when(policyRepository.list(eq("t1"), any(), any(), any(), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/policies")
+                        .header("X-Cycles-API-Key", "valid-api-key"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.policies").isEmpty())
+                .andExpect(jsonPath("$.has_more").value(false))
+                .andExpect(jsonPath("$.next_cursor").doesNotExist());
+    }
+
+    @Test
+    void listPolicies_limitClampedToMax100() throws Exception {
+        setupApiKeyAuth();
+        when(policyRepository.list(eq("t1"), any(), any(), any(), eq(100))).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/policies")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("limit", "500"))
+                .andExpect(status().isOk());
+
+        verify(policyRepository).list(eq("t1"), any(), any(), any(), eq(100));
+    }
 }
