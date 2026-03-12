@@ -96,13 +96,14 @@ class AuthInterceptorTest {
     }
 
     @Test
-    void preHandle_adminEndpoint_blankAdminApiKey_acceptsAnyKey() throws Exception {
+    void preHandle_adminEndpoint_blankAdminApiKey_rejectsWithServerError() throws Exception {
         ReflectionTestUtils.setField(interceptor, "adminApiKey", "");
         request.setMethod("POST");
         request.setRequestURI("/v1/admin/tenants");
         request.addHeader("X-Admin-API-Key", "any-value");
 
-        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(500);
     }
 
     @Test

@@ -19,7 +19,7 @@ public class BudgetController {
     public ResponseEntity<BudgetLedger> create(@Valid @RequestBody BudgetCreateRequest request, HttpServletRequest httpRequest) {
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         BudgetLedger ledger = repository.create(tenantId, request);
-        auditRepository.log(AuditLogEntry.builder()
+        auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
             .operation("createBudget")
@@ -52,12 +52,19 @@ public class BudgetController {
             @Valid @RequestBody BudgetFundingRequest request, HttpServletRequest httpRequest) {
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         BudgetFundingResponse response = repository.fund(tenantId, scope, unit, request);
-        auditRepository.log(AuditLogEntry.builder()
+        auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId((String) httpRequest.getAttribute("authenticated_tenant_id"))
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
             .operation("fundBudget")
             .status(200)
             .build());
         return ResponseEntity.ok(response);
+    }
+
+    private AuditLogEntry.AuditLogEntryBuilder buildAuditEntry(HttpServletRequest request) {
+        return AuditLogEntry.builder()
+            .requestId(request.getAttribute("requestId") != null ? request.getAttribute("requestId").toString() : null)
+            .sourceIp(request.getRemoteAddr())
+            .userAgent(request.getHeader("User-Agent"));
     }
 }

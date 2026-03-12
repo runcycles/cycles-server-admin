@@ -78,7 +78,12 @@ public class AuthInterceptor implements HandlerInterceptor {
             writeError(request, response, 401, ErrorCode.UNAUTHORIZED, "Missing " + ADMIN_KEY_HEADER + " header");
             return false;
         }
-        if (adminApiKey != null && !adminApiKey.isBlank() && !adminApiKey.equals(key)) {
+        if (adminApiKey == null || adminApiKey.isBlank()) {
+            LOG.error("Admin API key is not configured — rejecting admin request");
+            writeError(request, response, 500, ErrorCode.INTERNAL_ERROR, "Server misconfiguration: admin API key not set");
+            return false;
+        }
+        if (!adminApiKey.equals(key)) {
             writeError(request, response, 403, ErrorCode.FORBIDDEN, "Invalid admin API key");
             return false;
         }

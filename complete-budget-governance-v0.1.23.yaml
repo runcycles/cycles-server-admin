@@ -811,7 +811,7 @@ components:
     
     AuditLogListResponse:
       type: object
-      required: [logs]
+      required: [logs, has_more]
       properties:
         logs:
           type: array
@@ -861,6 +861,7 @@ components:
         - KEY_REVOKED
         - KEY_EXPIRED
         - DUPLICATE_RESOURCE
+        - BUDGET_CLOSED
     
     ErrorResponse:
       type: object
@@ -1207,7 +1208,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: Idempotency mismatch or insufficient funds for DEBIT
+          description: Idempotency mismatch, insufficient funds for DEBIT, or budget is frozen/closed
           content:
             application/json:
               schema:

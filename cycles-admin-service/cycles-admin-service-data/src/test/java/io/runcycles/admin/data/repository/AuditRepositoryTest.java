@@ -54,9 +54,7 @@ class AuditRepositoryTest {
 
         assertThat(entry.getLogId()).startsWith("log_");
         assertThat(entry.getTimestamp()).isNotNull();
-        verify(jedis).set(startsWith("audit:log:log_"), anyString());
-        verify(jedis).zadd(eq("audit:logs:t1"), anyDouble(), startsWith("log_"));
-        verify(jedis).zadd(eq("audit:logs:_all"), anyDouble(), startsWith("log_"));
+        verify(jedis).eval(anyString(), anyList(), anyList());
     }
 
     @Test
@@ -72,8 +70,10 @@ class AuditRepositoryTest {
 
         repository.log(entry);
 
-        verify(jedis).set(startsWith("audit:log:"), argThat(json -> {
+        verify(jedis).eval(anyString(), anyList(), argThat(args -> {
             try {
+                // ARGV[1] is the JSON payload
+                String json = args.get(0);
                 AuditLogEntry stored = objectMapper.readValue(json, AuditLogEntry.class);
                 return "key_1".equals(stored.getKeyId()) && "test-agent".equals(stored.getUserAgent());
             } catch (Exception e) {
@@ -190,8 +190,13 @@ class AuditRepositoryTest {
 
     @Test
     void list_respectsCursor() throws Exception {
-        List<String> logIds = List.of("log_1", "log_2", "log_3");
-        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
+        // The cursor's score is looked up via zscore, then used as maxScore ceiling
+        double cursorScore = 1000.0;
+        when(jedis.zscore("audit:logs:t1", "log_1")).thenReturn(cursorScore);
+
+        List<String> logIds = List.of("log_2", "log_3");
+        // maxScore = cursorScore - 1 = 999.0
+        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), eq(999.0), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(logIds);
 
         AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("t1").operation("op").status(200).timestamp(Instant.now()).build();
         AuditLogEntry e3 = AuditLogEntry.builder().logId("log_3").tenantId("t1").operation("op").status(200).timestamp(Instant.now()).build();

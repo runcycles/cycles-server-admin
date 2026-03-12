@@ -179,7 +179,7 @@ class BudgetRepositoryTest {
 
         assertThatThrownBy(() -> repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request))
                 .isInstanceOf(GovernanceException.class)
-                .satisfies(e -> assertThat(((GovernanceException) e).getErrorCode()).isEqualTo(ErrorCode.BUDGET_FROZEN));
+                .satisfies(e -> assertThat(((GovernanceException) e).getErrorCode()).isEqualTo(ErrorCode.BUDGET_CLOSED));
     }
 
     @Test
@@ -198,7 +198,7 @@ class BudgetRepositoryTest {
 
     @Test
     void fund_withIdempotencyKey_cachesMiss_executesNormally() {
-        when(jedis.get("idempotency:idem-1")).thenReturn(null);
+        // Idempotency is now handled inside the Lua script; cache miss = normal OK result
         List<String> luaResult = List.of("OK", "0", "1000", "0", "1000", "0", "0", "false");
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(luaResult);
 
@@ -210,20 +210,14 @@ class BudgetRepositoryTest {
         BudgetFundingResponse response = repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request);
 
         assertThat(response.getNewAllocated().getAmount()).isEqualTo(1000L);
-        verify(jedis).setex(eq("idempotency:idem-1"), eq(86400L), anyString());
+        verify(jedis).eval(anyString(), anyList(), anyList());
     }
 
     @Test
     void fund_withIdempotencyKey_cacheHit_returnsCached() throws Exception {
-        BudgetFundingResponse cached = BudgetFundingResponse.builder()
-                .operation(FundingOperation.CREDIT)
-                .previousAllocated(new Amount(UnitEnum.USD_MICROCENTS, 0L))
-                .newAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
-                .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 0L))
-                .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
-                .build();
-        String cachedJson = objectMapper.writeValueAsString(cached);
-        when(jedis.get("idempotency:idem-1")).thenReturn(cachedJson);
+        // Idempotency cache hit is now returned by Lua as IDEMPOTENT_HIT with pipe-delimited values
+        List<String> luaResult = List.of("IDEMPOTENT_HIT", "0|1000|0|1000|0|0|false");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(luaResult);
 
         BudgetFundingRequest request = new BudgetFundingRequest();
         request.setOperation(FundingOperation.CREDIT);
@@ -233,7 +227,7 @@ class BudgetRepositoryTest {
         BudgetFundingResponse response = repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request);
 
         assertThat(response.getNewAllocated().getAmount()).isEqualTo(1000L);
-        verify(jedis, never()).eval(anyString(), anyList(), anyList());
+        assertThat(response.getPreviousAllocated().getAmount()).isEqualTo(0L);
     }
 
     @Test
