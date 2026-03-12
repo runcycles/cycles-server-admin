@@ -439,6 +439,26 @@ class BudgetRepositoryTest {
         verify(jedis).smembers("budgets:t1");
     }
 
+    @Test
+    void list_corruptHashMissingScopeOrUnit_skipsGracefully() {
+        Set<String> keys = new LinkedHashSet<>(List.of("budget:corrupt:USD_MICROCENTS", "budget:valid:USD_MICROCENTS"));
+        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+
+        // Corrupt hash missing 'scope' and 'unit' fields
+        Map<String, String> corruptHash = new LinkedHashMap<>();
+        corruptHash.put("ledger_id", "led-bad");
+        corruptHash.put("allocated", "1000");
+        when(jedis.hgetAll("budget:corrupt:USD_MICROCENTS")).thenReturn(corruptHash);
+
+        Map<String, String> validHash = createBudgetHash("led-1", "valid", "USD_MICROCENTS");
+        when(jedis.hgetAll("budget:valid:USD_MICROCENTS")).thenReturn(validHash);
+
+        List<BudgetLedger> result = repository.list("t1", null, null, null, null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getScope()).isEqualTo("valid");
+    }
+
     private Map<String, String> createBudgetHash(String ledgerId, String scope, String unit) {
         Map<String, String> hash = new LinkedHashMap<>();
         hash.put("ledger_id", ledgerId);

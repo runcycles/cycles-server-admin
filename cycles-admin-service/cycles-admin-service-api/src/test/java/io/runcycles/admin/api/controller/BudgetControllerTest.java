@@ -259,4 +259,30 @@ class BudgetControllerTest {
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error").value("BUDGET_NOT_FOUND"));
     }
+
+    @Test
+    void listBudgets_withCursorParam_passesToRepository() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("t1"), any(), any(), any(), eq("led-abc"), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("cursor", "led-abc"))
+                .andExpect(status().isOk());
+
+        verify(budgetRepository).list(eq("t1"), any(), any(), any(), eq("led-abc"), anyInt());
+    }
+
+    @Test
+    void listBudgets_withStatusFilter_passesToRepository() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("t1"), any(), any(), eq(BudgetStatus.FROZEN), any(), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("status", "FROZEN"))
+                .andExpect(status().isOk());
+
+        verify(budgetRepository).list(eq("t1"), any(), any(), eq(BudgetStatus.FROZEN), any(), anyInt());
+    }
 }

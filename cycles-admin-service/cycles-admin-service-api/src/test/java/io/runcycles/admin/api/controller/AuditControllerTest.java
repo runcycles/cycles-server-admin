@@ -112,4 +112,21 @@ class AuditControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.next_cursor").doesNotExist());
     }
+
+    @Test
+    void listAuditLogs_withFromAndTo_passesInstantParams() throws Exception {
+        Instant from = Instant.parse("2025-01-01T00:00:00Z");
+        Instant to = Instant.parse("2025-12-31T23:59:59Z");
+        when(auditRepository.list(isNull(), isNull(), isNull(), isNull(), eq(from), eq(to), isNull(), eq(50)))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("from", "2025-01-01T00:00:00Z")
+                        .param("to", "2025-12-31T23:59:59Z"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.logs").isEmpty());
+
+        verify(auditRepository).list(isNull(), isNull(), isNull(), isNull(), eq(from), eq(to), isNull(), eq(50));
+    }
 }
