@@ -110,10 +110,10 @@ class RedisIntegrationTest {
 
     @Test
     @Order(2)
-    void tenant_create_idempotent() {
+    void tenant_create_idempotent_sameName() {
         TenantCreateRequest request = new TenantCreateRequest();
         request.setTenantId("integ-tenant");
-        request.setName("Different Name");
+        request.setName("Integration Tenant");
 
         var result = tenantRepository.create(request);
 
@@ -123,20 +123,35 @@ class RedisIntegrationTest {
 
     @Test
     @Order(3)
+    void tenant_create_conflict_differentName_throws409() {
+        TenantCreateRequest request = new TenantCreateRequest();
+        request.setTenantId("integ-tenant");
+        request.setName("Different Name");
+
+        assertThatThrownBy(() -> tenantRepository.create(request))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getHttpStatus()).isEqualTo(409);
+                });
+    }
+
+    @Test
+    @Order(4)
     void tenant_get_succeeds() {
         Tenant tenant = tenantRepository.get("integ-tenant");
         assertThat(tenant.getName()).isEqualTo("Integration Tenant");
     }
 
     @Test
-    @Order(4)
+    @Order(5)
     void tenant_get_notFound_throws() {
         assertThatThrownBy(() -> tenantRepository.get("nonexistent"))
                 .isInstanceOf(GovernanceException.class);
     }
 
     @Test
-    @Order(5)
+    @Order(6)
     void tenant_list_returnsTenants() {
         List<Tenant> tenants = tenantRepository.list(null, null, null, 50);
         assertThat(tenants).isNotEmpty();
@@ -144,7 +159,7 @@ class RedisIntegrationTest {
     }
 
     @Test
-    @Order(6)
+    @Order(7)
     void tenant_update_name() {
         TenantUpdateRequest request = new TenantUpdateRequest();
         request.setName("Updated Name");
@@ -155,7 +170,7 @@ class RedisIntegrationTest {
     }
 
     @Test
-    @Order(7)
+    @Order(8)
     void tenant_update_suspend() {
         TenantUpdateRequest request = new TenantUpdateRequest();
         request.setStatus(TenantStatus.SUSPENDED);
@@ -167,7 +182,7 @@ class RedisIntegrationTest {
     }
 
     @Test
-    @Order(8)
+    @Order(9)
     void tenant_update_reactivate() {
         TenantUpdateRequest request = new TenantUpdateRequest();
         request.setStatus(TenantStatus.ACTIVE);
