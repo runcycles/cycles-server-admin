@@ -323,4 +323,182 @@ class ApiKeyRepositoryTest {
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getKeyId()).isEqualTo("key_1");
     }
+
+    @Test
+    void list_cursorPagination_skipsEntriesBeforeCursor() throws Exception {
+        Set<String> ids = new LinkedHashSet<>(List.of("key_1", "key_2", "key_3"));
+        when(jedis.smembers("apikeys:t1")).thenReturn(ids);
+
+        ApiKey k2 = ApiKey.builder().keyId("key_2").tenantId("t1").keyHash("h2").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        ApiKey k3 = ApiKey.builder().keyId("key_3").tenantId("t1").keyHash("h3").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String k2Json = objectMapper.writeValueAsString(k2);
+        String k3Json = objectMapper.writeValueAsString(k3);
+        when(jedis.get("apikey:key_2")).thenReturn(k2Json);
+        when(jedis.get("apikey:key_3")).thenReturn(k3Json);
+
+        List<ApiKey> result = repository.list("t1", null, "key_1", 50);
+
+        assertThat(result).hasSize(2);
+        assertThat(result.get(0).getKeyId()).isEqualTo("key_2");
+    }
+
+    @Test
+    void list_respectsLimit() throws Exception {
+        Set<String> ids = new LinkedHashSet<>(List.of("key_1", "key_2", "key_3"));
+        when(jedis.smembers("apikeys:t1")).thenReturn(ids);
+
+        ApiKey k1 = ApiKey.builder().keyId("key_1").tenantId("t1").keyHash("h1").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String k1Json = objectMapper.writeValueAsString(k1);
+        when(jedis.get("apikey:key_1")).thenReturn(k1Json);
+
+        List<ApiKey> result = repository.list("t1", null, null, 1);
+
+        assertThat(result).hasSize(1);
+    }
+
+    @Test
+    void list_missingKeyData_skipsGracefully() throws Exception {
+        Set<String> ids = new LinkedHashSet<>(List.of("key_1", "key_2"));
+        when(jedis.smembers("apikeys:t1")).thenReturn(ids);
+
+        when(jedis.get("apikey:key_1")).thenReturn(null);
+        ApiKey k2 = ApiKey.builder().keyId("key_2").tenantId("t1").keyHash("h2").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String k2Json = objectMapper.writeValueAsString(k2);
+        when(jedis.get("apikey:key_2")).thenReturn(k2Json);
+
+        List<ApiKey> result = repository.list("t1", null, null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getKeyId()).isEqualTo("key_2");
+    }
+
+    @Test
+    void list_emptyKeySet_returnsEmptyList() {
+        when(jedis.smembers("apikeys:t1")).thenReturn(Collections.emptySet());
+
+        List<ApiKey> result = repository.list("t1", null, null, 50);
+
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    void list_convenienceMethod_callsFullListWithDefaults() {
+        when(jedis.smembers("apikeys:t1")).thenReturn(Collections.emptySet());
+
+        List<ApiKey> result = repository.list("t1");
+
+        assertThat(result).isEmpty();
+        verify(jedis).smembers("apikeys:t1");
+    }
+
+    @Test
+    void revoke_alreadyRevoked_returnsRevokedKey() throws Exception {
+        ApiKey revoked = ApiKey.builder()
+                .keyId("key_1").tenantId("t1").keyHash("hash")
+                .status(ApiKeyStatus.REVOKED).revokedAt(Instant.now())
+                .createdAt(Instant.now()).build();
+        String revokedJson = objectMapper.writeValueAsString(revoked);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("ALREADY_REVOKED", revokedJson));
+
+        ApiKey result = repository.revoke("key_1", "reason");
+
+        assertThat(result.getStatus()).isEqualTo(ApiKeyStatus.REVOKED);
+    }
+
+    @Test
+    void create_withCustomPermissions_usesProvidedPermissions() throws Exception {
+        when(keyService.generateKeySecret("cyc_live")).thenReturn("cyc_live_abc123def456ghi");
+        when(keyService.extractPrefix(anyString())).thenReturn("cyc_live_abc12");
+        when(keyService.hashKey(anyString())).thenReturn("$2a$12$hash");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("CREATED"));
+
+        ApiKeyCreateRequest request = new ApiKeyCreateRequest();
+        request.setTenantId("test-tenant");
+        request.setName("Test Key");
+        request.setPermissions(List.of("reservations:create"));
+
+        ApiKeyCreateResponse response = repository.create(request);
+
+        assertThat(response.getPermissions()).containsExactly("reservations:create");
+    }
+
+    @Test
+    void create_withoutExpiry_usesDefault90Days() throws Exception {
+        when(keyService.generateKeySecret("cyc_live")).thenReturn("cyc_live_abc123def456ghi");
+        when(keyService.extractPrefix(anyString())).thenReturn("cyc_live_abc12");
+        when(keyService.hashKey(anyString())).thenReturn("$2a$12$hash");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("CREATED"));
+
+        ApiKeyCreateRequest request = new ApiKeyCreateRequest();
+        request.setTenantId("test-tenant");
+        request.setName("Test Key");
+
+        ApiKeyCreateResponse response = repository.create(request);
+
+        assertThat(response.getExpiresAt()).isAfter(Instant.now().plusSeconds(86400 * 89));
+        assertThat(response.getExpiresAt()).isBefore(Instant.now().plusSeconds(86400 * 91));
+    }
+
+    @Test
+    void validate_keyDataNullAfterLookup_returnsKeyNotFound() {
+        when(keyService.extractPrefix("cyc_live_test")).thenReturn("cyc_live_test1");
+        when(jedis.get("apikey:lookup:cyc_live_test1")).thenReturn("key_123");
+        when(jedis.get("apikey:key_123")).thenReturn(null);
+
+        ApiKeyValidationResponse response = repository.validate("cyc_live_test");
+
+        assertThat(response.getValid()).isFalse();
+        assertThat(response.getReason()).isEqualTo("KEY_NOT_FOUND");
+    }
+
+    @Test
+    void validate_blankTenantId_returnsNotOwnedByTenant() throws Exception {
+        when(keyService.extractPrefix("cyc_live_blank")).thenReturn("cyc_live_blank");
+        when(jedis.get("apikey:lookup:cyc_live_blank")).thenReturn("key_b");
+
+        ApiKey key = ApiKey.builder()
+                .keyId("key_b").tenantId("").keyHash("$2a$12$hash")
+                .status(ApiKeyStatus.ACTIVE)
+                .expiresAt(Instant.now().plusSeconds(3600))
+                .createdAt(Instant.now()).build();
+        String keyJson = objectMapper.writeValueAsString(key);
+        when(jedis.get("apikey:key_b")).thenReturn(keyJson);
+        when(keyService.verifyKey("cyc_live_blank", "$2a$12$hash")).thenReturn(true);
+
+        ApiKeyValidationResponse response = repository.validate("cyc_live_blank");
+
+        assertThat(response.getValid()).isFalse();
+        assertThat(response.getReason()).isEqualTo("KEY_NOT_OWNED_BY_TENANT");
+    }
+
+    @Test
+    void validate_nullPermissions_coercedToEmptyList() throws Exception {
+        when(keyService.extractPrefix("cyc_live_noperm")).thenReturn("cyc_live_noper");
+        when(jedis.get("apikey:lookup:cyc_live_noper")).thenReturn("key_np");
+
+        ApiKey key = ApiKey.builder()
+                .keyId("key_np").tenantId("t1").keyHash("$2a$12$hash")
+                .status(ApiKeyStatus.ACTIVE).permissions(null)
+                .expiresAt(Instant.now().plusSeconds(3600))
+                .createdAt(Instant.now()).build();
+        String keyJson = objectMapper.writeValueAsString(key);
+        when(jedis.get("apikey:key_np")).thenReturn(keyJson);
+        when(keyService.verifyKey("cyc_live_noperm", "$2a$12$hash")).thenReturn(true);
+        when(jedis.get("tenant:t1")).thenReturn("{\"status\":\"ACTIVE\"}");
+
+        ApiKeyValidationResponse response = repository.validate("cyc_live_noperm");
+
+        assertThat(response.getValid()).isTrue();
+        assertThat(response.getPermissions()).isEmpty();
+    }
+
+    @Test
+    void validate_internalException_returnsInternalError() {
+        when(keyService.extractPrefix(anyString())).thenThrow(new RuntimeException("Redis down"));
+
+        ApiKeyValidationResponse response = repository.validate("cyc_live_test");
+
+        assertThat(response.getValid()).isFalse();
+        assertThat(response.getReason()).isEqualTo("INTERNAL_ERROR");
+    }
 }

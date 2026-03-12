@@ -148,4 +148,141 @@ class BudgetControllerTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error").value("BUDGET_EXCEEDED"));
     }
+
+    @Test
+    void createBudget_logsAuditEntry() throws Exception {
+        setupApiKeyAuth();
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1").scope("org/team1").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 1000000L))
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(budgetRepository.create(eq("t1"), any())).thenReturn(ledger);
+
+        mockMvc.perform(post("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"scope\":\"org/team1\",\"unit\":\"USD_MICROCENTS\",\"allocated\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000000}}"))
+                .andExpect(status().isCreated());
+
+        verify(auditRepository).log(argThat(entry ->
+                "createBudget".equals(entry.getOperation()) &&
+                "t1".equals(entry.getTenantId()) &&
+                entry.getStatus() == 201));
+    }
+
+    @Test
+    void fundBudget_logsAuditEntry() throws Exception {
+        setupApiKeyAuth();
+        BudgetFundingResponse funding = BudgetFundingResponse.builder()
+                .operation(FundingOperation.CREDIT)
+                .previousAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .newAllocated(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
+                .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
+                .timestamp(Instant.now()).build();
+        when(budgetRepository.fund(eq("t1"), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+
+        mockMvc.perform(post("/v1/admin/budgets/scope/USD_MICROCENTS/fund")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000}}"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry ->
+                "fundBudget".equals(entry.getOperation()) &&
+                entry.getStatus() == 200));
+    }
+
+    @Test
+    void listBudgets_usesAuthenticatedTenantId_ignoresUserSupplied() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("t1"), any(), any(), any(), any(), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("tenant_id", "attacker-tenant"))
+                .andExpect(status().isOk());
+
+        verify(budgetRepository).list(eq("t1"), any(), any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void listBudgets_emptyResult_hasMoreFalseAndNoCursor() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("t1"), any(), any(), any(), any(), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.ledgers").isEmpty())
+                .andExpect(jsonPath("$.has_more").value(false))
+                .andExpect(jsonPath("$.next_cursor").doesNotExist());
+    }
+
+    @Test
+    void listBudgets_limitClampedToMax100() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("t1"), any(), any(), any(), any(), eq(100))).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("limit", "999"))
+                .andExpect(status().isOk());
+
+        verify(budgetRepository).list(eq("t1"), any(), any(), any(), any(), eq(100));
+    }
+
+    @Test
+    void listBudgets_limitClampedToMin1() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("t1"), any(), any(), any(), any(), eq(1))).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("limit", "0"))
+                .andExpect(status().isOk());
+
+        verify(budgetRepository).list(eq("t1"), any(), any(), any(), any(), eq(1));
+    }
+
+    @Test
+    void fundBudget_notFound_returns404() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.fund(eq("t1"), eq("missing"), eq(UnitEnum.USD_MICROCENTS), any()))
+                .thenThrow(GovernanceException.budgetNotFound("missing"));
+
+        mockMvc.perform(post("/v1/admin/budgets/missing/USD_MICROCENTS/fund")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000}}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error").value("BUDGET_NOT_FOUND"));
+    }
+
+    @Test
+    void listBudgets_withCursorParam_passesToRepository() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("t1"), any(), any(), any(), eq("led-abc"), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("cursor", "led-abc"))
+                .andExpect(status().isOk());
+
+        verify(budgetRepository).list(eq("t1"), any(), any(), any(), eq("led-abc"), anyInt());
+    }
+
+    @Test
+    void listBudgets_withStatusFilter_passesToRepository() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("t1"), any(), any(), eq(BudgetStatus.FROZEN), any(), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("status", "FROZEN"))
+                .andExpect(status().isOk());
+
+        verify(budgetRepository).list(eq("t1"), any(), any(), eq(BudgetStatus.FROZEN), any(), anyInt());
+    }
 }

@@ -283,4 +283,101 @@ class TenantRepositoryTest {
 
         assertThat(result.getMetadata()).containsEntry("env", "prod");
     }
+
+    @Test
+    void update_tenantNotFound_throwsTenantNotFound() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("NOT_FOUND"));
+
+        TenantUpdateRequest req = new TenantUpdateRequest();
+        req.setName("New Name");
+
+        assertThatThrownBy(() -> repository.update("missing", req))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.TENANT_NOT_FOUND);
+                    assertThat(ge.getHttpStatus()).isEqualTo(404);
+                });
+    }
+
+    @Test
+    void update_invalidStatusTransition_throwsInvalidRequest() {
+        when(jedis.eval(anyString(), anyList(), anyList()))
+                .thenReturn(List.of("INVALID_TRANSITION", "Invalid status transition: ACTIVE -> BOGUS"));
+
+        TenantUpdateRequest req = new TenantUpdateRequest();
+        req.setStatus(TenantStatus.ACTIVE);
+
+        assertThatThrownBy(() -> repository.update("t1", req))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
+                    assertThat(ge.getHttpStatus()).isEqualTo(400);
+                    assertThat(ge.getMessage()).contains("Invalid status transition");
+                });
+    }
+
+    @Test
+    void list_missingTenantData_skipsGracefully() throws Exception {
+        Set<String> ids = new LinkedHashSet<>(List.of("t1", "t2"));
+        when(jedis.smembers("tenants")).thenReturn(ids);
+
+        when(jedis.get("tenant:t1")).thenReturn(null);
+        Tenant t2 = Tenant.builder().tenantId("t2").name("B").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        String t2Json = objectMapper.writeValueAsString(t2);
+        when(jedis.get("tenant:t2")).thenReturn(t2Json);
+
+        List<Tenant> result = repository.list(null, null, null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getTenantId()).isEqualTo("t2");
+    }
+
+    @Test
+    void list_emptyTenantSet_returnsEmptyList() {
+        when(jedis.smembers("tenants")).thenReturn(Collections.emptySet());
+
+        List<Tenant> result = repository.list(null, null, null, 50);
+
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    void list_combinedStatusAndParentFilter() throws Exception {
+        Set<String> ids = new LinkedHashSet<>(List.of("t1", "t2", "t3"));
+        when(jedis.smembers("tenants")).thenReturn(ids);
+
+        Tenant t1 = Tenant.builder().tenantId("t1").name("A").status(TenantStatus.ACTIVE).parentTenantId("parent1").createdAt(Instant.now()).build();
+        Tenant t2 = Tenant.builder().tenantId("t2").name("B").status(TenantStatus.SUSPENDED).parentTenantId("parent1").createdAt(Instant.now()).build();
+        Tenant t3 = Tenant.builder().tenantId("t3").name("C").status(TenantStatus.ACTIVE).parentTenantId("parent2").createdAt(Instant.now()).build();
+        String t1Json = objectMapper.writeValueAsString(t1);
+        String t2Json = objectMapper.writeValueAsString(t2);
+        String t3Json = objectMapper.writeValueAsString(t3);
+        when(jedis.get("tenant:t1")).thenReturn(t1Json);
+        when(jedis.get("tenant:t2")).thenReturn(t2Json);
+        when(jedis.get("tenant:t3")).thenReturn(t3Json);
+
+        List<Tenant> result = repository.list(TenantStatus.ACTIVE, "parent1", null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getTenantId()).isEqualTo("t1");
+    }
+
+    @Test
+    void update_nameAndStatusTogether_succeeds() throws Exception {
+        Tenant updated = Tenant.builder().tenantId("t1").name("New Name").status(TenantStatus.SUSPENDED)
+                .suspendedAt(Instant.now()).createdAt(Instant.now()).build();
+        String updatedJson = objectMapper.writeValueAsString(updated);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
+
+        TenantUpdateRequest req = new TenantUpdateRequest();
+        req.setName("New Name");
+        req.setStatus(TenantStatus.SUSPENDED);
+
+        Tenant result = repository.update("t1", req);
+
+        assertThat(result.getName()).isEqualTo("New Name");
+        assertThat(result.getStatus()).isEqualTo(TenantStatus.SUSPENDED);
+    }
 }

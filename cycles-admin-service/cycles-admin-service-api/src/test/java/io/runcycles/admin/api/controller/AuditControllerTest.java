@@ -75,4 +75,58 @@ class AuditControllerTest {
                 .andExpect(jsonPath("$.logs").isEmpty())
                 .andExpect(jsonPath("$.has_more").value(false));
     }
+
+    @Test
+    void listAuditLogs_limitClampedToMax100() throws Exception {
+        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), eq(100)))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("limit", "500"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), eq(100));
+    }
+
+    @Test
+    void listAuditLogs_limitClampedToMin1() throws Exception {
+        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), eq(1)))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("limit", "0"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), eq(1));
+    }
+
+    @Test
+    void listAuditLogs_emptyResult_nextCursorIsNull() throws Exception {
+        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), anyInt()))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.next_cursor").doesNotExist());
+    }
+
+    @Test
+    void listAuditLogs_withFromAndTo_passesInstantParams() throws Exception {
+        Instant from = Instant.parse("2025-01-01T00:00:00Z");
+        Instant to = Instant.parse("2025-12-31T23:59:59Z");
+        when(auditRepository.list(isNull(), isNull(), isNull(), isNull(), eq(from), eq(to), isNull(), eq(50)))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("from", "2025-01-01T00:00:00Z")
+                        .param("to", "2025-12-31T23:59:59Z"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.logs").isEmpty());
+
+        verify(auditRepository).list(isNull(), isNull(), isNull(), isNull(), eq(from), eq(to), isNull(), eq(50));
+    }
 }

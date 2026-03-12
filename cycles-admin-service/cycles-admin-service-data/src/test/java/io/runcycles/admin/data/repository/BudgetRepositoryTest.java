@@ -323,6 +323,142 @@ class BudgetRepositoryTest {
         assertThat(result.get(0).getScope()).isEqualTo("a");
     }
 
+    @Test
+    void fund_idempotencyMismatch_throws409() {
+        List<String> luaResult = List.of("IDEMPOTENCY_MISMATCH");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(luaResult);
+
+        BudgetFundingRequest request = new BudgetFundingRequest();
+        request.setOperation(FundingOperation.CREDIT);
+        request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
+        request.setIdempotencyKey("idem-1");
+
+        assertThatThrownBy(() -> repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> assertThat(((GovernanceException) e).getErrorCode()).isEqualTo(ErrorCode.IDEMPOTENCY_MISMATCH));
+    }
+
+    @Test
+    void fund_reset_returnsResetValues() {
+        List<String> luaResult = List.of("OK", "1000", "5000", "500", "4500", "0", "0", "false");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(luaResult);
+
+        BudgetFundingRequest request = new BudgetFundingRequest();
+        request.setOperation(FundingOperation.RESET);
+        request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 5000L));
+
+        BudgetFundingResponse response = repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request);
+
+        assertThat(response.getOperation()).isEqualTo(FundingOperation.RESET);
+        assertThat(response.getPreviousAllocated().getAmount()).isEqualTo(1000L);
+        assertThat(response.getNewAllocated().getAmount()).isEqualTo(5000L);
+        assertThat(response.getNewRemaining().getAmount()).isEqualTo(4500L);
+    }
+
+    @Test
+    void list_cursorPagination_skipsEntriesBeforeCursor() {
+        Set<String> keys = new LinkedHashSet<>(List.of("budget:a:USD_MICROCENTS", "budget:b:USD_MICROCENTS", "budget:c:USD_MICROCENTS"));
+        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+
+        Map<String, String> hashA = createBudgetHash("led-a", "a", "USD_MICROCENTS");
+        Map<String, String> hashB = createBudgetHash("led-b", "b", "USD_MICROCENTS");
+        Map<String, String> hashC = createBudgetHash("led-c", "c", "USD_MICROCENTS");
+        when(jedis.hgetAll("budget:a:USD_MICROCENTS")).thenReturn(hashA);
+        when(jedis.hgetAll("budget:b:USD_MICROCENTS")).thenReturn(hashB);
+        when(jedis.hgetAll("budget:c:USD_MICROCENTS")).thenReturn(hashC);
+
+        List<BudgetLedger> result = repository.list("t1", null, null, null, "led-a", 50);
+
+        assertThat(result).hasSize(2);
+        assertThat(result.get(0).getLedgerId()).isEqualTo("led-b");
+        assertThat(result.get(1).getLedgerId()).isEqualTo("led-c");
+    }
+
+    @Test
+    void list_emptyHashData_cleansIndexAndSkips() {
+        Set<String> keys = new LinkedHashSet<>(List.of("budget:stale:USD_MICROCENTS", "budget:valid:USD_MICROCENTS"));
+        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+
+        when(jedis.hgetAll("budget:stale:USD_MICROCENTS")).thenReturn(Collections.emptyMap());
+        Map<String, String> validHash = createBudgetHash("led-1", "valid", "USD_MICROCENTS");
+        when(jedis.hgetAll("budget:valid:USD_MICROCENTS")).thenReturn(validHash);
+
+        List<BudgetLedger> result = repository.list("t1", null, null, null, null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getScope()).isEqualTo("valid");
+        verify(jedis).srem("budgets:t1", "budget:stale:USD_MICROCENTS");
+    }
+
+    @Test
+    void list_respectsLimit() {
+        Set<String> keys = new LinkedHashSet<>(List.of("budget:a:USD_MICROCENTS", "budget:b:USD_MICROCENTS", "budget:c:USD_MICROCENTS"));
+        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+
+        when(jedis.hgetAll("budget:a:USD_MICROCENTS")).thenReturn(createBudgetHash("led-a", "a", "USD_MICROCENTS"));
+        when(jedis.hgetAll("budget:b:USD_MICROCENTS")).thenReturn(createBudgetHash("led-b", "b", "USD_MICROCENTS"));
+
+        List<BudgetLedger> result = repository.list("t1", null, null, null, null, 2);
+
+        assertThat(result).hasSize(2);
+    }
+
+    @Test
+    void list_noKeys_returnsEmptyList() {
+        when(jedis.smembers("budgets:t1")).thenReturn(Collections.emptySet());
+
+        List<BudgetLedger> result = repository.list("t1", null, null, null, null, 50);
+
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    void create_withOptionalFields_setsFieldsCorrectly() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+
+        BudgetCreateRequest request = new BudgetCreateRequest();
+        request.setScope("org/team1");
+        request.setUnit(UnitEnum.TOKENS);
+        request.setAllocated(new Amount(UnitEnum.TOKENS, 5000L));
+        request.setRolloverPolicy(RolloverPolicy.CARRY_FORWARD);
+        request.setCommitOveragePolicy(io.runcycles.admin.model.shared.CommitOveragePolicy.ALLOW_WITH_OVERDRAFT);
+
+        BudgetLedger result = repository.create("tenant1", request);
+
+        assertThat(result.getRolloverPolicy()).isEqualTo(RolloverPolicy.CARRY_FORWARD);
+        assertThat(result.getCommitOveragePolicy()).isEqualTo(io.runcycles.admin.model.shared.CommitOveragePolicy.ALLOW_WITH_OVERDRAFT);
+    }
+
+    @Test
+    void list_convenienceMethod_callsFullListWithDefaults() {
+        when(jedis.smembers("budgets:t1")).thenReturn(Collections.emptySet());
+
+        List<BudgetLedger> result = repository.list("t1");
+
+        assertThat(result).isEmpty();
+        verify(jedis).smembers("budgets:t1");
+    }
+
+    @Test
+    void list_corruptHashMissingScopeOrUnit_skipsGracefully() {
+        Set<String> keys = new LinkedHashSet<>(List.of("budget:corrupt:USD_MICROCENTS", "budget:valid:USD_MICROCENTS"));
+        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+
+        // Corrupt hash missing 'scope' and 'unit' fields
+        Map<String, String> corruptHash = new LinkedHashMap<>();
+        corruptHash.put("ledger_id", "led-bad");
+        corruptHash.put("allocated", "1000");
+        when(jedis.hgetAll("budget:corrupt:USD_MICROCENTS")).thenReturn(corruptHash);
+
+        Map<String, String> validHash = createBudgetHash("led-1", "valid", "USD_MICROCENTS");
+        when(jedis.hgetAll("budget:valid:USD_MICROCENTS")).thenReturn(validHash);
+
+        List<BudgetLedger> result = repository.list("t1", null, null, null, null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getScope()).isEqualTo("valid");
+    }
+
     private Map<String, String> createBudgetHash(String ledgerId, String scope, String unit) {
         Map<String, String> hash = new LinkedHashMap<>();
         hash.put("ledger_id", ledgerId);
