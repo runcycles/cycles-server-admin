@@ -15,11 +15,16 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
+import jakarta.validation.Path;
 
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class GlobalExceptionHandlerTest {
 
@@ -136,5 +141,64 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
         assertThat(response.getBody().getError()).isEqualTo(ErrorCode.INTERNAL_ERROR);
         assertThat(response.getBody().getMessage()).isEqualTo("Internal error");
+    }
+
+    @Test
+    void handleGenericException_wrappedGovernanceException_delegatesToGovernanceHandler() {
+        GovernanceException governance = GovernanceException.budgetNotFound("scope1");
+
+        ResponseEntity<ErrorResponse> response = handler.handleGenericException(governance, mockRequest);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(404);
+        assertThat(response.getBody().getError()).isEqualTo(ErrorCode.BUDGET_NOT_FOUND);
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void handleConstraintViolation_returns400WithViolationDetails() {
+        ConstraintViolation<Object> violation = mock(ConstraintViolation.class);
+        Path path = mock(Path.class);
+        when(path.toString()).thenReturn("create.request.scope");
+        when(violation.getPropertyPath()).thenReturn(path);
+        when(violation.getMessage()).thenReturn("must not be null");
+
+        ConstraintViolationException ex = new ConstraintViolationException(Set.of(violation));
+
+        ResponseEntity<ErrorResponse> response = handler.handleConstraintViolation(ex, mockRequest);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().getError()).isEqualTo(ErrorCode.INVALID_REQUEST);
+        assertThat(response.getBody().getMessage()).contains("scope");
+        assertThat(response.getBody().getMessage()).contains("must not be null");
+    }
+
+    @Test
+    void handleGovernanceException_nullDetails_excludesDetailsField() {
+        GovernanceException ex = new GovernanceException(ErrorCode.INTERNAL_ERROR, "Something went wrong", 500);
+
+        ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex, mockRequest);
+
+        assertThat(response.getBody().getDetails()).isNull();
+    }
+
+    @Test
+    void handleGovernanceException_apiKeyNotFound_returns404() {
+        GovernanceException ex = GovernanceException.apiKeyNotFound("key-123");
+
+        ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex, mockRequest);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(404);
+        assertThat(response.getBody().getError()).isEqualTo(ErrorCode.NOT_FOUND);
+        assertThat(response.getBody().getMessage()).contains("key-123");
+    }
+
+    @Test
+    void handleGovernanceException_budgetClosed_returns409() {
+        GovernanceException ex = GovernanceException.budgetClosed("scope1");
+
+        ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex, mockRequest);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        assertThat(response.getBody().getError()).isEqualTo(ErrorCode.BUDGET_CLOSED);
     }
 }

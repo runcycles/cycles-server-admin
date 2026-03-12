@@ -210,4 +210,75 @@ class AuthInterceptorTest {
         assertThat(body).contains("\"message\"");
         assertThat(body).contains("\"request_id\"");
     }
+
+    // --- Reservations endpoint (API key auth) ---
+
+    @Test
+    void preHandle_reservationsEndpoint_requiresApiKey() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/reservations");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    void preHandle_reservationsEndpoint_validApiKey_succeeds() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/reservations");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+
+        when(apiKeyRepository.validate("valid-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(List.of("reservations:write"))
+                        .build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+        assertThat(request.getAttribute("authenticated_tenant_id")).isEqualTo("t1");
+    }
+
+    // --- API key validation edge cases ---
+
+    @Test
+    void preHandle_apiKeyEndpoint_blankApiKey_returns401() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/budgets");
+        request.addHeader("X-Cycles-API-Key", "   ");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    void preHandle_apiKeyValidation_nullReason_returns403() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/budgets");
+        request.addHeader("X-Cycles-API-Key", "bad-key");
+
+        when(apiKeyRepository.validate("bad-key")).thenReturn(
+                ApiKeyValidationResponse.builder().valid(false).tenantId("").reason(null).build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getContentAsString()).contains("UNKNOWN");
+    }
+
+    // --- Non-matching paths pass through ---
+
+    @Test
+    void preHandle_unknownV1Path_passesThrough() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/unknown");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_nonV1Path_passesThrough() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/health");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
 }
