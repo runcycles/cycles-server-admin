@@ -21,9 +21,28 @@ public class BudgetRepository {
     @Autowired private JedisPool jedisPool;
     @Autowired private ObjectMapper objectMapper;
 
-    // Lua script for atomic budget funding — prevents race conditions on concurrent updates.
+    // Lua script for atomic budget funding with idempotency — prevents race conditions on concurrent updates.
+    // KEYS[1] = budget key
+    // ARGV[1] = operation, ARGV[2] = amount, ARGV[3] = now, ARGV[4] = tenant_id,
+    // ARGV[5] = idempotency_key (empty = skip), ARGV[6] = payload_hash (empty = skip)
     private static final String FUND_LUA =
         "local key = KEYS[1]\n" +
+        // Atomic idempotency check: same (idem_key) seen before → replay or mismatch
+        "local idem_key_arg = ARGV[5]\n" +
+        "local payload_hash = ARGV[6]\n" +
+        "if idem_key_arg ~= '' then\n" +
+        "  local idem_redis = 'idempotency:fund:' .. idem_key_arg\n" +
+        "  local cached = redis.call('GET', idem_redis)\n" +
+        "  if cached then\n" +
+        "    if payload_hash ~= '' then\n" +
+        "      local stored_hash = redis.call('GET', idem_redis .. ':hash')\n" +
+        "      if stored_hash and stored_hash ~= payload_hash then\n" +
+        "        return {'IDEMPOTENCY_MISMATCH'}\n" +
+        "      end\n" +
+        "    end\n" +
+        "    return {'IDEMPOTENT_HIT', cached}\n" +
+        "  end\n" +
+        "end\n" +
         "if redis.call('EXISTS', key) == 0 then return {'NOT_FOUND'} end\n" +
         "local tid = redis.call('HGET', key, 'tenant_id') or ''\n" +
         "if ARGV[4] ~= '' and tid ~= ARGV[4] then return {'FORBIDDEN'} end\n" +
@@ -65,6 +84,17 @@ public class BudgetRepository {
         "redis.call('HMSET', key, 'allocated', i(allocated), 'remaining', i(remaining),\n" +
         "  'debt', i(debt), 'reserved', i(reserved), 'spent', i(spent),\n" +
         "  'is_over_limit', is_over, 'updated_at', now)\n" +
+        // Store idempotency result atomically (24h TTL)
+        "if idem_key_arg ~= '' then\n" +
+        "  local idem_redis = 'idempotency:fund:' .. idem_key_arg\n" +
+        "  local result_json = i(prev_allocated) .. '|' .. i(allocated) .. '|' .. i(prev_remaining) .. '|' .. i(remaining) .. '|' .. i(prev_debt) .. '|' .. i(debt) .. '|' .. is_over\n" +
+        "  redis.call('SET', idem_redis, result_json)\n" +
+        "  redis.call('EXPIRE', idem_redis, 86400)\n" +
+        "  if payload_hash ~= '' then\n" +
+        "    redis.call('SET', idem_redis .. ':hash', payload_hash)\n" +
+        "    redis.call('EXPIRE', idem_redis .. ':hash', 86400)\n" +
+        "  end\n" +
+        "end\n" +
         "return {'OK', i(prev_allocated), i(allocated), i(prev_remaining),\n" +
         "  i(remaining), i(prev_debt), i(debt), is_over}\n";
 
@@ -184,30 +214,36 @@ public class BudgetRepository {
     public BudgetFundingResponse fund(String tenantId, String scope, UnitEnum unit, BudgetFundingRequest request) {
         LOG.info("Funding budget: scope={}, unit={}, op={}, tenant={}", scope, unit, request.getOperation(), tenantId);
         try (Jedis jedis = jedisPool.getResource()) {
-            // Idempotency check: return cached response for duplicate requests (only if key provided)
-            if (request.getIdempotencyKey() != null && !request.getIdempotencyKey().isBlank()) {
-                String idempotencyRedisKey = "idempotency:" + request.getIdempotencyKey();
-                String cached = jedis.get(idempotencyRedisKey);
-                if (cached != null) {
-                    try {
-                        return objectMapper.readValue(cached, BudgetFundingResponse.class);
-                    } catch (Exception e) {
-                        LOG.warn("Failed to parse cached idempotency response", e);
-                    }
-                }
-            }
-
             String key = "budget:" + scope + ":" + unit;
             long changeAmount = request.getAmount().getAmount();
             String now = String.valueOf(Instant.now().toEpochMilli());
 
-            // Atomic fund via Lua — read, compute, write in one step
+            // Compute payload hash for idempotency mismatch detection (spec MUST)
+            String idempotencyKey = (request.getIdempotencyKey() != null && !request.getIdempotencyKey().isBlank())
+                ? request.getIdempotencyKey() : "";
+            String payloadHash = "";
+            if (!idempotencyKey.isEmpty()) {
+                payloadHash = computePayloadHash(request);
+            }
+
+            // Atomic fund via Lua — idempotency check + read + compute + write + cache in one step
             @SuppressWarnings("unchecked")
             List<String> result = (List<String>) jedis.eval(FUND_LUA,
                 List.of(key),
-                List.of(request.getOperation().name(), String.valueOf(changeAmount), now, tenantId != null ? tenantId : ""));
+                List.of(request.getOperation().name(), String.valueOf(changeAmount), now,
+                         tenantId != null ? tenantId : "", idempotencyKey, payloadHash));
 
             String status = result.get(0);
+            if ("IDEMPOTENCY_MISMATCH".equals(status)) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.IDEMPOTENCY_MISMATCH,
+                    "Idempotency key reused with different payload", 409);
+            }
+            if ("IDEMPOTENT_HIT".equals(status)) {
+                // Reconstruct response from cached pipe-delimited values
+                String cached = result.get(1);
+                return parseCachedFundResponse(cached, unit, request.getOperation());
+            }
             if ("FORBIDDEN".equals(status)) {
                 throw new GovernanceException(
                     io.runcycles.admin.model.shared.ErrorCode.FORBIDDEN,
@@ -244,22 +280,38 @@ public class BudgetRepository {
                 .timestamp(Instant.now())
                 .build();
 
-            // Cache response for idempotency (24h TTL) if key provided
-            if (request.getIdempotencyKey() != null && !request.getIdempotencyKey().isBlank()) {
-                try {
-                    String idempotencyRedisKey = "idempotency:" + request.getIdempotencyKey();
-                    jedis.setex(idempotencyRedisKey, 86400, objectMapper.writeValueAsString(response));
-                } catch (Exception e) {
-                    LOG.warn("Failed to cache idempotency response", e);
-                }
-            }
-
             LOG.info("Funded budget atomically: key={}, op={}", key, request.getOperation());
             return response;
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    private BudgetFundingResponse parseCachedFundResponse(String cached, UnitEnum unit, FundingOperation operation) {
+        String[] parts = cached.split("\\|");
+        return BudgetFundingResponse.builder()
+            .operation(operation)
+            .previousAllocated(new Amount(unit, Long.parseLong(parts[0])))
+            .newAllocated(new Amount(unit, Long.parseLong(parts[1])))
+            .previousRemaining(new Amount(unit, Long.parseLong(parts[2])))
+            .newRemaining(new Amount(unit, Long.parseLong(parts[3])))
+            .previousDebt(new Amount(unit, Long.parseLong(parts[4])))
+            .newDebt(new Amount(unit, Long.parseLong(parts[5])))
+            .timestamp(Instant.now())
+            .build();
+    }
+
+    private String computePayloadHash(Object request) {
+        try {
+            String json = objectMapper.writeValueAsString(request);
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash);
+        } catch (Exception e) {
+            LOG.warn("Failed to compute payload hash, skipping mismatch detection", e);
+            return "";
         }
     }
 

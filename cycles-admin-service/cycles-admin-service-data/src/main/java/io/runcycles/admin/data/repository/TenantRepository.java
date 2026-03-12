@@ -25,6 +25,45 @@ public class TenantRepository {
         "redis.call('SADD', KEYS[2], ARGV[2])\n" +
         "return nil\n";
 
+    // Lua script for atomic tenant update: reads, validates status transition, and writes in one step.
+    // Prevents lost-update race conditions from concurrent read-modify-write cycles.
+    // KEYS[1] = tenant key
+    // ARGV[1] = new_name (empty string = no change)
+    // ARGV[2] = new_status (empty string = no change)
+    // ARGV[3] = new_metadata_json (empty string = no change)
+    // ARGV[4] = now_ms (epoch millis for timestamps)
+    // Returns: {'OK', updated_json} on success, or {'ERROR', error_message} on failure
+    private static final String UPDATE_TENANT_LUA =
+        "local json = redis.call('GET', KEYS[1])\n" +
+        "if not json then return {'NOT_FOUND'} end\n" +
+        "local tenant = cjson.decode(json)\n" +
+        "local new_name = ARGV[1]\n" +
+        "local new_status = ARGV[2]\n" +
+        "local new_metadata = ARGV[3]\n" +
+        "local now_ms = ARGV[4]\n" +
+        // Apply name change
+        "if new_name ~= '' then tenant['name'] = new_name end\n" +
+        // Validate and apply status transition
+        "if new_status ~= '' then\n" +
+        "  local old_status = tenant['status'] or 'ACTIVE'\n" +
+        "  if old_status == 'CLOSED' then return {'INVALID_TRANSITION', 'Cannot transition from CLOSED'} end\n" +
+        "  if old_status == 'ACTIVE' and new_status ~= 'SUSPENDED' and new_status ~= 'CLOSED' and new_status ~= 'ACTIVE' then\n" +
+        "    return {'INVALID_TRANSITION', 'Invalid status transition: ' .. old_status .. ' -> ' .. new_status}\n" +
+        "  end\n" +
+        "  if old_status == 'SUSPENDED' and new_status ~= 'ACTIVE' and new_status ~= 'CLOSED' and new_status ~= 'SUSPENDED' then\n" +
+        "    return {'INVALID_TRANSITION', 'Invalid status transition: ' .. old_status .. ' -> ' .. new_status}\n" +
+        "  end\n" +
+        "  tenant['status'] = new_status\n" +
+        "  if new_status == 'SUSPENDED' then tenant['suspendedAt'] = now_ms end\n" +
+        "  if new_status == 'CLOSED' then tenant['closedAt'] = now_ms end\n" +
+        "end\n" +
+        // Apply metadata change
+        "if new_metadata ~= '' then tenant['metadata'] = cjson.decode(new_metadata) end\n" +
+        "tenant['updatedAt'] = now_ms\n" +
+        "local updated = cjson.encode(tenant)\n" +
+        "redis.call('SET', KEYS[1], updated)\n" +
+        "return {'OK', updated}\n";
+
     public record TenantCreateResult(Tenant tenant, boolean created) {}
 
     public TenantCreateResult create(TenantCreateRequest request) {
@@ -100,43 +139,31 @@ public class TenantRepository {
     }
     public Tenant update(String tenantId, TenantUpdateRequest request) {
         try (Jedis jedis = jedisPool.getResource()) {
-            Tenant tenant = get(tenantId);
-            if (request.getName() != null) tenant.setName(request.getName());
-            if (request.getStatus() != null) {
-                TenantStatus oldStatus = tenant.getStatus();
-                TenantStatus newStatus = request.getStatus();
-                // Validate status transitions per spec
-                if (oldStatus == TenantStatus.CLOSED) {
-                    throw new GovernanceException(
-                        io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
-                        "Cannot transition from CLOSED", 400);
-                }
-                if (oldStatus == TenantStatus.ACTIVE && newStatus != TenantStatus.SUSPENDED && newStatus != TenantStatus.CLOSED) {
-                    if (newStatus != TenantStatus.ACTIVE) {
-                        throw new GovernanceException(
-                            io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
-                            "Invalid status transition: " + oldStatus + " -> " + newStatus, 400);
-                    }
-                }
-                if (oldStatus == TenantStatus.SUSPENDED && newStatus != TenantStatus.ACTIVE && newStatus != TenantStatus.CLOSED) {
-                    if (newStatus != TenantStatus.SUSPENDED) {
-                        throw new GovernanceException(
-                            io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
-                            "Invalid status transition: " + oldStatus + " -> " + newStatus, 400);
-                    }
-                }
-                tenant.setStatus(newStatus);
-                Instant now = Instant.now();
-                if (newStatus == TenantStatus.SUSPENDED) {
-                    tenant.setSuspendedAt(now);
-                } else if (newStatus == TenantStatus.CLOSED) {
-                    tenant.setClosedAt(now);
-                }
+            String key = "tenant:" + tenantId;
+            String nowMs = String.valueOf(Instant.now().toEpochMilli());
+
+            @SuppressWarnings("unchecked")
+            List<String> result = (List<String>) jedis.eval(UPDATE_TENANT_LUA,
+                List.of(key),
+                List.of(
+                    request.getName() != null ? request.getName() : "",
+                    request.getStatus() != null ? request.getStatus().name() : "",
+                    request.getMetadata() != null ? objectMapper.writeValueAsString(request.getMetadata()) : "",
+                    nowMs
+                ));
+
+            String status = result.get(0);
+            if ("NOT_FOUND".equals(status)) {
+                throw GovernanceException.tenantNotFound(tenantId);
             }
-            if (request.getMetadata() != null) tenant.setMetadata(request.getMetadata());
-            tenant.setUpdatedAt(Instant.now());
-            jedis.set("tenant:" + tenantId, objectMapper.writeValueAsString(tenant));
-            return tenant;
+            if ("INVALID_TRANSITION".equals(status)) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                    result.get(1), 400);
+            }
+
+            // result.get(1) is the updated tenant JSON
+            return objectMapper.readValue(result.get(1), Tenant.class);
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {

@@ -22,8 +22,8 @@ public class AuditRepository {
             // Also add to global index for cross-tenant queries
             jedis.zadd("audit:logs:_all", entry.getTimestamp().toEpochMilli(), logId);
         } catch (Exception e) {
-            LOG.error("Failed to write audit log", e);
-            throw new RuntimeException("Audit log write failed", e);
+            // Audit log failure should not break the business operation that triggered it
+            LOG.error("Failed to write audit log (non-fatal)", e);
         }
     }
     public List<AuditLogEntry> list(String tenantId, String keyId, String operation, Integer status,

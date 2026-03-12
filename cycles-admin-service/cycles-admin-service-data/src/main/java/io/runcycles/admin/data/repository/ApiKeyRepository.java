@@ -24,6 +24,22 @@ public class ApiKeyRepository {
         "redis.call('SADD', KEYS[2], ARGV[2])\n" +
         "redis.call('SET', KEYS[3], ARGV[2])\n" +
         "return 1\n";
+
+    // Lua script for atomic API key revocation: reads, checks state, sets revoked fields in one call.
+    // KEYS[1] = apikey:<keyId>
+    // ARGV[1] = reason, ARGV[2] = now_ms
+    // Returns: {'OK', updated_json} or {'NOT_FOUND'} or {'ALREADY_REVOKED', existing_json}
+    private static final String REVOKE_KEY_LUA =
+        "local json = redis.call('GET', KEYS[1])\n" +
+        "if not json then return {'NOT_FOUND'} end\n" +
+        "local key = cjson.decode(json)\n" +
+        "if key['status'] == 'REVOKED' then return {'ALREADY_REVOKED', json} end\n" +
+        "key['status'] = 'REVOKED'\n" +
+        "key['revokedAt'] = ARGV[2]\n" +
+        "if ARGV[1] ~= '' then key['revokedReason'] = ARGV[1] end\n" +
+        "local updated = cjson.encode(key)\n" +
+        "redis.call('SET', KEYS[1], updated)\n" +
+        "return {'OK', updated}\n";
     public ApiKeyCreateResponse create(ApiKeyCreateRequest request) {
         // Validate tenant exists and is active before creating key
         try (Jedis jedis = jedisPool.getResource()) {
@@ -120,14 +136,19 @@ public class ApiKeyRepository {
     }
     public ApiKey revoke(String keyId, String reason) {
         try (Jedis jedis = jedisPool.getResource()) {
-            String data = jedis.get("apikey:" + keyId);
-            if (data == null) throw GovernanceException.apiKeyNotFound(keyId);
-            ApiKey key = objectMapper.readValue(data, ApiKey.class);
-            key.setStatus(ApiKeyStatus.REVOKED);
-            key.setRevokedAt(Instant.now());
-            key.setRevokedReason(reason);
-            jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
-            return key;
+            String nowMs = String.valueOf(Instant.now().toEpochMilli());
+
+            @SuppressWarnings("unchecked")
+            List<String> result = (List<String>) jedis.eval(REVOKE_KEY_LUA,
+                List.of("apikey:" + keyId),
+                List.of(reason != null ? reason : "", nowMs));
+
+            String status = result.get(0);
+            if ("NOT_FOUND".equals(status)) {
+                throw GovernanceException.apiKeyNotFound(keyId);
+            }
+            // Both OK and ALREADY_REVOKED return the key JSON in result.get(1)
+            return objectMapper.readValue(result.get(1), ApiKey.class);
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
