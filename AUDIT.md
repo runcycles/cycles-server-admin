@@ -115,7 +115,7 @@ Note: The spec also defines `POST /v1/reservations`, `POST /v1/reservations/{id}
 |---|---|---|---|
 | `UnitEnum` | `UnitEnum` | `USD_MICROCENTS`, `TOKENS`, `CREDITS`, `RISK_POINTS` | PASS |
 | `CommitOveragePolicy` | `CommitOveragePolicy` | `REJECT`, `ALLOW_IF_AVAILABLE`, `ALLOW_WITH_OVERDRAFT` | PASS |
-| `ErrorCode` | `ErrorCode` | All 22 spec values (12 runtime + 10 admin-specific) | PASS |
+| `ErrorCode` | `ErrorCode` | All 23 spec values (12 runtime + 11 admin-specific) | PASS |
 | `TenantStatus` | `TenantStatus` | `ACTIVE`, `SUSPENDED`, `CLOSED` | PASS |
 | `ApiKeyStatus` | `ApiKeyStatus` | `ACTIVE`, `REVOKED`, `EXPIRED` | PASS |
 | `PolicyStatus` | `PolicyStatus` | `ACTIVE`, `DISABLED` | PASS |
