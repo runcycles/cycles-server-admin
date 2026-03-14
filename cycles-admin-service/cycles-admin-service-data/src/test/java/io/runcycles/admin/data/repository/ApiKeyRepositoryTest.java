@@ -501,4 +501,84 @@ class ApiKeyRepositoryTest {
         assertThat(response.getValid()).isFalse();
         assertThat(response.getReason()).isEqualTo("INTERNAL_ERROR");
     }
+
+    @Test
+    void create_genericException_wrappedInRuntimeException() {
+        when(keyService.generateKeySecret("cyc_live")).thenThrow(new RuntimeException("Key generation failed"));
+
+        ApiKeyCreateRequest request = new ApiKeyCreateRequest();
+        request.setTenantId("t1");
+        request.setName("Test Key");
+
+        assertThatThrownBy(() -> repository.create(request))
+                .isInstanceOf(RuntimeException.class)
+                .hasCauseInstanceOf(RuntimeException.class);
+    }
+
+    @Test
+    void list_deserializationFailure_skipsGracefully() throws Exception {
+        Set<String> ids = new LinkedHashSet<>(List.of("key_1", "key_2"));
+        when(jedis.smembers("apikeys:t1")).thenReturn(ids);
+
+        when(jedis.get("apikey:key_1")).thenReturn("{invalid json}");
+        ApiKey k2 = ApiKey.builder().keyId("key_2").tenantId("t1").keyHash("h2").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String k2Json = objectMapper.writeValueAsString(k2);
+        when(jedis.get("apikey:key_2")).thenReturn(k2Json);
+
+        List<ApiKey> result = repository.list("t1", null, null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getKeyId()).isEqualTo("key_2");
+    }
+
+    @Test
+    void revoke_genericException_wrappedInRuntimeException() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
+
+        assertThatThrownBy(() -> repository.revoke("key_1", "reason"))
+                .isInstanceOf(RuntimeException.class)
+                .hasCauseInstanceOf(RuntimeException.class);
+    }
+
+    @Test
+    void validate_tenantDataNull_returnsValid() throws Exception {
+        when(keyService.extractPrefix("cyc_live_nodata")).thenReturn("cyc_live_nodat");
+        when(jedis.get("apikey:lookup:cyc_live_nodat")).thenReturn("key_nd");
+
+        ApiKey key = ApiKey.builder()
+                .keyId("key_nd").tenantId("t1").keyHash("$2a$12$hash")
+                .status(ApiKeyStatus.ACTIVE)
+                .permissions(List.of("balances:read"))
+                .expiresAt(Instant.now().plusSeconds(3600))
+                .createdAt(Instant.now()).build();
+        String keyJson = objectMapper.writeValueAsString(key);
+        when(jedis.get("apikey:key_nd")).thenReturn(keyJson);
+        when(keyService.verifyKey("cyc_live_nodata", "$2a$12$hash")).thenReturn(true);
+        when(jedis.get("tenant:t1")).thenReturn(null);
+
+        ApiKeyValidationResponse response = repository.validate("cyc_live_nodata");
+
+        assertThat(response.getValid()).isTrue();
+        assertThat(response.getTenantId()).isEqualTo("t1");
+    }
+
+    @Test
+    void validate_nullTenantId_returnsNotOwnedByTenant() throws Exception {
+        when(keyService.extractPrefix("cyc_live_nulltid")).thenReturn("cyc_live_nullt");
+        when(jedis.get("apikey:lookup:cyc_live_nullt")).thenReturn("key_nt");
+
+        ApiKey key = ApiKey.builder()
+                .keyId("key_nt").tenantId(null).keyHash("$2a$12$hash")
+                .status(ApiKeyStatus.ACTIVE)
+                .expiresAt(Instant.now().plusSeconds(3600))
+                .createdAt(Instant.now()).build();
+        String keyJson = objectMapper.writeValueAsString(key);
+        when(jedis.get("apikey:key_nt")).thenReturn(keyJson);
+        when(keyService.verifyKey("cyc_live_nulltid", "$2a$12$hash")).thenReturn(true);
+
+        ApiKeyValidationResponse response = repository.validate("cyc_live_nulltid");
+
+        assertThat(response.getValid()).isFalse();
+        assertThat(response.getReason()).isEqualTo("KEY_NOT_OWNED_BY_TENANT");
+    }
 }

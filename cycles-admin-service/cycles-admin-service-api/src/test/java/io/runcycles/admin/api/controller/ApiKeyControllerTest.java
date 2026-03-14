@@ -183,4 +183,105 @@ class ApiKeyControllerTest {
 
         verify(apiKeyRepository).list(eq("t1"), any(), any(), eq(1));
     }
+
+    @Test
+    void createApiKey_auditEntry_requestIdIsNullWhenAttributeMissing() throws Exception {
+        ApiKeyCreateResponse response = ApiKeyCreateResponse.builder()
+                .keyId("key_123").keySecret("gov_secret").keyPrefix("gov_secret1234")
+                .tenantId("t1").permissions(List.of("balances:read"))
+                .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(86400))
+                .build();
+        when(apiKeyRepository.create(any())).thenReturn(response);
+
+        // No requestId attribute set on request — buildAuditEntry should produce null requestId
+        mockMvc.perform(post("/v1/admin/api-keys")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tenant_id\":\"t1\",\"name\":\"My Key\"}"))
+                .andExpect(status().isCreated());
+
+        verify(auditRepository).log(argThat(entry ->
+                entry.getRequestId() == null &&
+                "createApiKey".equals(entry.getOperation())));
+    }
+
+    @Test
+    void createApiKey_auditEntry_userAgentIsNullWhenHeaderMissing() throws Exception {
+        ApiKeyCreateResponse response = ApiKeyCreateResponse.builder()
+                .keyId("key_123").keySecret("gov_secret").keyPrefix("gov_secret1234")
+                .tenantId("t1").permissions(List.of("balances:read"))
+                .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(86400))
+                .build();
+        when(apiKeyRepository.create(any())).thenReturn(response);
+
+        // No User-Agent header — buildAuditEntry should produce null userAgent
+        mockMvc.perform(post("/v1/admin/api-keys")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tenant_id\":\"t1\",\"name\":\"My Key\"}"))
+                .andExpect(status().isCreated());
+
+        verify(auditRepository).log(argThat(entry ->
+                entry.getUserAgent() == null &&
+                "createApiKey".equals(entry.getOperation())));
+    }
+
+    @Test
+    void revokeApiKey_auditEntry_requestIdIsNullWhenAttributeMissing() throws Exception {
+        ApiKey revoked = ApiKey.builder()
+                .keyId("key_1").tenantId("t1").keyPrefix("gov_pre")
+                .status(ApiKeyStatus.REVOKED).revokedAt(Instant.now())
+                .revokedReason("test").createdAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(86400)).build();
+        when(apiKeyRepository.revoke("key_1", "test")).thenReturn(revoked);
+
+        mockMvc.perform(delete("/v1/admin/api-keys/key_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("reason", "test"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry ->
+                entry.getRequestId() == null &&
+                "revokeApiKey".equals(entry.getOperation())));
+    }
+
+    @Test
+    void listApiKeys_withStatusFilter_passesToRepository() throws Exception {
+        when(apiKeyRepository.list(eq("t1"), eq(ApiKeyStatus.REVOKED), any(), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/api-keys")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("tenant_id", "t1")
+                        .param("status", "REVOKED"))
+                .andExpect(status().isOk());
+
+        verify(apiKeyRepository).list(eq("t1"), eq(ApiKeyStatus.REVOKED), any(), anyInt());
+    }
+
+    @Test
+    void listApiKeys_withCursorParam_passesToRepository() throws Exception {
+        when(apiKeyRepository.list(eq("t1"), any(), eq("key_abc"), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/api-keys")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("tenant_id", "t1")
+                        .param("cursor", "key_abc"))
+                .andExpect(status().isOk());
+
+        verify(apiKeyRepository).list(eq("t1"), any(), eq("key_abc"), anyInt());
+    }
+
+    @Test
+    void revokeApiKey_withoutReason_passesNullReason() throws Exception {
+        ApiKey revoked = ApiKey.builder()
+                .keyId("key_1").tenantId("t1").keyPrefix("gov_pre")
+                .status(ApiKeyStatus.REVOKED).revokedAt(Instant.now())
+                .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(86400)).build();
+        when(apiKeyRepository.revoke("key_1", null)).thenReturn(revoked);
+
+        mockMvc.perform(delete("/v1/admin/api-keys/key_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REVOKED"));
+    }
 }

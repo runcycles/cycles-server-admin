@@ -127,4 +127,52 @@ class BalanceControllerTest {
 
         verify(budgetRepository).list(eq("t1"), any(), eq(UnitEnum.TOKENS), eq(BudgetStatus.ACTIVE), isNull(), eq(50));
     }
+
+    @Test
+    void queryBalances_withCursorParam_passesToRepository() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("t1"), any(), any(), eq(BudgetStatus.ACTIVE), eq("led-abc"), eq(50)))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/balances")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("cursor", "led-abc"))
+                .andExpect(status().isOk());
+
+        verify(budgetRepository).list(eq("t1"), any(), any(), eq(BudgetStatus.ACTIVE), eq("led-abc"), eq(50));
+    }
+
+    @Test
+    void queryBalances_withCustomLimit_passesToRepository() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("t1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(10)))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/balances")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("limit", "10"))
+                .andExpect(status().isOk());
+
+        verify(budgetRepository).list(eq("t1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(10));
+    }
+
+    @Test
+    void queryBalances_hasMoreTrue_returnsNextCursor() throws Exception {
+        setupApiKeyAuth();
+        // Return exactly 'limit' results to trigger hasMore=true
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-last").scope("org/team1").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 800L))
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(budgetRepository.list(eq("t1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(1)))
+                .thenReturn(List.of(ledger));
+
+        mockMvc.perform(get("/v1/balances")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("limit", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.has_more").value(true))
+                .andExpect(jsonPath("$.next_cursor").value("led-last"));
+    }
 }

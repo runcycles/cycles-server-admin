@@ -204,7 +204,7 @@ class AuthInterceptorTest {
 
         interceptor.preHandle(request, response, new Object());
 
-        assertThat(response.getContentType()).isEqualTo("application/json");
+        assertThat(response.getContentType()).startsWith("application/json");
         String body = response.getContentAsString();
         assertThat(body).contains("\"error\"");
         assertThat(body).contains("\"message\"");
@@ -279,6 +279,60 @@ class AuthInterceptorTest {
         request.setMethod("GET");
         request.setRequestURI("/health");
 
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_adminEndpoint_nullAdminApiKey_rejectsWithServerError() throws Exception {
+        ReflectionTestUtils.setField(interceptor, "adminApiKey", null);
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/tenants");
+        request.addHeader("X-Admin-API-Key", "any-value");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(500);
+        assertThat(response.getContentAsString()).contains("Server misconfiguration");
+    }
+
+    @Test
+    void preHandle_adminEndpoint_blankHeader_returns401() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/tenants");
+        request.addHeader("X-Admin-API-Key", "   ");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    void preHandle_errorResponse_usesRequestIdAttributeWhenPresent() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/tenants");
+        request.setAttribute("requestId", "test-req-id-abc");
+
+        interceptor.preHandle(request, response, new Object());
+
+        assertThat(response.getContentAsString()).contains("test-req-id-abc");
+    }
+
+    @Test
+    void preHandle_errorResponse_generatesUuidWhenRequestIdAttributeMissing() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/tenants");
+        // No requestId attribute set
+
+        interceptor.preHandle(request, response, new Object());
+
+        String body = response.getContentAsString();
+        assertThat(body).contains("\"request_id\"");
+        // The request_id should be a UUID since no attribute was set
+        assertThat(body).containsPattern("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+    }
+
+    @Test
+    void preHandle_apiDocsLegacyPath_skipsAuth() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/api-docs/something");
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
     }
 }

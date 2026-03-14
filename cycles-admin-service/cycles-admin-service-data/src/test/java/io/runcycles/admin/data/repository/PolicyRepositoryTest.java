@@ -19,6 +19,7 @@ import java.time.Instant;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -224,5 +225,34 @@ class PolicyRepositoryTest {
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getPolicyId()).isEqualTo("pol_1");
+    }
+
+    @Test
+    void create_genericException_wrappedInRuntimeException() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
+
+        PolicyCreateRequest request = new PolicyCreateRequest();
+        request.setName("Test Policy");
+        request.setScopePattern("org/*");
+
+        assertThatThrownBy(() -> repository.create("tenant1", request))
+                .isInstanceOf(RuntimeException.class)
+                .hasCauseInstanceOf(RuntimeException.class);
+    }
+
+    @Test
+    void list_deserializationFailure_skipsGracefully() throws Exception {
+        Set<String> ids = new LinkedHashSet<>(List.of("pol_1", "pol_2"));
+        when(jedis.smembers("policies:tenant1")).thenReturn(ids);
+
+        when(jedis.get("policy:pol_1")).thenReturn("{invalid json}");
+        Policy p2 = Policy.builder().policyId("pol_2").scopePattern("org/*").status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String p2Json = objectMapper.writeValueAsString(p2);
+        when(jedis.get("policy:pol_2")).thenReturn(p2Json);
+
+        List<Policy> result = repository.list("tenant1", null, null, null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getPolicyId()).isEqualTo("pol_2");
     }
 }

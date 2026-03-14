@@ -459,6 +459,54 @@ class BudgetRepositoryTest {
         assertThat(result.get(0).getScope()).isEqualTo("valid");
     }
 
+    @Test
+    void create_genericException_wrappedInRuntimeException() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
+
+        BudgetCreateRequest request = new BudgetCreateRequest();
+        request.setScope("org/team1");
+        request.setUnit(UnitEnum.USD_MICROCENTS);
+        request.setAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
+
+        assertThatThrownBy(() -> repository.create("t1", request))
+                .isInstanceOf(RuntimeException.class)
+                .hasCauseInstanceOf(RuntimeException.class);
+    }
+
+    @Test
+    void list_deserializationFailure_skipsGracefully() {
+        Set<String> keys = new LinkedHashSet<>(List.of("budget:bad:USD_MICROCENTS", "budget:valid:USD_MICROCENTS"));
+        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+
+        // Return a hash that will cause an exception in hashToBudgetLedger (bad unit value)
+        Map<String, String> badHash = new LinkedHashMap<>();
+        badHash.put("ledger_id", "led-bad");
+        badHash.put("scope", "bad");
+        badHash.put("unit", "INVALID_UNIT_ENUM");
+        when(jedis.hgetAll("budget:bad:USD_MICROCENTS")).thenReturn(badHash);
+
+        Map<String, String> validHash = createBudgetHash("led-1", "valid", "USD_MICROCENTS");
+        when(jedis.hgetAll("budget:valid:USD_MICROCENTS")).thenReturn(validHash);
+
+        List<BudgetLedger> result = repository.list("t1", null, null, null, null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getScope()).isEqualTo("valid");
+    }
+
+    @Test
+    void fund_genericException_wrappedInRuntimeException() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
+
+        BudgetFundingRequest request = new BudgetFundingRequest();
+        request.setOperation(FundingOperation.CREDIT);
+        request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
+
+        assertThatThrownBy(() -> repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request))
+                .isInstanceOf(RuntimeException.class)
+                .hasCauseInstanceOf(RuntimeException.class);
+    }
+
     private Map<String, String> createBudgetHash(String ledgerId, String scope, String unit) {
         Map<String, String> hash = new LinkedHashMap<>();
         hash.put("ledger_id", ledgerId);

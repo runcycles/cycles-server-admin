@@ -284,4 +284,26 @@ class AuditRepositoryTest {
         assertThat(result).hasSize(1);
         verify(jedis).zrevrangeByScore(eq("audit:logs:t1"), eq(2000.0), eq(1000.0), eq(0), anyInt());
     }
+
+    @Test
+    void list_negativeLimit_returnsEmptyList() {
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, -1);
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    void list_deserializationFailure_skipsGracefully() throws Exception {
+        List<String> logIds = List.of("log_bad", "log_good");
+        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
+
+        when(jedis.get("audit:log:log_bad")).thenReturn("{invalid json}");
+        AuditLogEntry good = AuditLogEntry.builder().logId("log_good").tenantId("t1").operation("op").status(200).timestamp(Instant.now()).build();
+        String goodJson = objectMapper.writeValueAsString(good);
+        when(jedis.get("audit:log:log_good")).thenReturn(goodJson);
+
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getLogId()).isEqualTo("log_good");
+    }
 }

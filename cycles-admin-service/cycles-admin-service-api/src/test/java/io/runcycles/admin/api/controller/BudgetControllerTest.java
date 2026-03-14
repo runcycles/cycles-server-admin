@@ -285,4 +285,149 @@ class BudgetControllerTest {
 
         verify(budgetRepository).list(eq("t1"), any(), any(), eq(BudgetStatus.FROZEN), any(), anyInt());
     }
+
+    @Test
+    void createBudget_auditEntry_requestIdIsNullWhenAttributeMissing() throws Exception {
+        setupApiKeyAuth();
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1").scope("org/team1").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 1000000L))
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(budgetRepository.create(eq("t1"), any())).thenReturn(ledger);
+
+        mockMvc.perform(post("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"scope\":\"org/team1\",\"unit\":\"USD_MICROCENTS\",\"allocated\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000000}}"))
+                .andExpect(status().isCreated());
+
+        verify(auditRepository).log(argThat(entry ->
+                entry.getRequestId() == null &&
+                "createBudget".equals(entry.getOperation())));
+    }
+
+    @Test
+    void fundBudget_auditEntry_includesKeyId() throws Exception {
+        setupApiKeyAuth();
+        BudgetFundingResponse funding = BudgetFundingResponse.builder()
+                .operation(FundingOperation.CREDIT)
+                .previousAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .newAllocated(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
+                .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
+                .timestamp(Instant.now()).build();
+        when(budgetRepository.fund(eq("t1"), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+
+        mockMvc.perform(post("/v1/admin/budgets/scope/USD_MICROCENTS/fund")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000}}"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry ->
+                "fundBudget".equals(entry.getOperation()) &&
+                "t1".equals(entry.getTenantId()) &&
+                "key_1".equals(entry.getKeyId())));
+    }
+
+    @Test
+    void fundBudget_debitOperation_returns200() throws Exception {
+        setupApiKeyAuth();
+        BudgetFundingResponse funding = BudgetFundingResponse.builder()
+                .operation(FundingOperation.DEBIT)
+                .previousAllocated(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
+                .newAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
+                .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .timestamp(Instant.now()).build();
+        when(budgetRepository.fund(eq("t1"), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+
+        mockMvc.perform(post("/v1/admin/budgets/scope/USD_MICROCENTS/fund")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"DEBIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operation").value("DEBIT"));
+    }
+
+    @Test
+    void fundBudget_resetOperation_returns200() throws Exception {
+        setupApiKeyAuth();
+        BudgetFundingResponse funding = BudgetFundingResponse.builder()
+                .operation(FundingOperation.RESET)
+                .previousAllocated(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
+                .newAllocated(new Amount(UnitEnum.USD_MICROCENTS, 5000L))
+                .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1500L))
+                .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 5000L))
+                .timestamp(Instant.now()).build();
+        when(budgetRepository.fund(eq("t1"), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+
+        mockMvc.perform(post("/v1/admin/budgets/scope/USD_MICROCENTS/fund")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"RESET\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":5000}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operation").value("RESET"));
+    }
+
+    @Test
+    void fundBudget_repayDebtOperation_returns200() throws Exception {
+        setupApiKeyAuth();
+        BudgetFundingResponse funding = BudgetFundingResponse.builder()
+                .operation(FundingOperation.REPAY_DEBT)
+                .previousAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .newAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1500L))
+                .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, -200L))
+                .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 300L))
+                .timestamp(Instant.now()).build();
+        when(budgetRepository.fund(eq("t1"), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+
+        mockMvc.perform(post("/v1/admin/budgets/scope/USD_MICROCENTS/fund")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"REPAY_DEBT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":500}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operation").value("REPAY_DEBT"));
+    }
+
+    @Test
+    void listBudgets_withScopePrefixFilter_passesToRepository() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("t1"), eq("org/"), any(), any(), any(), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("scope_prefix", "org/"))
+                .andExpect(status().isOk());
+
+        verify(budgetRepository).list(eq("t1"), eq("org/"), any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void listBudgets_withUnitFilter_passesToRepository() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("t1"), any(), eq(UnitEnum.TOKENS), any(), any(), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("unit", "TOKENS"))
+                .andExpect(status().isOk());
+
+        verify(budgetRepository).list(eq("t1"), any(), eq(UnitEnum.TOKENS), any(), any(), anyInt());
+    }
+
+    @Test
+    void fundBudget_budgetClosed_returns409() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.fund(eq("t1"), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any()))
+                .thenThrow(GovernanceException.budgetClosed("scope"));
+
+        mockMvc.perform(post("/v1/admin/budgets/scope/USD_MICROCENTS/fund")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000}}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("BUDGET_CLOSED"));
+    }
 }
