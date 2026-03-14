@@ -380,4 +380,54 @@ class TenantRepositoryTest {
         assertThat(result.getName()).isEqualTo("New Name");
         assertThat(result.getStatus()).isEqualTo(TenantStatus.SUSPENDED);
     }
+
+    @Test
+    void create_genericException_wrappedInRuntimeException() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
+
+        TenantCreateRequest request = new TenantCreateRequest();
+        request.setTenantId("t1");
+        request.setName("Test");
+
+        assertThatThrownBy(() -> repository.create(request))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Failed to create tenant");
+    }
+
+    @Test
+    void get_genericException_wrappedInRuntimeException() {
+        when(jedis.get(anyString())).thenThrow(new RuntimeException("Redis down"));
+
+        assertThatThrownBy(() -> repository.get("t1"))
+                .isInstanceOf(RuntimeException.class)
+                .hasCauseInstanceOf(RuntimeException.class);
+    }
+
+    @Test
+    void list_deserializationFailure_skipsGracefully() throws Exception {
+        Set<String> ids = new LinkedHashSet<>(List.of("t1", "t2"));
+        when(jedis.smembers("tenants")).thenReturn(ids);
+
+        when(jedis.get("tenant:t1")).thenReturn("{invalid json}");
+        Tenant t2 = Tenant.builder().tenantId("t2").name("B").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        String t2Json = objectMapper.writeValueAsString(t2);
+        when(jedis.get("tenant:t2")).thenReturn(t2Json);
+
+        List<Tenant> result = repository.list(null, null, null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getTenantId()).isEqualTo("t2");
+    }
+
+    @Test
+    void update_genericException_wrappedInRuntimeException() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
+
+        TenantUpdateRequest req = new TenantUpdateRequest();
+        req.setName("New Name");
+
+        assertThatThrownBy(() -> repository.update("t1", req))
+                .isInstanceOf(RuntimeException.class)
+                .hasCauseInstanceOf(RuntimeException.class);
+    }
 }

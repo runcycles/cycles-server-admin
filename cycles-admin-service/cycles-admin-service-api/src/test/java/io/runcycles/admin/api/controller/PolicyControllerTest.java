@@ -175,4 +175,75 @@ class PolicyControllerTest {
 
         verify(policyRepository).list(eq("t1"), any(), any(), any(), eq(1));
     }
+
+    @Test
+    void createPolicy_auditEntry_requestIdIsFallbackUuidWhenAttributeMissing() throws Exception {
+        setupApiKeyAuth();
+        Policy policy = Policy.builder()
+                .policyId("pol_123").scopePattern("org/*").name("Rate Limit")
+                .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(policyRepository.create(eq("t1"), any())).thenReturn(policy);
+
+        mockMvc.perform(post("/v1/admin/policies")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Rate Limit\",\"scope_pattern\":\"org/*\"}"))
+                .andExpect(status().isCreated());
+
+        verify(auditRepository).log(argThat(entry ->
+                entry.getRequestId() != null &&
+                entry.getRequestId().matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}") &&
+                "createPolicy".equals(entry.getOperation())));
+    }
+
+    @Test
+    void createPolicy_auditEntry_userAgentIsNullWhenHeaderMissing() throws Exception {
+        setupApiKeyAuth();
+        Policy policy = Policy.builder()
+                .policyId("pol_123").scopePattern("org/*").name("Rate Limit")
+                .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(policyRepository.create(eq("t1"), any())).thenReturn(policy);
+
+        mockMvc.perform(post("/v1/admin/policies")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Rate Limit\",\"scope_pattern\":\"org/*\"}"))
+                .andExpect(status().isCreated());
+
+        verify(auditRepository).log(argThat(entry ->
+                entry.getUserAgent() == null &&
+                "createPolicy".equals(entry.getOperation())));
+    }
+
+    @Test
+    void createPolicy_auditEntry_capturesSourceIp() throws Exception {
+        setupApiKeyAuth();
+        Policy policy = Policy.builder()
+                .policyId("pol_123").scopePattern("org/*").name("Rate Limit")
+                .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(policyRepository.create(eq("t1"), any())).thenReturn(policy);
+
+        mockMvc.perform(post("/v1/admin/policies")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Rate Limit\",\"scope_pattern\":\"org/*\"}"))
+                .andExpect(status().isCreated());
+
+        verify(auditRepository).log(argThat(entry ->
+                entry.getSourceIp() != null &&
+                "createPolicy".equals(entry.getOperation())));
+    }
+
+    @Test
+    void listPolicies_withCursorParam_passesToRepository() throws Exception {
+        setupApiKeyAuth();
+        when(policyRepository.list(eq("t1"), any(), any(), eq("pol_abc"), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/policies")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("cursor", "pol_abc"))
+                .andExpect(status().isOk());
+
+        verify(policyRepository).list(eq("t1"), any(), any(), eq("pol_abc"), anyInt());
+    }
 }

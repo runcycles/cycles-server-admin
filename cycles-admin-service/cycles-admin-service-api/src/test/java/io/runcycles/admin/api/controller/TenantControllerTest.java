@@ -263,4 +263,98 @@ class TenantControllerTest {
 
         verify(tenantRepository).list(any(), any(), any(), eq(1));
     }
+
+    @Test
+    void createTenant_auditEntry_requestIdIsFallbackUuidWhenAttributeMissing() throws Exception {
+        Tenant tenant = Tenant.builder()
+                .tenantId("new-tenant").name("New").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(tenantRepository.create(any())).thenReturn(new TenantRepository.TenantCreateResult(tenant, true));
+
+        mockMvc.perform(post("/v1/admin/tenants")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tenant_id\":\"new-tenant\",\"name\":\"New\"}"))
+                .andExpect(status().isCreated());
+
+        verify(auditRepository).log(argThat(entry ->
+                entry.getRequestId() != null &&
+                entry.getRequestId().matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}") &&
+                "createTenant".equals(entry.getOperation())));
+    }
+
+    @Test
+    void createTenant_auditEntry_userAgentIsNullWhenHeaderMissing() throws Exception {
+        Tenant tenant = Tenant.builder()
+                .tenantId("new-tenant").name("New").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(tenantRepository.create(any())).thenReturn(new TenantRepository.TenantCreateResult(tenant, true));
+
+        mockMvc.perform(post("/v1/admin/tenants")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tenant_id\":\"new-tenant\",\"name\":\"New\"}"))
+                .andExpect(status().isCreated());
+
+        verify(auditRepository).log(argThat(entry ->
+                entry.getUserAgent() == null &&
+                "createTenant".equals(entry.getOperation())));
+    }
+
+    @Test
+    void updateTenant_auditEntry_requestIdIsFallbackUuidWhenAttributeMissing() throws Exception {
+        Tenant updated = Tenant.builder()
+                .tenantId("t1").name("Updated").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("t1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/tenants/t1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Updated\"}"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry ->
+                entry.getRequestId() != null &&
+                entry.getRequestId().matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}") &&
+                "updateTenant".equals(entry.getOperation())));
+    }
+
+    @Test
+    void updateTenant_auditEntry_capturesSourceIp() throws Exception {
+        Tenant updated = Tenant.builder()
+                .tenantId("t1").name("Updated").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("t1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/tenants/t1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Updated\"}"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry ->
+                entry.getSourceIp() != null &&
+                "updateTenant".equals(entry.getOperation())));
+    }
+
+    @Test
+    void listTenants_withParentTenantIdFilter() throws Exception {
+        when(tenantRepository.list(any(), eq("parent-1"), any(), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/tenants")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("parent_tenant_id", "parent-1"))
+                .andExpect(status().isOk());
+
+        verify(tenantRepository).list(any(), eq("parent-1"), any(), anyInt());
+    }
+
+    @Test
+    void listTenants_withCursorParam_passesToRepository() throws Exception {
+        when(tenantRepository.list(any(), any(), eq("t-cursor"), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/tenants")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("cursor", "t-cursor"))
+                .andExpect(status().isOk());
+
+        verify(tenantRepository).list(any(), any(), eq("t-cursor"), anyInt());
+    }
 }

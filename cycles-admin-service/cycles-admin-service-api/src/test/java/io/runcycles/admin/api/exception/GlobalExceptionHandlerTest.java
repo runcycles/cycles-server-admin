@@ -10,6 +10,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.BeanPropertyBindingResult;
 import org.springframework.validation.FieldError;
+import org.springframework.core.MethodParameter;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
@@ -82,11 +83,12 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
-    void handleValidationException_returns400WithFieldErrors() {
+    void handleValidationException_returns400WithFieldErrors() throws Exception {
         BeanPropertyBindingResult bindingResult = new BeanPropertyBindingResult(new Object(), "request");
         bindingResult.addError(new FieldError("request", "name", "must not be blank"));
         bindingResult.addError(new FieldError("request", "scope", "must not be null"));
-        MethodArgumentNotValidException ex = new MethodArgumentNotValidException(null, bindingResult);
+        MethodParameter param = new MethodParameter(Object.class.getDeclaredMethod("toString"), -1);
+        MethodArgumentNotValidException ex = new MethodArgumentNotValidException(param, bindingResult);
 
         ResponseEntity<ErrorResponse> response = handler.handleValidationException(ex, mockRequest);
 
@@ -200,5 +202,58 @@ class GlobalExceptionHandlerTest {
 
         assertThat(response.getStatusCode().value()).isEqualTo(409);
         assertThat(response.getBody().getError()).isEqualTo(ErrorCode.BUDGET_CLOSED);
+    }
+
+    @Test
+    void resolveRequestId_whenRequestIsNull_returnsUuid() {
+        GovernanceException ex = GovernanceException.tenantNotFound("t1");
+
+        ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex, null);
+
+        assertThat(response.getBody().getRequestId()).isNotNull();
+        // Should be a valid UUID format
+        assertThat(response.getBody().getRequestId()).matches(
+                "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+    }
+
+    @Test
+    void resolveRequestId_whenRequestHasNoRequestIdAttribute_returnsUuid() {
+        // mockRequest returns null for getAttribute by default (no REQUEST_ID_ATTRIBUTE set)
+        GovernanceException ex = GovernanceException.tenantNotFound("t1");
+
+        ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex, mockRequest);
+
+        assertThat(response.getBody().getRequestId()).isNotNull();
+        assertThat(response.getBody().getRequestId()).matches(
+                "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+    }
+
+    @Test
+    void resolveRequestId_whenRequestHasRequestIdAttribute_returnsAttribute() {
+        when(mockRequest.getAttribute("requestId")).thenReturn("custom-req-id-123");
+
+        GovernanceException ex = GovernanceException.tenantNotFound("t1");
+
+        ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex, mockRequest);
+
+        assertThat(response.getBody().getRequestId()).isEqualTo("custom-req-id-123");
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void handleConstraintViolation_pathWithoutDot_usesFullPath() {
+        ConstraintViolation<Object> violation = mock(ConstraintViolation.class);
+        Path path = mock(Path.class);
+        when(path.toString()).thenReturn("scope");
+        when(violation.getPropertyPath()).thenReturn(path);
+        when(violation.getMessage()).thenReturn("must not be blank");
+
+        ConstraintViolationException ex = new ConstraintViolationException(Set.of(violation));
+
+        ResponseEntity<ErrorResponse> response = handler.handleConstraintViolation(ex, mockRequest);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().getMessage()).contains("scope");
+        assertThat(response.getBody().getMessage()).contains("must not be blank");
     }
 }
