@@ -265,7 +265,7 @@ class TenantControllerTest {
     }
 
     @Test
-    void createTenant_auditEntry_requestIdIsNullWhenAttributeMissing() throws Exception {
+    void createTenant_auditEntry_requestIdIsFallbackUuidWhenAttributeMissing() throws Exception {
         Tenant tenant = Tenant.builder()
                 .tenantId("new-tenant").name("New").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
         when(tenantRepository.create(any())).thenReturn(new TenantRepository.TenantCreateResult(tenant, true));
@@ -277,7 +277,8 @@ class TenantControllerTest {
                 .andExpect(status().isCreated());
 
         verify(auditRepository).log(argThat(entry ->
-                entry.getRequestId() == null &&
+                entry.getRequestId() != null &&
+                entry.getRequestId().matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}") &&
                 "createTenant".equals(entry.getOperation())));
     }
 
@@ -299,7 +300,7 @@ class TenantControllerTest {
     }
 
     @Test
-    void updateTenant_auditEntry_requestIdIsNullWhenAttributeMissing() throws Exception {
+    void updateTenant_auditEntry_requestIdIsFallbackUuidWhenAttributeMissing() throws Exception {
         Tenant updated = Tenant.builder()
                 .tenantId("t1").name("Updated").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
         when(tenantRepository.update(eq("t1"), any())).thenReturn(updated);
@@ -311,7 +312,8 @@ class TenantControllerTest {
                 .andExpect(status().isOk());
 
         verify(auditRepository).log(argThat(entry ->
-                entry.getRequestId() == null &&
+                entry.getRequestId() != null &&
+                entry.getRequestId().matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}") &&
                 "updateTenant".equals(entry.getOperation())));
     }
 

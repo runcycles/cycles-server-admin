@@ -177,7 +177,7 @@ class PolicyControllerTest {
     }
 
     @Test
-    void createPolicy_auditEntry_requestIdIsNullWhenAttributeMissing() throws Exception {
+    void createPolicy_auditEntry_requestIdIsFallbackUuidWhenAttributeMissing() throws Exception {
         setupApiKeyAuth();
         Policy policy = Policy.builder()
                 .policyId("pol_123").scopePattern("org/*").name("Rate Limit")
@@ -191,7 +191,8 @@ class PolicyControllerTest {
                 .andExpect(status().isCreated());
 
         verify(auditRepository).log(argThat(entry ->
-                entry.getRequestId() == null &&
+                entry.getRequestId() != null &&
+                entry.getRequestId().matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}") &&
                 "createPolicy".equals(entry.getOperation())));
     }
 

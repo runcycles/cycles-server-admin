@@ -287,7 +287,7 @@ class BudgetControllerTest {
     }
 
     @Test
-    void createBudget_auditEntry_requestIdIsNullWhenAttributeMissing() throws Exception {
+    void createBudget_auditEntry_requestIdIsFallbackUuidWhenAttributeMissing() throws Exception {
         setupApiKeyAuth();
         BudgetLedger ledger = BudgetLedger.builder()
                 .ledgerId("led-1").scope("org/team1").unit(UnitEnum.USD_MICROCENTS)
@@ -303,7 +303,8 @@ class BudgetControllerTest {
                 .andExpect(status().isCreated());
 
         verify(auditRepository).log(argThat(entry ->
-                entry.getRequestId() == null &&
+                entry.getRequestId() != null &&
+                entry.getRequestId().matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}") &&
                 "createBudget".equals(entry.getOperation())));
     }
 

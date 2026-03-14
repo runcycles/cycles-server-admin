@@ -185,7 +185,7 @@ class ApiKeyControllerTest {
     }
 
     @Test
-    void createApiKey_auditEntry_requestIdIsNullWhenAttributeMissing() throws Exception {
+    void createApiKey_auditEntry_requestIdIsFallbackUuidWhenAttributeMissing() throws Exception {
         ApiKeyCreateResponse response = ApiKeyCreateResponse.builder()
                 .keyId("key_123").keySecret("gov_secret").keyPrefix("gov_secret1234")
                 .tenantId("t1").permissions(List.of("balances:read"))
@@ -193,7 +193,7 @@ class ApiKeyControllerTest {
                 .build();
         when(apiKeyRepository.create(any())).thenReturn(response);
 
-        // No requestId attribute set on request — buildAuditEntry should produce null requestId
+        // No requestId attribute set on request — buildAuditEntry should produce a fallback UUID
         mockMvc.perform(post("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -201,7 +201,8 @@ class ApiKeyControllerTest {
                 .andExpect(status().isCreated());
 
         verify(auditRepository).log(argThat(entry ->
-                entry.getRequestId() == null &&
+                entry.getRequestId() != null &&
+                entry.getRequestId().matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}") &&
                 "createApiKey".equals(entry.getOperation())));
     }
 
@@ -227,7 +228,7 @@ class ApiKeyControllerTest {
     }
 
     @Test
-    void revokeApiKey_auditEntry_requestIdIsNullWhenAttributeMissing() throws Exception {
+    void revokeApiKey_auditEntry_requestIdIsFallbackUuidWhenAttributeMissing() throws Exception {
         ApiKey revoked = ApiKey.builder()
                 .keyId("key_1").tenantId("t1").keyPrefix("gov_pre")
                 .status(ApiKeyStatus.REVOKED).revokedAt(Instant.now())
@@ -241,7 +242,8 @@ class ApiKeyControllerTest {
                 .andExpect(status().isOk());
 
         verify(auditRepository).log(argThat(entry ->
-                entry.getRequestId() == null &&
+                entry.getRequestId() != null &&
+                entry.getRequestId().matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}") &&
                 "revokeApiKey".equals(entry.getOperation())));
     }
 
