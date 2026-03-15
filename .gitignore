@@ -35,4 +35,4 @@ replay_pid*
 /**/*_dev.*
 /**/temp
 /**/.vscode
-.flattened-pom.xml
+**/.flattened-pom.xml
