@@ -114,6 +114,25 @@ class AuditControllerTest {
     }
 
     @Test
+    void listAuditLogs_resultCountEqualsLimit_hasMoreTrueWithCursor() throws Exception {
+        AuditLogEntry e1 = AuditLogEntry.builder()
+                .logId("log_1").tenantId("t1").operation("createTenant")
+                .status(201).timestamp(Instant.now()).build();
+        AuditLogEntry e2 = AuditLogEntry.builder()
+                .logId("log_2").tenantId("t1").operation("updateTenant")
+                .status(200).timestamp(Instant.now()).build();
+        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), eq(2)))
+                .thenReturn(List.of(e1, e2));
+
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("limit", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.has_more").value(true))
+                .andExpect(jsonPath("$.next_cursor").value("log_2"));
+    }
+
+    @Test
     void listAuditLogs_withFromAndTo_passesInstantParams() throws Exception {
         Instant from = Instant.parse("2025-01-01T00:00:00Z");
         Instant to = Instant.parse("2025-12-31T23:59:59Z");
