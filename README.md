@@ -1,4 +1,4 @@
-# Cycles Server Admin
+# RunCycles Server Admin
 
 Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.23](complete-budget-governance-v0.1.23.yaml).
 
