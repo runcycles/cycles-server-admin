@@ -4,7 +4,7 @@
     <parent>
         <groupId>io.runcycles</groupId>
         <artifactId>cycles-admin-service</artifactId>
-        <version>0.1.23</version>
+        <version>${revision}</version>
     </parent>
     <artifactId>cycles-admin-service-data</artifactId>
     <name>Cycles Admin Service Data</name>
@@ -13,7 +13,7 @@
         <dependency>
             <groupId>io.runcycles</groupId>
             <artifactId>cycles-admin-service-model</artifactId>
-            <version>0.1.23</version>
+            <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>redis.clients</groupId>

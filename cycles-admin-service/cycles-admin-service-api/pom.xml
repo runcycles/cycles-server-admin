@@ -4,7 +4,7 @@
     <parent>
         <groupId>io.runcycles</groupId>
         <artifactId>cycles-admin-service</artifactId>
-        <version>0.1.23</version>
+        <version>${revision}</version>
     </parent>
     <artifactId>cycles-admin-service-api</artifactId>
     <name>Cycles Admin Service API</name>
@@ -13,12 +13,12 @@
         <dependency>
             <groupId>io.runcycles</groupId>
             <artifactId>cycles-admin-service-model</artifactId>
-            <version>0.1.23</version>
+            <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>io.runcycles</groupId>
             <artifactId>cycles-admin-service-data</artifactId>
-            <version>0.1.23</version>
+            <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
