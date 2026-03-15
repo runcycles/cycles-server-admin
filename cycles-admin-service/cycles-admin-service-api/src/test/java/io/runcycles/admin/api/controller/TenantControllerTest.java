@@ -347,6 +347,22 @@ class TenantControllerTest {
     }
 
     @Test
+    void listTenants_resultCountEqualsLimit_hasMoreTrueWithCursor() throws Exception {
+        // Return exactly 2 tenants with limit=2 to trigger has_more=true branch
+        List<Tenant> tenants = List.of(
+                Tenant.builder().tenantId("t1").name("A").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build(),
+                Tenant.builder().tenantId("t2").name("B").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build());
+        when(tenantRepository.list(any(), any(), any(), eq(2))).thenReturn(tenants);
+
+        mockMvc.perform(get("/v1/admin/tenants")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("limit", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.has_more").value(true))
+                .andExpect(jsonPath("$.next_cursor").value("t2"));
+    }
+
+    @Test
     void listTenants_withCursorParam_passesToRepository() throws Exception {
         when(tenantRepository.list(any(), any(), eq("t-cursor"), anyInt())).thenReturn(List.of());
 

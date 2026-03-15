@@ -274,6 +274,27 @@ class ApiKeyControllerTest {
     }
 
     @Test
+    void listApiKeys_resultCountEqualsLimit_hasMoreTrueWithCursor() throws Exception {
+        ApiKey k1 = ApiKey.builder()
+                .keyId("key_1").tenantId("t1").keyPrefix("gov_pre1")
+                .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(86400)).build();
+        ApiKey k2 = ApiKey.builder()
+                .keyId("key_2").tenantId("t1").keyPrefix("gov_pre2")
+                .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(86400)).build();
+        when(apiKeyRepository.list(eq("t1"), any(), any(), eq(2))).thenReturn(List.of(k1, k2));
+
+        mockMvc.perform(get("/v1/admin/api-keys")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("tenant_id", "t1")
+                        .param("limit", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.has_more").value(true))
+                .andExpect(jsonPath("$.next_cursor").value("key_2"));
+    }
+
+    @Test
     void revokeApiKey_withoutReason_passesNullReason() throws Exception {
         ApiKey revoked = ApiKey.builder()
                 .keyId("key_1").tenantId("t1").keyPrefix("gov_pre")

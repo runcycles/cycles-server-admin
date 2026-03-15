@@ -507,6 +507,121 @@ class BudgetRepositoryTest {
                 .hasCauseInstanceOf(RuntimeException.class);
     }
 
+    @Test
+    void create_withPeriodStartAndEnd_includesPeriodsInArgs() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+
+        BudgetCreateRequest request = new BudgetCreateRequest();
+        request.setScope("org/team1");
+        request.setUnit(UnitEnum.USD_MICROCENTS);
+        request.setAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000000L));
+        request.setPeriodStart(java.time.Instant.parse("2026-01-01T00:00:00Z"));
+        request.setPeriodEnd(java.time.Instant.parse("2026-12-31T23:59:59Z"));
+
+        BudgetLedger result = repository.create("tenant1", request);
+
+        assertThat(result.getPeriodStart()).isEqualTo(java.time.Instant.parse("2026-01-01T00:00:00Z"));
+        assertThat(result.getPeriodEnd()).isEqualTo(java.time.Instant.parse("2026-12-31T23:59:59Z"));
+        verify(jedis).eval(anyString(), anyList(), argThat(args ->
+                args.contains("period_start") && args.contains("period_end")));
+    }
+
+    @Test
+    void list_hashWithAllOptionalFields_parsesCorrectly() {
+        Set<String> keys = new LinkedHashSet<>(List.of("budget:org/full:USD_MICROCENTS"));
+        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+
+        Map<String, String> hash = createBudgetHash("led-full", "org/full", "USD_MICROCENTS");
+        hash.put("commit_overage_policy", "ALLOW_WITH_OVERDRAFT");
+        hash.put("rollover_policy", "CARRY_FORWARD");
+        hash.put("period_start", String.valueOf(java.time.Instant.parse("2026-01-01T00:00:00Z").toEpochMilli()));
+        hash.put("period_end", String.valueOf(java.time.Instant.parse("2026-12-31T23:59:59Z").toEpochMilli()));
+        hash.put("updated_at", String.valueOf(System.currentTimeMillis()));
+        when(jedis.hgetAll("budget:org/full:USD_MICROCENTS")).thenReturn(hash);
+
+        List<BudgetLedger> result = repository.list("t1", null, null, null, null, 50);
+
+        assertThat(result).hasSize(1);
+        BudgetLedger ledger = result.get(0);
+        assertThat(ledger.getCommitOveragePolicy()).isEqualTo(io.runcycles.admin.model.shared.CommitOveragePolicy.ALLOW_WITH_OVERDRAFT);
+        assertThat(ledger.getRolloverPolicy()).isEqualTo(RolloverPolicy.CARRY_FORWARD);
+        assertThat(ledger.getPeriodStart()).isNotNull();
+        assertThat(ledger.getPeriodEnd()).isNotNull();
+        assertThat(ledger.getUpdatedAt()).isNotNull();
+    }
+
+    @Test
+    void fund_withNullTenantId_passesEmptyString() {
+        List<String> luaResult = List.of("OK", "0", "1000", "0", "1000", "0", "0", "false");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(luaResult);
+
+        BudgetFundingRequest request = new BudgetFundingRequest();
+        request.setOperation(FundingOperation.CREDIT);
+        request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
+
+        BudgetFundingResponse response = repository.fund(null, "scope", UnitEnum.USD_MICROCENTS, request);
+
+        assertThat(response.getNewAllocated().getAmount()).isEqualTo(1000L);
+        verify(jedis).eval(anyString(), anyList(), argThat(args -> args.contains("")));
+    }
+
+    @Test
+    void fund_governanceExceptionInCatch_rethrowsDirectly() {
+        // Simulate GovernanceException thrown directly (not wrapped)
+        GovernanceException expected = GovernanceException.budgetNotFound("test");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(expected);
+
+        BudgetFundingRequest request = new BudgetFundingRequest();
+        request.setOperation(FundingOperation.CREDIT);
+        request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
+
+        assertThatThrownBy(() -> repository.fund("t1", "test", UnitEnum.USD_MICROCENTS, request))
+                .isSameAs(expected);
+    }
+
+    @Test
+    void create_governanceExceptionInCatch_rethrowsDirectly() {
+        GovernanceException expected = GovernanceException.duplicateResource("Budget", "test");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(expected);
+
+        BudgetCreateRequest request = new BudgetCreateRequest();
+        request.setScope("test");
+        request.setUnit(UnitEnum.USD_MICROCENTS);
+        request.setAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
+
+        assertThatThrownBy(() -> repository.create("t1", request))
+                .isSameAs(expected);
+    }
+
+    @Test
+    void fund_withBlankIdempotencyKey_treatedAsNoIdempotency() {
+        List<String> luaResult = List.of("OK", "0", "1000", "0", "1000", "0", "0", "false");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(luaResult);
+
+        BudgetFundingRequest request = new BudgetFundingRequest();
+        request.setOperation(FundingOperation.CREDIT);
+        request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
+        request.setIdempotencyKey("   ");
+
+        BudgetFundingResponse response = repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request);
+
+        assertThat(response.getNewAllocated().getAmount()).isEqualTo(1000L);
+    }
+
+    @Test
+    void list_cursorNotFound_includesAllEntries() {
+        Set<String> keys = new LinkedHashSet<>(List.of("budget:a:USD_MICROCENTS", "budget:b:USD_MICROCENTS"));
+        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+
+        when(jedis.hgetAll("budget:a:USD_MICROCENTS")).thenReturn(createBudgetHash("led-a", "a", "USD_MICROCENTS"));
+        when(jedis.hgetAll("budget:b:USD_MICROCENTS")).thenReturn(createBudgetHash("led-b", "b", "USD_MICROCENTS"));
+
+        // Cursor "nonexistent" won't match any ledger_id, so nothing is returned after the cursor
+        List<BudgetLedger> result = repository.list("t1", null, null, null, "nonexistent", 50);
+
+        assertThat(result).isEmpty();
+    }
+
     private Map<String, String> createBudgetHash(String ledgerId, String scope, String unit) {
         Map<String, String> hash = new LinkedHashMap<>();
         hash.put("ledger_id", ledgerId);

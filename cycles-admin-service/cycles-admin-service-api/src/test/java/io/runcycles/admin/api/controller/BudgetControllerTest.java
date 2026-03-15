@@ -419,6 +419,29 @@ class BudgetControllerTest {
     }
 
     @Test
+    void listBudgets_resultCountEqualsLimit_hasMoreTrueWithCursor() throws Exception {
+        setupApiKeyAuth();
+        BudgetLedger l1 = BudgetLedger.builder()
+                .ledgerId("led-1").scope("a").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 800L))
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        BudgetLedger l2 = BudgetLedger.builder()
+                .ledgerId("led-2").scope("b").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 1500L))
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(budgetRepository.list(eq("t1"), any(), any(), any(), any(), eq(2))).thenReturn(List.of(l1, l2));
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("limit", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.has_more").value(true))
+                .andExpect(jsonPath("$.next_cursor").value("led-2"));
+    }
+
+    @Test
     void fundBudget_budgetClosed_returns409() throws Exception {
         setupApiKeyAuth();
         when(budgetRepository.fund(eq("t1"), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any()))

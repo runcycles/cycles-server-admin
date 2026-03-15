@@ -198,15 +198,27 @@ Note: The spec also defines `POST /v1/reservations`, `POST /v1/reservations/{id}
 
 ## Test Coverage
 
-18 test classes cover the implementation:
+19 test classes cover the implementation (161 tests total):
 
 | Layer | Test Classes | Coverage |
 |---|---|---|
+| Application | `BudgetGovernanceApplicationTest` | Spring Boot main entry point |
 | Controllers | `TenantControllerTest`, `BudgetControllerTest`, `PolicyControllerTest`, `ApiKeyControllerTest`, `AuthControllerTest`, `BalanceControllerTest`, `AuditControllerTest` | All 15 endpoints |
 | Auth/Config | `AuthInterceptorTest`, `WebConfigTest`, `RequestIdFilterTest`, `GlobalExceptionHandlerTest` | Auth flow, request IDs, error mapping |
 | Repositories | `TenantRepositoryTest`, `BudgetRepositoryTest`, `PolicyRepositoryTest`, `ApiKeyRepositoryTest`, `AuditRepositoryTest` | Redis operations, Lua scripts |
 | Services | `KeyServiceTest` | API key hashing |
 | Integration | `RedisIntegrationTest` | End-to-end with TestContainers Redis |
+
+### JaCoCo Line Coverage
+
+| Module | Lines Covered | Lines Missed | Coverage |
+|---|---|---|---|
+| cycles-admin-service-api | 252 | 0 | **100.0%** |
+| cycles-admin-service-data | 518 | 3 | **99.4%** |
+| cycles-admin-service-model | — | — | Skipped (pure data classes) |
+
+**JaCoCo enforcement threshold:** 95% minimum line coverage (BUNDLE level).
+All modules exceed the threshold. Overall effective coverage: **99.6%**.
 
 ---
 

@@ -563,6 +563,112 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
+    void revoke_withNullReason_passesEmptyString() throws Exception {
+        ApiKey revoked = ApiKey.builder()
+                .keyId("key_1").tenantId("t1").keyHash("hash")
+                .status(ApiKeyStatus.REVOKED)
+                .revokedAt(Instant.now()).createdAt(Instant.now()).build();
+        String revokedJson = objectMapper.writeValueAsString(revoked);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", revokedJson));
+
+        ApiKey result = repository.revoke("key_1", null);
+
+        assertThat(result.getStatus()).isEqualTo(ApiKeyStatus.REVOKED);
+        verify(jedis).eval(anyString(), anyList(), argThat(args -> args.contains("")));
+    }
+
+    @Test
+    void validate_activeKeyWithNullExpiresAt_skipsExpirationCheck() throws Exception {
+        when(keyService.extractPrefix("cyc_live_noexp")).thenReturn("cyc_live_noexp");
+        when(jedis.get("apikey:lookup:cyc_live_noexp")).thenReturn("key_ne");
+
+        ApiKey key = ApiKey.builder()
+                .keyId("key_ne").tenantId("t1").keyHash("$2a$12$hash")
+                .status(ApiKeyStatus.ACTIVE).expiresAt(null)
+                .permissions(List.of("balances:read"))
+                .createdAt(Instant.now()).build();
+        String keyJson = objectMapper.writeValueAsString(key);
+        when(jedis.get("apikey:key_ne")).thenReturn(keyJson);
+        when(keyService.verifyKey("cyc_live_noexp", "$2a$12$hash")).thenReturn(true);
+        when(jedis.get("tenant:t1")).thenReturn("{\"status\":\"ACTIVE\"}");
+
+        ApiKeyValidationResponse response = repository.validate("cyc_live_noexp");
+
+        assertThat(response.getValid()).isTrue();
+        assertThat(response.getTenantId()).isEqualTo("t1");
+    }
+
+    @Test
+    void validate_revokedKeyWithNullTenantId_returnsEmptyTenantId() throws Exception {
+        when(keyService.extractPrefix("cyc_live_revnull")).thenReturn("cyc_live_revnu");
+        when(jedis.get("apikey:lookup:cyc_live_revnu")).thenReturn("key_rn");
+
+        ApiKey key = ApiKey.builder()
+                .keyId("key_rn").tenantId(null).keyHash("hash")
+                .status(ApiKeyStatus.REVOKED).createdAt(Instant.now()).build();
+        String keyJson = objectMapper.writeValueAsString(key);
+        when(jedis.get("apikey:key_rn")).thenReturn(keyJson);
+
+        ApiKeyValidationResponse response = repository.validate("cyc_live_revnull");
+
+        assertThat(response.getValid()).isFalse();
+        assertThat(response.getReason()).isEqualTo("KEY_REVOKED");
+        assertThat(response.getTenantId()).isEmpty();
+    }
+
+    @Test
+    void validate_expiredKeyWithNullTenantId_returnsEmptyTenantId() throws Exception {
+        when(keyService.extractPrefix("cyc_live_expnull")).thenReturn("cyc_live_expnu");
+        when(jedis.get("apikey:lookup:cyc_live_expnu")).thenReturn("key_en");
+
+        ApiKey key = ApiKey.builder()
+                .keyId("key_en").tenantId(null).keyHash("hash")
+                .status(ApiKeyStatus.ACTIVE)
+                .expiresAt(Instant.now().minusSeconds(3600))
+                .createdAt(Instant.now()).build();
+        String keyJson = objectMapper.writeValueAsString(key);
+        when(jedis.get("apikey:key_en")).thenReturn(keyJson);
+
+        ApiKeyValidationResponse response = repository.validate("cyc_live_expnull");
+
+        assertThat(response.getValid()).isFalse();
+        assertThat(response.getReason()).isEqualTo("KEY_EXPIRED");
+        assertThat(response.getTenantId()).isEmpty();
+    }
+
+    @Test
+    void validate_invalidKeyWithNullTenantId_returnsEmptyTenantId() throws Exception {
+        when(keyService.extractPrefix("cyc_live_invnull")).thenReturn("cyc_live_invnu");
+        when(jedis.get("apikey:lookup:cyc_live_invnu")).thenReturn("key_in");
+
+        ApiKey key = ApiKey.builder()
+                .keyId("key_in").tenantId(null).keyHash("$2a$12$real")
+                .status(ApiKeyStatus.ACTIVE)
+                .expiresAt(Instant.now().plusSeconds(3600))
+                .createdAt(Instant.now()).build();
+        String keyJson = objectMapper.writeValueAsString(key);
+        when(jedis.get("apikey:key_in")).thenReturn(keyJson);
+        when(keyService.verifyKey("cyc_live_invnull", "$2a$12$real")).thenReturn(false);
+
+        ApiKeyValidationResponse response = repository.validate("cyc_live_invnull");
+
+        assertThat(response.getValid()).isFalse();
+        assertThat(response.getReason()).isEqualTo("INVALID_KEY");
+        assertThat(response.getTenantId()).isEmpty();
+    }
+
+    @Test
+    void list_cursorNotFound_returnsNoEntriesAfterCursor() throws Exception {
+        Set<String> ids = new LinkedHashSet<>(List.of("key_1", "key_2"));
+        when(jedis.smembers("apikeys:t1")).thenReturn(ids);
+
+        // Cursor points to nonexistent key - nothing comes after it
+        List<ApiKey> result = repository.list("t1", null, "nonexistent", 50);
+
+        assertThat(result).isEmpty();
+    }
+
+    @Test
     void validate_nullTenantId_returnsNotOwnedByTenant() throws Exception {
         when(keyService.extractPrefix("cyc_live_nulltid")).thenReturn("cyc_live_nullt");
         when(jedis.get("apikey:lookup:cyc_live_nullt")).thenReturn("key_nt");

@@ -235,6 +235,25 @@ class PolicyControllerTest {
     }
 
     @Test
+    void listPolicies_resultCountEqualsLimit_hasMoreTrueWithCursor() throws Exception {
+        setupApiKeyAuth();
+        Policy p1 = Policy.builder()
+                .policyId("pol_1").scopePattern("org/*").name("P1")
+                .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        Policy p2 = Policy.builder()
+                .policyId("pol_2").scopePattern("team/*").name("P2")
+                .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(policyRepository.list(eq("t1"), any(), any(), any(), eq(2))).thenReturn(List.of(p1, p2));
+
+        mockMvc.perform(get("/v1/admin/policies")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("limit", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.has_more").value(true))
+                .andExpect(jsonPath("$.next_cursor").value("pol_2"));
+    }
+
+    @Test
     void listPolicies_withCursorParam_passesToRepository() throws Exception {
         setupApiKeyAuth();
         when(policyRepository.list(eq("t1"), any(), any(), eq("pol_abc"), anyInt())).thenReturn(List.of());
