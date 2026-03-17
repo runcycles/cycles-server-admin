@@ -44,7 +44,7 @@ To run the full stack (Admin Server + Runtime Server + Redis):
 docker compose -f docker-compose.full-stack.prod.yml up -d
 ```
 
-> For the complete deployment walkthrough including tenant setup, API key creation, and budget allocation, see the [full stack deployment guide](https://runcycles.github.io/docs/quickstart/deploying-the-full-cycles-stack).
+> For the complete deployment walkthrough including tenant setup, API key creation, and budget allocation, see the [full stack deployment guide](https://runcycles.io/quickstart/deploying-the-full-cycles-stack).
 
 ## Prerequisites (for building from source)
 
