@@ -1576,7 +1576,7 @@ paths:
   /v1/balances:
     get:
       tags: [Balances]
-      operationId: queryBalances
+      operationId: getBalances
       summary: Query budget balances (Cycles v0.1.23)
       description: >-
         See Cycles Protocol v0.1.23 specification.
@@ -1587,6 +1587,32 @@ paths:
         - Supports scope filtering via query params
       security:
         - ApiKeyAuth: []
+      parameters:
+        - name: tenant_id
+          in: query
+          schema:
+            type: string
+        - name: scope_prefix
+          in: query
+          schema:
+            type: string
+          description: Filter by scope prefix
+        - name: unit
+          in: query
+          schema:
+            type: string
+            enum: [USD_MICROCENTS, TOKENS, CREDITS, RISK_POINTS]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 100
+        - name: cursor
+          in: query
+          schema:
+            type: string
       responses:
         '200':
           description: Balance data (see Cycles v0.1.23)
