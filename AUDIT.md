@@ -70,10 +70,10 @@ Note: The spec also defines `POST /v1/reservations`, `POST /v1/reservations/{id}
 ### Request Schemas (all match spec)
 
 **TenantCreateRequest** — spec required: `[tenant_id, name]`
-- Fields: `tenant_id` (`@NotBlank @Pattern @Size`), `name` (`@NotBlank`), `parent_tenant_id`, `metadata` — all match spec constraints
+- Fields: `tenant_id` (`@NotBlank @Pattern @Size`), `name` (`@NotBlank`), `parent_tenant_id`, `metadata`, `default_commit_overage_policy` — all match spec constraints
 
 **TenantUpdateRequest** — all optional fields
-- Fields: `name`, `status` (TenantStatus), `default_commit_overage_policy`, `default_reservation_ttl_ms`, `max_reservation_ttl_ms`, `max_reservation_extensions`, `reservation_expiry_policy`, `metadata` — all match spec
+- Fields: `name`, `status` (TenantStatus), `metadata`, `default_commit_overage_policy` — all match spec
 
 **BudgetCreateRequest** — spec required: `[scope, unit, allocated]`
 - Fields: `scope` (`@NotBlank`), `unit` (`@NotNull`), `allocated` (`@NotNull @Valid`), `overdraft_limit`, `commit_overage_policy`, `rollover_policy`, `period_start`, `period_end`, `metadata` — all match spec
