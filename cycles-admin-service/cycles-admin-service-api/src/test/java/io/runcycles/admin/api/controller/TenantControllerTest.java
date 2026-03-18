@@ -5,6 +5,7 @@ import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.data.repository.TenantRepository;
+import io.runcycles.admin.model.shared.CommitOveragePolicy;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.tenant.*;
 import org.junit.jupiter.api.Test;
@@ -48,6 +49,22 @@ class TenantControllerTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.tenant_id").value("new-tenant"))
                 .andExpect(jsonPath("$.status").value("ACTIVE"));
+    }
+
+    @Test
+    void createTenant_withDefaultCommitOveragePolicy_returns201() throws Exception {
+        Tenant tenant = Tenant.builder()
+                .tenantId("new-tenant").name("New").status(TenantStatus.ACTIVE)
+                .defaultCommitOveragePolicy(CommitOveragePolicy.ALLOW_WITH_OVERDRAFT)
+                .createdAt(Instant.now()).build();
+        when(tenantRepository.create(any())).thenReturn(new TenantRepository.TenantCreateResult(tenant, true));
+
+        mockMvc.perform(post("/v1/admin/tenants")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tenant_id\":\"new-tenant\",\"name\":\"New\",\"default_commit_overage_policy\":\"ALLOW_WITH_OVERDRAFT\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.default_commit_overage_policy").value("ALLOW_WITH_OVERDRAFT"));
     }
 
     @Test
@@ -332,6 +349,31 @@ class TenantControllerTest {
         verify(auditRepository).log(argThat(entry ->
                 entry.getSourceIp() != null &&
                 "updateTenant".equals(entry.getOperation())));
+    }
+
+    @Test
+    void updateTenant_defaultCommitOveragePolicy_returns200() throws Exception {
+        Tenant updated = Tenant.builder()
+                .tenantId("t1").name("Test").status(TenantStatus.ACTIVE)
+                .defaultCommitOveragePolicy(CommitOveragePolicy.ALLOW_WITH_OVERDRAFT)
+                .createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("t1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/tenants/t1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"default_commit_overage_policy\":\"ALLOW_WITH_OVERDRAFT\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.default_commit_overage_policy").value("ALLOW_WITH_OVERDRAFT"));
+    }
+
+    @Test
+    void updateTenant_invalidCommitOveragePolicy_returns400() throws Exception {
+        mockMvc.perform(patch("/v1/admin/tenants/t1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"default_commit_overage_policy\":\"INVALID_VALUE\"}"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
