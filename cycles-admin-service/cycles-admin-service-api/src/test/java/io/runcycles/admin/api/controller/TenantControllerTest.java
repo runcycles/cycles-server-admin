@@ -52,6 +52,22 @@ class TenantControllerTest {
     }
 
     @Test
+    void createTenant_withDefaultCommitOveragePolicy_returns201() throws Exception {
+        Tenant tenant = Tenant.builder()
+                .tenantId("new-tenant").name("New").status(TenantStatus.ACTIVE)
+                .defaultCommitOveragePolicy(CommitOveragePolicy.ALLOW_WITH_OVERDRAFT)
+                .createdAt(Instant.now()).build();
+        when(tenantRepository.create(any())).thenReturn(new TenantRepository.TenantCreateResult(tenant, true));
+
+        mockMvc.perform(post("/v1/admin/tenants")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tenant_id\":\"new-tenant\",\"name\":\"New\",\"default_commit_overage_policy\":\"ALLOW_WITH_OVERDRAFT\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.default_commit_overage_policy").value("ALLOW_WITH_OVERDRAFT"));
+    }
+
+    @Test
     void createTenant_existingReturns200() throws Exception {
         Tenant tenant = Tenant.builder()
                 .tenantId("existing").name("E").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();

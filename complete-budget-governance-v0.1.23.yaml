@@ -255,7 +255,9 @@ components:
           type: object
           additionalProperties:
             type: string
-    
+        default_commit_overage_policy:
+          $ref: '#/components/schemas/CommitOveragePolicy'
+
     TenantListResponse:
       type: object
       required: [tenants]
