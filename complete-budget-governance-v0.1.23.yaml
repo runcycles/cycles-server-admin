@@ -1032,6 +1032,8 @@ paths:
                   enum: [ACTIVE, SUSPENDED, CLOSED]
                 metadata:
                   type: object
+                default_commit_overage_policy:
+                  $ref: '#/components/schemas/CommitOveragePolicy'
       responses:
         '200':
           description: Tenant updated
