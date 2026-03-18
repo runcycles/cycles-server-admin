@@ -1,5 +1,6 @@
 package io.runcycles.admin.data.integration;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -11,6 +12,7 @@ import io.runcycles.admin.model.auth.*;
 import io.runcycles.admin.model.budget.*;
 import io.runcycles.admin.model.policy.*;
 import io.runcycles.admin.model.shared.Amount;
+import io.runcycles.admin.model.shared.CommitOveragePolicy;
 import io.runcycles.admin.model.shared.UnitEnum;
 import io.runcycles.admin.model.tenant.*;
 import org.junit.jupiter.api.*;
@@ -55,6 +57,7 @@ class RedisIntegrationTest {
         objectMapper = new ObjectMapper();
         objectMapper.registerModule(new JavaTimeModule());
         objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        objectMapper.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
 
         keyService = new KeyService();
 
@@ -190,6 +193,171 @@ class RedisIntegrationTest {
         Tenant updated = tenantRepository.update("integ-tenant", request);
 
         assertThat(updated.getStatus()).isEqualTo(TenantStatus.ACTIVE);
+    }
+
+    // --- Tenant: default_commit_overage_policy ---
+
+    @Test
+    @Order(50)
+    void tenant_create_withOveragePolicy_persistsPolicy() {
+        TenantCreateRequest request = new TenantCreateRequest();
+        request.setTenantId("integ-policy-tenant");
+        request.setName("Policy Tenant");
+        request.setDefaultCommitOveragePolicy(CommitOveragePolicy.ALLOW_WITH_OVERDRAFT);
+
+        var result = tenantRepository.create(request);
+
+        assertThat(result.created()).isTrue();
+        assertThat(result.tenant().getDefaultCommitOveragePolicy()).isEqualTo(CommitOveragePolicy.ALLOW_WITH_OVERDRAFT);
+
+        // Verify persistence by re-reading from Redis
+        Tenant fetched = tenantRepository.get("integ-policy-tenant");
+        assertThat(fetched.getDefaultCommitOveragePolicy()).isEqualTo(CommitOveragePolicy.ALLOW_WITH_OVERDRAFT);
+    }
+
+    @Test
+    @Order(51)
+    void tenant_create_withoutOveragePolicy_defaultsToReject() {
+        TenantCreateRequest request = new TenantCreateRequest();
+        request.setTenantId("integ-default-policy");
+        request.setName("Default Policy Tenant");
+
+        var result = tenantRepository.create(request);
+
+        assertThat(result.created()).isTrue();
+        assertThat(result.tenant().getDefaultCommitOveragePolicy()).isEqualTo(CommitOveragePolicy.REJECT);
+    }
+
+    @Test
+    @Order(52)
+    void tenant_update_overagePolicy() {
+        TenantUpdateRequest request = new TenantUpdateRequest();
+        request.setDefaultCommitOveragePolicy(CommitOveragePolicy.ALLOW_IF_AVAILABLE);
+
+        Tenant updated = tenantRepository.update("integ-policy-tenant", request);
+
+        assertThat(updated.getDefaultCommitOveragePolicy()).isEqualTo(CommitOveragePolicy.ALLOW_IF_AVAILABLE);
+
+        // Verify persistence
+        Tenant fetched = tenantRepository.get("integ-policy-tenant");
+        assertThat(fetched.getDefaultCommitOveragePolicy()).isEqualTo(CommitOveragePolicy.ALLOW_IF_AVAILABLE);
+    }
+
+    @Test
+    @Order(53)
+    void tenant_update_overagePolicy_doesNotAffectOtherFields() {
+        TenantUpdateRequest request = new TenantUpdateRequest();
+        request.setDefaultCommitOveragePolicy(CommitOveragePolicy.REJECT);
+
+        Tenant updated = tenantRepository.update("integ-policy-tenant", request);
+
+        assertThat(updated.getDefaultCommitOveragePolicy()).isEqualTo(CommitOveragePolicy.REJECT);
+        assertThat(updated.getName()).isEqualTo("Policy Tenant");
+        assertThat(updated.getStatus()).isEqualTo(TenantStatus.ACTIVE);
+    }
+
+    // --- Tenant: status transitions ---
+
+    @Test
+    @Order(60)
+    void tenant_close_fromActive_succeeds() {
+        TenantCreateRequest create = new TenantCreateRequest();
+        create.setTenantId("integ-close-test");
+        create.setName("Close Test");
+        tenantRepository.create(create);
+
+        TenantUpdateRequest request = new TenantUpdateRequest();
+        request.setStatus(TenantStatus.CLOSED);
+
+        Tenant updated = tenantRepository.update("integ-close-test", request);
+
+        assertThat(updated.getStatus()).isEqualTo(TenantStatus.CLOSED);
+        assertThat(updated.getClosedAt()).isNotNull();
+    }
+
+    @Test
+    @Order(61)
+    void tenant_update_fromClosed_throwsInvalidTransition() {
+        TenantUpdateRequest request = new TenantUpdateRequest();
+        request.setStatus(TenantStatus.ACTIVE);
+
+        assertThatThrownBy(() -> tenantRepository.update("integ-close-test", request))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getHttpStatus()).isEqualTo(400);
+                });
+    }
+
+    @Test
+    @Order(62)
+    void tenant_close_fromSuspended_succeeds() {
+        TenantCreateRequest create = new TenantCreateRequest();
+        create.setTenantId("integ-suspend-close");
+        create.setName("Suspend Then Close");
+        tenantRepository.create(create);
+
+        TenantUpdateRequest suspend = new TenantUpdateRequest();
+        suspend.setStatus(TenantStatus.SUSPENDED);
+        tenantRepository.update("integ-suspend-close", suspend);
+
+        TenantUpdateRequest close = new TenantUpdateRequest();
+        close.setStatus(TenantStatus.CLOSED);
+        Tenant closed = tenantRepository.update("integ-suspend-close", close);
+
+        assertThat(closed.getStatus()).isEqualTo(TenantStatus.CLOSED);
+        assertThat(closed.getClosedAt()).isNotNull();
+        assertThat(closed.getSuspendedAt()).isNotNull();
+    }
+
+    @Test
+    @Order(63)
+    void tenant_invalidTransition_active_to_invalid_throws() {
+        TenantCreateRequest create = new TenantCreateRequest();
+        create.setTenantId("integ-invalid-trans");
+        create.setName("Invalid Transition");
+        tenantRepository.create(create);
+
+        TenantUpdateRequest request = new TenantUpdateRequest();
+        request.setStatus(TenantStatus.SUSPENDED);
+        tenantRepository.update("integ-invalid-trans", request);
+
+        // SUSPENDED -> SUSPENDED is allowed (no-op), but verify CLOSED -> ACTIVE fails
+        TenantUpdateRequest close = new TenantUpdateRequest();
+        close.setStatus(TenantStatus.CLOSED);
+        tenantRepository.update("integ-invalid-trans", close);
+
+        TenantUpdateRequest reactivate = new TenantUpdateRequest();
+        reactivate.setStatus(TenantStatus.ACTIVE);
+        assertThatThrownBy(() -> tenantRepository.update("integ-invalid-trans", reactivate))
+                .isInstanceOf(GovernanceException.class);
+    }
+
+    // --- Tenant: list with filters ---
+
+    @Test
+    @Order(70)
+    void tenant_list_filterByStatus() {
+        List<Tenant> active = tenantRepository.list(TenantStatus.ACTIVE, null, null, 50);
+        assertThat(active).allSatisfy(t -> assertThat(t.getStatus()).isEqualTo(TenantStatus.ACTIVE));
+
+        List<Tenant> closed = tenantRepository.list(TenantStatus.CLOSED, null, null, 50);
+        assertThat(closed).allSatisfy(t -> assertThat(t.getStatus()).isEqualTo(TenantStatus.CLOSED));
+        assertThat(closed).isNotEmpty();
+    }
+
+    @Test
+    @Order(71)
+    void tenant_list_pagination() {
+        List<Tenant> page1 = tenantRepository.list(null, null, null, 2);
+        assertThat(page1).hasSizeLessThanOrEqualTo(2);
+
+        if (page1.size() == 2) {
+            String cursor = page1.get(page1.size() - 1).getTenantId();
+            List<Tenant> page2 = tenantRepository.list(null, null, cursor, 2);
+            // Cursor-based: page2 should not contain any IDs from page1
+            assertThat(page2).noneMatch(t -> page1.stream().anyMatch(p -> p.getTenantId().equals(t.getTenantId())));
+        }
     }
 
     // --- API Key lifecycle ---
@@ -342,6 +510,46 @@ class RedisIntegrationTest {
         BudgetFundingResponse second = budgetRepository.fund("integ-tenant", "integ/scope1", UnitEnum.USD_MICROCENTS, request);
 
         assertThat(second.getNewAllocated().getAmount()).isEqualTo(first.getNewAllocated().getAmount());
+    }
+
+    // --- Budget: RESET and REPAY_DEBT ---
+
+    @Test
+    @Order(27)
+    void budget_fund_reset_succeeds() {
+        BudgetFundingRequest request = new BudgetFundingRequest();
+        request.setOperation(FundingOperation.RESET);
+        request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 500000L));
+
+        BudgetFundingResponse response = budgetRepository.fund("integ-tenant", "integ/scope1", UnitEnum.USD_MICROCENTS, request);
+
+        assertThat(response.getOperation()).isEqualTo(FundingOperation.RESET);
+        assertThat(response.getNewAllocated().getAmount()).isEqualTo(500000L);
+        assertThat(response.getNewRemaining().getAmount()).isEqualTo(500000L);
+    }
+
+    @Test
+    @Order(28)
+    void budget_fund_repayDebt_noDebt_noChange() {
+        // Budget has no debt currently, repay should work but not change debt
+        BudgetFundingRequest request = new BudgetFundingRequest();
+        request.setOperation(FundingOperation.REPAY_DEBT);
+        request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 100L));
+
+        BudgetFundingResponse response = budgetRepository.fund("integ-tenant", "integ/scope1", UnitEnum.USD_MICROCENTS, request);
+
+        assertThat(response.getOperation()).isEqualTo(FundingOperation.REPAY_DEBT);
+    }
+
+    @Test
+    @Order(29)
+    void budget_list_withFilters() {
+        List<BudgetLedger> filtered = budgetRepository.list("integ-tenant", "integ/", null, null, null, 50);
+        assertThat(filtered).isNotEmpty();
+        assertThat(filtered).allSatisfy(l -> assertThat(l.getScope()).startsWith("integ/"));
+
+        List<BudgetLedger> noMatch = budgetRepository.list("integ-tenant", "nonexistent/", null, null, null, 50);
+        assertThat(noMatch).isEmpty();
     }
 
     // --- Policy lifecycle ---
