@@ -355,6 +355,14 @@ All errors return a standard `ErrorResponse`:
 
 The full OpenAPI 3.1.0 specification is in [`complete-budget-governance-v0.1.23.yaml`](complete-budget-governance-v0.1.23.yaml).
 
+## Documentation
+
+- [Cycles Documentation](https://runcycles.io) — full docs site
+- [Deploy the Full Stack](https://runcycles.io/quickstart/deploying-the-full-cycles-stack) — deployment guide with admin server setup
+- [Tenant Management](https://runcycles.io/how-to/tenant-creation-and-management-in-cycles) — tenant creation and lifecycle
+- [Budget Allocation and Management](https://runcycles.io/how-to/budget-allocation-and-management-in-cycles) — budget configuration
+- [API Key Management](https://runcycles.io/how-to/api-key-management-in-cycles) — API key lifecycle
+
 ## License
 
 [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0)
