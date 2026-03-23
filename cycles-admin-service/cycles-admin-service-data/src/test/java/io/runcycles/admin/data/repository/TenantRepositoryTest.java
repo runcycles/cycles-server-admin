@@ -270,6 +270,23 @@ class TenantRepositoryTest {
     }
 
     @Test
+    void update_statusClosedToSuspended_throwsInvalidRequest() throws Exception {
+        when(jedis.eval(anyString(), anyList(), anyList()))
+                .thenReturn(List.of("INVALID_TRANSITION", "Cannot transition from CLOSED"));
+
+        TenantUpdateRequest req = new TenantUpdateRequest();
+        req.setStatus(TenantStatus.SUSPENDED);
+
+        assertThatThrownBy(() -> repository.update("t1", req))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
+                    assertThat(ge.getMessage()).contains("CLOSED");
+                });
+    }
+
+    @Test
     void update_metadata_updatesSuccessfully() throws Exception {
         Tenant updated = Tenant.builder().tenantId("t1").name("T").status(TenantStatus.ACTIVE)
                 .metadata(Map.of("env", "prod")).createdAt(Instant.now()).build();
