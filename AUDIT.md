@@ -1,6 +1,6 @@
 # Complete Budget Governance v0.1.23 — Admin Server Audit
 
-**Date:** 2026-03-14
+**Date:** 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** `complete-budget-governance-v0.1.23.yaml` (OpenAPI 3.1.0, v0.1.23)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 **Runtime server audit:** See `cycles-server/AUDIT.md` (all passing)
@@ -198,7 +198,7 @@ Note: The spec also defines `POST /v1/reservations`, `POST /v1/reservations/{id}
 
 ## Test Coverage
 
-19 test classes cover the implementation (161 tests total):
+21 test classes cover the implementation (362 tests total):
 
 | Layer | Test Classes | Coverage |
 |---|---|---|
@@ -207,7 +207,13 @@ Note: The spec also defines `POST /v1/reservations`, `POST /v1/reservations/{id}
 | Auth/Config | `AuthInterceptorTest`, `WebConfigTest`, `RequestIdFilterTest`, `GlobalExceptionHandlerTest` | Auth flow, request IDs, error mapping |
 | Repositories | `TenantRepositoryTest`, `BudgetRepositoryTest`, `PolicyRepositoryTest`, `ApiKeyRepositoryTest`, `AuditRepositoryTest` | Redis operations, Lua scripts |
 | Services | `KeyServiceTest` | API key hashing |
+| Data/Config | `RedisConfigTest`, `GovernanceExceptionTest` | Redis configuration, exception model |
 | Integration | `RedisIntegrationTest` | End-to-end with TestContainers Redis |
+
+Notable additions since initial audit:
+- Tenant lifecycle tests: CLOSED→SUSPENDED invalid transition, CLOSED tenant API key creation rejection
+- Integration tests for overage policy resolution, status transitions, pagination filters, and budget operations
+- `default_commit_overage_policy` support on tenant create and update endpoints
 
 ### JaCoCo Line Coverage
 
@@ -224,4 +230,4 @@ All modules exceed the threshold. Overall effective coverage: **99.6%**.
 
 ## Verdict
 
-The admin server is **fully compliant** with the Complete Budget Governance spec v0.1.23. All 15 endpoints are implemented, all 8 request schemas and 12 response schemas match, all 10 enum types have correct values. Auth (AdminKeyAuth / ApiKeyAuth), tenant scoping, idempotency, pagination, audit logging, and behavioral constraints (status transitions, funding operations, key lifecycle) all follow spec normative rules. All 19 previously identified issues have been verified as fixed. No remaining spec violations found.
+The admin server is **fully compliant** with the Complete Budget Governance spec v0.1.23. All 15 endpoints are implemented, all 8 request schemas and 12 response schemas match, all 10 enum types have correct values. Auth (AdminKeyAuth / ApiKeyAuth), tenant scoping, idempotency, pagination, audit logging, and behavioral constraints (status transitions, funding operations, key lifecycle) all follow spec normative rules. All 19 previously identified issues have been verified as fixed. Tenant lifecycle edge cases (CLOSED→SUSPENDED, CLOSED tenant API key creation) are fully tested. No remaining spec violations found.
