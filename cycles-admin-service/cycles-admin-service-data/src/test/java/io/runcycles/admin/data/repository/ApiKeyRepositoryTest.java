@@ -110,6 +110,26 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
+    void create_tenantClosed_throwsException() {
+        when(keyService.generateKeySecret("cyc_live")).thenReturn("cyc_live_abc123def456ghi");
+        when(keyService.extractPrefix(anyString())).thenReturn("cyc_live_abc12");
+        when(keyService.hashKey(anyString())).thenReturn("$2a$12$hash");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("TENANT_INACTIVE", "CLOSED"));
+
+        ApiKeyCreateRequest request = new ApiKeyCreateRequest();
+        request.setTenantId("closed-tenant");
+        request.setName("Test Key");
+
+        assertThatThrownBy(() -> repository.create(request))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
+                    assertThat(ge.getHttpStatus()).isEqualTo(400);
+                });
+    }
+
+    @Test
     void create_withCustomExpiry_usesProvidedExpiry() throws Exception {
         Instant customExpiry = Instant.now().plusSeconds(3600);
         when(keyService.generateKeySecret("cyc_live")).thenReturn("cyc_live_abc123def456ghi");

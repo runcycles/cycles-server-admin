@@ -291,6 +291,21 @@ class RedisIntegrationTest {
 
     @Test
     @Order(62)
+    void tenant_update_closedToSuspended_throwsInvalidTransition() {
+        // integ-close-test is already CLOSED from Order 60
+        TenantUpdateRequest request = new TenantUpdateRequest();
+        request.setStatus(TenantStatus.SUSPENDED);
+
+        assertThatThrownBy(() -> tenantRepository.update("integ-close-test", request))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getHttpStatus()).isEqualTo(400);
+                });
+    }
+
+    @Test
+    @Order(63)
     void tenant_close_fromSuspended_succeeds() {
         TenantCreateRequest create = new TenantCreateRequest();
         create.setTenantId("integ-suspend-close");
@@ -311,7 +326,7 @@ class RedisIntegrationTest {
     }
 
     @Test
-    @Order(63)
+    @Order(64)
     void tenant_invalidTransition_active_to_invalid_throws() {
         TenantCreateRequest create = new TenantCreateRequest();
         create.setTenantId("integ-invalid-trans");
