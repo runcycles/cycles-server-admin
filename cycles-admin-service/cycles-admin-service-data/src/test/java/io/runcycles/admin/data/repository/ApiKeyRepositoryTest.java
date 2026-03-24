@@ -561,7 +561,7 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
-    void validate_tenantDataNull_returnsValid() throws Exception {
+    void validate_tenantDataNull_returnsInvalid() throws Exception {
         when(keyService.extractPrefix("cyc_live_nodata")).thenReturn("cyc_live_nodat");
         when(jedis.get("apikey:lookup:cyc_live_nodat")).thenReturn("key_nd");
 
@@ -578,8 +578,9 @@ class ApiKeyRepositoryTest {
 
         ApiKeyValidationResponse response = repository.validate("cyc_live_nodata");
 
-        assertThat(response.getValid()).isTrue();
+        assertThat(response.getValid()).isFalse();
         assertThat(response.getTenantId()).isEqualTo("t1");
+        assertThat(response.getReason()).isEqualTo("TENANT_NOT_FOUND");
     }
 
     @Test

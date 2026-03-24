@@ -77,13 +77,13 @@ class AuthInterceptorTest {
     }
 
     @Test
-    void preHandle_adminEndpoint_invalidKey_returns403() throws Exception {
+    void preHandle_adminEndpoint_invalidKey_returns401() throws Exception {
         request.setMethod("POST");
         request.setRequestURI("/v1/admin/tenants");
         request.addHeader("X-Admin-API-Key", "wrong-key");
 
         assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
-        assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getStatus()).isEqualTo(401);
     }
 
     @Test

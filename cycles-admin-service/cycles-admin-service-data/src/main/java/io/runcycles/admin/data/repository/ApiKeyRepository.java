@@ -181,18 +181,19 @@ public class ApiKeyRepository {
             if (key.getTenantId() == null || key.getTenantId().isBlank()) {
                 return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_OWNED_BY_TENANT").build();
             }
-            // Check tenant status (admin-specific: validates tenant is not suspended/closed)
+            // Check tenant exists and is ACTIVE (spec: tenant must exist for key to be valid)
             String tenantData = jedis.get("tenant:" + key.getTenantId());
-            if (tenantData != null) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> tenantMap = objectMapper.readValue(tenantData, Map.class);
-                String tenantStatus = (String) tenantMap.get("status");
-                if ("SUSPENDED".equals(tenantStatus)) {
-                    return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("TENANT_SUSPENDED").build();
-                }
-                if ("CLOSED".equals(tenantStatus)) {
-                    return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("TENANT_CLOSED").build();
-                }
+            if (tenantData == null) {
+                return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("TENANT_NOT_FOUND").build();
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> tenantMap = objectMapper.readValue(tenantData, Map.class);
+            String tenantStatus = (String) tenantMap.get("status");
+            if ("SUSPENDED".equals(tenantStatus)) {
+                return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("TENANT_SUSPENDED").build();
+            }
+            if ("CLOSED".equals(tenantStatus)) {
+                return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("TENANT_CLOSED").build();
             }
             // Coerce null permissions to empty list (consistent with cycles-server authority)
             List<String> permissions = key.getPermissions() != null ? key.getPermissions() : Collections.emptyList();

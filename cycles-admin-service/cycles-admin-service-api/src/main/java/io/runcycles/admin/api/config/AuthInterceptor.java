@@ -84,7 +84,7 @@ public class AuthInterceptor implements HandlerInterceptor {
             return false;
         }
         if (!adminApiKey.equals(key)) {
-            writeError(request, response, 403, ErrorCode.FORBIDDEN, "Invalid admin API key");
+            writeError(request, response, 401, ErrorCode.UNAUTHORIZED, "Invalid admin API key");
             return false;
         }
         return true;

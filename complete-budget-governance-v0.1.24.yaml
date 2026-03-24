@@ -257,6 +257,24 @@ components:
             type: string
         default_commit_overage_policy:
           $ref: '#/components/schemas/CommitOveragePolicy'
+        default_reservation_ttl_ms:
+          type: integer
+          minimum: 1000
+          maximum: 86400000
+          description: Default TTL for reservations (default 60000ms)
+        max_reservation_ttl_ms:
+          type: integer
+          minimum: 1000
+          maximum: 86400000
+          description: Maximum allowed TTL for reservations (default 3600000ms)
+        max_reservation_extensions:
+          type: integer
+          minimum: 0
+          description: Maximum TTL extensions per reservation (default 10)
+        reservation_expiry_policy:
+          type: string
+          enum: [AUTO_RELEASE, MANUAL_CLEANUP, GRACE_ONLY]
+          description: How expired reservations are handled (default AUTO_RELEASE)
 
     TenantListResponse:
       type: object

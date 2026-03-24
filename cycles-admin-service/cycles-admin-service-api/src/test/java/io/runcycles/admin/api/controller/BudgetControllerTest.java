@@ -616,4 +616,46 @@ class BudgetControllerTest {
 
         verify(budgetRepository).update(eq("t1"), eq("tenant:acme/workspace:prod"), eq(UnitEnum.USD_MICROCENTS), any());
     }
+
+    // ========== Unit mismatch validation ==========
+
+    @Test
+    void createBudget_unitMismatch_returns400() throws Exception {
+        setupApiKeyAuth();
+
+        mockMvc.perform(post("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"scope\":\"org/team1\",\"unit\":\"USD_MICROCENTS\",\"allocated\":{\"unit\":\"TOKENS\",\"amount\":1000}}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("UNIT_MISMATCH"));
+    }
+
+    @Test
+    void fundBudget_unitMismatch_returns400() throws Exception {
+        setupApiKeyAuth();
+
+        mockMvc.perform(post("/v1/admin/budgets/fund")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"TOKENS\",\"amount\":1000}}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("UNIT_MISMATCH"));
+    }
+
+    @Test
+    void updateBudget_unitMismatch_returns400() throws Exception {
+        setupApiKeyAuth();
+
+        mockMvc.perform(patch("/v1/admin/budgets")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"overdraft_limit\":{\"unit\":\"TOKENS\",\"amount\":100}}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("UNIT_MISMATCH"));
+    }
 }

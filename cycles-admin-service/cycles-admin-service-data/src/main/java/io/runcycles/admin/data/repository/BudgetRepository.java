@@ -74,7 +74,9 @@ public class BudgetRepository {
         "elseif op == 'REPAY_DEBT' then\n" +
         "  local repayment = math.min(debt, amount)\n" +
         "  debt = debt - repayment\n" +
+        "  remaining = remaining + repayment\n" +
         "  if repayment < amount then\n" +
+        "    allocated = allocated + (amount - repayment)\n" +
         "    remaining = remaining + (amount - repayment)\n" +
         "  end\n" +
         "end\n" +
@@ -98,8 +100,16 @@ public class BudgetRepository {
         "return {'OK', i(prev_allocated), i(allocated), i(prev_remaining),\n" +
         "  i(remaining), i(prev_debt), i(debt), is_over}\n";
 
-    // Lua script for atomic budget creation — prevents TOCTOU race on duplicate check.
+    // Lua script for atomic budget creation — validates tenant exists and is ACTIVE,
+    // prevents TOCTOU race on duplicate check.
+    // KEYS[1] = budget key, KEYS[2] = tenant budget index, KEYS[3] = tenant key
+    // ARGV = flat key-value pairs for HMSET
     private static final String CREATE_BUDGET_LUA =
+        "local tenant_json = redis.call('GET', KEYS[3])\n" +
+        "if not tenant_json then return -1 end\n" +
+        "local tenant = cjson.decode(tenant_json)\n" +
+        "local ts = tenant['status'] or 'ACTIVE'\n" +
+        "if ts ~= 'ACTIVE' then return -2 end\n" +
         "if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end\n" +
         "redis.call('HMSET', KEYS[1], unpack(ARGV))\n" +
         "redis.call('SADD', KEYS[2], KEYS[1])\n" +
@@ -165,9 +175,19 @@ public class BudgetRepository {
                 } catch (Exception e) { /* skip metadata on serialization error */ }
             }
 
-            // Atomic create: EXISTS + HMSET + SADD in one Lua call
-            Object result = jedis.eval(CREATE_BUDGET_LUA, List.of(key, indexKey), args);
-            if (Long.valueOf(0).equals(result)) {
+            // Atomic create: tenant check + EXISTS + HMSET + SADD in one Lua call
+            String tenantKey = "tenant:" + tenantId;
+            Object result = jedis.eval(CREATE_BUDGET_LUA, List.of(key, indexKey, tenantKey), args);
+            long resultCode = (Long) result;
+            if (resultCode == -1) {
+                throw GovernanceException.tenantNotFound(tenantId);
+            }
+            if (resultCode == -2) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                    "Tenant is not ACTIVE: " + tenantId, 400);
+            }
+            if (resultCode == 0) {
                 throw GovernanceException.duplicateResource("Budget", request.getScope());
             }
             LOG.info("Created budget as HASH: {}", key);

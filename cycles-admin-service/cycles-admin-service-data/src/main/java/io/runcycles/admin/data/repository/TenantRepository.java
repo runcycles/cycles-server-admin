@@ -98,9 +98,10 @@ public class TenantRepository {
                 .status(TenantStatus.ACTIVE)
                 .parentTenantId(request.getParentTenantId())
                 .defaultCommitOveragePolicy(request.getDefaultCommitOveragePolicy() != null ? request.getDefaultCommitOveragePolicy() : CommitOveragePolicy.ALLOW_IF_AVAILABLE)
-                .defaultReservationTtlMs(60000L)
-                .maxReservationTtlMs(3600000L)
-                .maxReservationExtensions(10)
+                .defaultReservationTtlMs(request.getDefaultReservationTtlMs() != null ? request.getDefaultReservationTtlMs() : 60000L)
+                .maxReservationTtlMs(request.getMaxReservationTtlMs() != null ? request.getMaxReservationTtlMs() : 3600000L)
+                .maxReservationExtensions(request.getMaxReservationExtensions() != null ? request.getMaxReservationExtensions() : 10)
+                .reservationExpiryPolicy(request.getReservationExpiryPolicy())
                 .metadata(request.getMetadata())
                 .createdAt(Instant.now())
                 .build();
