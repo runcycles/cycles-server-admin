@@ -3,6 +3,7 @@ import io.runcycles.admin.data.repository.BudgetRepository;
 import io.runcycles.admin.model.budget.BalanceQueryResponse;
 import io.runcycles.admin.model.budget.BudgetStatus;
 import io.runcycles.admin.model.shared.UnitEnum;
+import io.runcycles.admin.api.config.ScopeFilterUtil;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -26,6 +27,7 @@ public class BalanceController {
             @RequestParam(required = false) String cursor,
             HttpServletRequest httpRequest) {
         // Enforce tenant scoping: always use authenticated tenant, ignore user-supplied tenant_id
+        ScopeFilterUtil.enforceScopeFilter(httpRequest, scope_prefix);
         String effectiveTenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         LOG.info("GET /v1/balances - tenant: {}", effectiveTenantId);
         var ledgers = repository.list(effectiveTenantId, scope_prefix, unit, BudgetStatus.ACTIVE, cursor, limit);

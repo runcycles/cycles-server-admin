@@ -166,15 +166,93 @@ class AuthInterceptorTest {
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("balances:read"))
+                        .permissions(List.of("admin:write", "balances:read"))
                         .scopeFilter(List.of("org/*"))
                         .build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
         assertThat(request.getAttribute("authenticated_tenant_id")).isEqualTo("t1");
         assertThat(request.getAttribute("authenticated_key_id")).isEqualTo("key_1");
-        assertThat(request.getAttribute("authenticated_permissions")).isEqualTo(List.of("balances:read"));
+        assertThat(request.getAttribute("authenticated_permissions")).isEqualTo(List.of("admin:write", "balances:read"));
         assertThat(request.getAttribute("authenticated_scope_filter")).isEqualTo(List.of("org/*"));
+    }
+
+    @Test
+    void preHandle_budgetEndpoint_insufficientPermissions_returns403() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/budgets");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+
+        when(apiKeyRepository.validate("valid-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(List.of("balances:read"))
+                        .build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    void preHandle_balancesEndpoint_balancesReadPermission_allows() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/balances");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+
+        when(apiKeyRepository.validate("valid-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(List.of("balances:read"))
+                        .build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_budgetListEndpoint_adminReadPermission_allows() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/admin/budgets");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+
+        when(apiKeyRepository.validate("valid-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(List.of("admin:read"))
+                        .build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_policyUpdate_withPathVariable_requiresAdminWrite() throws Exception {
+        request.setMethod("PATCH");
+        request.setRequestURI("/v1/admin/policies/pol_123");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+
+        when(apiKeyRepository.validate("valid-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(List.of("admin:read"))
+                        .build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    void preHandle_nullPermissions_returns403() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/budgets");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+
+        when(apiKeyRepository.validate("valid-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(null)
+                        .build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
     }
 
     @Test

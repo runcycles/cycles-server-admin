@@ -39,7 +39,7 @@ class BudgetControllerTest {
         when(apiKeyRepository.validate("valid-api-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("balances:read")).build());
+                        .permissions(List.of("admin:read", "admin:write", "balances:read")).build());
     }
 
     @Test
@@ -98,6 +98,45 @@ class BudgetControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.ledgers").isArray())
                 .andExpect(jsonPath("$.ledgers[0].ledger_id").value("led-1"));
+    }
+
+    @Test
+    void createBudget_scopeFilterDenied_returns403() throws Exception {
+        when(apiKeyRepository.validate("restricted-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(List.of("admin:read", "admin:write", "balances:read"))
+                        .scopeFilter(List.of("workspace:eng"))
+                        .build());
+
+        mockMvc.perform(post("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "restricted-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"scope\":\"tenant:acme/workspace:sales\",\"unit\":\"USD_MICROCENTS\",\"allocated\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000000}}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    @Test
+    void createBudget_scopeFilterAllowed_returns201() throws Exception {
+        when(apiKeyRepository.validate("restricted-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(List.of("admin:read", "admin:write", "balances:read"))
+                        .scopeFilter(List.of("workspace:eng"))
+                        .build());
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1").scope("tenant:acme/workspace:eng").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 1000000L))
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(budgetRepository.create(eq("t1"), any())).thenReturn(ledger);
+
+        mockMvc.perform(post("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "restricted-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"scope\":\"tenant:acme/workspace:eng\",\"unit\":\"USD_MICROCENTS\",\"allocated\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000000}}"))
+                .andExpect(status().isCreated());
     }
 
     // ========== POST /v1/admin/budgets/fund ==========

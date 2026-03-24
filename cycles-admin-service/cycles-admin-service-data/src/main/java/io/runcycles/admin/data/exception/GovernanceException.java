@@ -44,4 +44,9 @@ public class GovernanceException extends RuntimeException {
         return new GovernanceException(ErrorCode.UNIT_MISMATCH,
             "Unit mismatch: expected " + expected + " but got " + actual, 400);
     }
+
+    public static GovernanceException scopeFilterDenied(String scope) {
+        return new GovernanceException(ErrorCode.FORBIDDEN,
+            "API key scope_filter does not permit access to scope: " + scope, 403);
+    }
 }
