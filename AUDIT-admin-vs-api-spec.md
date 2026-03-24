@@ -16,7 +16,7 @@
 | `/v1/admin/tenants/{id}` | PATCH | AdminKeyAuth | AdminKeyAuth | name, status, metadata | Tenant | **PASS** |
 | `/v1/admin/budgets` | POST | ApiKeyAuth | ApiKeyAuth | BudgetCreateRequest | 201 BudgetLedger | **PASS** |
 | `/v1/admin/budgets` | GET | ApiKeyAuth | ApiKeyAuth | tenant_id (req), scope_prefix, unit, status, cursor, limit | BudgetListResponse | **PASS** |
-| `/v1/admin/budgets/{scope}/{unit}/fund` | POST | ApiKeyAuth | ApiKeyAuth | BudgetFundingRequest | BudgetFundingResponse / 404 / 409 | **PASS** |
+| `/v1/admin/budgets/fund?scope=&unit=` | POST | ApiKeyAuth | ApiKeyAuth | BudgetFundingRequest | BudgetFundingResponse / 404 / 409 | **PASS** |
 | `/v1/admin/policies` | POST | ApiKeyAuth | ApiKeyAuth | PolicyCreateRequest | 201 Policy | **PASS** |
 | `/v1/admin/policies` | GET | ApiKeyAuth | ApiKeyAuth | scope_pattern, status, cursor, limit | PolicyListResponse | **PASS** |
 | `/v1/admin/api-keys` | POST | AdminKeyAuth | AdminKeyAuth | ApiKeyCreateRequest | 201 ApiKeyCreateResponse | **PASS** |

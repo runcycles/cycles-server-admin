@@ -105,8 +105,8 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 | `PATCH` | `/v1/admin/tenants/{tenant_id}` | Update tenant | Admin |
 | `POST` | `/v1/admin/budgets` | Create budget ledger | ApiKey |
 | `GET` | `/v1/admin/budgets` | List budget ledgers | ApiKey |
-| `PATCH` | `/v1/admin/budgets/{scope}/{unit}` | Update budget | ApiKey |
-| `POST` | `/v1/admin/budgets/{scope}/{unit}/fund` | Fund/adjust budget | ApiKey |
+| `PATCH` | `/v1/admin/budgets?scope={scope}&unit={unit}` | Update budget | ApiKey |
+| `POST` | `/v1/admin/budgets/fund?scope={scope}&unit={unit}` | Fund/adjust budget | ApiKey |
 | `POST` | `/v1/admin/policies` | Create policy | ApiKey |
 | `GET` | `/v1/admin/policies` | List policies | ApiKey |
 | `PATCH` | `/v1/admin/policies/{policy_id}` | Update policy | ApiKey |
@@ -202,7 +202,7 @@ Scopes use hierarchical paths: `tenant:acme-corp/workspace:eng/agent:summarizer`
 
 ### Funding Operations
 
-Use `POST /v1/admin/budgets/{scope}/{unit}/fund` with one of:
+Use `POST /v1/admin/budgets/fund?scope={scope}&unit={unit}` with one of:
 
 | Operation | Effect |
 |-----------|--------|

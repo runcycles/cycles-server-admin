@@ -115,7 +115,7 @@ The internal `ApiKey` entity includes `key_hash` with a `@JsonProperty` annotati
 | `/v1/admin/tenants/{tenant_id}` | PATCH | `TenantController.update` | AdminKeyAuth | OK |
 | `/v1/admin/budgets` | POST | `BudgetController.create` | ApiKeyAuth | OK |
 | `/v1/admin/budgets` | GET | `BudgetController.list` | ApiKeyAuth | OK |
-| `/v1/admin/budgets/{scope}/{unit}/fund` | POST | `BudgetController.fund` | ApiKeyAuth | OK |
+| `/v1/admin/budgets/fund?scope=&unit=` | POST | `BudgetController.fund` | ApiKeyAuth | OK |
 | `/v1/admin/policies` | POST | `PolicyController.create` | ApiKeyAuth | OK |
 | `/v1/admin/policies` | GET | `PolicyController.list` | ApiKeyAuth | OK |
 | `/v1/admin/api-keys` | POST | `ApiKeyController.create` | AdminKeyAuth | OK |

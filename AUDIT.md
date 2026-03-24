@@ -55,8 +55,8 @@ Compared the following across spec YAML and server Java source:
 | `/v1/admin/tenants/{tenant_id}` | PATCH | `TenantController.update` | AdminKeyAuth | PASS |
 | `/v1/admin/budgets` | POST | `BudgetController.create` | ApiKeyAuth | PASS |
 | `/v1/admin/budgets` | GET | `BudgetController.list` | ApiKeyAuth | PASS |
-| `/v1/admin/budgets/{scope}/{unit}` | PATCH | `BudgetController.update` | ApiKeyAuth | PASS |
-| `/v1/admin/budgets/{scope}/{unit}/fund` | POST | `BudgetController.fund` | ApiKeyAuth | PASS |
+| `/v1/admin/budgets?scope=&unit=` | PATCH | `BudgetController.update` | ApiKeyAuth | PASS |
+| `/v1/admin/budgets/fund?scope=&unit=` | POST | `BudgetController.fund` | ApiKeyAuth | PASS |
 | `/v1/admin/policies` | POST | `PolicyController.create` | ApiKeyAuth | PASS |
 | `/v1/admin/policies` | GET | `PolicyController.list` | ApiKeyAuth | PASS |
 | `/v1/admin/policies/{policy_id}` | PATCH | `PolicyController.update` | ApiKeyAuth | PASS |
