@@ -51,6 +51,18 @@ class ScopeFilterUtilTest {
         assertThat(ScopeFilterUtil.matchesScope("tenant:acme/workspace:engineering", "workspace:eng")).isFalse();
     }
 
+    @Test
+    void matchesScope_bareAsteriskDoesNotMatchAll() {
+        // Bare "*" is malformed — must be "key:*" format. Should not match.
+        assertThat(ScopeFilterUtil.matchesScope("tenant:acme/workspace:eng", "*")).isFalse();
+    }
+
+    @Test
+    void matchesScope_colonAsteriskTooShort_noMatch() {
+        // ":*" alone is malformed — prefix would be empty
+        assertThat(ScopeFilterUtil.matchesScope("tenant:acme", ":*")).isFalse();
+    }
+
     // --- enforceScopeFilter ---
 
     @Test
@@ -118,5 +130,27 @@ class ScopeFilterUtilTest {
         request.setAttribute("authenticated_scope_filter", List.of("agent:*"));
         ScopeFilterUtil.enforceScopeFilter(request, "tenant:acme/workspace:eng/agent:bot1");
         // Should not throw — matches wildcard
+    }
+
+    @Test
+    void enforceScopeFilter_nullFilterEntries_skippedGracefully() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        // Can't use List.of() with nulls, use Arrays.asList
+        request.setAttribute("authenticated_scope_filter",
+                java.util.Arrays.asList(null, "workspace:eng"));
+        ScopeFilterUtil.enforceScopeFilter(request, "tenant:acme/workspace:eng");
+        // Should not throw — null entry skipped, second entry matches
+    }
+
+    @Test
+    void enforceScopeFilter_onlyNullFilterEntries_throws403() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setAttribute("authenticated_scope_filter",
+                java.util.Arrays.asList(null, null));
+
+        assertThatThrownBy(() ->
+                ScopeFilterUtil.enforceScopeFilter(request, "tenant:acme/workspace:eng"))
+                .isInstanceOf(GovernanceException.class)
+                .hasFieldOrPropertyWithValue("httpStatus", 403);
     }
 }

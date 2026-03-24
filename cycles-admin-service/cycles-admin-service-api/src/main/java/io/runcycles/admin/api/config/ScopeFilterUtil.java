@@ -36,6 +36,9 @@ public final class ScopeFilterUtil {
             return;
         }
         for (String filter : scopeFilter) {
+            if (filter == null || filter.isBlank()) {
+                continue;
+            }
             if (matchesScope(scope, filter)) {
                 return;
             }
@@ -51,7 +54,8 @@ public final class ScopeFilterUtil {
      */
     static boolean matchesScope(String scopePath, String filter) {
         String[] segments = scopePath.split("/");
-        if (filter.endsWith(":*")) {
+        // Wildcard filters must be "key:*" format (e.g. "agent:*"), not bare "*"
+        if (filter.endsWith(":*") && filter.length() > 2) {
             // Wildcard: "agent:*" matches any segment starting with "agent:"
             String prefix = filter.substring(0, filter.length() - 1); // "agent:"
             for (String segment : segments) {
