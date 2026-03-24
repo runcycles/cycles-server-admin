@@ -26,7 +26,7 @@ After applying all 14 fixes from Rounds 1 and 2, a comprehensive re-audit found 
 
 **Spec** (lines 1142-1176):
 ```yaml
-/v1/admin/budgets/{scope}/{unit}/fund:
+/v1/admin/budgets/fund?scope=&unit=:
   post:
     security:
       - ApiKeyAuth: []
@@ -37,8 +37,8 @@ After applying all 14 fixes from Rounds 1 and 2, a comprehensive re-audit found 
 
 **Implementation** (`BudgetController.java:47-58`):
 ```java
-@PostMapping("/{scope}/{unit}/fund")
-public ResponseEntity<BudgetFundingResponse> fund(@PathVariable String scope, @PathVariable UnitEnum unit,
+@PostMapping("/fund")
+public ResponseEntity<BudgetFundingResponse> fund(@RequestParam String scope, @RequestParam UnitEnum unit,
         @Valid @RequestBody BudgetFundingRequest request, HttpServletRequest httpRequest) {
     BudgetFundingResponse response = repository.fund(scope, unit, request);
     // ...
@@ -47,7 +47,7 @@ public ResponseEntity<BudgetFundingResponse> fund(@PathVariable String scope, @P
 
 The `scope` path parameter is passed directly to `repository.fund()` without verifying that the scope belongs to the authenticated tenant. Redis key is `budget:{scope}:{unit}`, which is globally accessible. An attacker with a valid API key for tenant A can CREDIT/DEBIT/RESET/REPAY_DEBT budgets belonging to tenant B by specifying their scope.
 
-**Attack vector**: `POST /v1/admin/budgets/tenant:victim-corp/USD_MICROCENTS/fund` with `X-Cycles-API-Key` belonging to attacker-corp.
+**Attack vector**: `POST /v1/admin/budgets/fund?scope=tenant:victim-corp&unit=USD_MICROCENTS` with `X-Cycles-API-Key` belonging to attacker-corp.
 
 **Risk**: Unauthorized financial modification — attacker can drain or inflate another tenant's budget.
 
@@ -180,7 +180,7 @@ Same pattern as the fixed Issue 13 — the class-level `@JsonInclude(NON_NULL)` 
 | `/v1/admin/tenants/{tenant_id}` | PATCH | `TenantController.update` | AdminKeyAuth | OK |
 | `/v1/admin/budgets` | POST | `BudgetController.create` | ApiKeyAuth | OK |
 | `/v1/admin/budgets` | GET | `BudgetController.list` | ApiKeyAuth | **Issue 16** |
-| `/v1/admin/budgets/{scope}/{unit}/fund` | POST | `BudgetController.fund` | ApiKeyAuth | **Issue 15** |
+| `/v1/admin/budgets/fund?scope=&unit=` | POST | `BudgetController.fund` | ApiKeyAuth | **Issue 15** |
 | `/v1/admin/policies` | POST | `PolicyController.create` | ApiKeyAuth | OK |
 | `/v1/admin/policies` | GET | `PolicyController.list` | ApiKeyAuth | OK |
 | `/v1/admin/api-keys` | POST | `ApiKeyController.create` | AdminKeyAuth | OK |

@@ -1157,8 +1157,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BudgetListResponse'
-  
-  /v1/admin/budgets/{scope}/{unit}:
     patch:
       tags: [Budgets]
       operationId: updateBudget
@@ -1168,11 +1166,12 @@ paths:
         Recalculates is_over_limit after overdraft_limit changes.
       parameters:
         - name: scope
-          in: path
+          in: query
           required: true
+          description: Canonical scope identifier, e.g., "tenant:acme" or "tenant:acme/workspace:prod"
           schema: {type: string}
         - name: unit
-          in: path
+          in: query
           required: true
           schema: {$ref: '#/components/schemas/UnitEnum'}
       requestBody:
@@ -1200,7 +1199,7 @@ paths:
         '404': {$ref: '#/components/responses/ErrorResponse'}
         '409': {$ref: '#/components/responses/ErrorResponse'}
 
-  /v1/admin/budgets/{scope}/{unit}/fund:
+  /v1/admin/budgets/fund:
     post:
       tags: [Budgets]
       operationId: fundBudget
@@ -1208,29 +1207,29 @@ paths:
       description: >-
         Modifies budget allocation and remaining balance outside the
         reservation flow. Common operations:
-        
+
         AUTHORIZATION:
         - Tenant can fund their own budgets only
-        
+
         CREDIT (top-up):
         - allocated += amount
         - remaining += amount
         - Use for: monthly allocations, bonus credits
-        
+
         DEBIT (drain):
         - allocated -= amount
         - remaining -= amount (fails if would go negative)
         - Use for: downgrades, refunds, policy enforcement
-        
+
         RESET (reallocate):
         - allocated = amount
         - remaining = amount - reserved - spent - debt
         - Use for: period rollovers, plan changes
-        
+
         REPAY_DEBT:
         - debt -= amount (use remaining if debt < amount)
         - Use for: manual debt reconciliation
-        
+
         IDEMPOTENCY:
         - Required idempotency_key prevents double-funding
         - Replayed requests return original response
@@ -1238,12 +1237,13 @@ paths:
         - ApiKeyAuth: []
       parameters:
         - name: scope
-          in: path
+          in: query
           required: true
+          description: Canonical scope identifier, e.g., "tenant:acme" or "tenant:acme/workspace:prod"
           schema:
             type: string
         - name: unit
-          in: path
+          in: query
           required: true
           schema:
             type: string

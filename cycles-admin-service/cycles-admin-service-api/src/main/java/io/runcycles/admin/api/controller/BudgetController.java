@@ -47,8 +47,8 @@ public class BudgetController {
             .build();
         return ResponseEntity.ok(response);
     }
-    @PatchMapping("/{scope}/{unit}") @Operation(operationId = "updateBudget")
-    public ResponseEntity<BudgetLedger> update(@PathVariable String scope, @PathVariable UnitEnum unit,
+    @PatchMapping @Operation(operationId = "updateBudget")
+    public ResponseEntity<BudgetLedger> update(@RequestParam String scope, @RequestParam UnitEnum unit,
             @Valid @RequestBody BudgetUpdateRequest request, HttpServletRequest httpRequest) {
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         BudgetLedger ledger = repository.update(tenantId, scope, unit, request);
@@ -60,8 +60,8 @@ public class BudgetController {
             .build());
         return ResponseEntity.ok(ledger);
     }
-    @PostMapping("/{scope}/{unit}/fund") @Operation(operationId = "fundBudget")
-    public ResponseEntity<BudgetFundingResponse> fund(@PathVariable String scope, @PathVariable UnitEnum unit,
+    @PostMapping("/fund") @Operation(operationId = "fundBudget")
+    public ResponseEntity<BudgetFundingResponse> fund(@RequestParam String scope, @RequestParam UnitEnum unit,
             @Valid @RequestBody BudgetFundingRequest request, HttpServletRequest httpRequest) {
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         BudgetFundingResponse response = repository.fund(tenantId, scope, unit, request);
