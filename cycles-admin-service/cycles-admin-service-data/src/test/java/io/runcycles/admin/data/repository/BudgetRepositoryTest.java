@@ -699,6 +699,36 @@ class BudgetRepositoryTest {
     }
 
     @Test
+    void create_tenantNotFound_throwsTenantNotFound() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(-1L);
+
+        BudgetCreateRequest request = new BudgetCreateRequest();
+        request.setScope("org/team1");
+        request.setUnit(UnitEnum.USD_MICROCENTS);
+        request.setAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
+
+        assertThatThrownBy(() -> repository.create("missing-tenant", request))
+                .isInstanceOf(GovernanceException.class)
+                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.TENANT_NOT_FOUND)
+                .hasFieldOrPropertyWithValue("httpStatus", 404);
+    }
+
+    @Test
+    void create_tenantNotActive_throwsInvalidRequest() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(-2L);
+
+        BudgetCreateRequest request = new BudgetCreateRequest();
+        request.setScope("org/team1");
+        request.setUnit(UnitEnum.USD_MICROCENTS);
+        request.setAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
+
+        assertThatThrownBy(() -> repository.create("suspended-tenant", request))
+                .isInstanceOf(GovernanceException.class)
+                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.INVALID_REQUEST)
+                .hasFieldOrPropertyWithValue("httpStatus", 400);
+    }
+
+    @Test
     void update_withCommitOveragePolicy_passesCorrectArgs() {
         when(jedisPool.getResource()).thenReturn(jedis);
         doNothing().when(jedis).close();

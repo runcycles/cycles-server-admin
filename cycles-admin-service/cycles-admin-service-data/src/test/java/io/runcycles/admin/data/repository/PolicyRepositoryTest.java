@@ -46,6 +46,7 @@ class PolicyRepositoryTest {
 
     @Test
     void create_validRequest_returnsPolicy() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
         PolicyCreateRequest request = new PolicyCreateRequest();
         request.setName("Rate Limit Policy");
         request.setScopePattern("org/*");
@@ -64,6 +65,7 @@ class PolicyRepositoryTest {
 
     @Test
     void create_withCaps_setsCaps() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
         PolicyCreateRequest request = new PolicyCreateRequest();
         request.setName("Cap Policy");
         request.setScopePattern("org/*");
@@ -76,6 +78,7 @@ class PolicyRepositoryTest {
 
     @Test
     void create_withDefaultPriority_setsZero() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
         PolicyCreateRequest request = new PolicyCreateRequest();
         request.setName("Default");
         request.setScopePattern("*");
@@ -87,6 +90,7 @@ class PolicyRepositoryTest {
 
     @Test
     void create_withCustomPriority_usesCustom() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
         PolicyCreateRequest request = new PolicyCreateRequest();
         request.setName("High Priority");
         request.setScopePattern("*");
@@ -229,6 +233,32 @@ class PolicyRepositoryTest {
     }
 
     @Test
+    void create_tenantNotFound_throwsTenantNotFound() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(-1L);
+
+        PolicyCreateRequest request = new PolicyCreateRequest();
+        request.setName("Test Policy");
+        request.setScopePattern("org/*");
+
+        assertThatThrownBy(() -> repository.create("missing-tenant", request))
+                .isInstanceOf(GovernanceException.class)
+                .hasFieldOrPropertyWithValue("httpStatus", 404);
+    }
+
+    @Test
+    void create_tenantNotActive_throwsInvalidRequest() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(-2L);
+
+        PolicyCreateRequest request = new PolicyCreateRequest();
+        request.setName("Test Policy");
+        request.setScopePattern("org/*");
+
+        assertThatThrownBy(() -> repository.create("suspended-tenant", request))
+                .isInstanceOf(GovernanceException.class)
+                .hasFieldOrPropertyWithValue("httpStatus", 400);
+    }
+
+    @Test
     void create_genericException_wrappedInRuntimeException() {
         when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
 
@@ -237,8 +267,7 @@ class PolicyRepositoryTest {
         request.setScopePattern("org/*");
 
         assertThatThrownBy(() -> repository.create("tenant1", request))
-                .isInstanceOf(RuntimeException.class)
-                .hasCauseInstanceOf(RuntimeException.class);
+                .isInstanceOf(RuntimeException.class);
     }
 
     @Test

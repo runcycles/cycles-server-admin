@@ -17,8 +17,16 @@ public class PolicyRepository {
     @Autowired private JedisPool jedisPool;
     @Autowired private ObjectMapper objectMapper;
 
-    // Lua script for atomic policy creation: SET + SADD in one call (consistent with budget/tenant creation)
+    // Lua script for atomic policy creation: validates tenant exists and is ACTIVE,
+    // then SET + SADD in one call.
+    // KEYS[1] = policy key, KEYS[2] = tenant policy index, KEYS[3] = tenant key
+    // ARGV[1] = policy JSON, ARGV[2] = policyId
     private static final String CREATE_POLICY_LUA =
+        "local tenant_json = redis.call('GET', KEYS[3])\n" +
+        "if not tenant_json then return -1 end\n" +
+        "local tenant = cjson.decode(tenant_json)\n" +
+        "local ts = tenant['status'] or 'ACTIVE'\n" +
+        "if ts ~= 'ACTIVE' then return -2 end\n" +
         "redis.call('SET', KEYS[1], ARGV[1])\n" +
         "redis.call('SADD', KEYS[2], ARGV[2])\n" +
         "return 1\n";
@@ -43,11 +51,23 @@ public class PolicyRepository {
                 .createdAt(Instant.now())
                 .build();
             String json = objectMapper.writeValueAsString(policy);
-            // Atomic create: SET policy + SADD index in one Lua call
-            jedis.eval(CREATE_POLICY_LUA,
-                List.of("policy:" + policyId, "policies:" + tenantId),
+            // Atomic create: tenant check + SET policy + SADD index in one Lua call
+            String tenantKey = "tenant:" + tenantId;
+            Object result = jedis.eval(CREATE_POLICY_LUA,
+                List.of("policy:" + policyId, "policies:" + tenantId, tenantKey),
                 List.of(json, policyId));
+            long resultCode = (Long) result;
+            if (resultCode == -1) {
+                throw GovernanceException.tenantNotFound(tenantId);
+            }
+            if (resultCode == -2) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                    "Tenant is not ACTIVE: " + tenantId, 400);
+            }
             return policy;
+        } catch (GovernanceException e) {
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
