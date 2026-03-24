@@ -30,8 +30,8 @@
 ## Audit Scope
 
 Compared the following across spec YAML and server Java source:
-- All 15 admin/auth/balance endpoint paths, HTTP methods, and path/query parameters (2 runtime endpoints — reservations and commit — are handled by `cycles-server`)
-- All 8 request schemas (fields, types, constraints, required markers)
+- All 17 admin/auth/balance endpoint paths, HTTP methods, and path/query parameters (2 runtime endpoints — reservations and commit — are handled by `cycles-server`)
+- All 10 request schemas (fields, types, constraints, required markers)
 - All 12 response schemas and domain models
 - All 10 enum types and their values
 - Auth: `X-Admin-API-Key` for admin endpoints, `X-Cycles-API-Key` for tenant-scoped endpoints
@@ -45,7 +45,7 @@ Compared the following across spec YAML and server Java source:
 
 ## PASS — Correctly Implemented
 
-### Endpoints (all 15 match spec)
+### Endpoints (all 17 match spec)
 
 | Spec Endpoint | Method | Controller | Auth | Match |
 |---|---|---|---|---|
@@ -55,9 +55,11 @@ Compared the following across spec YAML and server Java source:
 | `/v1/admin/tenants/{tenant_id}` | PATCH | `TenantController.update` | AdminKeyAuth | PASS |
 | `/v1/admin/budgets` | POST | `BudgetController.create` | ApiKeyAuth | PASS |
 | `/v1/admin/budgets` | GET | `BudgetController.list` | ApiKeyAuth | PASS |
+| `/v1/admin/budgets/{scope}/{unit}` | PATCH | `BudgetController.update` | ApiKeyAuth | PASS |
 | `/v1/admin/budgets/{scope}/{unit}/fund` | POST | `BudgetController.fund` | ApiKeyAuth | PASS |
 | `/v1/admin/policies` | POST | `PolicyController.create` | ApiKeyAuth | PASS |
 | `/v1/admin/policies` | GET | `PolicyController.list` | ApiKeyAuth | PASS |
+| `/v1/admin/policies/{policy_id}` | PATCH | `PolicyController.update` | ApiKeyAuth | PASS |
 | `/v1/admin/api-keys` | POST | `ApiKeyController.create` | AdminKeyAuth | PASS |
 | `/v1/admin/api-keys` | GET | `ApiKeyController.list` | AdminKeyAuth | PASS |
 | `/v1/admin/api-keys/{key_id}` | DELETE | `ApiKeyController.revoke` | AdminKeyAuth | PASS |
@@ -65,7 +67,7 @@ Compared the following across spec YAML and server Java source:
 | `/v1/admin/audit/logs` | GET | `AuditController.list` | AdminKeyAuth | PASS |
 | `/v1/balances` | GET | `BalanceController.query` | ApiKeyAuth | PASS |
 
-Note: The spec also defines `POST /v1/reservations`, `POST /v1/reservations/{id}/commit`, and `GET /v1/balances` as runtime endpoints. The admin server implements only `GET /v1/balances`; the reservation endpoints are handled by `cycles-server`.
+Note: The spec also defines `POST /v1/reservations`, `POST /v1/reservations/{id}/commit`, and `GET /v1/balances` as runtime endpoints. The admin server implements `GET /v1/balances`; the reservation endpoints are handled by `cycles-server`.
 
 ### Request Schemas (all match spec)
 
@@ -73,16 +75,22 @@ Note: The spec also defines `POST /v1/reservations`, `POST /v1/reservations/{id}
 - Fields: `tenant_id` (`@NotBlank @Pattern @Size`), `name` (`@NotBlank`), `parent_tenant_id`, `metadata`, `default_commit_overage_policy` — all match spec constraints
 
 **TenantUpdateRequest** — all optional fields
-- Fields: `name`, `status` (TenantStatus), `metadata`, `default_commit_overage_policy` — all match spec
+- Fields: `name`, `status` (TenantStatus), `metadata`, `default_commit_overage_policy`, `default_reservation_ttl_ms`, `max_reservation_ttl_ms`, `max_reservation_extensions` — all match spec
 
 **BudgetCreateRequest** — spec required: `[scope, unit, allocated]`
 - Fields: `scope` (`@NotBlank`), `unit` (`@NotNull`), `allocated` (`@NotNull @Valid`), `overdraft_limit`, `commit_overage_policy`, `rollover_policy`, `period_start`, `period_end`, `metadata` — all match spec
+
+**BudgetUpdateRequest** — all optional fields
+- Fields: `overdraft_limit`, `commit_overage_policy`, `metadata` — all match spec. Lua script recalculates `is_over_limit` after overdraft change. Returns 409 if budget is CLOSED.
 
 **BudgetFundingRequest** — spec required: `[operation, amount]`
 - Fields: `operation` (`@NotNull`), `amount` (`@NotNull @Valid`), `reason` (`@Size`), `idempotency_key` (`@Size`), `metadata` — all match spec
 
 **PolicyCreateRequest** — spec required: `[name, scope_pattern]`
 - Fields: `name` (`@NotBlank`), `description`, `scope_pattern` (`@NotBlank`), `priority`, `caps` (`@Valid`), `commit_overage_policy`, `reservation_ttl_override`, `rate_limits`, `effective_from`, `effective_until` — all match spec
+
+**PolicyUpdateRequest** — all optional fields
+- Fields: `name`, `description`, `priority`, `caps`, `commit_overage_policy`, `reservation_ttl_override`, `rate_limits`, `effective_from`, `effective_until`, `status` — all match spec. Lua script merges non-null fields into existing policy JSON.
 
 **ApiKeyCreateRequest** — spec required: `[tenant_id, name]`
 - Fields: `tenant_id` (`@NotBlank`), `name` (`@NotBlank`), `description`, `permissions`, `scope_filter`, `expires_at`, `metadata` — all match spec
@@ -203,7 +211,7 @@ Note: The spec also defines `POST /v1/reservations`, `POST /v1/reservations/{id}
 | Layer | Test Classes | Coverage |
 |---|---|---|
 | Application | `BudgetGovernanceApplicationTest` | Spring Boot main entry point |
-| Controllers | `TenantControllerTest`, `BudgetControllerTest`, `PolicyControllerTest`, `ApiKeyControllerTest`, `AuthControllerTest`, `BalanceControllerTest`, `AuditControllerTest` | All 15 endpoints |
+| Controllers | `TenantControllerTest`, `BudgetControllerTest`, `PolicyControllerTest`, `ApiKeyControllerTest`, `AuthControllerTest`, `BalanceControllerTest`, `AuditControllerTest` | All 17 endpoints |
 | Auth/Config | `AuthInterceptorTest`, `WebConfigTest`, `RequestIdFilterTest`, `GlobalExceptionHandlerTest` | Auth flow, request IDs, error mapping |
 | Repositories | `TenantRepositoryTest`, `BudgetRepositoryTest`, `PolicyRepositoryTest`, `ApiKeyRepositoryTest`, `AuditRepositoryTest` | Redis operations, Lua scripts |
 | Services | `KeyServiceTest` | API key hashing |
@@ -230,4 +238,4 @@ All modules exceed the threshold. Overall effective coverage: **99.6%**.
 
 ## Verdict
 
-The admin server is **fully compliant** with the Complete Budget Governance spec v0.1.24. v0.1.24 changes: default tenant commit overage policy changed from REJECT to ALLOW_IF_AVAILABLE; spec file renamed to v0.1.24; FUND_LUA correctly recalculates is_over_limit on all funding operations (clears the flag when debt <= overdraft_limit, which handles ALLOW_IF_AVAILABLE capped scenarios where debt=0). New endpoints: PATCH /v1/admin/budgets/{scope}/{unit} (update overdraft_limit, commit_overage_policy, metadata with atomic is_over_limit recalculation); PATCH /v1/admin/policies/{policy_id} (update all mutable policy fields). Extended PATCH /v1/admin/tenants/{tenant_id} with default_reservation_ttl_ms, max_reservation_ttl_ms, max_reservation_extensions. Total endpoints: 17 (was 15). All 15 endpoints are implemented, all 8 request schemas and 12 response schemas match, all 10 enum types have correct values. Auth (AdminKeyAuth / ApiKeyAuth), tenant scoping, idempotency, pagination, audit logging, and behavioral constraints (status transitions, funding operations, key lifecycle) all follow spec normative rules. All 19 previously identified issues have been verified as fixed. Tenant lifecycle edge cases (CLOSED→SUSPENDED, CLOSED tenant API key creation) are fully tested. No remaining spec violations found.
+The admin server is **fully compliant** with the Complete Budget Governance spec v0.1.24. v0.1.24 changes: default tenant commit overage policy changed from REJECT to ALLOW_IF_AVAILABLE; spec file renamed to v0.1.24; FUND_LUA correctly recalculates is_over_limit on all funding operations (clears the flag when debt <= overdraft_limit, which handles ALLOW_IF_AVAILABLE capped scenarios where debt=0). New endpoints: PATCH /v1/admin/budgets/{scope}/{unit} (update overdraft_limit, commit_overage_policy, metadata with atomic is_over_limit recalculation); PATCH /v1/admin/policies/{policy_id} (update all mutable policy fields). Extended PATCH /v1/admin/tenants/{tenant_id} with default_reservation_ttl_ms, max_reservation_ttl_ms, max_reservation_extensions. Total endpoints: 17 (was 15). All 17 endpoints are implemented, all 10 request schemas and 12 response schemas match, all 10 enum types have correct values. Auth (AdminKeyAuth / ApiKeyAuth), tenant scoping, idempotency, pagination, audit logging, and behavioral constraints (status transitions, funding operations, key lifecycle) all follow spec normative rules. All 19 previously identified issues have been verified as fixed. Tenant lifecycle edge cases (CLOSED→SUSPENDED, CLOSED tenant API key creation) are fully tested. No remaining spec violations found.

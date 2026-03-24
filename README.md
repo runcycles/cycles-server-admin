@@ -105,9 +105,11 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 | `PATCH` | `/v1/admin/tenants/{tenant_id}` | Update tenant | Admin |
 | `POST` | `/v1/admin/budgets` | Create budget ledger | ApiKey |
 | `GET` | `/v1/admin/budgets` | List budget ledgers | ApiKey |
+| `PATCH` | `/v1/admin/budgets/{scope}/{unit}` | Update budget | ApiKey |
 | `POST` | `/v1/admin/budgets/{scope}/{unit}/fund` | Fund/adjust budget | ApiKey |
 | `POST` | `/v1/admin/policies` | Create policy | ApiKey |
 | `GET` | `/v1/admin/policies` | List policies | ApiKey |
+| `PATCH` | `/v1/admin/policies/{policy_id}` | Update policy | ApiKey |
 
 ### Pillar 2: Authentication & Authorization
 
