@@ -17,6 +17,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import redis.clients.jedis.JedisPool;
 
+import java.net.URI;
 import java.time.Instant;
 import java.util.List;
 
@@ -453,6 +454,52 @@ class BudgetControllerTest {
                         .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000}}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error").value("BUDGET_CLOSED"));
+    }
+
+    @Test
+    void fundBudget_workspaceScopeWithEncodedSlash_returns200() throws Exception {
+        setupApiKeyAuth();
+        BudgetFundingResponse funding = BudgetFundingResponse.builder()
+                .operation(FundingOperation.CREDIT)
+                .previousAllocated(new Amount(UnitEnum.USD_MICROCENTS, 0L))
+                .newAllocated(new Amount(UnitEnum.USD_MICROCENTS, 500000L))
+                .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 0L))
+                .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 500000L))
+                .timestamp(Instant.now()).build();
+        when(budgetRepository.fund(eq("t1"), eq("tenant:acme/workspace:prod"), eq(UnitEnum.USD_MICROCENTS), any()))
+                .thenReturn(funding);
+
+        mockMvc.perform(post(new URI("/v1/admin/budgets/tenant:acme%2Fworkspace:prod/USD_MICROCENTS/fund"))
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":500000}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operation").value("CREDIT"))
+                .andExpect(jsonPath("$.new_allocated.amount").value(500000));
+
+        verify(budgetRepository).fund(eq("t1"), eq("tenant:acme/workspace:prod"), eq(UnitEnum.USD_MICROCENTS), any());
+    }
+
+    @Test
+    void updateBudget_workspaceScopeWithEncodedSlash_returns200() throws Exception {
+        setupApiKeyAuth();
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1").scope("tenant:acme/workspace:prod").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 500000L))
+                .overdraftLimit(new Amount(UnitEnum.USD_MICROCENTS, 50000L))
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(budgetRepository.update(eq("t1"), eq("tenant:acme/workspace:prod"), eq(UnitEnum.USD_MICROCENTS), any()))
+                .thenReturn(ledger);
+
+        mockMvc.perform(patch(new URI("/v1/admin/budgets/tenant:acme%2Fworkspace:prod/USD_MICROCENTS"))
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"overdraft_limit\":{\"unit\":\"USD_MICROCENTS\",\"amount\":50000}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.scope").value("tenant:acme/workspace:prod"));
+
+        verify(budgetRepository).update(eq("t1"), eq("tenant:acme/workspace:prod"), eq(UnitEnum.USD_MICROCENTS), any());
     }
 
     // ========== PATCH /v1/admin/budgets/{scope}/{unit} ==========
