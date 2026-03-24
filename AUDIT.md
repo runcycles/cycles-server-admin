@@ -1,6 +1,6 @@
 # Complete Budget Governance v0.1.24 — Admin Server Audit
 
-**Date:** 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Date:** 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** `complete-budget-governance-v0.1.24.yaml` (OpenAPI 3.1.0, v0.1.24)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 **Runtime server audit:** See `cycles-server/AUDIT.md` (all passing)
@@ -23,7 +23,7 @@
 | Error Handling | — | 0 |
 | Behavioral Constraints | — | 0 |
 
-**All previously identified issues (19 across Rounds 1–3) have been fixed. No remaining spec violations found.**
+**All previously identified issues (19 across Rounds 1–3, plus 7 in Rounds 4–5) have been fixed. No remaining spec violations found.**
 
 ---
 
@@ -72,7 +72,7 @@ Note: The spec also defines `POST /v1/reservations`, `POST /v1/reservations/{id}
 ### Request Schemas (all match spec)
 
 **TenantCreateRequest** — spec required: `[tenant_id, name]`
-- Fields: `tenant_id` (`@NotBlank @Pattern @Size`), `name` (`@NotBlank`), `parent_tenant_id`, `metadata`, `default_commit_overage_policy` — all match spec constraints
+- Fields: `tenant_id` (`@NotBlank @Pattern @Size`), `name` (`@NotBlank`), `parent_tenant_id`, `metadata`, `default_commit_overage_policy`, `default_reservation_ttl_ms`, `max_reservation_ttl_ms`, `max_reservation_extensions`, `reservation_expiry_policy` — all match spec constraints. TTL/extension fields default to spec values (60s, 1h, 10) when not provided.
 
 **TenantUpdateRequest** — all optional fields
 - Fields: `name`, `status` (TenantStatus), `metadata`, `default_commit_overage_policy`, `default_reservation_ttl_ms`, `max_reservation_ttl_ms`, `max_reservation_extensions` — all match spec
@@ -136,7 +136,9 @@ Note: The spec also defines `POST /v1/reservations`, `POST /v1/reservations/{id}
 
 - **AdminKeyAuth** (`X-Admin-API-Key`): Validated by `AuthInterceptor.validateAdminKey()` for all `/v1/admin/*` and `/v1/auth/*` endpoints
 - **ApiKeyAuth** (`X-Cycles-API-Key`): Validated by `AuthInterceptor.validateApiKey()` for budget, policy, and balance endpoints
-- API key validation checks: key exists, hash matches, status is ACTIVE, not expired, owning tenant is active — all 5 checks in `ApiKeyRepository.validate()`
+- Missing admin key → 401 UNAUTHORIZED; invalid admin key → 401 UNAUTHORIZED (spec: "Missing or invalid API key")
+- API key validation checks: key exists, hash matches, status is ACTIVE, not expired, tenant exists and is ACTIVE — all 6 checks in `ApiKeyRepository.validate()`
+- Deleted/missing tenant during key validation → returns `valid=false` with `TENANT_NOT_FOUND` (defense-in-depth)
 - `ApiKey.keyHash` excluded from API responses via `@JsonIgnore`; API uses `ApiKeyResponse` DTO instead
 
 ### Tenant Scoping (correct)
@@ -178,6 +180,11 @@ Note: The spec also defines `POST /v1/reservations`, `POST /v1/reservations/{id}
 | FROZEN/CLOSED budgets block fund operations | Lua checks status, returns error | PASS |
 | Key revocation is permanent (ACTIVE → REVOKED) | `ApiKeyRepository.revoke()` sets status and timestamp | PASS |
 | Tenant existence check before API key creation | `ApiKeyRepository.create()` validates tenant exists and is active | PASS |
+| Tenant existence check before budget creation | `BudgetRepository.create()` Lua validates tenant exists and is ACTIVE | PASS |
+| Tenant existence check before policy creation | `PolicyRepository.create()` Lua validates tenant exists and is ACTIVE | PASS |
+| Deleted tenant blocks API key validation | `ApiKeyRepository.validate()` returns TENANT_NOT_FOUND if tenant data missing | PASS |
+| Unit mismatch validation on budget create/fund/update | `BudgetController` validates Amount.unit matches budget unit | PASS |
+| REPAY_DEBT maintains ledger invariant | Lua: `remaining += repayment`; excess updates both `allocated` and `remaining` | PASS |
 | Error responses include `request_id` | `GlobalExceptionHandler` and `AuthInterceptor` both generate UUID | PASS |
 
 ### Error Handling (correct)
@@ -191,7 +198,7 @@ Note: The spec also defines `POST /v1/reservations`, `POST /v1/reservations/{id}
 
 ## Previously Found Issues (all fixed)
 
-19 issues were identified and fixed across Rounds 1–3:
+26 issues were identified and fixed across Rounds 1–5:
 
 | Round | Issues | Severity | Status |
 |---|---|---|---|
@@ -201,6 +208,13 @@ Note: The spec also defines `POST /v1/reservations`, `POST /v1/reservations/{id}
 | Round 3 | #15: Cross-tenant budget modification via fund endpoint | CRITICAL | **FIXED** |
 | Round 3 | #16–17: Cross-tenant budget/balance enumeration | HIGH | All **FIXED** |
 | Round 3 | #18–19: `ErrorResponse.details` null serialization, `BalanceQueryResponse` `NON_NULL` | LOW | All **FIXED** |
+| Round 4 | #20: REPAY_DEBT Lua breaks ledger invariant (remaining += excess without allocated +=) | CRITICAL | **FIXED** |
+| Round 4 | #21: Invalid admin API key returned 403 instead of 401 per spec | MEDIUM | **FIXED** |
+| Round 4 | #22: No unit mismatch validation on budget create/fund/update | MEDIUM | **FIXED** |
+| Round 5 | #23: API key validation silently accepted deleted/missing tenants | HIGH | **FIXED** |
+| Round 5 | #24: Budget create Lua had no tenant existence/status check | HIGH | **FIXED** |
+| Round 5 | #25: Policy create Lua had no tenant existence/status check | HIGH | **FIXED** |
+| Round 5 | #26: TenantCreateRequest missing TTL/extension/expiry fields (required separate update) | LOW | **FIXED** |
 
 ---
 
@@ -236,6 +250,19 @@ All modules exceed the threshold. Overall effective coverage: **99.6%**.
 
 ---
 
+## Production Deployment Notes
+
+- **Port 7979** — internal admin service, never expose to public internet
+- **Redis** — single point of state; use appendonly persistence, HA setup (Sentinel/Cluster) for production
+- **Logging** — `application.properties` defaults to DEBUG for `io.runcycles.admin`; override to INFO via `LOGGING_LEVEL_IO_RUNCYCLES_ADMIN=INFO`
+- **Admin key** — set `ADMIN_API_KEY` env var; server rejects all admin requests with 500 if not configured (fail-closed)
+- **Swagger UI** — enabled by default (`/swagger-ui.html`); acceptable for internal-only service
+- **Redis pool** — 50 max connections, 10 max idle, 5 min idle; increase for high-throughput deployments
+- **Audit logging** — non-fatal; audit write failures are logged as errors but do not fail business operations
+- **All Lua scripts are atomic** — no TOCTOU race conditions on any write path
+
+---
+
 ## Verdict
 
-The admin server is **fully compliant** with the Complete Budget Governance spec v0.1.24. v0.1.24 changes: default tenant commit overage policy changed from REJECT to ALLOW_IF_AVAILABLE; spec file renamed to v0.1.24; FUND_LUA correctly recalculates is_over_limit on all funding operations (clears the flag when debt <= overdraft_limit, which handles ALLOW_IF_AVAILABLE capped scenarios where debt=0). New endpoints: PATCH /v1/admin/budgets?scope={scope}&unit={unit} (update overdraft_limit, commit_overage_policy, metadata with atomic is_over_limit recalculation); PATCH /v1/admin/policies/{policy_id} (update all mutable policy fields). Extended PATCH /v1/admin/tenants/{tenant_id} with default_reservation_ttl_ms, max_reservation_ttl_ms, max_reservation_extensions. Total endpoints: 17 (was 15). All 17 endpoints are implemented, all 10 request schemas and 12 response schemas match, all 10 enum types have correct values. Auth (AdminKeyAuth / ApiKeyAuth), tenant scoping, idempotency, pagination, audit logging, and behavioral constraints (status transitions, funding operations, key lifecycle) all follow spec normative rules. All 19 previously identified issues have been verified as fixed. Tenant lifecycle edge cases (CLOSED→SUSPENDED, CLOSED tenant API key creation) are fully tested. No remaining spec violations found.
+The admin server is **fully compliant** with the Complete Budget Governance spec v0.1.24 and **ready for production deployment**. All 17 endpoints are implemented, all 10 request schemas and 12 response schemas match, all 10 enum types have correct values. Auth (AdminKeyAuth / ApiKeyAuth), tenant scoping, idempotency, pagination, audit logging, and behavioral constraints (status transitions, funding operations, key lifecycle) all follow spec normative rules. All 26 previously identified issues (across Rounds 1–5) have been verified as fixed. Defense-in-depth: tenant existence is validated at both the auth layer (API key validation) and the data layer (Lua scripts on budget/policy creation). No remaining spec violations found.
