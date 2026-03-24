@@ -30,8 +30,8 @@ public class PolicyController {
             .build());
         return ResponseEntity.status(201).body(policy);
     }
-    @PatchMapping("/{policyId}") @Operation(operationId = "updatePolicy")
-    public ResponseEntity<Policy> update(@PathVariable String policyId, @Valid @RequestBody PolicyUpdateRequest request, HttpServletRequest httpRequest) {
+    @PatchMapping("/{policy_id}") @Operation(operationId = "updatePolicy")
+    public ResponseEntity<Policy> update(@PathVariable("policy_id") String policyId, @Valid @RequestBody PolicyUpdateRequest request, HttpServletRequest httpRequest) {
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         Policy policy = repository.update(tenantId, policyId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
