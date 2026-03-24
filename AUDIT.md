@@ -1,7 +1,7 @@
-# Complete Budget Governance v0.1.23 — Admin Server Audit
+# Complete Budget Governance v0.1.24 — Admin Server Audit
 
-**Date:** 2026-03-23 (updated), 2026-03-14 (initial)
-**Spec:** `complete-budget-governance-v0.1.23.yaml` (OpenAPI 3.1.0, v0.1.23)
+**Date:** 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Spec:** `complete-budget-governance-v0.1.24.yaml` (OpenAPI 3.1.0, v0.1.24)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 **Runtime server audit:** See `cycles-server/AUDIT.md` (all passing)
 
@@ -230,4 +230,4 @@ All modules exceed the threshold. Overall effective coverage: **99.6%**.
 
 ## Verdict
 
-The admin server is **fully compliant** with the Complete Budget Governance spec v0.1.23. All 15 endpoints are implemented, all 8 request schemas and 12 response schemas match, all 10 enum types have correct values. Auth (AdminKeyAuth / ApiKeyAuth), tenant scoping, idempotency, pagination, audit logging, and behavioral constraints (status transitions, funding operations, key lifecycle) all follow spec normative rules. All 19 previously identified issues have been verified as fixed. Tenant lifecycle edge cases (CLOSED→SUSPENDED, CLOSED tenant API key creation) are fully tested. No remaining spec violations found.
+The admin server is **fully compliant** with the Complete Budget Governance spec v0.1.24. v0.1.24 changes: default tenant commit overage policy changed from REJECT to ALLOW_IF_AVAILABLE; spec file renamed to v0.1.24; FUND_LUA correctly recalculates is_over_limit on all funding operations (clears the flag when debt <= overdraft_limit, which handles ALLOW_IF_AVAILABLE capped scenarios where debt=0). All 15 endpoints are implemented, all 8 request schemas and 12 response schemas match, all 10 enum types have correct values. Auth (AdminKeyAuth / ApiKeyAuth), tenant scoping, idempotency, pagination, audit logging, and behavioral constraints (status transitions, funding operations, key lifecycle) all follow spec normative rules. All 19 previously identified issues have been verified as fixed. Tenant lifecycle edge cases (CLOSED→SUSPENDED, CLOSED tenant API key creation) are fully tested. No remaining spec violations found.
