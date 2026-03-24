@@ -454,4 +454,84 @@ class BudgetControllerTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error").value("BUDGET_CLOSED"));
     }
+
+    // ========== PATCH /v1/admin/budgets/{scope}/{unit} ==========
+
+    @Test
+    void updateBudget_returns200() throws Exception {
+        setupApiKeyAuth();
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1").scope("org_team1").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 500000L))
+                .overdraftLimit(new Amount(UnitEnum.USD_MICROCENTS, 50000L))
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(budgetRepository.update(eq("t1"), eq("org_team1"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(ledger);
+
+        mockMvc.perform(patch("/v1/admin/budgets/org_team1/USD_MICROCENTS")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"overdraft_limit\":{\"unit\":\"USD_MICROCENTS\",\"amount\":50000}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.ledger_id").value("led-1"))
+                .andExpect(jsonPath("$.overdraft_limit.amount").value(50000));
+    }
+
+    @Test
+    void updateBudget_notFound_returns404() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.update(eq("t1"), eq("missing"), eq(UnitEnum.USD_MICROCENTS), any()))
+                .thenThrow(GovernanceException.budgetNotFound("missing:USD_MICROCENTS"));
+
+        mockMvc.perform(patch("/v1/admin/budgets/missing/USD_MICROCENTS")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"overdraft_limit\":{\"unit\":\"USD_MICROCENTS\",\"amount\":50000}}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error").value("BUDGET_NOT_FOUND"));
+    }
+
+    @Test
+    void updateBudget_closed_returns409() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.update(eq("t1"), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any()))
+                .thenThrow(GovernanceException.budgetClosed("scope"));
+
+        mockMvc.perform(patch("/v1/admin/budgets/scope/USD_MICROCENTS")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"commit_overage_policy\":\"REJECT\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("BUDGET_CLOSED"));
+    }
+
+    @Test
+    void updateBudget_logsAuditEntry() throws Exception {
+        setupApiKeyAuth();
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1").scope("scope").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(budgetRepository.update(eq("t1"), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(ledger);
+
+        mockMvc.perform(patch("/v1/admin/budgets/scope/USD_MICROCENTS")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"overdraft_limit\":{\"unit\":\"USD_MICROCENTS\",\"amount\":100}}"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry ->
+                "updateBudget".equals(entry.getOperation()) &&
+                "t1".equals(entry.getTenantId()) &&
+                entry.getStatus() == 200));
+    }
+
+    @Test
+    void updateBudget_noApiKey_returns401() throws Exception {
+        mockMvc.perform(patch("/v1/admin/budgets/scope/USD_MICROCENTS")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"overdraft_limit\":{\"unit\":\"USD_MICROCENTS\",\"amount\":100}}"))
+                .andExpect(status().isUnauthorized());
+    }
 }

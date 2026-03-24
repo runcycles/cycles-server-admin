@@ -3,6 +3,7 @@ package io.runcycles.admin.data.repository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.policy.*;
 import io.runcycles.admin.model.shared.Caps;
 import org.junit.jupiter.api.BeforeEach;
@@ -254,5 +255,72 @@ class PolicyRepositoryTest {
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getPolicyId()).isEqualTo("pol_2");
+    }
+
+    // ========== update() tests ==========
+
+    @Test
+    void update_success_returnsUpdatedPolicy() throws Exception {
+        when(jedisPool.getResource()).thenReturn(jedis);
+        doNothing().when(jedis).close();
+
+        String updatedJson = objectMapper.writeValueAsString(Policy.builder()
+                .policyId("pol_123").tenantId("tenant1").name("Updated").scopePattern("org/*")
+                .priority(10).status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build());
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
+
+        PolicyUpdateRequest request = new PolicyUpdateRequest();
+        request.setName("Updated");
+        request.setPriority(10);
+
+        Policy result = repository.update("tenant1", "pol_123", request);
+
+        assertThat(result).isNotNull();
+        assertThat(result.getName()).isEqualTo("Updated");
+        assertThat(result.getPriority()).isEqualTo(10);
+    }
+
+    @Test
+    void update_notFound_throws404() {
+        when(jedisPool.getResource()).thenReturn(jedis);
+        doNothing().when(jedis).close();
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("NOT_FOUND"));
+
+        PolicyUpdateRequest request = new PolicyUpdateRequest();
+        request.setName("New Name");
+
+        assertThatThrownBy(() -> repository.update("tenant1", "pol_missing", request))
+                .isInstanceOf(GovernanceException.class)
+                .hasFieldOrPropertyWithValue("httpStatus", 404);
+    }
+
+    @Test
+    void update_forbidden_throws403() {
+        when(jedisPool.getResource()).thenReturn(jedis);
+        doNothing().when(jedis).close();
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("FORBIDDEN"));
+
+        PolicyUpdateRequest request = new PolicyUpdateRequest();
+
+        assertThatThrownBy(() -> repository.update("wrong-tenant", "pol_123", request))
+                .isInstanceOf(GovernanceException.class)
+                .hasFieldOrPropertyWithValue("httpStatus", 403);
+    }
+
+    @Test
+    void update_withStatus_passesStatusField() throws Exception {
+        when(jedisPool.getResource()).thenReturn(jedis);
+        doNothing().when(jedis).close();
+
+        String updatedJson = objectMapper.writeValueAsString(Policy.builder()
+                .policyId("pol_123").tenantId("tenant1").name("P").scopePattern("org/*")
+                .status(PolicyStatus.DISABLED).createdAt(Instant.now()).build());
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
+
+        PolicyUpdateRequest request = new PolicyUpdateRequest();
+        request.setStatus(PolicyStatus.DISABLED);
+
+        Policy result = repository.update("tenant1", "pol_123", request);
+        assertThat(result.getStatus()).isEqualTo(PolicyStatus.DISABLED);
     }
 }
