@@ -7,6 +7,7 @@ import io.runcycles.admin.model.policy.PolicyCreateRequest;
 import io.runcycles.admin.model.policy.PolicyListResponse;
 import io.runcycles.admin.model.policy.PolicyStatus;
 import io.runcycles.admin.model.policy.PolicyUpdateRequest;
+import io.runcycles.admin.api.config.ScopeFilterUtil;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -14,12 +15,15 @@ import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+// v0: policies (caps, overage overrides, TTL overrides, rate limits) are stored for future consumption.
+// Runtime enforcement by the protocol server is deferred to a future version.
 @RestController @RequestMapping("/v1/admin/policies") @Tag(name = "Policies")
 public class PolicyController {
     @Autowired private PolicyRepository repository;
     @Autowired private AuditRepository auditRepository;
     @PostMapping @Operation(operationId = "createPolicy")
     public ResponseEntity<Policy> create(@Valid @RequestBody PolicyCreateRequest request, HttpServletRequest httpRequest) {
+        ScopeFilterUtil.enforceScopeFilter(httpRequest, request.getScopePattern());
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         Policy policy = repository.create(tenantId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
@@ -49,6 +53,7 @@ public class PolicyController {
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit,
             HttpServletRequest httpRequest) {
+        ScopeFilterUtil.enforceScopeFilter(httpRequest, scope_pattern);
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         var policies = repository.list(tenantId, scope_pattern, status, cursor, effectiveLimit);

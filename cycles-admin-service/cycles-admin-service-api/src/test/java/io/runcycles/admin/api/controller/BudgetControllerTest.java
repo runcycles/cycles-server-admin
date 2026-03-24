@@ -39,7 +39,7 @@ class BudgetControllerTest {
         when(apiKeyRepository.validate("valid-api-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("balances:read")).build());
+                        .permissions(List.of("admin:read", "admin:write", "balances:read")).build());
     }
 
     @Test

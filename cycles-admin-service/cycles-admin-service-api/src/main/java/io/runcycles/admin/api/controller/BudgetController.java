@@ -5,6 +5,7 @@ import io.runcycles.admin.data.repository.BudgetRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.budget.*;
 import io.runcycles.admin.model.shared.UnitEnum;
+import io.runcycles.admin.api.config.ScopeFilterUtil;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -19,6 +20,7 @@ public class BudgetController {
     @PostMapping @Operation(operationId = "createBudget")
     public ResponseEntity<BudgetLedger> create(@Valid @RequestBody BudgetCreateRequest request, HttpServletRequest httpRequest) {
         validateCreateUnits(request);
+        ScopeFilterUtil.enforceScopeFilter(httpRequest, request.getScope());
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         BudgetLedger ledger = repository.create(tenantId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
@@ -39,6 +41,7 @@ public class BudgetController {
             @RequestParam(defaultValue = "50") int limit,
             HttpServletRequest httpRequest) {
         // Enforce tenant scoping: always use authenticated tenant, ignore user-supplied tenant_id
+        ScopeFilterUtil.enforceScopeFilter(httpRequest, scope_prefix);
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         var ledgers = repository.list(tenantId, scope_prefix, unit, status, cursor, effectiveLimit);
@@ -52,6 +55,7 @@ public class BudgetController {
     @PatchMapping @Operation(operationId = "updateBudget")
     public ResponseEntity<BudgetLedger> update(@RequestParam String scope, @RequestParam UnitEnum unit,
             @Valid @RequestBody BudgetUpdateRequest request, HttpServletRequest httpRequest) {
+        ScopeFilterUtil.enforceScopeFilter(httpRequest, scope);
         if (request.getOverdraftLimit() != null && request.getOverdraftLimit().getUnit() != unit) {
             throw GovernanceException.unitMismatch(unit.name(), request.getOverdraftLimit().getUnit().name());
         }
@@ -68,6 +72,7 @@ public class BudgetController {
     @PostMapping("/fund") @Operation(operationId = "fundBudget")
     public ResponseEntity<BudgetFundingResponse> fund(@RequestParam String scope, @RequestParam UnitEnum unit,
             @Valid @RequestBody BudgetFundingRequest request, HttpServletRequest httpRequest) {
+        ScopeFilterUtil.enforceScopeFilter(httpRequest, scope);
         if (request.getAmount().getUnit() != unit) {
             throw GovernanceException.unitMismatch(unit.name(), request.getAmount().getUnit().name());
         }

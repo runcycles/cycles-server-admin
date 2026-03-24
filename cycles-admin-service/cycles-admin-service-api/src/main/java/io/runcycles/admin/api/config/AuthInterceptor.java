@@ -16,6 +16,8 @@ import org.springframework.web.servlet.HandlerInterceptor;
 
 import io.runcycles.admin.api.filter.RequestIdFilter;
 
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Component
@@ -23,6 +25,19 @@ public class AuthInterceptor implements HandlerInterceptor {
     private static final Logger LOG = LoggerFactory.getLogger(AuthInterceptor.class);
     private static final String ADMIN_KEY_HEADER = "X-Admin-API-Key";
     private static final String API_KEY_HEADER = "X-Cycles-API-Key";
+
+    // Endpoint path+method → required permission per admin governance spec
+    private static final Map<String, String> PERMISSION_MAP = Map.ofEntries(
+        Map.entry("POST:/v1/admin/budgets/fund", "admin:write"),
+        Map.entry("POST:/v1/admin/budgets", "admin:write"),
+        Map.entry("GET:/v1/admin/budgets", "admin:read"),
+        Map.entry("PATCH:/v1/admin/budgets", "admin:write"),
+        Map.entry("POST:/v1/admin/policies", "admin:write"),
+        Map.entry("PATCH:/v1/admin/policies", "admin:write"),
+        Map.entry("GET:/v1/admin/policies", "admin:read"),
+        Map.entry("GET:/v1/balances", "balances:read"),
+        Map.entry("GET:/v1/reservations", "reservations:list")
+    );
 
     @Value("${admin.api-key:}")
     private String adminApiKey;
@@ -101,12 +116,47 @@ public class AuthInterceptor implements HandlerInterceptor {
             writeError(request, response, 403, ErrorCode.FORBIDDEN, "Invalid API key: " + (validation.getReason() != null ? validation.getReason() : "UNKNOWN"));
             return false;
         }
+        // Check permissions before allowing the request
+        String requiredPermission = resolveRequiredPermission(request.getMethod(), request.getRequestURI());
+        if (requiredPermission != null) {
+            List<String> permissions = validation.getPermissions();
+            if (permissions == null || !permissions.contains(requiredPermission)) {
+                writeError(request, response, 403, ErrorCode.INSUFFICIENT_PERMISSIONS,
+                    "API key lacks required permission: " + requiredPermission);
+                return false;
+            }
+        }
+
         // Store validated tenant_id in request attributes for controllers
         request.setAttribute("authenticated_tenant_id", validation.getTenantId());
         request.setAttribute("authenticated_key_id", validation.getKeyId());
         request.setAttribute("authenticated_permissions", validation.getPermissions());
         request.setAttribute("authenticated_scope_filter", validation.getScopeFilter());
         return true;
+    }
+
+    /**
+     * Resolve the required permission for the given method + path.
+     * Matches longest path prefix first (e.g. /v1/admin/budgets/fund before /v1/admin/budgets).
+     */
+    private String resolveRequiredPermission(String method, String path) {
+        // Try exact key first, then strip path segments for prefix matching
+        // (handles paths like /v1/admin/policies/{id})
+        String key = method + ":" + path;
+        if (PERMISSION_MAP.containsKey(key)) {
+            return PERMISSION_MAP.get(key);
+        }
+        // Walk up the path to match prefix (e.g. PATCH:/v1/admin/policies/pol_123 → PATCH:/v1/admin/policies)
+        int lastSlash = path.lastIndexOf('/');
+        while (lastSlash > 0) {
+            path = path.substring(0, lastSlash);
+            key = method + ":" + path;
+            if (PERMISSION_MAP.containsKey(key)) {
+                return PERMISSION_MAP.get(key);
+            }
+            lastSlash = path.lastIndexOf('/');
+        }
+        return null;
     }
 
     private void writeError(HttpServletRequest request, HttpServletResponse response, int status, ErrorCode code, String message) throws Exception {
