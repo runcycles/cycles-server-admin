@@ -1123,7 +1123,11 @@ paths:
       parameters:
         - name: tenant_id
           in: query
-          required: true
+          required: false
+          description: >-
+            Ignored when using ApiKeyAuth — the authenticated tenant from the
+            API key is always used for scoping.  Accepted for backwards
+            compatibility but has no effect.
           schema:
             type: string
         - name: scope_prefix
