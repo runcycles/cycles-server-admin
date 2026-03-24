@@ -7,7 +7,7 @@ info:
     url: https://www.apache.org/licenses/LICENSE-2.0
   summary: >-
     Complete budget governance protocol covering tenant management, authentication, 
-    and runtime enforcement (aligned with Cycles Protocol v0.1.23).
+    and runtime enforcement (aligned with Cycles Protocol v0.1.24).
   description: |-
     PURPOSE:
       This specification defines a complete, interoperable budget governance system
@@ -26,7 +26,7 @@ info:
          - Audit logging and access tracking
       
       3. RUNTIME ENFORCEMENT (Reservation Plane)
-         - Budget reservations and commits (from Cycles Protocol v0.1.23)
+         - Budget reservations and commits (from Cycles Protocol v0.1.24)
          - Real-time enforcement with overdraft support
          - Balance queries and monitoring
       
@@ -34,7 +34,7 @@ info:
       - Interoperability: Standard schemas enable tool ecosystem
       - Security-first: Explicit trust boundaries and validation
       - Operational clarity: All workflows have defined endpoints
-      - Backward compatibility: Extends Cycles v0.1.23 without breaking changes
+      - Backward compatibility: Extends Cycles v0.1.24 without breaking changes
 
     DEPLOYMENT MODELS:
       - Single-service: All three pillars in one deployment
@@ -59,7 +59,7 @@ tags:
   - name: Audit
     description: "Pillar 2: Access logging and compliance"
   - name: Reservations
-    description: "Pillar 3: Runtime budget enforcement (from Cycles v0.1.23)"
+    description: "Pillar 3: Runtime budget enforcement (from Cycles v0.1.24)"
   - name: Balances
     description: "Pillar 3: Balance queries and monitoring"
 
@@ -79,20 +79,20 @@ components:
 
   schemas:
     # ========================================================================
-    # SHARED SCHEMAS (aligned with Cycles Protocol v0.1.23)
+    # SHARED SCHEMAS (aligned with Cycles Protocol v0.1.24)
     # ========================================================================
     
     UnitEnum:
       type: string
       enum: [USD_MICROCENTS, TOKENS, CREDITS, RISK_POINTS]
-      description: Standard budget units from Cycles Protocol v0.1.23
+      description: Standard budget units from Cycles Protocol v0.1.24
     
     Amount:
       type: object
       required: [unit, amount]
       additionalProperties: false
       description: >-
-        Amount with explicit unit. Identical to Cycles Protocol v0.1.23.
+        Amount with explicit unit. Identical to Cycles Protocol v0.1.24.
         This ensures structural alignment between governance and runtime.
       properties:
         unit:
@@ -106,7 +106,7 @@ components:
       type: string
       enum: [REJECT, ALLOW_IF_AVAILABLE, ALLOW_WITH_OVERDRAFT]
       description: >-
-        How commits handle actual > reserved (from Cycles Protocol v0.1.23).
+        How commits handle actual > reserved (from Cycles Protocol v0.1.24).
         
         REJECT: Fail if actual > reserved
         ALLOW_IF_AVAILABLE: Charge delta from remaining budget if available
@@ -122,7 +122,7 @@ components:
       type: object
       additionalProperties: false
       description: >-
-        Soft-landing constraints. Identical to Cycles Protocol v0.1.23 Caps schema.
+        Soft-landing constraints. Identical to Cycles Protocol v0.1.24 Caps schema.
       properties:
         max_tokens:
           type: integer
@@ -493,7 +493,7 @@ components:
         caps:
           $ref: '#/components/schemas/Caps'
           description: >-
-            Soft-landing constraints from Cycles v0.1.23.
+            Soft-landing constraints from Cycles v0.1.24.
             Identical schema for consistency.
         commit_overage_policy:
           $ref: '#/components/schemas/CommitOveragePolicy'
@@ -825,9 +825,9 @@ components:
           type: boolean
     
     # ========================================================================
-    # PILLAR 3: RUNTIME ENFORCEMENT SCHEMAS (from Cycles v0.1.23)
+    # PILLAR 3: RUNTIME ENFORCEMENT SCHEMAS (from Cycles v0.1.24)
     # ========================================================================
-    # Note: These schemas are imported from Cycles Protocol v0.1.23
+    # Note: These schemas are imported from Cycles Protocol v0.1.24
     # They are referenced here for completeness but defined in cycles-protocol-v0.yaml
     
     # Amount, Subject, Action, Caps, Balance, StandardMetrics
@@ -839,7 +839,7 @@ components:
     ErrorCode:
       type: string
       enum:
-        # Cycles v0.1.23 codes
+        # Cycles v0.1.24 codes
         - INVALID_REQUEST
         - UNAUTHORIZED
         - FORBIDDEN
@@ -1524,18 +1524,18 @@ paths:
                 $ref: '#/components/schemas/AuditLogListResponse'
   
   # ==========================================================================
-  # PILLAR 3: RUNTIME ENFORCEMENT (from Cycles v0.1.23)
+  # PILLAR 3: RUNTIME ENFORCEMENT (from Cycles v0.1.24)
   # ==========================================================================
-  # Note: These endpoints are imported from Cycles Protocol v0.1.23
+  # Note: These endpoints are imported from Cycles Protocol v0.1.24
   # They are included here for reference but fully defined in cycles-protocol-v0.yaml
   
   /v1/reservations:
     post:
       tags: [Reservations]
       operationId: createReservation
-      summary: Create budget reservation (Cycles v0.1.23)
+      summary: Create budget reservation (Cycles v0.1.24)
       description: >-
-        See Cycles Protocol v0.1.23 specification.
+        See Cycles Protocol v0.1.24 specification.
         
         GOVERNANCE INTEGRATION:
         1. Validates X-Cycles-API-Key via /v1/auth/validate
@@ -1550,7 +1550,7 @@ paths:
         - ApiKeyAuth: []
       responses:
         '200':
-          description: Reservation created (see Cycles v0.1.23)
+          description: Reservation created (see Cycles v0.1.24)
         '403':
           description: Tenant mismatch, suspended, or insufficient permissions
         '409':
@@ -1560,9 +1560,9 @@ paths:
     post:
       tags: [Reservations]
       operationId: commitReservation
-      summary: Commit actual spend (Cycles v0.1.23)
+      summary: Commit actual spend (Cycles v0.1.24)
       description: >-
-        See Cycles Protocol v0.1.23 specification.
+        See Cycles Protocol v0.1.24 specification.
         
         GOVERNANCE INTEGRATION:
         - Validates key and tenant as in reservation
@@ -1573,15 +1573,15 @@ paths:
         - ApiKeyAuth: []
       responses:
         '200':
-          description: Commit succeeded (see Cycles v0.1.23)
+          description: Commit succeeded (see Cycles v0.1.24)
   
   /v1/balances:
     get:
       tags: [Balances]
       operationId: getBalances
-      summary: Query budget balances (Cycles v0.1.23)
+      summary: Query budget balances (Cycles v0.1.24)
       description: >-
-        See Cycles Protocol v0.1.23 specification.
+        See Cycles Protocol v0.1.24 specification.
         
         GOVERNANCE INTEGRATION:
         - Returns full ledger state including debt, overdraft_limit, is_over_limit
@@ -1617,4 +1617,4 @@ paths:
             type: string
       responses:
         '200':
-          description: Balance data (see Cycles v0.1.23)
+          description: Balance data (see Cycles v0.1.24)
