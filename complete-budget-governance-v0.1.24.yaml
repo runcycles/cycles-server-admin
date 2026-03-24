@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Complete Budget Governance System API
-  version: 0.1.23
+  version: 0.1.24
   license:
     name: Apache 2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -185,7 +185,7 @@ components:
           description: >-
             Default commit overage policy for all reservations in this tenant.
             Can be overridden at budget ledger, policy, or reservation level.
-            Default: REJECT
+            Default: ALLOW_IF_AVAILABLE
         default_reservation_ttl_ms:
           type: integer
           minimum: 1000

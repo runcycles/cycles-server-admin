@@ -3,7 +3,7 @@
 
 # RunCycles Server Admin
 
-Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.23](complete-budget-governance-v0.1.23.yaml).
+Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.24](complete-budget-governance-v0.1.24.yaml).
 
 ## Overview
 
@@ -13,7 +13,7 @@ This service implements a budget governance system built on three integrated pil
 |--------|-------|---------|
 | **Tenant & Budget Management** | Configuration | Tenant lifecycle, budget ledgers, policy configuration |
 | **Authentication & Authorization** | Identity | API key validation, permission enforcement, audit logging |
-| **Runtime Enforcement** | Reservation | Budget reservations, commits, balance queries (Cycles Protocol v0.1.23) |
+| **Runtime Enforcement** | Reservation | Budget reservations, commits, balance queries (Cycles Protocol v0.1.24) |
 
 ## Architecture
 
@@ -119,7 +119,7 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 | `POST` | `/v1/auth/validate` | Validate key & resolve tenant | Admin |
 | `GET` | `/v1/admin/audit/logs` | Query audit logs | Admin |
 
-### Pillar 3: Runtime Enforcement (Cycles Protocol v0.1.23)
+### Pillar 3: Runtime Enforcement (Cycles Protocol v0.1.24)
 
 | Method | Path | Operation | Auth |
 |--------|------|-----------|------|
@@ -143,7 +143,7 @@ Tenants are the top-level isolation boundary. All budgets, keys, and reservation
 
 | Property | Default | Range | Description |
 |----------|---------|-------|-------------|
-| `default_commit_overage_policy` | `REJECT` | — | Default overage policy for all scopes |
+| `default_commit_overage_policy` | `ALLOW_IF_AVAILABLE` | — | Default overage policy for all scopes |
 | `default_reservation_ttl_ms` | `60000` (60s) | 1s – 24h | Default TTL when not specified per-reservation |
 | `max_reservation_ttl_ms` | `3600000` (1h) | 1s – 24h | Maximum allowed TTL; requests exceeding this are capped |
 | `max_reservation_extensions` | `10` | 0+ | Max TTL extensions per reservation (prevents zombie reservations) |
@@ -243,7 +243,7 @@ Policies support:
 
 ### Caps (Soft-Landing Constraints)
 
-From Cycles Protocol v0.1.23:
+From Cycles Protocol v0.1.24:
 
 ```json
 {
@@ -337,7 +337,7 @@ All errors return a standard `ErrorResponse`:
 }
 ```
 
-**Cycles v0.1.23 error codes:**
+**Cycles v0.1.24 error codes:**
 `INVALID_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `BUDGET_EXCEEDED`, `RESERVATION_EXPIRED`, `RESERVATION_FINALIZED`, `IDEMPOTENCY_MISMATCH`, `UNIT_MISMATCH`, `OVERDRAFT_LIMIT_EXCEEDED`, `DEBT_OUTSTANDING`, `INTERNAL_ERROR`
 
 **Governance error codes:**
@@ -353,7 +353,7 @@ All errors return a standard `ErrorResponse`:
 
 ## Protocol Specification
 
-The full OpenAPI 3.1.0 specification is in [`complete-budget-governance-v0.1.23.yaml`](complete-budget-governance-v0.1.23.yaml).
+The full OpenAPI 3.1.0 specification is in [`complete-budget-governance-v0.1.24.yaml`](complete-budget-governance-v0.1.24.yaml).
 
 ## Documentation
 

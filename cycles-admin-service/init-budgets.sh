@@ -1,9 +1,9 @@
 #!/bin/bash
-# Initialize sample budgets for Budget Governance v0.1.23
+# Initialize sample budgets for Budget Governance v0.1.24
 # ✅ FIXED: Using HMSET to store as Redis HASH (compatible with Lua scripts)
 
 CLI="redis-cli"
-echo "Initializing budgets for Budget Governance v0.1.23..."
+echo "Initializing budgets for Budget Governance v0.1.24..."
 
 # Create tenant budget using HMSET (Redis HASH format)
 $CLI HMSET "budget:tenant:demo-corp:TOKENS" \

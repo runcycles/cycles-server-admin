@@ -217,7 +217,7 @@ class RedisIntegrationTest {
 
     @Test
     @Order(51)
-    void tenant_create_withoutOveragePolicy_defaultsToReject() {
+    void tenant_create_withoutOveragePolicy_defaultsToAllowIfAvailable() {
         TenantCreateRequest request = new TenantCreateRequest();
         request.setTenantId("integ-default-policy");
         request.setName("Default Policy Tenant");
@@ -225,7 +225,7 @@ class RedisIntegrationTest {
         var result = tenantRepository.create(request);
 
         assertThat(result.created()).isTrue();
-        assertThat(result.tenant().getDefaultCommitOveragePolicy()).isEqualTo(CommitOveragePolicy.REJECT);
+        assertThat(result.tenant().getDefaultCommitOveragePolicy()).isEqualTo(CommitOveragePolicy.ALLOW_IF_AVAILABLE);
     }
 
     @Test
