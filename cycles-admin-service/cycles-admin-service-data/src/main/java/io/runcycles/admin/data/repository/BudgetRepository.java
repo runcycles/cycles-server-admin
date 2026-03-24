@@ -158,6 +158,12 @@ public class BudgetRepository {
             if (ledger.getPeriodEnd() != null) {
                 args.add("period_end"); args.add(String.valueOf(ledger.getPeriodEnd().toEpochMilli()));
             }
+            if (request.getMetadata() != null) {
+                try {
+                    args.add("metadata_json"); args.add(objectMapper.writeValueAsString(request.getMetadata()));
+                    ledger.setMetadata(request.getMetadata());
+                } catch (Exception e) { /* skip metadata on serialization error */ }
+            }
 
             // Atomic create: EXISTS + HMSET + SADD in one Lua call
             Object result = jedis.eval(CREATE_BUDGET_LUA, List.of(key, indexKey), args);
@@ -382,6 +388,11 @@ public class BudgetRepository {
         }
     }
 
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> parseMetadata(String json) {
+        try { return objectMapper.readValue(json, Map.class); } catch (Exception e) { return null; }
+    }
+
     private BudgetLedger hashToBudgetLedger(Map<String, String> hash, String key) {
         String scope = hash.get("scope");
         String unitStr = hash.get("unit");
@@ -415,6 +426,7 @@ public class BudgetRepository {
                 Instant.ofEpochMilli(Long.parseLong(hash.get("created_at"))) : Instant.now())
             .updatedAt(hash.containsKey("updated_at") ?
                 Instant.ofEpochMilli(Long.parseLong(hash.get("updated_at"))) : null)
+            .metadata(hash.containsKey("metadata_json") ? parseMetadata(hash.get("metadata_json")) : null)
             .build();
     }
 }
