@@ -1,4 +1,5 @@
 package io.runcycles.admin.api.controller;
+import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.BudgetRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
@@ -17,6 +18,7 @@ public class BudgetController {
     @Autowired private AuditRepository auditRepository;
     @PostMapping @Operation(operationId = "createBudget")
     public ResponseEntity<BudgetLedger> create(@Valid @RequestBody BudgetCreateRequest request, HttpServletRequest httpRequest) {
+        validateCreateUnits(request);
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         BudgetLedger ledger = repository.create(tenantId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
@@ -50,6 +52,9 @@ public class BudgetController {
     @PatchMapping @Operation(operationId = "updateBudget")
     public ResponseEntity<BudgetLedger> update(@RequestParam String scope, @RequestParam UnitEnum unit,
             @Valid @RequestBody BudgetUpdateRequest request, HttpServletRequest httpRequest) {
+        if (request.getOverdraftLimit() != null && request.getOverdraftLimit().getUnit() != unit) {
+            throw GovernanceException.unitMismatch(unit.name(), request.getOverdraftLimit().getUnit().name());
+        }
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         BudgetLedger ledger = repository.update(tenantId, scope, unit, request);
         auditRepository.log(buildAuditEntry(httpRequest)
@@ -63,6 +68,9 @@ public class BudgetController {
     @PostMapping("/fund") @Operation(operationId = "fundBudget")
     public ResponseEntity<BudgetFundingResponse> fund(@RequestParam String scope, @RequestParam UnitEnum unit,
             @Valid @RequestBody BudgetFundingRequest request, HttpServletRequest httpRequest) {
+        if (request.getAmount().getUnit() != unit) {
+            throw GovernanceException.unitMismatch(unit.name(), request.getAmount().getUnit().name());
+        }
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         BudgetFundingResponse response = repository.fund(tenantId, scope, unit, request);
         auditRepository.log(buildAuditEntry(httpRequest)
@@ -72,6 +80,15 @@ public class BudgetController {
             .status(200)
             .build());
         return ResponseEntity.ok(response);
+    }
+
+    private void validateCreateUnits(BudgetCreateRequest request) {
+        if (request.getAllocated() != null && request.getAllocated().getUnit() != request.getUnit()) {
+            throw GovernanceException.unitMismatch(request.getUnit().name(), request.getAllocated().getUnit().name());
+        }
+        if (request.getOverdraftLimit() != null && request.getOverdraftLimit().getUnit() != request.getUnit()) {
+            throw GovernanceException.unitMismatch(request.getUnit().name(), request.getOverdraftLimit().getUnit().name());
+        }
     }
 
     private AuditLogEntry.AuditLogEntryBuilder buildAuditEntry(HttpServletRequest request) {

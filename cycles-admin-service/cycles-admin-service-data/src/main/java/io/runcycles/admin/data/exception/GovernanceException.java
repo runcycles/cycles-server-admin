@@ -40,4 +40,8 @@ public class GovernanceException extends RuntimeException {
     public static GovernanceException policyNotFound(String id) {
         return new GovernanceException(ErrorCode.NOT_FOUND, "Policy not found: " + id, 404);
     }
+    public static GovernanceException unitMismatch(String expected, String actual) {
+        return new GovernanceException(ErrorCode.UNIT_MISMATCH,
+            "Unit mismatch: expected " + expected + " but got " + actual, 400);
+    }
 }

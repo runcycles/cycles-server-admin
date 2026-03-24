@@ -74,7 +74,9 @@ public class BudgetRepository {
         "elseif op == 'REPAY_DEBT' then\n" +
         "  local repayment = math.min(debt, amount)\n" +
         "  debt = debt - repayment\n" +
+        "  remaining = remaining + repayment\n" +
         "  if repayment < amount then\n" +
+        "    allocated = allocated + (amount - repayment)\n" +
         "    remaining = remaining + (amount - repayment)\n" +
         "  end\n" +
         "end\n" +
