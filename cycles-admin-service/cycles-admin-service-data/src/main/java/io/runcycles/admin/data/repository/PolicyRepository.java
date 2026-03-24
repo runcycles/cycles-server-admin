@@ -132,6 +132,21 @@ public class PolicyRepository {
         }
     }
 
+    public String getScopePattern(String policyId) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            String data = jedis.get("policy:" + policyId);
+            if (data == null) {
+                throw GovernanceException.policyNotFound(policyId);
+            }
+            Policy policy = objectMapper.readValue(data, Policy.class);
+            return policy.getScopePattern();
+        } catch (GovernanceException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     public List<Policy> list(String tenantId, String scopePattern, PolicyStatus status, String cursor, int limit) {
         try (Jedis jedis = jedisPool.getResource()) {
             Set<String> ids = jedis.smembers("policies:" + tenantId);

@@ -36,6 +36,12 @@ class ScopeFilterUtilTest {
     }
 
     @Test
+    void matchesScope_wildcardDoesNotMatchSubstring() {
+        // "agent:*" must NOT match "reagent:bot" — segment-based, not substring
+        assertThat(ScopeFilterUtil.matchesScope("tenant:acme/reagent:bot", "agent:*")).isFalse();
+    }
+
+    @Test
     void matchesScope_firstSegment() {
         assertThat(ScopeFilterUtil.matchesScope("tenant:acme", "tenant:acme")).isTrue();
     }

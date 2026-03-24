@@ -36,6 +36,8 @@ public class PolicyController {
     }
     @PatchMapping("/{policy_id}") @Operation(operationId = "updatePolicy")
     public ResponseEntity<Policy> update(@PathVariable("policy_id") String policyId, @Valid @RequestBody PolicyUpdateRequest request, HttpServletRequest httpRequest) {
+        String scopePattern = repository.getScopePattern(policyId);
+        ScopeFilterUtil.enforceScopeFilter(httpRequest, scopePattern);
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         Policy policy = repository.update(tenantId, policyId, request);
         auditRepository.log(buildAuditEntry(httpRequest)

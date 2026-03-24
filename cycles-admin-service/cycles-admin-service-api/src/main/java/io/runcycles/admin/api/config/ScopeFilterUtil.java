@@ -44,19 +44,24 @@ public final class ScopeFilterUtil {
     }
 
     /**
-     * Checks if a scope path matches a filter entry.
-     * Filter "workspace:eng" matches if the scope path contains "/workspace:eng" or starts with "workspace:eng".
-     * Filter "agent:*" matches if the scope path contains an "agent:" segment.
+     * Checks if a scope path matches a filter entry using segment-based matching.
+     * Scope paths look like "tenant:acme/workspace:eng/agent:bot1".
+     * Filter "workspace:eng" matches if the scope contains that exact segment.
+     * Filter "agent:*" matches if the scope contains any segment starting with "agent:".
      */
     static boolean matchesScope(String scopePath, String filter) {
-        if (filter.endsWith(":*")) {
-            // Wildcard: "agent:*" matches any scope containing "agent:" as a segment key
-            String prefix = filter.substring(0, filter.length() - 1); // "agent:"
-            return scopePath.contains(prefix);
-        }
-        // Exact segment match: "workspace:eng" matches if scope contains that segment
-        // Scope paths look like "tenant:acme/workspace:eng/agent:bot1"
         String[] segments = scopePath.split("/");
+        if (filter.endsWith(":*")) {
+            // Wildcard: "agent:*" matches any segment starting with "agent:"
+            String prefix = filter.substring(0, filter.length() - 1); // "agent:"
+            for (String segment : segments) {
+                if (segment.startsWith(prefix)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        // Exact segment match
         for (String segment : segments) {
             if (segment.equals(filter)) {
                 return true;
