@@ -10,4 +10,7 @@ public class TenantUpdateRequest {
     @JsonProperty("status") private TenantStatus status;
     @Size(max = 32) @JsonProperty("metadata") private Map<String, String> metadata;
     @JsonProperty("default_commit_overage_policy") private CommitOveragePolicy defaultCommitOveragePolicy;
+    @JsonProperty("default_reservation_ttl_ms") private Long defaultReservationTtlMs;
+    @JsonProperty("max_reservation_ttl_ms") private Long maxReservationTtlMs;
+    @JsonProperty("max_reservation_extensions") private Integer maxReservationExtensions;
 }

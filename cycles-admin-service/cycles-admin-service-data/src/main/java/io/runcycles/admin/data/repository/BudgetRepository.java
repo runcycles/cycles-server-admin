@@ -174,6 +174,73 @@ public class BudgetRepository {
         }
     }
 
+    // Lua script for atomic budget update — validates tenant ownership, applies partial updates,
+    // and recalculates is_over_limit after overdraft_limit change.
+    // KEYS[1] = budget key
+    // ARGV[1] = tenant_id (for ownership check, empty = skip)
+    // ARGV[2] = new_overdraft_limit (empty = no change)
+    // ARGV[3] = new_commit_overage_policy (empty = no change)
+    // ARGV[4] = new_metadata_json (empty = no change)
+    // ARGV[5] = now_iso
+    private static final String UPDATE_BUDGET_LUA =
+        "local key = KEYS[1]\n" +
+        "if redis.call('EXISTS', key) == 0 then return {'NOT_FOUND'} end\n" +
+        "local tid = redis.call('HGET', key, 'tenant_id') or ''\n" +
+        "if ARGV[1] ~= '' and tid ~= ARGV[1] then return {'FORBIDDEN'} end\n" +
+        "local status = redis.call('HGET', key, 'status') or 'ACTIVE'\n" +
+        "if status == 'CLOSED' then return {'BUDGET_CLOSED'} end\n" +
+        "if ARGV[2] ~= '' then redis.call('HSET', key, 'overdraft_limit', ARGV[2]) end\n" +
+        "if ARGV[3] ~= '' then redis.call('HSET', key, 'commit_overage_policy', ARGV[3]) end\n" +
+        "if ARGV[4] ~= '' then redis.call('HSET', key, 'metadata_json', ARGV[4]) end\n" +
+        "local debt = tonumber(redis.call('HGET', key, 'debt') or '0')\n" +
+        "local overdraft = tonumber(redis.call('HGET', key, 'overdraft_limit') or '0')\n" +
+        "local is_over = 'false'\n" +
+        "if debt > overdraft then is_over = 'true' end\n" +
+        "redis.call('HMSET', key, 'is_over_limit', is_over, 'updated_at', ARGV[5])\n" +
+        "return {'OK'}\n";
+
+    public BudgetLedger update(String tenantId, String scope, UnitEnum unit, BudgetUpdateRequest request) {
+        LOG.info("Updating budget: scope={}, unit={}", scope, unit);
+        try (Jedis jedis = jedisPool.getResource()) {
+            String key = "budget:" + scope + ":" + unit;
+            String now = String.valueOf(Instant.now().toEpochMilli());
+
+            @SuppressWarnings("unchecked")
+            List<String> result = (List<String>) jedis.eval(UPDATE_BUDGET_LUA,
+                List.of(key),
+                List.of(
+                    tenantId != null ? tenantId : "",
+                    request.getOverdraftLimit() != null ? String.valueOf(request.getOverdraftLimit().getAmount()) : "",
+                    request.getCommitOveragePolicy() != null ? request.getCommitOveragePolicy().name() : "",
+                    request.getMetadata() != null ? objectMapper.writeValueAsString(request.getMetadata()) : "",
+                    now
+                ));
+
+            String status = result.get(0);
+            if ("NOT_FOUND".equals(status)) {
+                throw GovernanceException.budgetNotFound(scope + ":" + unit);
+            }
+            if ("FORBIDDEN".equals(status)) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.FORBIDDEN,
+                    "Budget does not belong to tenant", 403);
+            }
+            if ("BUDGET_CLOSED".equals(status)) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.BUDGET_CLOSED,
+                    "Cannot update a CLOSED budget", 409);
+            }
+
+            // Re-read and return the updated budget
+            Map<String, String> hash = jedis.hgetAll(key);
+            return hashToBudgetLedger(hash, key);
+        } catch (GovernanceException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     public List<BudgetLedger> list(String tenantId, String scopePrefix, UnitEnum unitFilter, BudgetStatus statusFilter, String cursor, int limit) {
         try (Jedis jedis = jedisPool.getResource()) {
             Set<String> keys = jedis.smembers("budgets:" + tenantId);

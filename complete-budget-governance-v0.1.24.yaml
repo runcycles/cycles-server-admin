@@ -1036,6 +1036,20 @@ paths:
                   type: object
                 default_commit_overage_policy:
                   $ref: '#/components/schemas/CommitOveragePolicy'
+                default_reservation_ttl_ms:
+                  type: integer
+                  minimum: 1000
+                  maximum: 86400000
+                  description: Default TTL for reservations when not specified per-request
+                max_reservation_ttl_ms:
+                  type: integer
+                  minimum: 1000
+                  maximum: 86400000
+                  description: Maximum allowed TTL; requests exceeding this are capped
+                max_reservation_extensions:
+                  type: integer
+                  minimum: 0
+                  description: Maximum TTL extensions per reservation
       responses:
         '200':
           description: Tenant updated
@@ -1144,6 +1158,48 @@ paths:
               schema:
                 $ref: '#/components/schemas/BudgetListResponse'
   
+  /v1/admin/budgets/{scope}/{unit}:
+    patch:
+      tags: [Budgets]
+      operationId: updateBudget
+      summary: Update budget properties
+      description: >-
+        Update overdraft_limit, commit_overage_policy, or metadata on an existing budget.
+        Recalculates is_over_limit after overdraft_limit changes.
+      parameters:
+        - name: scope
+          in: path
+          required: true
+          schema: {type: string}
+        - name: unit
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/UnitEnum'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                overdraft_limit:
+                  $ref: '#/components/schemas/Amount'
+                  description: New maximum allowed debt (amount >= 0, must match budget unit)
+                commit_overage_policy:
+                  $ref: '#/components/schemas/CommitOveragePolicy'
+                metadata:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: Budget updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetLedger'
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+        '409': {$ref: '#/components/responses/ErrorResponse'}
+
   /v1/admin/budgets/{scope}/{unit}/fund:
     post:
       tags: [Budgets]
@@ -1295,6 +1351,47 @@ paths:
               schema:
                 $ref: '#/components/schemas/PolicyListResponse'
   
+  /v1/admin/policies/{policy_id}:
+    patch:
+      tags: [Policies]
+      operationId: updatePolicy
+      summary: Update policy properties
+      description: >-
+        Update any mutable field on an existing policy.
+        Tenant scoping enforced: only the owning tenant can update.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: policy_id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string}
+                description: {type: string}
+                priority: {type: integer}
+                caps: {$ref: '#/components/schemas/Caps'}
+                commit_overage_policy: {$ref: '#/components/schemas/CommitOveragePolicy'}
+                reservation_ttl_override: {$ref: '#/components/schemas/ReservationTtlOverride'}
+                rate_limits: {$ref: '#/components/schemas/RateLimits'}
+                effective_from: {type: string, format: date-time}
+                effective_until: {type: string, format: date-time}
+                status: {type: string, enum: [ACTIVE, DISABLED]}
+      responses:
+        '200':
+          description: Policy updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+
   # ==========================================================================
   # PILLAR 2: AUTHENTICATION & AUTHORIZATION
   # ==========================================================================
