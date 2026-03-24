@@ -1,6 +1,7 @@
 package io.runcycles.admin.api.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.data.repository.PolicyRepository;
@@ -264,5 +265,67 @@ class PolicyControllerTest {
                 .andExpect(status().isOk());
 
         verify(policyRepository).list(eq("t1"), any(), any(), eq("pol_abc"), anyInt());
+    }
+
+    // ========== PATCH /v1/admin/policies/{policy_id} ==========
+
+    @Test
+    void updatePolicy_returns200() throws Exception {
+        setupApiKeyAuth();
+        Policy policy = Policy.builder()
+                .policyId("pol_123").scopePattern("org/*").name("Updated Name")
+                .priority(10).status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(policyRepository.update(eq("t1"), eq("pol_123"), any())).thenReturn(policy);
+
+        mockMvc.perform(patch("/v1/admin/policies/pol_123")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Updated Name\",\"priority\":10}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.policy_id").value("pol_123"))
+                .andExpect(jsonPath("$.name").value("Updated Name"))
+                .andExpect(jsonPath("$.priority").value(10));
+    }
+
+    @Test
+    void updatePolicy_notFound_returns404() throws Exception {
+        setupApiKeyAuth();
+        when(policyRepository.update(eq("t1"), eq("pol_missing"), any()))
+                .thenThrow(GovernanceException.policyNotFound("pol_missing"));
+
+        mockMvc.perform(patch("/v1/admin/policies/pol_missing")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"New Name\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error").value("NOT_FOUND"));
+    }
+
+    @Test
+    void updatePolicy_logsAuditEntry() throws Exception {
+        setupApiKeyAuth();
+        Policy policy = Policy.builder()
+                .policyId("pol_123").scopePattern("org/*").name("P")
+                .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(policyRepository.update(eq("t1"), eq("pol_123"), any())).thenReturn(policy);
+
+        mockMvc.perform(patch("/v1/admin/policies/pol_123")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"priority\":5}"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry ->
+                "updatePolicy".equals(entry.getOperation()) &&
+                "t1".equals(entry.getTenantId()) &&
+                entry.getStatus() == 200));
+    }
+
+    @Test
+    void updatePolicy_noApiKey_returns401() throws Exception {
+        mockMvc.perform(patch("/v1/admin/policies/pol_123")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"New Name\"}"))
+                .andExpect(status().isUnauthorized());
     }
 }

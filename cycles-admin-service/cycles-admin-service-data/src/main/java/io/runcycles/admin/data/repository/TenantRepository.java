@@ -41,6 +41,9 @@ public class TenantRepository {
     // ARGV[3] = new_metadata_json (empty string = no change)
     // ARGV[4] = now_iso (ISO-8601 timestamp, must match Jackson serialization format)
     // ARGV[5] = new_default_commit_overage_policy (empty string = no change)
+    // ARGV[6] = new_default_reservation_ttl_ms (empty string = no change)
+    // ARGV[7] = new_max_reservation_ttl_ms (empty string = no change)
+    // ARGV[8] = new_max_reservation_extensions (empty string = no change)
     // Returns: {'OK', updated_json} on success, or {'ERROR', error_message} on failure
     private static final String UPDATE_TENANT_LUA =
         "local json = redis.call('GET', KEYS[1])\n" +
@@ -71,6 +74,13 @@ public class TenantRepository {
         // Apply default_commit_overage_policy change
         "local new_policy = ARGV[5]\n" +
         "if new_policy ~= '' then tenant['default_commit_overage_policy'] = new_policy end\n" +
+        // Apply TTL and extension fields
+        "local new_ttl = ARGV[6]\n" +
+        "if new_ttl ~= '' then tenant['default_reservation_ttl_ms'] = tonumber(new_ttl) end\n" +
+        "local new_max_ttl = ARGV[7]\n" +
+        "if new_max_ttl ~= '' then tenant['max_reservation_ttl_ms'] = tonumber(new_max_ttl) end\n" +
+        "local new_max_ext = ARGV[8]\n" +
+        "if new_max_ext ~= '' then tenant['max_reservation_extensions'] = tonumber(new_max_ext) end\n" +
         "tenant['updated_at'] = now_iso\n" +
         "local updated = cjson.encode(tenant)\n" +
         "redis.call('SET', KEYS[1], updated)\n" +
@@ -87,7 +97,7 @@ public class TenantRepository {
                 .name(request.getName())
                 .status(TenantStatus.ACTIVE)
                 .parentTenantId(request.getParentTenantId())
-                .defaultCommitOveragePolicy(request.getDefaultCommitOveragePolicy() != null ? request.getDefaultCommitOveragePolicy() : CommitOveragePolicy.REJECT)
+                .defaultCommitOveragePolicy(request.getDefaultCommitOveragePolicy() != null ? request.getDefaultCommitOveragePolicy() : CommitOveragePolicy.ALLOW_IF_AVAILABLE)
                 .defaultReservationTtlMs(60000L)
                 .maxReservationTtlMs(3600000L)
                 .maxReservationExtensions(10)
@@ -171,7 +181,10 @@ public class TenantRepository {
                     request.getStatus() != null ? request.getStatus().name() : "",
                     request.getMetadata() != null ? objectMapper.writeValueAsString(request.getMetadata()) : "",
                     nowIso,
-                    request.getDefaultCommitOveragePolicy() != null ? request.getDefaultCommitOveragePolicy().name() : ""
+                    request.getDefaultCommitOveragePolicy() != null ? request.getDefaultCommitOveragePolicy().name() : "",
+                    request.getDefaultReservationTtlMs() != null ? String.valueOf(request.getDefaultReservationTtlMs()) : "",
+                    request.getMaxReservationTtlMs() != null ? String.valueOf(request.getMaxReservationTtlMs()) : "",
+                    request.getMaxReservationExtensions() != null ? String.valueOf(request.getMaxReservationExtensions()) : ""
                 ));
 
             String status = result.get(0);

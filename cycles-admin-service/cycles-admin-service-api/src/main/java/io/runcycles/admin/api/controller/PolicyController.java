@@ -6,6 +6,7 @@ import io.runcycles.admin.model.policy.Policy;
 import io.runcycles.admin.model.policy.PolicyCreateRequest;
 import io.runcycles.admin.model.policy.PolicyListResponse;
 import io.runcycles.admin.model.policy.PolicyStatus;
+import io.runcycles.admin.model.policy.PolicyUpdateRequest;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -28,6 +29,18 @@ public class PolicyController {
             .status(201)
             .build());
         return ResponseEntity.status(201).body(policy);
+    }
+    @PatchMapping("/{policyId}") @Operation(operationId = "updatePolicy")
+    public ResponseEntity<Policy> update(@PathVariable String policyId, @Valid @RequestBody PolicyUpdateRequest request, HttpServletRequest httpRequest) {
+        String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
+        Policy policy = repository.update(tenantId, policyId, request);
+        auditRepository.log(buildAuditEntry(httpRequest)
+            .tenantId(tenantId)
+            .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
+            .operation("updatePolicy")
+            .status(200)
+            .build());
+        return ResponseEntity.ok(policy);
     }
     @GetMapping @Operation(operationId = "listPolicies")
     public ResponseEntity<PolicyListResponse> list(

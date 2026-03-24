@@ -415,4 +415,51 @@ class TenantControllerTest {
 
         verify(tenantRepository).list(any(), any(), eq("t-cursor"), anyInt());
     }
+
+    // ========== Tenant TTL update fields ==========
+
+    @Test
+    void updateTenant_defaultReservationTtlMs_returns200() throws Exception {
+        Tenant tenant = Tenant.builder()
+                .tenantId("t1").name("T1").status(TenantStatus.ACTIVE)
+                .defaultReservationTtlMs(30000L).createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("t1"), any())).thenReturn(tenant);
+
+        mockMvc.perform(patch("/v1/admin/tenants/t1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"default_reservation_ttl_ms\":30000}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.default_reservation_ttl_ms").value(30000));
+    }
+
+    @Test
+    void updateTenant_maxReservationTtlMs_returns200() throws Exception {
+        Tenant tenant = Tenant.builder()
+                .tenantId("t1").name("T1").status(TenantStatus.ACTIVE)
+                .maxReservationTtlMs(1800000L).createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("t1"), any())).thenReturn(tenant);
+
+        mockMvc.perform(patch("/v1/admin/tenants/t1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"max_reservation_ttl_ms\":1800000}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.max_reservation_ttl_ms").value(1800000));
+    }
+
+    @Test
+    void updateTenant_maxReservationExtensions_returns200() throws Exception {
+        Tenant tenant = Tenant.builder()
+                .tenantId("t1").name("T1").status(TenantStatus.ACTIVE)
+                .maxReservationExtensions(20).createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("t1"), any())).thenReturn(tenant);
+
+        mockMvc.perform(patch("/v1/admin/tenants/t1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"max_reservation_extensions\":20}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.max_reservation_extensions").value(20));
+    }
 }

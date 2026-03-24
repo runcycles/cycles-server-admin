@@ -639,4 +639,78 @@ class BudgetRepositoryTest {
         hash.put("created_at", String.valueOf(System.currentTimeMillis()));
         return hash;
     }
+
+    // ========== update() tests ==========
+
+    @Test
+    void update_success_returnsUpdatedLedger() {
+        when(jedisPool.getResource()).thenReturn(jedis);
+        doNothing().when(jedis).close();
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK"));
+        when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(createBudgetHash("led-1", "tenant:acme", "USD_MICROCENTS"));
+
+        BudgetUpdateRequest request = new BudgetUpdateRequest();
+        request.setOverdraftLimit(new Amount(UnitEnum.USD_MICROCENTS, 50000L));
+
+        BudgetLedger result = repository.update("acme", "tenant:acme", UnitEnum.USD_MICROCENTS, request);
+
+        assertThat(result).isNotNull();
+        assertThat(result.getScope()).isEqualTo("tenant:acme");
+    }
+
+    @Test
+    void update_notFound_throws404() {
+        when(jedisPool.getResource()).thenReturn(jedis);
+        doNothing().when(jedis).close();
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("NOT_FOUND"));
+
+        BudgetUpdateRequest request = new BudgetUpdateRequest();
+        request.setOverdraftLimit(new Amount(UnitEnum.USD_MICROCENTS, 50000L));
+
+        assertThatThrownBy(() -> repository.update("acme", "tenant:acme", UnitEnum.USD_MICROCENTS, request))
+                .isInstanceOf(GovernanceException.class)
+                .hasFieldOrPropertyWithValue("httpStatus", 404);
+    }
+
+    @Test
+    void update_forbidden_throws403() {
+        when(jedisPool.getResource()).thenReturn(jedis);
+        doNothing().when(jedis).close();
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("FORBIDDEN"));
+
+        BudgetUpdateRequest request = new BudgetUpdateRequest();
+
+        assertThatThrownBy(() -> repository.update("wrong-tenant", "tenant:acme", UnitEnum.USD_MICROCENTS, request))
+                .isInstanceOf(GovernanceException.class)
+                .hasFieldOrPropertyWithValue("httpStatus", 403);
+    }
+
+    @Test
+    void update_closed_throws409() {
+        when(jedisPool.getResource()).thenReturn(jedis);
+        doNothing().when(jedis).close();
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("BUDGET_CLOSED"));
+
+        BudgetUpdateRequest request = new BudgetUpdateRequest();
+
+        assertThatThrownBy(() -> repository.update("acme", "tenant:acme", UnitEnum.USD_MICROCENTS, request))
+                .isInstanceOf(GovernanceException.class)
+                .hasFieldOrPropertyWithValue("httpStatus", 409);
+    }
+
+    @Test
+    void update_withCommitOveragePolicy_passesCorrectArgs() {
+        when(jedisPool.getResource()).thenReturn(jedis);
+        doNothing().when(jedis).close();
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK"));
+        when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(createBudgetHash("led-1", "tenant:acme", "USD_MICROCENTS"));
+
+        BudgetUpdateRequest request = new BudgetUpdateRequest();
+        request.setCommitOveragePolicy(io.runcycles.admin.model.shared.CommitOveragePolicy.ALLOW_WITH_OVERDRAFT);
+
+        repository.update("acme", "tenant:acme", UnitEnum.USD_MICROCENTS, request);
+
+        verify(jedis).eval(anyString(), anyList(), argThat((List<String> args) ->
+                args.get(2).equals("ALLOW_WITH_OVERDRAFT")));
+    }
 }

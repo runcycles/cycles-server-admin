@@ -37,4 +37,7 @@ public class GovernanceException extends RuntimeException {
     public static GovernanceException budgetClosed(String scope) {
         return new GovernanceException(ErrorCode.BUDGET_CLOSED, "Budget is closed: " + scope, 409);
     }
+    public static GovernanceException policyNotFound(String id) {
+        return new GovernanceException(ErrorCode.NOT_FOUND, "Policy not found: " + id, 404);
+    }
 }

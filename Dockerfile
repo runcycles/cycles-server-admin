@@ -20,8 +20,12 @@ LABEL org.opencontainers.image.title="cycles-server-admin" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="${APP_VERSION}"
 
+RUN addgroup -g 1000 appuser && adduser -D -u 1000 -G appuser appuser
+
 WORKDIR /app
 COPY --from=build /app/cycles-admin-service/cycles-admin-service-api/target/cycles-admin-service-api-*.jar app.jar
+RUN chown appuser:appuser app.jar
 
+USER appuser
 EXPOSE 7979
 ENTRYPOINT ["java", "-jar", "app.jar"]

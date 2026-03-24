@@ -6,6 +6,7 @@ import io.runcycles.admin.model.shared.CommitOveragePolicy;
 import io.runcycles.admin.model.shared.UnitEnum;
 import lombok.*;
 import java.time.Instant;
+import java.util.Map;
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 public class BudgetLedger {
     // Required per spec: ledger_id, scope, unit, allocated, remaining, status, created_at
@@ -29,4 +30,5 @@ public class BudgetLedger {
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("period_start") private Instant periodStart;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("period_end") private Instant periodEnd;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("updated_at") private Instant updatedAt;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("metadata") private Map<String, Object> metadata;
 }
