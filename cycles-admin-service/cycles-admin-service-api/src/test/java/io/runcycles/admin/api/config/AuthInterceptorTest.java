@@ -194,6 +194,68 @@ class AuthInterceptorTest {
     }
 
     @Test
+    void preHandle_balancesEndpoint_balancesReadPermission_allows() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/balances");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+
+        when(apiKeyRepository.validate("valid-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(List.of("balances:read"))
+                        .build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_budgetListEndpoint_adminReadPermission_allows() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/admin/budgets");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+
+        when(apiKeyRepository.validate("valid-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(List.of("admin:read"))
+                        .build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_policyUpdate_withPathVariable_requiresAdminWrite() throws Exception {
+        request.setMethod("PATCH");
+        request.setRequestURI("/v1/admin/policies/pol_123");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+
+        when(apiKeyRepository.validate("valid-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(List.of("admin:read"))
+                        .build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    void preHandle_nullPermissions_returns403() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/budgets");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+
+        when(apiKeyRepository.validate("valid-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(null)
+                        .build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+    }
+
+    @Test
     void preHandle_policyEndpoint_requiresApiKey() throws Exception {
         request.setMethod("POST");
         request.setRequestURI("/v1/admin/policies");
