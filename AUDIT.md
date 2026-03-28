@@ -308,3 +308,9 @@ All modules exceed the threshold. Overall effective coverage: **99.6%**.
 ## Verdict
 
 The admin server is **fully compliant** with the Complete Budget Governance spec v0.1.24 and **ready for production deployment**. All 17 endpoints are implemented, all 10 request schemas and 12 response schemas match, all 10 enum types have correct values. Auth (AdminKeyAuth / ApiKeyAuth), tenant scoping, idempotency, pagination, audit logging, and behavioral constraints (status transitions, funding operations, key lifecycle) all follow spec normative rules. All 28 previously identified issues (across Rounds 1–6) have been verified as fixed, plus 2 v0 limitations documented. Round 6 added API key permission enforcement and scope_filter enforcement — two critical gaps where authorization data was stored but never checked. Defense-in-depth: tenant existence is validated at both the auth layer (API key validation) and the data layer (Lua scripts on budget/policy creation). No remaining spec violations found.
+
+---
+
+## Audit History
+
+For historical audit rounds 1-4 against spec v0.1.23 (19 issues found and fixed), see [AUDIT-history.md](./AUDIT-history.md).
