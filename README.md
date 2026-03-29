@@ -1,5 +1,6 @@
 [![CI](https://github.com/runcycles/cycles-server-admin/actions/workflows/ci.yml/badge.svg)](https://github.com/runcycles/cycles-server-admin/actions)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+[![Coverage](https://img.shields.io/badge/coverage-95%25+-brightgreen)](https://github.com/runcycles/cycles-server-admin/actions)
 
 # RunCycles Server Admin
 
