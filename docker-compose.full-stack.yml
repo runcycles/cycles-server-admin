@@ -41,5 +41,19 @@ services:
       redis:
         condition: service_healthy
 
+  cycles-events:
+    build:
+      context: ../cycles-server-events
+      dockerfile: Dockerfile
+    ports:
+      - "7980:7980"
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ""
+    depends_on:
+      redis:
+        condition: service_healthy
+
 volumes:
   redis-data:
