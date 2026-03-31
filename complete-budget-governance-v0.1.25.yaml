@@ -101,6 +101,17 @@ info:
               response definitions): PATCH /v1/admin/budgets 404/409, PATCH /v1/admin/policies 404.
             * Added missing ReservationTtlOverride and RateLimits schemas (referenced by
               PATCH /v1/admin/policies/{policy_id} but never defined).
+        - Added per-tenant webhook self-service: 8 new tenant-scoped endpoints at /v1/webhooks
+          and /v1/events using ApiKeyAuth. Tenants can manage their own webhooks and query
+          their own events. Restricted to budget.*, reservation.*, and tenant.* event types
+          (24 of 40). Admin-only: api_key.*, policy.*, system.*.
+        - Added webhook endpoint IP allowlisting: WebhookSecurityConfig schema with blocked
+          CIDR ranges (RFC 1918 + loopback + link-local blocked by default), allowed URL
+          patterns (glob), and allow_http flag. Admin endpoint GET/PUT /v1/admin/config/webhook-security.
+        - Added granular admin permissions: 12 new namespaced permissions
+          (admin:tenants:read/write, admin:budgets:read/write, etc.). Existing admin:read
+          and admin:write retained as wildcards for backward compatibility.
+        - Added 3 new tenant API key permissions: webhooks:read, webhooks:write, events:read.
         - Backward compatibility: All changes are purely additive. No schemas, paths, methods,
           fields, enum values, or response codes were removed. Clients built against v0.1.24
           work unchanged against v0.1.25.
@@ -137,7 +148,7 @@ tags:
   - name: Balances
     description: "Pillar 3: Balance queries and monitoring"
   - name: Webhooks
-    description: "Pillar 4: Webhook subscription management"
+    description: "Pillar 4: Webhook subscription management (admin and tenant self-service)"
   - name: Events
     description: "Pillar 4: Event types, delivery tracking, and replay"
 
@@ -761,15 +772,33 @@ components:
           type: array
           items:
             type: string
-            enum: 
+            enum:
+              # Tenant runtime permissions
               - 'reservations:create'
               - 'reservations:commit'
               - 'reservations:release'
               - 'reservations:extend'
               - 'reservations:list'
               - 'balances:read'
+              - 'webhooks:read'
+              - 'webhooks:write'
+              - 'events:read'
+              # Admin wildcard permissions (backward compatible)
               - 'admin:read'
               - 'admin:write'
+              # Granular admin permissions
+              - 'admin:tenants:read'
+              - 'admin:tenants:write'
+              - 'admin:budgets:read'
+              - 'admin:budgets:write'
+              - 'admin:policies:read'
+              - 'admin:policies:write'
+              - 'admin:apikeys:read'
+              - 'admin:apikeys:write'
+              - 'admin:webhooks:read'
+              - 'admin:webhooks:write'
+              - 'admin:events:read'
+              - 'admin:audit:read'
           description: >-
             Granular permissions. Default for tenant keys:
             [reservations:*, balances:read]
@@ -1982,6 +2011,39 @@ components:
         event_id:
           type: string
           description: ID of the test event that was sent
+
+    WebhookSecurityConfig:
+      type: object
+      description: >-
+        Server-level security configuration for webhook URL validation.
+        Applied to all webhook create and update operations.
+        Prevents SSRF by blocking private/internal IP ranges by default.
+      additionalProperties: false
+      properties:
+        blocked_cidr_ranges:
+          type: array
+          items:
+            type: string
+          default: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16", "::1/128", "fc00::/7"]
+          description: >-
+            CIDR ranges that webhook URLs may NOT resolve to.
+            Default blocks all RFC 1918 private ranges, loopback, link-local, and IPv6 private.
+            Server resolves webhook URL hostnames and checks resolved IPs against this list.
+        allowed_url_patterns:
+          type: array
+          items:
+            type: string
+          description: >-
+            Glob patterns for allowed webhook URLs (e.g., "https://*.example.com/*").
+            If non-empty, only URLs matching at least one pattern are allowed.
+            If empty, all non-blocked URLs are allowed.
+        allow_http:
+          type: boolean
+          default: false
+          description: >-
+            Allow HTTP (non-HTTPS) webhook URLs.
+            MUST only be enabled in development/test environments.
+            Production deployments SHOULD keep this false.
 
     EventListResponse:
       type: object
@@ -3244,6 +3306,366 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/admin/config/webhook-security:
+    get:
+      tags: [Webhooks]
+      operationId: getWebhookSecurityConfig
+      summary: Get webhook security configuration
+      description: >-
+        Returns the current server-level webhook security configuration
+        including blocked CIDR ranges and allowed URL patterns.
+      security:
+        - AdminKeyAuth: []
+      responses:
+        '200':
+          description: Current webhook security config
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSecurityConfig'
+
+    put:
+      tags: [Webhooks]
+      operationId: updateWebhookSecurityConfig
+      summary: Update webhook security configuration
+      description: >-
+        Replaces the server-level webhook security configuration.
+        Changes take effect immediately for all subsequent webhook create/update operations.
+        Existing webhook subscriptions are NOT retroactively validated.
+
+        CAUTION: Removing blocked CIDR ranges may expose the server to SSRF attacks.
+      security:
+        - AdminKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookSecurityConfig'
+      responses:
+        '200':
+          description: Config updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSecurityConfig'
+        '400':
+          description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # --------------------------------------------------------------------------
+  # PILLAR 4: TENANT WEBHOOK SELF-SERVICE
+  # --------------------------------------------------------------------------
+
+  /v1/webhooks:
+    post:
+      tags: [Webhooks]
+      operationId: createTenantWebhook
+      summary: Create a webhook for the authenticated tenant
+      description: >-
+        Tenant-scoped webhook creation. The subscription is automatically scoped
+        to the authenticated tenant. Tenants can only subscribe to tenant-accessible
+        event types: budget.*, reservation.*, tenant.* (24 of 40 types).
+
+        api_key.*, policy.*, and system.* events require admin access.
+
+        PERMISSIONS:
+        - Requires webhooks:write permission on the API key.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookCreateRequest'
+      responses:
+        '201':
+          description: Subscription created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookCreateResponse'
+        '400':
+          description: Invalid request (non-HTTPS URL, restricted event type, etc.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API key lacks webhooks:write permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    get:
+      tags: [Webhooks]
+      operationId: listTenantWebhooks
+      summary: List webhooks for the authenticated tenant
+      description: >-
+        Returns only webhooks belonging to the authenticated tenant.
+
+        PERMISSIONS:
+        - Requires webhooks:read permission on the API key.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [ACTIVE, PAUSED, DISABLED]
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Subscription list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookListResponse'
+
+  /v1/webhooks/{subscription_id}:
+    get:
+      tags: [Webhooks]
+      operationId: getTenantWebhook
+      summary: Get a tenant's webhook subscription
+      description: >-
+        Returns webhook details. Returns 404 if subscription belongs to a different tenant.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: subscription_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Subscription details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+        '404':
+          description: Subscription not found or belongs to different tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    patch:
+      tags: [Webhooks]
+      operationId: updateTenantWebhook
+      summary: Update a tenant's webhook subscription
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: subscription_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookUpdateRequest'
+      responses:
+        '200':
+          description: Subscription updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+        '400':
+          description: Invalid update (restricted event type, invalid URL, etc.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Subscription not found or belongs to different tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags: [Webhooks]
+      operationId: deleteTenantWebhook
+      summary: Delete a tenant's webhook subscription
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: subscription_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Subscription deleted
+        '404':
+          description: Subscription not found or belongs to different tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/webhooks/{subscription_id}/test:
+    post:
+      tags: [Webhooks]
+      operationId: testTenantWebhook
+      summary: Send a test event to a tenant's webhook
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: subscription_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Test result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookTestResponse'
+        '404':
+          description: Subscription not found or belongs to different tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/webhooks/{subscription_id}/deliveries:
+    get:
+      tags: [Webhooks]
+      operationId: listTenantWebhookDeliveries
+      summary: List delivery attempts for a tenant's webhook
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: subscription_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [PENDING, SUCCESS, FAILED, RETRYING]
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Delivery list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookDeliveryListResponse'
+        '404':
+          description: Subscription not found or belongs to different tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/events:
+    get:
+      tags: [Events]
+      operationId: listTenantEvents
+      summary: Query events for the authenticated tenant
+      description: >-
+        Returns events scoped to the authenticated tenant only.
+        Only tenant-accessible event types are returned (budget.*, reservation.*, tenant.*).
+
+        PERMISSIONS:
+        - Requires events:read permission on the API key.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: event_type
+          in: query
+          schema:
+            $ref: '#/components/schemas/EventType'
+        - name: category
+          in: query
+          schema:
+            $ref: '#/components/schemas/EventCategory'
+        - name: scope
+          in: query
+          schema:
+            type: string
+        - name: correlation_id
+          in: query
+          schema:
+            type: string
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Event list (tenant-scoped)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventListResponse'
 
   # ==========================================================================
   # PILLAR 3: RUNTIME ENFORCEMENT (from Cycles v0.1.24)

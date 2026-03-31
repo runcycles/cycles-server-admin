@@ -4,6 +4,36 @@
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
+### 2026-03-31 — v0.1.25: Webhook Security Features
+
+Added three webhook security features to the admin API spec:
+
+**1. Expanded API key permissions (24 total, up from 8):**
+- 3 new tenant permissions: `webhooks:read`, `webhooks:write`, `events:read`
+- 12 new granular admin permissions: `admin:tenants:read/write`, `admin:budgets:read/write`, `admin:policies:read/write`, `admin:apikeys:read/write`, `admin:webhooks:read/write`, `admin:events:read`, `admin:audit:read`
+- Existing `admin:read` and `admin:write` retained as backward-compatible wildcards
+
+**2. WebhookSecurityConfig schema and admin endpoints:**
+- New `WebhookSecurityConfig` schema with `blocked_cidr_ranges` (RFC 1918 + loopback + link-local blocked by default), `allowed_url_patterns` (glob), and `allow_http` flag
+- `GET /v1/admin/config/webhook-security` — Read current config
+- `PUT /v1/admin/config/webhook-security` — Update config (SSRF protection)
+
+**3. Tenant webhook self-service (8 new endpoints):**
+- `POST /v1/webhooks` — Create tenant-scoped webhook (ApiKeyAuth, requires `webhooks:write`)
+- `GET /v1/webhooks` — List tenant's webhooks
+- `GET /v1/webhooks/{subscription_id}` — Get tenant's webhook
+- `PATCH /v1/webhooks/{subscription_id}` — Update tenant's webhook
+- `DELETE /v1/webhooks/{subscription_id}` — Delete tenant's webhook
+- `POST /v1/webhooks/{subscription_id}/test` — Test tenant's webhook
+- `GET /v1/webhooks/{subscription_id}/deliveries` — List delivery attempts
+- `GET /v1/events` — Query tenant-scoped events (requires `events:read`)
+
+Tenants restricted to `budget.*`, `reservation.*`, `tenant.*` event types (24 of 40). Admin-only: `api_key.*`, `policy.*`, `system.*`.
+
+**Status:** Spec only — server implementation pending.
+
+---
+
 ### 2026-03-31 — v0.1.25: Pillar 4 — Events & Webhooks (Observability Plane)
 
 Added a fourth pillar to the admin API spec: **Events & Webhooks**.
