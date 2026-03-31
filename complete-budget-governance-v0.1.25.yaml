@@ -1452,7 +1452,8 @@ components:
     EventDataSystem:
       type: object
       description: >-
-        Payload for system.* events.
+        Payload for system.store_connection_lost, system.store_connection_restored,
+        system.high_latency, system.webhook_delivery_failed, and system.webhook_test events.
       properties:
         component:
           type: string
@@ -1600,6 +1601,10 @@ components:
           format: date-time
           readOnly: true
           description: Timestamp of last failed delivery
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Operator-defined key-value pairs for custom tagging and filtering
 
     WebhookThresholdConfig:
       type: object
@@ -2246,8 +2251,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BudgetLedger'
-        '404': {$ref: '#/components/responses/ErrorResponse'}
-        '409': {$ref: '#/components/responses/ErrorResponse'}
+        '404':
+          description: Budget not found for the given scope and unit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflict (e.g., concurrent modification)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /v1/admin/budgets/fund:
     post:
@@ -2440,7 +2455,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Policy'
-        '404': {$ref: '#/components/responses/ErrorResponse'}
+        '404':
+          description: Policy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ==========================================================================
   # PILLAR 2: AUTHENTICATION & AUTHORIZATION
