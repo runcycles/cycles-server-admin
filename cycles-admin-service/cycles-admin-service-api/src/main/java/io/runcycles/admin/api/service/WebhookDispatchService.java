@@ -77,14 +77,19 @@ public class WebhookDispatchService {
     }
 
     /**
-     * Sign a payload with HMAC-SHA256.
+     * Sign a payload with HMAC-SHA256. Returns "sha256=<hex>" format per v0.1.25 spec.
+     * Used by the /test endpoint; runtime delivery signing is done by cycles-server-events.
      */
     public String signPayload(String payload, String secret) {
         try {
             Mac mac = Mac.getInstance("HmacSHA256");
             mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
             byte[] hash = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));
-            return Base64.getEncoder().encodeToString(hash);
+            StringBuilder hex = new StringBuilder("sha256=");
+            for (byte b : hash) {
+                hex.append(String.format("%02x", b));
+            }
+            return hex.toString();
         } catch (Exception e) {
             throw new RuntimeException("Failed to sign payload", e);
         }

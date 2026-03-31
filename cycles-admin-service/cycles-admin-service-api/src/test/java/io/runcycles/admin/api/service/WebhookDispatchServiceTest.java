@@ -123,6 +123,8 @@ class WebhookDispatchServiceTest {
         String sig2 = webhookDispatchService.signPayload(payload, secret);
 
         assertThat(sig1).isNotBlank();
+        assertThat(sig1).startsWith("sha256=");
+        assertThat(sig1).hasSize(7 + 64); // "sha256=" + 64 hex chars
         assertThat(sig1).isEqualTo(sig2);
     }
 
