@@ -9,6 +9,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -22,13 +24,16 @@ public class WebhookDispatchService {
     private final WebhookRepository webhookRepository;
     private final WebhookDeliveryRepository deliveryRepository;
     private final ObjectMapper objectMapper;
+    private final JedisPool jedisPool;
 
     public WebhookDispatchService(WebhookRepository webhookRepository,
                                    WebhookDeliveryRepository deliveryRepository,
-                                   ObjectMapper objectMapper) {
+                                   ObjectMapper objectMapper,
+                                   JedisPool jedisPool) {
         this.webhookRepository = webhookRepository;
         this.deliveryRepository = deliveryRepository;
         this.objectMapper = objectMapper;
+        this.jedisPool = jedisPool;
     }
 
     /**
@@ -63,8 +68,12 @@ public class WebhookDispatchService {
             .attempts(0)
             .build();
         deliveryRepository.save(delivery);
-        // TODO: actual HTTP POST with signing, retry logic
-        // For now, mark as pending for future background processor
+        // Enqueue for cycles-server-events to pick up via BRPOP
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.lpush("dispatch:pending", delivery.getDeliveryId());
+        } catch (Exception e) {
+            LOG.warn("Failed to enqueue delivery {} to dispatch:pending: {}", delivery.getDeliveryId(), e.getMessage());
+        }
     }
 
     /**

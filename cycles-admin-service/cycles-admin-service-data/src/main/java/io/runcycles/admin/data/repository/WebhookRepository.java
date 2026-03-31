@@ -45,12 +45,17 @@ public class WebhookRepository {
             if (sub.getConsecutiveFailures() == null) {
                 sub.setConsecutiveFailures(0);
             }
+            String signingSecret = sub.getSigningSecret();
             String json = objectMapper.writeValueAsString(sub);
             jedis.eval(SAVE_WEBHOOK_LUA,
                 List.of("webhook:" + subscriptionId,
                         "webhooks:" + sub.getTenantId(),
                         "webhooks:_all"),
                 List.of(json, subscriptionId));
+            // Store signing secret separately (not in JSON due to @JsonIgnore)
+            if (signingSecret != null) {
+                jedis.set("webhook:secret:" + subscriptionId, signingSecret);
+            }
         } catch (Exception e) {
             LOG.error("Failed to save webhook subscription", e);
             throw new RuntimeException("Failed to save webhook subscription", e);
@@ -96,6 +101,7 @@ public class WebhookRepository {
                         "webhooks:" + sub.getTenantId(),
                         "webhooks:_all"),
                 List.of(subscriptionId));
+            jedis.del("webhook:secret:" + subscriptionId);
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
