@@ -36,7 +36,12 @@ public class AuthInterceptor implements HandlerInterceptor {
         Map.entry("PATCH:/v1/admin/policies", "admin:write"),
         Map.entry("GET:/v1/admin/policies", "admin:read"),
         Map.entry("GET:/v1/balances", "balances:read"),
-        Map.entry("GET:/v1/reservations", "reservations:list")
+        Map.entry("GET:/v1/reservations", "reservations:list"),
+        Map.entry("POST:/v1/webhooks", "webhooks:write"),
+        Map.entry("GET:/v1/webhooks", "webhooks:read"),
+        Map.entry("PATCH:/v1/webhooks", "webhooks:write"),
+        Map.entry("DELETE:/v1/webhooks", "webhooks:write"),
+        Map.entry("GET:/v1/events", "events:read")
     );
 
     @Value("${admin.api-key:}")
@@ -76,7 +81,10 @@ public class AuthInterceptor implements HandlerInterceptor {
         return path.startsWith("/v1/admin/tenants") ||
                path.startsWith("/v1/admin/api-keys") ||
                path.startsWith("/v1/auth/validate") ||
-               path.startsWith("/v1/admin/audit");
+               path.startsWith("/v1/admin/audit") ||
+               path.startsWith("/v1/admin/webhooks") ||
+               path.startsWith("/v1/admin/events") ||
+               path.startsWith("/v1/admin/config");
     }
 
     private boolean requiresApiKey(String path) {
@@ -84,7 +92,9 @@ public class AuthInterceptor implements HandlerInterceptor {
         return path.startsWith("/v1/admin/budgets") ||
                path.startsWith("/v1/admin/policies") ||
                path.startsWith("/v1/balances") ||
-               path.startsWith("/v1/reservations");
+               path.startsWith("/v1/reservations") ||
+               path.startsWith("/v1/webhooks") ||
+               path.startsWith("/v1/events");
     }
 
     private boolean validateAdminKey(HttpServletRequest request, HttpServletResponse response) throws Exception {
