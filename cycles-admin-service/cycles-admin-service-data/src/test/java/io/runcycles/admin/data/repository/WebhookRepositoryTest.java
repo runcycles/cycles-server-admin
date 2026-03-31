@@ -408,13 +408,14 @@ class WebhookRepositoryTest {
         when(jedis.smembers("webhooks:t1")).thenReturn(tenantIds);
         when(jedis.smembers("webhooks:_system")).thenReturn(Set.of());
 
-        when(jedis.get("webhook:whsub_gone")).thenReturn(null);
         WebhookSubscription sub = WebhookSubscription.builder()
                 .subscriptionId("whsub_ok").tenantId("t1").url("https://a.com")
                 .status(WebhookStatus.ACTIVE)
                 .eventTypes(List.of(EventType.BUDGET_CREATED))
                 .createdAt(Instant.now()).consecutiveFailures(0).build();
-        when(jedis.get("webhook:whsub_ok")).thenReturn(objectMapper.writeValueAsString(sub));
+        String subJson = objectMapper.writeValueAsString(sub);
+        when(jedis.get("webhook:whsub_gone")).thenReturn(null);
+        when(jedis.get("webhook:whsub_ok")).thenReturn(subJson);
 
         List<WebhookSubscription> result = repository.findMatchingSubscriptions("t1", EventType.BUDGET_CREATED, null);
 
@@ -432,7 +433,8 @@ class WebhookRepositoryTest {
                 .status(WebhookStatus.ACTIVE)
                 .eventTypes(List.of(EventType.BUDGET_CREATED))
                 .createdAt(Instant.now()).consecutiveFailures(0).build();
-        when(jedis.get("webhook:whsub_1")).thenReturn(objectMapper.writeValueAsString(sub));
+        String subJson = objectMapper.writeValueAsString(sub);
+        when(jedis.get("webhook:whsub_1")).thenReturn(subJson);
 
         List<WebhookSubscription> result = repository.findMatchingSubscriptions("t1", EventType.TENANT_CREATED, null);
 
@@ -451,7 +453,8 @@ class WebhookRepositoryTest {
                 .eventTypes(List.of(EventType.BUDGET_CREATED))
                 .scopeFilter("org/eng")
                 .createdAt(Instant.now()).consecutiveFailures(0).build();
-        when(jedis.get("webhook:whsub_1")).thenReturn(objectMapper.writeValueAsString(sub));
+        String subJson = objectMapper.writeValueAsString(sub);
+        when(jedis.get("webhook:whsub_1")).thenReturn(subJson);
 
         // null scope should match (matchesScope returns true when scope is null)
         List<WebhookSubscription> result = repository.findMatchingSubscriptions("t1", EventType.BUDGET_CREATED, null);
@@ -471,7 +474,8 @@ class WebhookRepositoryTest {
                 .eventTypes(List.of(EventType.BUDGET_CREATED))
                 .scopeFilter("   ")
                 .createdAt(Instant.now()).consecutiveFailures(0).build();
-        when(jedis.get("webhook:whsub_1")).thenReturn(objectMapper.writeValueAsString(sub));
+        String subJson = objectMapper.writeValueAsString(sub);
+        when(jedis.get("webhook:whsub_1")).thenReturn(subJson);
 
         List<WebhookSubscription> result = repository.findMatchingSubscriptions("t1", EventType.BUDGET_CREATED, "any/scope");
 
@@ -485,8 +489,10 @@ class WebhookRepositoryTest {
 
         WebhookSubscription s2 = WebhookSubscription.builder().subscriptionId("whsub_2").tenantId("t1").url("https://b.com").status(WebhookStatus.ACTIVE).eventTypes(List.of(EventType.TENANT_CREATED)).createdAt(Instant.now()).consecutiveFailures(0).build();
         WebhookSubscription s3 = WebhookSubscription.builder().subscriptionId("whsub_3").tenantId("t1").url("https://c.com").status(WebhookStatus.ACTIVE).eventTypes(List.of(EventType.BUDGET_CREATED)).createdAt(Instant.now()).consecutiveFailures(0).build();
-        when(jedis.get("webhook:whsub_2")).thenReturn(objectMapper.writeValueAsString(s2));
-        when(jedis.get("webhook:whsub_3")).thenReturn(objectMapper.writeValueAsString(s3));
+        String s2Json = objectMapper.writeValueAsString(s2);
+        String s3Json = objectMapper.writeValueAsString(s3);
+        when(jedis.get("webhook:whsub_2")).thenReturn(s2Json);
+        when(jedis.get("webhook:whsub_3")).thenReturn(s3Json);
 
         List<WebhookSubscription> result = repository.listByTenant("t1", null, null, "whsub_1", 50);
 
@@ -501,8 +507,10 @@ class WebhookRepositoryTest {
 
         WebhookSubscription s1 = WebhookSubscription.builder().subscriptionId("whsub_1").tenantId("t1").url("https://a.com").status(WebhookStatus.ACTIVE).eventTypes(List.of(EventType.TENANT_CREATED)).createdAt(Instant.now()).consecutiveFailures(0).build();
         WebhookSubscription s2 = WebhookSubscription.builder().subscriptionId("whsub_2").tenantId("t1").url("https://b.com").status(WebhookStatus.ACTIVE).eventTypes(List.of(EventType.BUDGET_CREATED)).createdAt(Instant.now()).consecutiveFailures(0).build();
-        when(jedis.get("webhook:whsub_1")).thenReturn(objectMapper.writeValueAsString(s1));
-        when(jedis.get("webhook:whsub_2")).thenReturn(objectMapper.writeValueAsString(s2));
+        String s1Json = objectMapper.writeValueAsString(s1);
+        String s2Json = objectMapper.writeValueAsString(s2);
+        when(jedis.get("webhook:whsub_1")).thenReturn(s1Json);
+        when(jedis.get("webhook:whsub_2")).thenReturn(s2Json);
 
         List<WebhookSubscription> result = repository.listAll("ACTIVE", "tenant.created", null, 50);
 
@@ -524,9 +532,10 @@ class WebhookRepositoryTest {
         Set<String> ids = new LinkedHashSet<>(List.of("whsub_gone", "whsub_ok"));
         when(jedis.smembers("webhooks:t1")).thenReturn(ids);
 
-        when(jedis.get("webhook:whsub_gone")).thenReturn(null);
         WebhookSubscription s = WebhookSubscription.builder().subscriptionId("whsub_ok").tenantId("t1").url("https://a.com").status(WebhookStatus.ACTIVE).eventTypes(List.of(EventType.TENANT_CREATED)).createdAt(Instant.now()).consecutiveFailures(0).build();
-        when(jedis.get("webhook:whsub_ok")).thenReturn(objectMapper.writeValueAsString(s));
+        String sJson = objectMapper.writeValueAsString(s);
+        when(jedis.get("webhook:whsub_gone")).thenReturn(null);
+        when(jedis.get("webhook:whsub_ok")).thenReturn(sJson);
 
         List<WebhookSubscription> result = repository.listByTenant("t1", null, null, null, 50);
 
@@ -539,7 +548,8 @@ class WebhookRepositoryTest {
         when(jedis.smembers("webhooks:t1")).thenReturn(ids);
 
         WebhookSubscription s1 = WebhookSubscription.builder().subscriptionId("whsub_1").tenantId("t1").url("https://a.com").status(WebhookStatus.ACTIVE).eventTypes(List.of(EventType.TENANT_CREATED)).createdAt(Instant.now()).consecutiveFailures(0).build();
-        when(jedis.get("webhook:whsub_1")).thenReturn(objectMapper.writeValueAsString(s1));
+        String s1Json = objectMapper.writeValueAsString(s1);
+        when(jedis.get("webhook:whsub_1")).thenReturn(s1Json);
 
         List<WebhookSubscription> result = repository.listByTenant("t1", null, null, null, 1);
 
@@ -579,7 +589,8 @@ class WebhookRepositoryTest {
         WebhookSubscription sub = WebhookSubscription.builder()
                 .subscriptionId("whsub_1").tenantId("t1").url("https://a.com")
                 .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).consecutiveFailures(0).build();
-        when(jedis.get("webhook:whsub_1")).thenReturn(objectMapper.writeValueAsString(sub));
+        String subJson = objectMapper.writeValueAsString(sub);
+        when(jedis.get("webhook:whsub_1")).thenReturn(subJson);
         when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
 
         assertThatThrownBy(() -> repository.delete("whsub_1"))

@@ -267,9 +267,10 @@ class WebhookDeliveryRepositoryTest {
         List<String> ids = List.of("del_gone", "del_ok");
         when(jedis.zrevrangeByScore(eq("deliveries:whsub_1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
 
-        when(jedis.get("delivery:del_gone")).thenReturn(null);
         WebhookDelivery d = WebhookDelivery.builder().deliveryId("del_ok").subscriptionId("whsub_1").eventId("evt_1").status(DeliveryStatus.SUCCESS).attemptedAt(Instant.now()).build();
-        when(jedis.get("delivery:del_ok")).thenReturn(objectMapper.writeValueAsString(d));
+        String dJson = objectMapper.writeValueAsString(d);
+        when(jedis.get("delivery:del_gone")).thenReturn(null);
+        when(jedis.get("delivery:del_ok")).thenReturn(dJson);
 
         List<WebhookDelivery> result = repository.listBySubscription("whsub_1", null, null, null, null, 50);
 
@@ -282,9 +283,10 @@ class WebhookDeliveryRepositoryTest {
         List<String> ids = List.of("del_bad", "del_ok");
         when(jedis.zrevrangeByScore(eq("deliveries:whsub_1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
 
-        when(jedis.get("delivery:del_bad")).thenReturn("{invalid json}");
         WebhookDelivery d = WebhookDelivery.builder().deliveryId("del_ok").subscriptionId("whsub_1").eventId("evt_1").status(DeliveryStatus.SUCCESS).attemptedAt(Instant.now()).build();
-        when(jedis.get("delivery:del_ok")).thenReturn(objectMapper.writeValueAsString(d));
+        String dJson = objectMapper.writeValueAsString(d);
+        when(jedis.get("delivery:del_bad")).thenReturn("{invalid json}");
+        when(jedis.get("delivery:del_ok")).thenReturn(dJson);
 
         List<WebhookDelivery> result = repository.listBySubscription("whsub_1", null, null, null, null, 50);
 
@@ -299,7 +301,8 @@ class WebhookDeliveryRepositoryTest {
         when(jedis.zrevrangeByScore(eq("deliveries:whsub_1"), eq(Double.POSITIVE_INFINITY), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
 
         WebhookDelivery d = WebhookDelivery.builder().deliveryId("del_1").subscriptionId("whsub_1").eventId("evt_1").status(DeliveryStatus.SUCCESS).attemptedAt(Instant.now()).build();
-        when(jedis.get("delivery:del_1")).thenReturn(objectMapper.writeValueAsString(d));
+        String dJson = objectMapper.writeValueAsString(d);
+        when(jedis.get("delivery:del_1")).thenReturn(dJson);
 
         List<WebhookDelivery> result = repository.listBySubscription("whsub_1", null, null, null, "del_unknown", 50);
 
@@ -322,8 +325,10 @@ class WebhookDeliveryRepositoryTest {
 
         WebhookDelivery d1 = WebhookDelivery.builder().deliveryId("del_1").subscriptionId("whsub_1").eventId("evt_1").status(DeliveryStatus.SUCCESS).attemptedAt(Instant.now()).build();
         WebhookDelivery d2 = WebhookDelivery.builder().deliveryId("del_2").subscriptionId("whsub_1").eventId("evt_2").status(DeliveryStatus.SUCCESS).attemptedAt(Instant.now()).build();
-        when(jedis.get("delivery:del_1")).thenReturn(objectMapper.writeValueAsString(d1));
-        when(jedis.get("delivery:del_2")).thenReturn(objectMapper.writeValueAsString(d2));
+        String d1Json = objectMapper.writeValueAsString(d1);
+        String d2Json = objectMapper.writeValueAsString(d2);
+        when(jedis.get("delivery:del_1")).thenReturn(d1Json);
+        when(jedis.get("delivery:del_2")).thenReturn(d2Json);
 
         List<WebhookDelivery> result = repository.listBySubscription("whsub_1", null, null, null, null, 2);
 
@@ -337,7 +342,8 @@ class WebhookDeliveryRepositoryTest {
 
         WebhookDelivery d1 = WebhookDelivery.builder().deliveryId("del_1").subscriptionId("whsub_1").eventId("evt_1").attemptedAt(Instant.now()).build();
         // status is null
-        when(jedis.get("delivery:del_1")).thenReturn(objectMapper.writeValueAsString(d1));
+        String d1Json = objectMapper.writeValueAsString(d1);
+        when(jedis.get("delivery:del_1")).thenReturn(d1Json);
 
         List<WebhookDelivery> result = repository.listBySubscription("whsub_1", "SUCCESS", null, null, null, 50);
 

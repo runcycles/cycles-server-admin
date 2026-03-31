@@ -458,9 +458,12 @@ class EventRepositoryTest {
         Event e1 = Event.builder().eventId("evt_1").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
         Event e2 = Event.builder().eventId("evt_2").tenantId("t1").eventType(EventType.TENANT_UPDATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
         Event e3 = Event.builder().eventId("evt_3").tenantId("t1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").timestamp(Instant.now()).build();
-        when(jedis.get("event:evt_1")).thenReturn(objectMapper.writeValueAsString(e1));
-        when(jedis.get("event:evt_2")).thenReturn(objectMapper.writeValueAsString(e2));
-        lenient().when(jedis.get("event:evt_3")).thenReturn(objectMapper.writeValueAsString(e3));
+        String e1Json = objectMapper.writeValueAsString(e1);
+        String e2Json = objectMapper.writeValueAsString(e2);
+        String e3Json = objectMapper.writeValueAsString(e3);
+        when(jedis.get("event:evt_1")).thenReturn(e1Json);
+        when(jedis.get("event:evt_2")).thenReturn(e2Json);
+        lenient().when(jedis.get("event:evt_3")).thenReturn(e3Json);
 
         List<Event> result = repository.list("t1", null, null, null, null, null, null, null, 2);
 
@@ -472,9 +475,10 @@ class EventRepositoryTest {
         List<String> ids = List.of("evt_bad", "evt_good");
         when(jedis.zrevrangeByScore(eq("events:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
 
-        when(jedis.get("event:evt_bad")).thenReturn("{invalid json}");
         Event good = Event.builder().eventId("evt_good").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
-        when(jedis.get("event:evt_good")).thenReturn(objectMapper.writeValueAsString(good));
+        String goodJson = objectMapper.writeValueAsString(good);
+        when(jedis.get("event:evt_bad")).thenReturn("{invalid json}");
+        when(jedis.get("event:evt_good")).thenReturn(goodJson);
 
         List<Event> result = repository.list("t1", null, null, null, null, null, null, null, 50);
 

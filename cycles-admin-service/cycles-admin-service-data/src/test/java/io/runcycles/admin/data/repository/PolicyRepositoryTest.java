@@ -408,7 +408,8 @@ class PolicyRepositoryTest {
     @Test
     void getScopePattern_success_returnsScopePattern() throws Exception {
         Policy p = Policy.builder().policyId("pol_1").scopePattern("org/*").status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(jedis.get("policy:pol_1")).thenReturn(objectMapper.writeValueAsString(p));
+        String pJson = objectMapper.writeValueAsString(p);
+        when(jedis.get("policy:pol_1")).thenReturn(pJson);
 
         String result = repository.getScopePattern("pol_1");
 

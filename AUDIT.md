@@ -420,11 +420,11 @@ Notable additions since initial audit:
 | Module | Lines Covered | Lines Missed | Coverage |
 |---|---|---|---|
 | cycles-admin-service-api | 252 | 0 | **100.0%** |
-| cycles-admin-service-data | 518 | 3 | **99.4%** |
+| cycles-admin-service-data | 878 | 24 | **97.3%** |
 | cycles-admin-service-model | — | — | Skipped (pure data classes) |
 
 **JaCoCo enforcement threshold:** 95% minimum line coverage (BUNDLE level).
-All modules exceed the threshold. Overall effective coverage: **99.6%**.
+All modules exceed the threshold. Overall effective coverage: **98.7%**.
 
 ---
 
