@@ -37,3 +37,4 @@ replay_pid*
 /**/.vscode
 **/.flattened-pom.xml
 .claude/settings.local.json
+dump.rdb

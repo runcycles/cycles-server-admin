@@ -125,7 +125,7 @@ public class WebhookRepository {
             // Check tenant-specific subscriptions
             Set<String> tenantIds = jedis.smembers("webhooks:" + tenantId);
             // Also check system-wide subscriptions (tenantId = "_system")
-            Set<String> systemIds = jedis.smembers("webhooks:_system");
+            Set<String> systemIds = jedis.smembers("webhooks:__system__");
             Set<String> allIds = new HashSet<>();
             if (tenantIds != null) allIds.addAll(tenantIds);
             if (systemIds != null) allIds.addAll(systemIds);
