@@ -7,6 +7,9 @@ import io.runcycles.admin.model.tenant.TenantCreateRequest;
 import io.runcycles.admin.model.tenant.TenantListResponse;
 import io.runcycles.admin.model.tenant.TenantStatus;
 import io.runcycles.admin.model.tenant.TenantUpdateRequest;
+import io.runcycles.admin.api.service.EventService;
+import io.runcycles.admin.model.event.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -14,10 +17,14 @@ import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import java.util.List;
+import java.util.Map;
 @RestController @RequestMapping("/v1/admin/tenants") @Tag(name = "Tenants")
 public class TenantController {
     @Autowired private TenantRepository repository;
     @Autowired private AuditRepository auditRepository;
+    @Autowired private EventService eventService;
+    @Autowired private ObjectMapper objectMapper;
     @PostMapping @Operation(operationId = "createTenant")
     public ResponseEntity<Tenant> create(@Valid @RequestBody TenantCreateRequest request, HttpServletRequest httpRequest) {
         var result = repository.create(request);
@@ -27,6 +34,15 @@ public class TenantController {
             .operation("createTenant")
             .status(httpStatus)
             .build());
+        try {
+            eventService.emit(EventType.TENANT_CREATED, request.getTenantId(), null, "cycles-admin",
+                Actor.builder().type(ActorType.ADMIN).build(),
+                objectMapper.convertValue(EventDataTenantLifecycle.builder()
+                    .tenantId(request.getTenantId()).newStatus("ACTIVE").changedFields(List.of()).build(), Map.class),
+                null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
+        } catch (Exception e) {
+            // Non-blocking: don't break the business operation
+        }
         return ResponseEntity.status(httpStatus).body(result.tenant());
     }
     @GetMapping @Operation(operationId = "listTenants")
@@ -56,6 +72,26 @@ public class TenantController {
             .operation("updateTenant")
             .status(200)
             .build());
+        try {
+            EventType eventType = EventType.TENANT_UPDATED;
+            if (request.getStatus() != null) {
+                switch (request.getStatus()) {
+                    case SUSPENDED: eventType = EventType.TENANT_SUSPENDED; break;
+                    case ACTIVE: eventType = EventType.TENANT_REACTIVATED; break;
+                    case CLOSED: eventType = EventType.TENANT_CLOSED; break;
+                    default: break;
+                }
+            }
+            eventService.emit(eventType, tenantId, null, "cycles-admin",
+                Actor.builder().type(ActorType.ADMIN).build(),
+                objectMapper.convertValue(EventDataTenantLifecycle.builder()
+                    .tenantId(tenantId)
+                    .newStatus(updated.getStatus() != null ? updated.getStatus().name() : null)
+                    .changedFields(List.of()).build(), Map.class),
+                null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
+        } catch (Exception e) {
+            // Non-blocking: don't break the business operation
+        }
         return ResponseEntity.ok(updated);
     }
 
