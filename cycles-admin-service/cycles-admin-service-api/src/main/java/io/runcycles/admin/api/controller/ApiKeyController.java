@@ -33,6 +33,16 @@ public class ApiKeyController {
             .operation("createApiKey")
             .status(201)
             .build());
+        try {
+            eventService.emit(EventType.API_KEY_CREATED, request.getTenantId(), null, "cycles-admin",
+                Actor.builder().type(ActorType.ADMIN).build(),
+                objectMapper.convertValue(EventDataApiKey.builder()
+                    .keyId(response.getKeyId()).keyName(request.getName())
+                    .newStatus("ACTIVE").permissions(request.getPermissions()).build(), Map.class),
+                null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
+        } catch (Exception e) {
+            // Non-blocking: don't break the business operation
+        }
         return ResponseEntity.status(201).body(response);
     }
     @GetMapping @Operation(operationId = "listApiKeys")
@@ -60,6 +70,15 @@ public class ApiKeyController {
             .operation("revokeApiKey")
             .status(200)
             .build());
+        try {
+            eventService.emit(EventType.API_KEY_REVOKED, response.getTenantId(), null, "cycles-admin",
+                Actor.builder().type(ActorType.ADMIN).build(),
+                objectMapper.convertValue(EventDataApiKey.builder()
+                    .keyId(keyId).newStatus("REVOKED").failureReason(reason).build(), Map.class),
+                null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
+        } catch (Exception e) {
+            // Non-blocking: don't break the business operation
+        }
         return ResponseEntity.ok(response);
     }
 

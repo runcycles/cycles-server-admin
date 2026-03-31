@@ -32,6 +32,20 @@ Tenants restricted to `budget.*`, `reservation.*`, `tenant.*` event types (24 of
 
 **Status:** Spec only — server implementation pending.
 
+### 2026-03-31 — Pillar 4: Wire Event Emission into Existing Controllers
+
+Wired `EventService.emit()` calls into the 5 existing controllers so that state-changing operations produce events:
+
+- **TenantController**: `create()` emits `TENANT_CREATED`; `update()` emits `TENANT_UPDATED`, `TENANT_SUSPENDED`, `TENANT_REACTIVATED`, or `TENANT_CLOSED` based on status change
+- **BudgetController**: `create()` emits `BUDGET_CREATED`; `update()` emits `BUDGET_UPDATED`; `fund()` emits `BUDGET_FUNDED`, `BUDGET_DEBITED`, `BUDGET_RESET`, or `BUDGET_DEBT_REPAID` based on operation
+- **ApiKeyController**: `create()` emits `API_KEY_CREATED`; `revoke()` emits `API_KEY_REVOKED`
+- **PolicyController**: `create()` emits `POLICY_CREATED`; `update()` emits `POLICY_UPDATED`
+- **AuthController**: `validate()` emits `API_KEY_AUTH_FAILED` when validation returns `valid=false`
+
+All event emissions are fire-and-forget (wrapped in try-catch), same pattern as audit logging. Admin endpoints use `ActorType.ADMIN`; tenant-scoped endpoints use `ActorType.API_KEY` with `key_id` from request attributes. Event data uses typed builders (`EventDataTenantLifecycle`, `EventDataBudgetLifecycle`, `EventDataApiKey`, `EventDataPolicy`) converted to `Map` via `ObjectMapper.convertValue()`.
+
+---
+
 ### 2026-03-31 — Pillar 4: Controller Layer Implementation
 
 Implemented controller layer for Events & Webhooks (5 controllers, 1 AuthInterceptor update):
