@@ -36,3 +36,4 @@ replay_pid*
 /**/temp
 /**/.vscode
 **/.flattened-pom.xml
+.claude/settings.local.json

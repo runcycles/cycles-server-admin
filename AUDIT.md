@@ -1,8 +1,16 @@
 # Complete Budget Governance v0.1.24 — Admin Server Audit
 
-**Date:** 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Date:** 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** `complete-budget-governance-v0.1.24.yaml` (OpenAPI 3.1.0, v0.1.24)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-03-31 — Dynamic version in startup message
+- Removed all hardcoded `v0.1.24` from Java source and POM descriptions
+- Startup banner now reads version dynamically via `BuildProperties` bean (aligned with cycles-server's `StartupBanner` pattern)
+- Added `build-info` goal to `spring-boot-maven-plugin` to generate `META-INF/build-info.properties` at build time
+- Version is defined once in `cycles-admin-service/pom.xml` `<revision>` property — no code changes needed when bumping version
+- Bumped version to `0.1.24.2`
+
 **Runtime server audit:** See `cycles-server/AUDIT.md` (all passing)
 
 ---

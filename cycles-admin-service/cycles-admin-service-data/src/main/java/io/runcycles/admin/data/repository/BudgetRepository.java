@@ -14,7 +14,7 @@ import redis.clients.jedis.*;
 import java.time.Instant;
 import java.util.*;
 
-/** Budget Governance v0.1.24 - Fixed to use Redis HASH */
+/** Budget Governance - Fixed to use Redis HASH */
 @Repository
 public class BudgetRepository {
     private static final Logger LOG = LoggerFactory.getLogger(BudgetRepository.class);
