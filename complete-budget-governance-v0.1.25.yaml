@@ -620,7 +620,45 @@ components:
           type: string
         has_more:
           type: boolean
-    
+
+    ReservationTtlOverride:
+      type: object
+      additionalProperties: false
+      description: >-
+        TTL governance overrides for matching scopes.
+        Used in Policy and policy update operations.
+      properties:
+        default_ttl_ms:
+          type: integer
+          minimum: 1000
+          maximum: 86400000
+          description: Default TTL for reservations when not specified per-request
+        max_ttl_ms:
+          type: integer
+          minimum: 1000
+          maximum: 86400000
+          description: Maximum allowed TTL; requests exceeding this are capped
+        max_extensions:
+          type: integer
+          minimum: 0
+          description: Maximum TTL extensions per reservation
+
+    RateLimits:
+      type: object
+      additionalProperties: false
+      description: >-
+        Request rate limits per scope.
+        Used in Policy and policy update operations.
+      properties:
+        max_reservations_per_minute:
+          type: integer
+          minimum: 1
+          description: Maximum reserve requests per minute for matching scopes
+        max_commits_per_minute:
+          type: integer
+          minimum: 1
+          description: Maximum commit requests per minute for matching scopes
+
     # ========================================================================
     # PILLAR 2: AUTHENTICATION & AUTHORIZATION SCHEMAS
     # ========================================================================
@@ -892,6 +930,11 @@ components:
         - KEY_EXPIRED
         - DUPLICATE_RESOURCE
         - BUDGET_CLOSED
+        # Webhook & event governance codes
+        - WEBHOOK_NOT_FOUND
+        - WEBHOOK_URL_INVALID
+        - EVENT_NOT_FOUND
+        - REPLAY_IN_PROGRESS
     
     ErrorResponse:
       type: object
@@ -986,6 +1029,7 @@ components:
         - system.store_connection_restored # Backing store connection recovered
         - system.high_latency              # p99 operation latency exceeded threshold
         - system.webhook_delivery_failed   # Webhook delivery failed after all retries (meta-alert)
+        - system.webhook_test              # Synthetic test event (only via /test endpoint, never emitted by system)
 
     Event:
       type: object
@@ -2168,6 +2212,8 @@ paths:
       description: >-
         Update overdraft_limit, commit_overage_policy, or metadata on an existing budget.
         Recalculates is_over_limit after overdraft_limit changes.
+      security:
+        - AdminKeyAuth: []
       parameters:
         - name: scope
           in: query
