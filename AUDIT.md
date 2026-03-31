@@ -32,6 +32,27 @@ Tenants restricted to `budget.*`, `reservation.*`, `tenant.*` event types (24 of
 
 **Status:** Spec only — server implementation pending.
 
+### 2026-03-31 — Pillar 4: Controller Layer Implementation
+
+Implemented controller layer for Events & Webhooks (5 controllers, 1 AuthInterceptor update):
+
+**New controllers:**
+- `WebhookAdminController` — 8 admin endpoints at `/v1/admin/webhooks` (CRUD, test, deliveries, replay)
+- `WebhookTenantController` — 7 tenant-scoped endpoints at `/v1/webhooks` with ownership enforcement
+- `EventAdminController` — 2 admin endpoints at `/v1/admin/events` (list, get)
+- `EventTenantController` — 1 tenant-scoped endpoint at `/v1/events` (list, auto-scoped)
+- `WebhookSecurityConfigController` — 2 admin endpoints at `/v1/admin/config/webhook-security` (get, put)
+
+**AuthInterceptor update:**
+- Added `/v1/webhooks` and `/v1/events` to `requiresApiKey()` so tenant endpoints require API key authentication
+- Admin paths (`/v1/admin/webhooks`, `/v1/admin/events`, `/v1/admin/config`) and PERMISSION_MAP entries were already present
+
+**Design notes:**
+- Tenant controllers enforce ownership via `enforceTenantOwnership()` (returns 404, not 403, to avoid leaking existence)
+- Tenant webhook creation validates event types are tenant-accessible (budget.*, reservation.*, tenant.* only)
+- All write operations on admin webhook controller log to audit repository
+- Controllers delegate all business logic to service layer (`WebhookService`, `EventService`)
+
 ---
 
 ### 2026-03-31 — v0.1.25: Pillar 4 — Events & Webhooks (Observability Plane)
