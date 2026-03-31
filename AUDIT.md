@@ -32,6 +32,27 @@ Tenants restricted to `budget.*`, `reservation.*`, `tenant.*` event types (24 of
 
 **Status:** Spec only — server implementation pending.
 
+### 2026-03-31 — Pillar 4: Unit Tests for Service and Controller Layers
+
+Added 82 unit tests across 9 test files covering the Pillar 4 Events & Webhooks service and controller layers:
+
+**Service tests (4 files, 53 tests):**
+- `EventServiceTest` (14 tests) — emit auto-generates IDs/timestamps/category, non-blocking on failures, findById delegation, list pagination with limit clamping
+- `WebhookServiceTest` (17 tests) — create with auto-generated/provided signing secrets, get masks secrets/headers, partial update, delete, test, listByTenant/listAll with filtering, listDeliveries, replay
+- `WebhookDispatchServiceTest` (7 tests) — dispatch to matching subscriptions, delivery creation, non-blocking on failure, empty subscription list, consistent HMAC-SHA256 signing
+- `WebhookUrlValidatorTest` (15 tests) — null/blank/malformed URL rejection, HTTP/HTTPS scheme enforcement, private IP blocking, allowed URL pattern matching, glob wildcard tests
+
+**Controller tests (5 files, 29 tests):**
+- `WebhookAdminControllerTest` (10 tests) — all 8 admin webhook endpoints (POST 201, GET list/detail, PATCH, DELETE 204, POST test, GET deliveries, POST replay 202), auth enforcement, audit logging
+- `WebhookTenantControllerTest` (7 tests) — tenant-scoped create with valid/admin-only event types, ownership enforcement (own=200, other=404), delete, auth enforcement, list
+- `EventAdminControllerTest` (5 tests) — list with filters, get found/not found, auth enforcement
+- `EventTenantControllerTest` (3 tests) — auto-scoped to authenticated tenant, filters pass-through, auth enforcement
+- `WebhookSecurityConfigControllerTest` (4 tests) — get/update config, auth enforcement
+
+All tests follow existing project conventions: `@ExtendWith(MockitoExtension.class)` for services, `@WebMvcTest` with `@MockitoBean` for controllers.
+
+---
+
 ### 2026-03-31 — Pillar 4: Wire Event Emission into Existing Controllers
 
 Wired `EventService.emit()` calls into the 5 existing controllers so that state-changing operations produce events:
