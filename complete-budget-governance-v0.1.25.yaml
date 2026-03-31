@@ -47,6 +47,74 @@ info:
       - Split-plane: Separate admin/auth services from runtime enforcement
       - Federated: Multiple runtime enforcement instances, shared admin plane
 
+    CHANGELOG:
+      v0.1.25 (2026-03-31):
+        - Added Pillar 4: Events & Webhooks (Observability Plane).
+        - Added 29 new schemas:
+            * Core event model: EventCategory, EventType (40 types across 6 categories), Event.
+            * Event data payloads (13 schemas): EventDataBudgetLifecycle, EventDataBudgetThreshold,
+              EventDataBudgetOverLimit, EventDataBudgetDebtIncurred, EventDataBurnRateAnomaly,
+              EventDataReservationDenied, EventDataReservationExpired, EventDataRateSpike,
+              EventDataCommitOverage, EventDataTenantLifecycle, EventDataApiKey, EventDataPolicy,
+              EventDataSystem.
+            * Webhook management (13 schemas): WebhookSubscription, WebhookThresholdConfig,
+              WebhookRetryPolicy, WebhookCreateRequest, WebhookCreateResponse, WebhookUpdateRequest,
+              WebhookListResponse, WebhookDelivery, WebhookDeliveryListResponse, WebhookTestResponse,
+              EventListResponse.
+            * Missing schemas from v0.1.24 (2): ReservationTtlOverride, RateLimits (were referenced
+              by PATCH /v1/admin/policies/{policy_id} but never defined).
+        - Added 7 new paths (10 operations):
+            * POST   /v1/admin/webhooks — Create webhook subscription
+            * GET    /v1/admin/webhooks — List webhook subscriptions
+            * GET    /v1/admin/webhooks/{subscription_id} — Get subscription details
+            * PATCH  /v1/admin/webhooks/{subscription_id} — Update subscription
+            * DELETE /v1/admin/webhooks/{subscription_id} — Delete subscription
+            * POST   /v1/admin/webhooks/{subscription_id}/test — Send test event
+            * GET    /v1/admin/webhooks/{subscription_id}/deliveries — List delivery attempts
+            * GET    /v1/admin/events — Query event stream
+            * GET    /v1/admin/events/{event_id} — Get single event
+            * POST   /v1/admin/webhooks/{subscription_id}/replay — Replay historical events
+        - Added 40 event types across 6 categories:
+            * budget (15): created, updated, funded, debited, reset, debt_repaid, frozen, unfrozen,
+              closed, threshold_crossed, exhausted, over_limit_entered, over_limit_exited,
+              debt_incurred, burn_rate_anomaly.
+            * reservation (5): denied, denial_rate_spike, expired, expiry_rate_spike, commit_overage.
+            * tenant (6): created, updated, suspended, reactivated, closed, settings_changed.
+            * api_key (6): created, revoked, expired, permissions_changed, auth_failed,
+              auth_failure_rate_spike.
+            * policy (3): created, updated, deleted.
+            * system (5): store_connection_lost, store_connection_restored, high_latency,
+              webhook_delivery_failed, webhook_test.
+        - Added 4 new ErrorCode values: WEBHOOK_NOT_FOUND, WEBHOOK_URL_INVALID, EVENT_NOT_FOUND,
+          REPLAY_IN_PROGRESS.
+        - Added Webhooks and Events tags for Pillar 4 endpoints.
+        - Design decisions:
+            * Implementation-agnostic naming (system.store_* not system.redis_*).
+            * Extensible event types: consumers MUST ignore unrecognized types; custom.* prefix reserved.
+            * Category-level wildcard subscriptions (e.g., subscribe to all budget.* including future types).
+            * At-least-once delivery semantics with event_id for consumer deduplication.
+            * HMAC-SHA256 payload signing via X-Cycles-Signature header.
+            * Auto-disable after consecutive failures with manual re-enable via PATCH.
+        - Bug fixes (pre-existing in v0.1.24):
+            * Added missing security block (AdminKeyAuth) to PATCH /v1/admin/budgets.
+            * Fixed 3 broken $refs using #/components/responses/ErrorResponse (should be inline
+              response definitions): PATCH /v1/admin/budgets 404/409, PATCH /v1/admin/policies 404.
+            * Added missing ReservationTtlOverride and RateLimits schemas (referenced by
+              PATCH /v1/admin/policies/{policy_id} but never defined).
+        - Backward compatibility: All changes are purely additive. No schemas, paths, methods,
+          fields, enum values, or response codes were removed. Clients built against v0.1.24
+          work unchanged against v0.1.25.
+
+      v0.1.24 (2026-03-24):
+        - Initial release of the Complete Budget Governance System API.
+        - Three integrated pillars: Tenant & Budget Management, Authentication &
+          Authorization, Runtime Enforcement.
+        - 25 schemas, 13 paths, 19 operations.
+        - Aligned with Cycles Protocol v0.1.24 for runtime enforcement schemas.
+        - Tenant lifecycle (ACTIVE/SUSPENDED/CLOSED), budget ledgers with overdraft,
+          policy-based caps and rate limits, API key provisioning with permissions,
+          audit logging, cursor-based pagination.
+
 servers:
   - url: https://api.budget-governance.local
     description: Default server
