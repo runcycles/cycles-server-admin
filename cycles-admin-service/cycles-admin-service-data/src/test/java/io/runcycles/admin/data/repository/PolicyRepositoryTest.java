@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.policy.*;
-import io.runcycles.admin.model.shared.Caps;
+import io.runcycles.admin.model.shared.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;

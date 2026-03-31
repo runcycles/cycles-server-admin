@@ -363,6 +363,240 @@ class WebhookRepositoryTest {
     }
 
     @Test
+    void findMatchingSubscriptions_includesSystemSubscriptions() throws Exception {
+        when(jedis.smembers("webhooks:t1")).thenReturn(Set.of());
+        Set<String> systemIds = new LinkedHashSet<>(List.of("whsub_sys1"));
+        when(jedis.smembers("webhooks:_system")).thenReturn(systemIds);
+
+        WebhookSubscription sysSub = WebhookSubscription.builder()
+                .subscriptionId("whsub_sys1").tenantId("_system").url("https://system.example.com")
+                .status(WebhookStatus.ACTIVE)
+                .eventTypes(List.of(EventType.TENANT_CREATED))
+                .createdAt(Instant.now()).consecutiveFailures(0).build();
+        String sysJson = objectMapper.writeValueAsString(sysSub);
+        when(jedis.get("webhook:whsub_sys1")).thenReturn(sysJson);
+
+        List<WebhookSubscription> result = repository.findMatchingSubscriptions("t1", EventType.TENANT_CREATED, null);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getTenantId()).isEqualTo("_system");
+    }
+
+    @Test
+    void findMatchingSubscriptions_wildcardScopeFilter_matchesAll() throws Exception {
+        Set<String> tenantIds = new LinkedHashSet<>(List.of("whsub_1"));
+        when(jedis.smembers("webhooks:t1")).thenReturn(tenantIds);
+        when(jedis.smembers("webhooks:_system")).thenReturn(Set.of());
+
+        WebhookSubscription sub = WebhookSubscription.builder()
+                .subscriptionId("whsub_1").tenantId("t1").url("https://a.com")
+                .status(WebhookStatus.ACTIVE)
+                .eventTypes(List.of(EventType.BUDGET_CREATED))
+                .scopeFilter("*")
+                .createdAt(Instant.now()).consecutiveFailures(0).build();
+        String subJson = objectMapper.writeValueAsString(sub);
+        when(jedis.get("webhook:whsub_1")).thenReturn(subJson);
+
+        List<WebhookSubscription> result = repository.findMatchingSubscriptions("t1", EventType.BUDGET_CREATED, "any/scope/here");
+
+        assertThat(result).hasSize(1);
+    }
+
+    @Test
+    void findMatchingSubscriptions_missingData_skipsGracefully() throws Exception {
+        Set<String> tenantIds = new LinkedHashSet<>(List.of("whsub_gone", "whsub_ok"));
+        when(jedis.smembers("webhooks:t1")).thenReturn(tenantIds);
+        when(jedis.smembers("webhooks:_system")).thenReturn(Set.of());
+
+        when(jedis.get("webhook:whsub_gone")).thenReturn(null);
+        WebhookSubscription sub = WebhookSubscription.builder()
+                .subscriptionId("whsub_ok").tenantId("t1").url("https://a.com")
+                .status(WebhookStatus.ACTIVE)
+                .eventTypes(List.of(EventType.BUDGET_CREATED))
+                .createdAt(Instant.now()).consecutiveFailures(0).build();
+        when(jedis.get("webhook:whsub_ok")).thenReturn(objectMapper.writeValueAsString(sub));
+
+        List<WebhookSubscription> result = repository.findMatchingSubscriptions("t1", EventType.BUDGET_CREATED, null);
+
+        assertThat(result).hasSize(1);
+    }
+
+    @Test
+    void findMatchingSubscriptions_eventTypeNotMatched_excluded() throws Exception {
+        Set<String> tenantIds = new LinkedHashSet<>(List.of("whsub_1"));
+        when(jedis.smembers("webhooks:t1")).thenReturn(tenantIds);
+        when(jedis.smembers("webhooks:_system")).thenReturn(Set.of());
+
+        WebhookSubscription sub = WebhookSubscription.builder()
+                .subscriptionId("whsub_1").tenantId("t1").url("https://a.com")
+                .status(WebhookStatus.ACTIVE)
+                .eventTypes(List.of(EventType.BUDGET_CREATED))
+                .createdAt(Instant.now()).consecutiveFailures(0).build();
+        when(jedis.get("webhook:whsub_1")).thenReturn(objectMapper.writeValueAsString(sub));
+
+        List<WebhookSubscription> result = repository.findMatchingSubscriptions("t1", EventType.TENANT_CREATED, null);
+
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    void findMatchingSubscriptions_nullScopeWithScopeFilter_matches() throws Exception {
+        Set<String> tenantIds = new LinkedHashSet<>(List.of("whsub_1"));
+        when(jedis.smembers("webhooks:t1")).thenReturn(tenantIds);
+        when(jedis.smembers("webhooks:_system")).thenReturn(Set.of());
+
+        WebhookSubscription sub = WebhookSubscription.builder()
+                .subscriptionId("whsub_1").tenantId("t1").url("https://a.com")
+                .status(WebhookStatus.ACTIVE)
+                .eventTypes(List.of(EventType.BUDGET_CREATED))
+                .scopeFilter("org/eng")
+                .createdAt(Instant.now()).consecutiveFailures(0).build();
+        when(jedis.get("webhook:whsub_1")).thenReturn(objectMapper.writeValueAsString(sub));
+
+        // null scope should match (matchesScope returns true when scope is null)
+        List<WebhookSubscription> result = repository.findMatchingSubscriptions("t1", EventType.BUDGET_CREATED, null);
+
+        assertThat(result).hasSize(1);
+    }
+
+    @Test
+    void findMatchingSubscriptions_blankScopeFilter_matchesAll() throws Exception {
+        Set<String> tenantIds = new LinkedHashSet<>(List.of("whsub_1"));
+        when(jedis.smembers("webhooks:t1")).thenReturn(tenantIds);
+        when(jedis.smembers("webhooks:_system")).thenReturn(Set.of());
+
+        WebhookSubscription sub = WebhookSubscription.builder()
+                .subscriptionId("whsub_1").tenantId("t1").url("https://a.com")
+                .status(WebhookStatus.ACTIVE)
+                .eventTypes(List.of(EventType.BUDGET_CREATED))
+                .scopeFilter("   ")
+                .createdAt(Instant.now()).consecutiveFailures(0).build();
+        when(jedis.get("webhook:whsub_1")).thenReturn(objectMapper.writeValueAsString(sub));
+
+        List<WebhookSubscription> result = repository.findMatchingSubscriptions("t1", EventType.BUDGET_CREATED, "any/scope");
+
+        assertThat(result).hasSize(1);
+    }
+
+    @Test
+    void listByTenant_withCursor_skipsIdsUpToCursor() throws Exception {
+        Set<String> ids = new LinkedHashSet<>(List.of("whsub_1", "whsub_2", "whsub_3"));
+        when(jedis.smembers("webhooks:t1")).thenReturn(ids);
+
+        WebhookSubscription s2 = WebhookSubscription.builder().subscriptionId("whsub_2").tenantId("t1").url("https://b.com").status(WebhookStatus.ACTIVE).eventTypes(List.of(EventType.TENANT_CREATED)).createdAt(Instant.now()).consecutiveFailures(0).build();
+        WebhookSubscription s3 = WebhookSubscription.builder().subscriptionId("whsub_3").tenantId("t1").url("https://c.com").status(WebhookStatus.ACTIVE).eventTypes(List.of(EventType.BUDGET_CREATED)).createdAt(Instant.now()).consecutiveFailures(0).build();
+        when(jedis.get("webhook:whsub_2")).thenReturn(objectMapper.writeValueAsString(s2));
+        when(jedis.get("webhook:whsub_3")).thenReturn(objectMapper.writeValueAsString(s3));
+
+        List<WebhookSubscription> result = repository.listByTenant("t1", null, null, "whsub_1", 50);
+
+        assertThat(result).hasSize(2);
+        assertThat(result.get(0).getSubscriptionId()).isEqualTo("whsub_2");
+    }
+
+    @Test
+    void listAll_filtersByStatusAndEventType() throws Exception {
+        Set<String> ids = new LinkedHashSet<>(List.of("whsub_1", "whsub_2"));
+        when(jedis.smembers("webhooks:_all")).thenReturn(ids);
+
+        WebhookSubscription s1 = WebhookSubscription.builder().subscriptionId("whsub_1").tenantId("t1").url("https://a.com").status(WebhookStatus.ACTIVE).eventTypes(List.of(EventType.TENANT_CREATED)).createdAt(Instant.now()).consecutiveFailures(0).build();
+        WebhookSubscription s2 = WebhookSubscription.builder().subscriptionId("whsub_2").tenantId("t1").url("https://b.com").status(WebhookStatus.ACTIVE).eventTypes(List.of(EventType.BUDGET_CREATED)).createdAt(Instant.now()).consecutiveFailures(0).build();
+        when(jedis.get("webhook:whsub_1")).thenReturn(objectMapper.writeValueAsString(s1));
+        when(jedis.get("webhook:whsub_2")).thenReturn(objectMapper.writeValueAsString(s2));
+
+        List<WebhookSubscription> result = repository.listAll("ACTIVE", "tenant.created", null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getSubscriptionId()).isEqualTo("whsub_1");
+    }
+
+    @Test
+    void listAll_nullSmembers_returnsEmpty() {
+        when(jedis.smembers("webhooks:_all")).thenReturn(null);
+
+        List<WebhookSubscription> result = repository.listAll(null, null, null, 50);
+
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    void listFromSet_missingData_skipsGracefully() throws Exception {
+        Set<String> ids = new LinkedHashSet<>(List.of("whsub_gone", "whsub_ok"));
+        when(jedis.smembers("webhooks:t1")).thenReturn(ids);
+
+        when(jedis.get("webhook:whsub_gone")).thenReturn(null);
+        WebhookSubscription s = WebhookSubscription.builder().subscriptionId("whsub_ok").tenantId("t1").url("https://a.com").status(WebhookStatus.ACTIVE).eventTypes(List.of(EventType.TENANT_CREATED)).createdAt(Instant.now()).consecutiveFailures(0).build();
+        when(jedis.get("webhook:whsub_ok")).thenReturn(objectMapper.writeValueAsString(s));
+
+        List<WebhookSubscription> result = repository.listByTenant("t1", null, null, null, 50);
+
+        assertThat(result).hasSize(1);
+    }
+
+    @Test
+    void listFromSet_respectsLimit() throws Exception {
+        Set<String> ids = new LinkedHashSet<>(List.of("whsub_1", "whsub_2", "whsub_3"));
+        when(jedis.smembers("webhooks:t1")).thenReturn(ids);
+
+        WebhookSubscription s1 = WebhookSubscription.builder().subscriptionId("whsub_1").tenantId("t1").url("https://a.com").status(WebhookStatus.ACTIVE).eventTypes(List.of(EventType.TENANT_CREATED)).createdAt(Instant.now()).consecutiveFailures(0).build();
+        when(jedis.get("webhook:whsub_1")).thenReturn(objectMapper.writeValueAsString(s1));
+
+        List<WebhookSubscription> result = repository.listByTenant("t1", null, null, null, 1);
+
+        assertThat(result).hasSize(1);
+    }
+
+    @Test
+    void save_redisException_throwsRuntimeException() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
+
+        WebhookSubscription sub = WebhookSubscription.builder()
+                .tenantId("t1")
+                .url("https://example.com/hook")
+                .eventTypes(List.of(EventType.TENANT_CREATED))
+                .build();
+
+        assertThatThrownBy(() -> repository.save(sub))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Failed to save webhook");
+    }
+
+    @Test
+    void update_redisException_throwsRuntimeException() {
+        when(jedis.set(anyString(), anyString())).thenThrow(new RuntimeException("Redis down"));
+
+        WebhookSubscription sub = WebhookSubscription.builder()
+                .subscriptionId("whsub_1").tenantId("t1").url("https://a.com")
+                .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).consecutiveFailures(0).build();
+
+        assertThatThrownBy(() -> repository.update("whsub_1", sub))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Failed to update webhook");
+    }
+
+    @Test
+    void delete_redisException_throwsRuntimeException() throws Exception {
+        WebhookSubscription sub = WebhookSubscription.builder()
+                .subscriptionId("whsub_1").tenantId("t1").url("https://a.com")
+                .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).consecutiveFailures(0).build();
+        when(jedis.get("webhook:whsub_1")).thenReturn(objectMapper.writeValueAsString(sub));
+        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
+
+        assertThatThrownBy(() -> repository.delete("whsub_1"))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Failed to delete webhook");
+    }
+
+    @Test
+    void findById_redisException_throwsRuntimeException() {
+        when(jedis.get("webhook:whsub_err")).thenThrow(new RuntimeException("Redis down"));
+
+        assertThatThrownBy(() -> repository.findById("whsub_err"))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Failed to find webhook");
+    }
+
+    @Test
     void findMatchingSubscriptions_wildcardSubscription_matchesAllEvents() throws Exception {
         Set<String> tenantIds = new LinkedHashSet<>(List.of("whsub_1"));
         when(jedis.smembers("webhooks:t1")).thenReturn(tenantIds);
