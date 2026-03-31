@@ -124,6 +124,118 @@ class WebhookTenantControllerTest {
     }
 
     @Test
+    void updateWebhook_ownWebhook_returns200() throws Exception {
+        setupApiKeyAuth();
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(sub);
+        WebhookSubscription updated = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh2")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/webhooks/whsub_1")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://example.com/wh2\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subscription_id").value("whsub_1"));
+    }
+
+    @Test
+    void updateWebhook_withAdminOnlyEventType_returns400() throws Exception {
+        setupApiKeyAuth();
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(sub);
+
+        mockMvc.perform(patch("/v1/webhooks/whsub_1")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"event_types\":[\"api_key.created\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("WEBHOOK_URL_INVALID"));
+    }
+
+    @Test
+    void updateWebhook_otherTenantWebhook_returns404() throws Exception {
+        setupApiKeyAuth();
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_other").tenantId("t2").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_other")).thenReturn(sub);
+
+        mockMvc.perform(patch("/v1/webhooks/whsub_other")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://example.com/wh2\"}"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void testWebhook_ownWebhook_returns200() throws Exception {
+        setupApiKeyAuth();
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(sub);
+        WebhookTestResponse testResponse = WebhookTestResponse.builder()
+            .success(true).responseStatus(200).build();
+        when(webhookService.test("whsub_1")).thenReturn(testResponse);
+
+        mockMvc.perform(post("/v1/webhooks/whsub_1/test")
+                        .header("X-Cycles-API-Key", "valid-api-key"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
+    }
+
+    @Test
+    void testWebhook_otherTenantWebhook_returns404() throws Exception {
+        setupApiKeyAuth();
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_other").tenantId("t2").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_other")).thenReturn(sub);
+
+        mockMvc.perform(post("/v1/webhooks/whsub_other/test")
+                        .header("X-Cycles-API-Key", "valid-api-key"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void listDeliveries_ownWebhook_returns200() throws Exception {
+        setupApiKeyAuth();
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(sub);
+        WebhookDeliveryListResponse deliveries = WebhookDeliveryListResponse.builder()
+            .deliveries(List.of()).hasMore(false).build();
+        when(webhookService.listDeliveries(eq("whsub_1"), any(), any(), any(), any(), anyInt()))
+            .thenReturn(deliveries);
+
+        mockMvc.perform(get("/v1/webhooks/whsub_1/deliveries")
+                        .header("X-Cycles-API-Key", "valid-api-key"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.deliveries").isArray());
+    }
+
+    @Test
+    void listDeliveries_otherTenantWebhook_returns404() throws Exception {
+        setupApiKeyAuth();
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_other").tenantId("t2").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_other")).thenReturn(sub);
+
+        mockMvc.perform(get("/v1/webhooks/whsub_other/deliveries")
+                        .header("X-Cycles-API-Key", "valid-api-key"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
     void listWebhooks_returns200() throws Exception {
         setupApiKeyAuth();
         WebhookListResponse response = WebhookListResponse.builder()

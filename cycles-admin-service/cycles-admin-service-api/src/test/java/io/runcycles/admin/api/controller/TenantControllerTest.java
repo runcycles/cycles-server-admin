@@ -1,10 +1,12 @@
 package io.runcycles.admin.api.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.data.repository.TenantRepository;
+import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.CommitOveragePolicy;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.tenant.*;
@@ -33,6 +35,7 @@ class TenantControllerTest {
     @MockitoBean private AuditRepository auditRepository;
     @MockitoBean private ApiKeyRepository apiKeyRepository;
     @MockitoBean private JedisPool jedisPool;
+    @MockitoBean private EventService eventService;
 
     private static final String ADMIN_KEY = "test-admin-key";
 
@@ -414,6 +417,81 @@ class TenantControllerTest {
                 .andExpect(status().isOk());
 
         verify(tenantRepository).list(any(), any(), eq("t-cursor"), anyInt());
+    }
+
+    @Test
+    void createTenant_emitsEvent() throws Exception {
+        Tenant tenant = Tenant.builder()
+                .tenantId("new-tenant").name("New").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(tenantRepository.create(any())).thenReturn(new TenantRepository.TenantCreateResult(tenant, true));
+
+        mockMvc.perform(post("/v1/admin/tenants")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tenant_id\":\"new-tenant\",\"name\":\"New\"}"))
+                .andExpect(status().isCreated());
+
+        verify(eventService).emit(eq(EventType.TENANT_CREATED), eq("new-tenant"), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void updateTenant_emitsEvent() throws Exception {
+        Tenant updated = Tenant.builder()
+                .tenantId("t1").name("Updated").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("t1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/tenants/t1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Updated\"}"))
+                .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(EventType.TENANT_UPDATED), eq("t1"), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void updateTenant_withSuspendedStatus_emitsSuspendedEvent() throws Exception {
+        Tenant updated = Tenant.builder()
+                .tenantId("t1").name("Test").status(TenantStatus.SUSPENDED).createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("t1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/tenants/t1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"SUSPENDED\"}"))
+                .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(EventType.TENANT_SUSPENDED), eq("t1"), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void updateTenant_withClosedStatus_emitsClosedEvent() throws Exception {
+        Tenant updated = Tenant.builder()
+                .tenantId("t1").name("Test").status(TenantStatus.CLOSED).createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("t1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/tenants/t1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"CLOSED\"}"))
+                .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(EventType.TENANT_CLOSED), eq("t1"), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void updateTenant_withActiveStatus_emitsReactivatedEvent() throws Exception {
+        Tenant updated = Tenant.builder()
+                .tenantId("t1").name("Test").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("t1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/tenants/t1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"ACTIVE\"}"))
+                .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(EventType.TENANT_REACTIVATED), eq("t1"), any(), any(), any(), any(), any(), any());
     }
 
     // ========== Tenant TTL update fields ==========
