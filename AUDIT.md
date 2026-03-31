@@ -4,6 +4,68 @@
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
+### 2026-03-31 — v0.1.25: Pillar 4 Implementation Complete
+
+Full server-side implementation of Events & Webhooks (Observability Plane).
+
+**Build verification:**
+- 304 unit tests, 0 failures
+- Data module: 97.3% line coverage
+- API module: 96.4% line coverage
+- Model module: 100% class coverage
+- All JaCoCo thresholds met (95% minimum)
+
+**New source files (50+):**
+
+*Model layer (35 files):*
+- `model/event/`: EventCategory, EventType (40 values), ActorType, SystemSeverity, Actor, Event, EventListResponse, 13 EventData* payload classes
+- `model/webhook/`: WebhookStatus, DeliveryStatus, WebhookRetryPolicy, WebhookThresholdConfig, WebhookSubscription, WebhookCreateRequest/Response, WebhookUpdateRequest, WebhookListResponse, WebhookDelivery, WebhookDeliveryListResponse, WebhookTestResponse, WebhookSecurityConfig, ReplayRequest/Response
+- `model/shared/ErrorCode`: +4 values (WEBHOOK_NOT_FOUND, WEBHOOK_URL_INVALID, EVENT_NOT_FOUND, REPLAY_IN_PROGRESS)
+
+*Repository layer (4 files + GovernanceException):*
+- EventRepository: ZSET-indexed events with cursor pagination, Lua script for atomic save
+- WebhookRepository: SET-indexed subscriptions, subscription matching for dispatch
+- WebhookDeliveryRepository: ZSET-indexed deliveries per subscription
+- WebhookSecurityConfigRepository: server-level URL policy
+- GovernanceException: +4 factory methods
+
+*Service layer (4 files):*
+- EventService: non-blocking event emission with webhook dispatch
+- WebhookService: subscription CRUD, signing secret management, delivery listing
+- WebhookDispatchService: subscription matching, HMAC-SHA256 signing, delivery creation
+- WebhookUrlValidator: SSRF prevention with CIDR blocking and URL pattern matching
+
+*Controller layer (5 new + 1 modified):*
+- WebhookAdminController: 8 admin operations at /v1/admin/webhooks
+- WebhookTenantController: 7 tenant-scoped operations at /v1/webhooks
+- EventAdminController: 2 admin operations at /v1/admin/events
+- EventTenantController: 1 tenant-scoped operation at /v1/events
+- WebhookSecurityConfigController: 2 operations at /v1/admin/config/webhook-security
+- AuthInterceptor: updated with new route registrations and permission mappings
+
+*Event emission wiring (5 existing controllers modified):*
+- TenantController: tenant.created/updated/suspended/reactivated/closed
+- BudgetController: budget.created/updated/funded/debited/reset/debt_repaid
+- ApiKeyController: api_key.created/revoked
+- PolicyController: policy.created/updated
+- AuthController: api_key.auth_failed
+
+*Test files (15 new):*
+- Repository: EventRepositoryTest, WebhookRepositoryTest, WebhookDeliveryRepositoryTest, WebhookSecurityConfigRepositoryTest
+- Model: EventModelTest, WebhookModelTest
+- Service: EventServiceTest, WebhookServiceTest, WebhookDispatchServiceTest, WebhookUrlValidatorTest
+- Controller: WebhookAdminControllerTest, WebhookTenantControllerTest, EventAdminControllerTest, EventTenantControllerTest, WebhookSecurityConfigControllerTest
+
+*Redis data model (new keys):*
+- `event:{eventId}` → String, `events:{tenantId}` → ZSET, `events:_all` → ZSET
+- `webhook:{subscriptionId}` → String, `webhooks:{tenantId}` → SET, `webhooks:_all` → SET
+- `delivery:{deliveryId}` → String, `deliveries:{subscriptionId}` → ZSET
+- `config:webhook-security` → String, `events:correlation:{correlationId}` → SET
+
+*Spec:* 55 schemas, 26 paths, 39 operations, 40 event types, 23 permissions, 27 error codes. Backward compatible with v0.1.24.
+
+---
+
 ### 2026-03-31 — v0.1.25: Webhook Security Features
 
 Added three webhook security features to the admin API spec:

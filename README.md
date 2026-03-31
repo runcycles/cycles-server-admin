@@ -130,6 +130,44 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 | `POST` | `/v1/reservations/{reservation_id}/commit` | Commit actual spend | ApiKey |
 | `GET` | `/v1/balances` | Query budget balances | ApiKey |
 
+### Pillar 4: Events & Webhooks (v0.1.25)
+
+**Admin webhook management** (`X-Admin-API-Key`):
+
+| Method | Path | Operation | Auth |
+|--------|------|-----------|------|
+| `POST` | `/v1/admin/webhooks` | Create webhook subscription | Admin |
+| `GET` | `/v1/admin/webhooks` | List subscriptions | Admin |
+| `GET` | `/v1/admin/webhooks/{id}` | Get subscription | Admin |
+| `PATCH` | `/v1/admin/webhooks/{id}` | Update subscription | Admin |
+| `DELETE` | `/v1/admin/webhooks/{id}` | Delete subscription | Admin |
+| `POST` | `/v1/admin/webhooks/{id}/test` | Test webhook | Admin |
+| `GET` | `/v1/admin/webhooks/{id}/deliveries` | List deliveries | Admin |
+| `POST` | `/v1/admin/webhooks/{id}/replay` | Replay events | Admin |
+| `GET` | `/v1/admin/events` | Query events | Admin |
+| `GET` | `/v1/admin/events/{id}` | Get event | Admin |
+| `GET` | `/v1/admin/config/webhook-security` | Get URL policy | Admin |
+| `PUT` | `/v1/admin/config/webhook-security` | Update URL policy | Admin |
+
+**Tenant self-service** (`X-Cycles-API-Key`, requires `webhooks:read/write` or `events:read`):
+
+| Method | Path | Operation | Auth |
+|--------|------|-----------|------|
+| `POST` | `/v1/webhooks` | Create tenant webhook | ApiKey |
+| `GET` | `/v1/webhooks` | List tenant webhooks | ApiKey |
+| `GET` | `/v1/webhooks/{id}` | Get tenant webhook | ApiKey |
+| `PATCH` | `/v1/webhooks/{id}` | Update tenant webhook | ApiKey |
+| `DELETE` | `/v1/webhooks/{id}` | Delete tenant webhook | ApiKey |
+| `POST` | `/v1/webhooks/{id}/test` | Test tenant webhook | ApiKey |
+| `GET` | `/v1/webhooks/{id}/deliveries` | List tenant deliveries | ApiKey |
+| `GET` | `/v1/events` | Query tenant events | ApiKey |
+
+Tenants can subscribe to `budget.*`, `reservation.*`, `tenant.*` (24 of 40 event types). Admin-only: `api_key.*`, `policy.*`, `system.*`.
+
+**40 event types** across 6 categories: budget (15), reservation (5), tenant (6), api_key (6), policy (3), system (5).
+
+**Webhook features:** HMAC-SHA256 signing, at-least-once delivery, exponential backoff retry, auto-disable on consecutive failures, event replay, SSRF prevention (private IP blocking by default).
+
 ## Core Concepts
 
 ### Tenants
