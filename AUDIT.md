@@ -1,8 +1,50 @@
-# Complete Budget Governance v0.1.24 — Admin Server Audit
+# Complete Budget Governance v0.1.25 — Admin Server Audit
 
-**Date:** 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
-**Spec:** `complete-budget-governance-v0.1.24.yaml` (OpenAPI 3.1.0, v0.1.24)
+**Date:** 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-03-31 — v0.1.25: Pillar 4 — Events & Webhooks (Observability Plane)
+
+Added a fourth pillar to the admin API spec: **Events & Webhooks**.
+
+**New event type taxonomy (39 event types across 6 categories):**
+- `budget.*` (15 types): lifecycle (created, funded, debited, reset, debt_repaid, frozen, unfrozen, closed, updated), runtime (threshold_crossed, exhausted, over_limit_entered/exited, debt_incurred, burn_rate_anomaly)
+- `reservation.*` (5 types): denied, denial_rate_spike, expired, expiry_rate_spike, commit_overage
+- `tenant.*` (6 types): created, updated, suspended, reactivated, closed, settings_changed
+- `api_key.*` (6 types): created, revoked, expired, permissions_changed, auth_failed, auth_failure_rate_spike
+- `policy.*` (3 types): created, updated, deleted
+- `system.*` (4 types): store_connection_lost, store_connection_restored, high_latency, webhook_delivery_failed
+
+**New schemas (27):**
+- Core: `EventCategory`, `EventType`, `Event`
+- Event data payloads (11): `EventDataBudgetLifecycle`, `EventDataBudgetThreshold`, `EventDataBudgetOverLimit`, `EventDataBudgetDebtIncurred`, `EventDataBurnRateAnomaly`, `EventDataReservationDenied`, `EventDataReservationExpired`, `EventDataRateSpike`, `EventDataCommitOverage`, `EventDataTenantLifecycle`, `EventDataApiKey`, `EventDataPolicy`, `EventDataSystem`
+- Webhook management (11): `WebhookSubscription`, `WebhookThresholdConfig`, `WebhookRetryPolicy`, `WebhookCreateRequest`, `WebhookCreateResponse`, `WebhookUpdateRequest`, `WebhookListResponse`, `WebhookDelivery`, `WebhookDeliveryListResponse`, `WebhookTestResponse`, `EventListResponse`
+
+**New endpoints (10 operations across 7 paths):**
+- `POST /v1/admin/webhooks` — Create webhook subscription
+- `GET /v1/admin/webhooks` — List webhook subscriptions
+- `GET /v1/admin/webhooks/{subscription_id}` — Get subscription details
+- `PATCH /v1/admin/webhooks/{subscription_id}` — Update subscription
+- `DELETE /v1/admin/webhooks/{subscription_id}` — Delete subscription
+- `POST /v1/admin/webhooks/{subscription_id}/test` — Send test event
+- `GET /v1/admin/webhooks/{subscription_id}/deliveries` — List delivery attempts
+- `GET /v1/admin/events` — Query event stream
+- `GET /v1/admin/events/{event_id}` — Get single event
+- `POST /v1/admin/webhooks/{subscription_id}/replay` — Replay historical events
+
+**Design decisions:**
+- Implementation-agnostic naming: `system.store_connection_lost` (not `redis_connection_lost`)
+- Extensible event types: consumers MUST ignore unrecognized types; custom prefix `custom.*` reserved
+- At-least-once delivery with deduplication via `event_id`
+- Category-level wildcard subscriptions (e.g., subscribe to all `budget.*` including future types)
+- Configurable thresholds per subscription (utilization %, burn rate multiplier, denial/expiry rate)
+- HMAC-SHA256 payload signing with `X-Cycles-Signature` header
+- Auto-disable after consecutive failures with manual re-enable via PATCH
+
+**Status:** Spec only — server implementation pending.
+
+---
 
 ### 2026-03-31 — Dynamic version in startup message
 - Removed all hardcoded `v0.1.24` from Java source and POM descriptions
