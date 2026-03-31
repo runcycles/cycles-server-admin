@@ -7,6 +7,9 @@ import io.runcycles.admin.model.auth.ApiKeyCreateResponse;
 import io.runcycles.admin.model.auth.ApiKeyListResponse;
 import io.runcycles.admin.model.auth.ApiKeyResponse;
 import io.runcycles.admin.model.auth.ApiKeyStatus;
+import io.runcycles.admin.api.service.EventService;
+import io.runcycles.admin.model.event.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -14,11 +17,14 @@ import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import java.util.Map;
 import java.util.stream.Collectors;
 @RestController @RequestMapping("/v1/admin/api-keys") @Tag(name = "API Keys")
 public class ApiKeyController {
     @Autowired private ApiKeyRepository repository;
     @Autowired private AuditRepository auditRepository;
+    @Autowired private EventService eventService;
+    @Autowired private ObjectMapper objectMapper;
     @PostMapping @Operation(operationId = "createApiKey")
     public ResponseEntity<ApiKeyCreateResponse> create(@Valid @RequestBody ApiKeyCreateRequest request, HttpServletRequest httpRequest) {
         ApiKeyCreateResponse response = repository.create(request);
