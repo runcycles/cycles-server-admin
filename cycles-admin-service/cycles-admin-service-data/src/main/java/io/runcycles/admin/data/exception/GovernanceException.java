@@ -49,4 +49,18 @@ public class GovernanceException extends RuntimeException {
         return new GovernanceException(ErrorCode.FORBIDDEN,
             "API key scope_filter does not permit access to scope: " + scope, 403);
     }
+    public static GovernanceException webhookNotFound(String id) {
+        return new GovernanceException(ErrorCode.WEBHOOK_NOT_FOUND, "Webhook subscription not found: " + id, 404);
+    }
+    public static GovernanceException webhookUrlInvalid(String url, String reason) {
+        return new GovernanceException(ErrorCode.WEBHOOK_URL_INVALID,
+            "Webhook URL invalid: " + url + " (" + reason + ")", 400);
+    }
+    public static GovernanceException eventNotFound(String id) {
+        return new GovernanceException(ErrorCode.EVENT_NOT_FOUND, "Event not found: " + id, 404);
+    }
+    public static GovernanceException replayInProgress(String subscriptionId) {
+        return new GovernanceException(ErrorCode.REPLAY_IN_PROGRESS,
+            "Replay already in progress for subscription: " + subscriptionId, 409);
+    }
 }
