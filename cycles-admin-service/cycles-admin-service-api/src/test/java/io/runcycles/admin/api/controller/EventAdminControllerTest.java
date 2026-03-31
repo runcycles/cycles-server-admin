@@ -49,7 +49,7 @@ class EventAdminControllerTest {
     void listEvents_withFilters_passes() throws Exception {
         EventListResponse response = EventListResponse.builder()
             .events(List.of()).hasMore(false).build();
-        when(eventService.list(eq("t1"), eq("budget.created"), eq("BUDGET"), eq("org/team1"),
+        when(eventService.list(eq("t1"), eq("budget.created"), eq("budget"), eq("org/team1"),
                 eq("corr_1"), any(), any(), any(), anyInt()))
             .thenReturn(response);
 
@@ -57,7 +57,7 @@ class EventAdminControllerTest {
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .param("tenant_id", "t1")
                         .param("event_type", "budget.created")
-                        .param("category", "BUDGET")
+                        .param("category", "budget")
                         .param("scope", "org/team1")
                         .param("correlation_id", "corr_1"))
                 .andExpect(status().isOk());

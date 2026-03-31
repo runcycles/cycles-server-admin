@@ -63,15 +63,15 @@ class EventTenantControllerTest {
         setupApiKeyAuth();
         EventListResponse response = EventListResponse.builder()
             .events(List.of()).hasMore(false).build();
-        when(eventService.list(eq("t1"), eq("budget.created"), eq("BUDGET"), any(), any(), any(), any(), any(), anyInt()))
+        when(eventService.list(eq("t1"), eq("budget.created"), eq("budget"), any(), any(), any(), any(), any(), anyInt()))
             .thenReturn(response);
 
         mockMvc.perform(get("/v1/events")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .param("event_type", "budget.created")
-                        .param("category", "BUDGET"))
+                        .param("category", "budget"))
                 .andExpect(status().isOk());
 
-        verify(eventService).list(eq("t1"), eq("budget.created"), eq("BUDGET"), any(), any(), any(), any(), any(), anyInt());
+        verify(eventService).list(eq("t1"), eq("budget.created"), eq("budget"), any(), any(), any(), any(), any(), anyInt());
     }
 }

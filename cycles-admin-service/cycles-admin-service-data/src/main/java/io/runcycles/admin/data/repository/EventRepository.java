@@ -103,7 +103,7 @@ public class EventRepository {
                     }
                     Event event = objectMapper.readValue(data, Event.class);
                     if (eventType != null && !eventType.equals(event.getEventType().getValue())) continue;
-                    if (category != null && !category.equals(event.getCategory().name())) continue;
+                    if (category != null && !category.equals(event.getCategory().getValue())) continue;
                     if (scope != null && (event.getScope() == null || !event.getScope().startsWith(scope))) continue;
                     events.add(event);
                     if (events.size() >= limit) break;
@@ -126,7 +126,7 @@ public class EventRepository {
                 Event event = objectMapper.readValue(data, Event.class);
                 if (tenantId != null && !tenantId.equals(event.getTenantId())) continue;
                 if (eventType != null && !eventType.equals(event.getEventType().getValue())) continue;
-                if (category != null && !category.equals(event.getCategory().name())) continue;
+                if (category != null && !category.equals(event.getCategory().getValue())) continue;
                 if (scope != null && (event.getScope() == null || !event.getScope().startsWith(scope))) continue;
                 events.add(event);
                 if (events.size() >= limit) break;

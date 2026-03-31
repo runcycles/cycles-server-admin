@@ -243,7 +243,7 @@ class EventRepositoryTest {
         when(jedis.get("event:evt_1")).thenReturn(e1Json);
         when(jedis.get("event:evt_2")).thenReturn(e2Json);
 
-        List<Event> result = repository.list("t1", null, "BUDGET", null, null, null, null, null, 50);
+        List<Event> result = repository.list("t1", null, "budget", null, null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getCategory()).isEqualTo(EventCategory.BUDGET);
@@ -382,7 +382,7 @@ class EventRepositoryTest {
         when(jedis.get("event:evt_1")).thenReturn(e1Json);
         when(jedis.get("event:evt_2")).thenReturn(e2Json);
 
-        List<Event> result = repository.list(null, null, "BUDGET", "org/eng", "corr_abc", null, null, null, 50);
+        List<Event> result = repository.list(null, null, "budget", "org/eng", "corr_abc", null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getCategory()).isEqualTo(EventCategory.BUDGET);
