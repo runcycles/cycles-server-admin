@@ -90,7 +90,7 @@ Added three webhook security features to the admin API spec:
 - `GET /v1/webhooks/{subscription_id}/deliveries` — List delivery attempts
 - `GET /v1/events` — Query tenant-scoped events (requires `events:read`)
 
-Tenants restricted to `budget.*`, `reservation.*`, `tenant.*` event types (24 of 40). Admin-only: `api_key.*`, `policy.*`, `system.*`.
+Tenants restricted to `budget.*`, `reservation.*`, `tenant.*` event types (26 of 40). Admin-only: `api_key.*`, `policy.*`, `system.*`.
 
 **Status:** Spec only — server implementation pending.
 

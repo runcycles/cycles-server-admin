@@ -104,7 +104,7 @@ info:
         - Added per-tenant webhook self-service: 8 new tenant-scoped endpoints at /v1/webhooks
           and /v1/events using ApiKeyAuth. Tenants can manage their own webhooks and query
           their own events. Restricted to budget.*, reservation.*, and tenant.* event types
-          (24 of 40). Admin-only: api_key.*, policy.*, system.*.
+          (26 of 40). Admin-only: api_key.*, policy.*, system.*.
         - Added webhook endpoint IP allowlisting: WebhookSecurityConfig schema with blocked
           CIDR ranges (RFC 1918 + loopback + link-local blocked by default), allowed URL
           patterns (glob), and allow_http flag. Admin endpoint GET/PUT /v1/admin/config/webhook-security.
@@ -3369,7 +3369,7 @@ paths:
       description: >-
         Tenant-scoped webhook creation. The subscription is automatically scoped
         to the authenticated tenant. Tenants can only subscribe to tenant-accessible
-        event types: budget.*, reservation.*, tenant.* (24 of 40 types).
+        event types: budget.*, reservation.*, tenant.* (26 of 40 types).
 
         api_key.*, policy.*, and system.* events require admin access.
 

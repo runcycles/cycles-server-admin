@@ -29,23 +29,25 @@ public class EventRepository {
 
     public void save(Event event) {
         try (Jedis jedis = jedisPool.getResource()) {
-            String eventId = "evt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
-            event.setEventId(eventId);
+            if (event.getEventId() == null) {
+                event.setEventId("evt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16));
+            }
             if (event.getTimestamp() == null) {
                 event.setTimestamp(Instant.now());
             }
             String json = objectMapper.writeValueAsString(event);
             String score = String.valueOf(event.getTimestamp().toEpochMilli());
 
+            String id = event.getEventId();
             List<String> keys = new ArrayList<>();
-            keys.add("event:" + eventId);
+            keys.add("event:" + id);
             keys.add("events:" + event.getTenantId());
             keys.add("events:_all");
             if (event.getCorrelationId() != null && !event.getCorrelationId().isBlank()) {
                 keys.add("events:correlation:" + event.getCorrelationId());
             }
 
-            jedis.eval(SAVE_EVENT_LUA, keys, List.of(json, score, eventId));
+            jedis.eval(SAVE_EVENT_LUA, keys, List.of(json, score, id));
         } catch (Exception e) {
             LOG.error("Failed to save event", e);
             throw new RuntimeException("Failed to save event", e);

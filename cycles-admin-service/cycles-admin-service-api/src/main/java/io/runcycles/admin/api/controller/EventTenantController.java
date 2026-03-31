@@ -1,7 +1,10 @@
 package io.runcycles.admin.api.controller;
 
 import io.runcycles.admin.api.service.EventService;
+import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventListResponse;
+import io.runcycles.admin.model.event.EventType;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -9,10 +12,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import java.time.Instant;
+import java.util.Set;
 
 @RestController @RequestMapping("/v1/events") @Tag(name = "Events")
 public class EventTenantController {
     @Autowired private EventService eventService;
+
+    private static final Set<String> TENANT_ACCESSIBLE_CATEGORIES = Set.of("budget", "reservation", "tenant");
 
     @GetMapping @Operation(operationId = "listTenantEvents")
     public ResponseEntity<EventListResponse> list(
@@ -26,7 +32,22 @@ public class EventTenantController {
             @RequestParam(defaultValue = "50") int limit,
             HttpServletRequest httpRequest) {
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
-        // Auto-scope to authenticated tenant, filter to tenant-accessible types only
+        // Validate tenant-accessible event types
+        if (event_type != null) {
+            try {
+                EventType type = EventType.fromValue(event_type);
+                if (!type.isTenantAccessible()) {
+                    throw GovernanceException.webhookUrlInvalid(event_type,
+                        "Event type " + event_type + " is admin-only; tenants can query budget.*, reservation.*, tenant.* only");
+                }
+            } catch (IllegalArgumentException e) {
+                throw GovernanceException.webhookUrlInvalid(event_type, "Unknown event type");
+            }
+        }
+        if (category != null && !TENANT_ACCESSIBLE_CATEGORIES.contains(category.toLowerCase())) {
+            throw GovernanceException.webhookUrlInvalid(category,
+                "Category " + category + " is admin-only; tenants can query budget, reservation, tenant only");
+        }
         return ResponseEntity.ok(eventService.list(tenantId, event_type, category, scope,
             correlation_id, from, to, cursor, limit));
     }

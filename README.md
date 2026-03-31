@@ -162,7 +162,7 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 | `GET` | `/v1/webhooks/{id}/deliveries` | List tenant deliveries | ApiKey |
 | `GET` | `/v1/events` | Query tenant events | ApiKey |
 
-Tenants can subscribe to `budget.*`, `reservation.*`, `tenant.*` (24 of 40 event types). Admin-only: `api_key.*`, `policy.*`, `system.*`.
+Tenants can subscribe to `budget.*`, `reservation.*`, `tenant.*` (26 of 40 event types). Admin-only: `api_key.*`, `policy.*`, `system.*`.
 
 **40 event types** across 6 categories: budget (15), reservation (5), tenant (6), api_key (6), policy (3), system (5).
 
