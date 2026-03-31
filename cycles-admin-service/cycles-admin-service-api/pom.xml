@@ -8,7 +8,7 @@
     </parent>
     <artifactId>cycles-admin-service-api</artifactId>
     <name>Cycles Admin Service API</name>
-    <description>REST API for Cycles Admin Service v0.1.24</description>
+    <description>REST API for Cycles Admin Service</description>
     <dependencies>
         <dependency>
             <groupId>io.runcycles</groupId>
@@ -61,6 +61,14 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>build-info</id>
+                        <goals>
+                            <goal>build-info</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

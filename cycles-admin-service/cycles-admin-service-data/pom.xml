@@ -8,7 +8,7 @@
     </parent>
     <artifactId>cycles-admin-service-data</artifactId>
     <name>Cycles Admin Service Data</name>
-    <description>Data access layer for Cycles Admin Service v0.1.24</description>
+    <description>Data access layer for Cycles Admin Service</description>
     <dependencies>
         <dependency>
             <groupId>io.runcycles</groupId>
