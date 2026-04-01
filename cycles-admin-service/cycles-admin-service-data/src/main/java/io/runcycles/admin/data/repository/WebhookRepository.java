@@ -1,5 +1,6 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.service.CryptoService;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.webhook.WebhookStatus;
 import io.runcycles.admin.model.webhook.WebhookSubscription;
@@ -15,6 +16,7 @@ public class WebhookRepository {
     private static final Logger LOG = LoggerFactory.getLogger(WebhookRepository.class);
     @Autowired private JedisPool jedisPool;
     @Autowired private ObjectMapper objectMapper;
+    @Autowired private CryptoService cryptoService;
 
     // Lua script for atomic webhook creation: SET JSON + SADD tenant index + SADD global index
     private static final String SAVE_WEBHOOK_LUA =
@@ -52,9 +54,9 @@ public class WebhookRepository {
                         "webhooks:" + sub.getTenantId(),
                         "webhooks:_all"),
                 List.of(json, subscriptionId));
-            // Store signing secret separately (not in JSON due to @JsonIgnore)
+            // Store signing secret separately, encrypted at rest
             if (signingSecret != null) {
-                jedis.set("webhook:secret:" + subscriptionId, signingSecret);
+                jedis.set("webhook:secret:" + subscriptionId, cryptoService.encrypt(signingSecret));
             }
         } catch (Exception e) {
             LOG.error("Failed to save webhook subscription", e);
@@ -64,7 +66,8 @@ public class WebhookRepository {
 
     public String getSigningSecret(String subscriptionId) {
         try (Jedis jedis = jedisPool.getResource()) {
-            return jedis.get("webhook:secret:" + subscriptionId);
+            String encrypted = jedis.get("webhook:secret:" + subscriptionId);
+            return cryptoService.decrypt(encrypted);
         }
     }
 
@@ -86,6 +89,11 @@ public class WebhookRepository {
     public void update(String subscriptionId, WebhookSubscription updated) {
         try (Jedis jedis = jedisPool.getResource()) {
             updated.setUpdatedAt(Instant.now());
+            // Persist rotated signing secret if present
+            String newSecret = updated.getSigningSecret();
+            if (newSecret != null) {
+                jedis.set("webhook:secret:" + subscriptionId, cryptoService.encrypt(newSecret));
+            }
             String json = objectMapper.writeValueAsString(updated);
             jedis.set("webhook:" + subscriptionId, json);
         } catch (Exception e) {

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.service.CryptoService;
 import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.ErrorCode;
@@ -33,6 +34,7 @@ class WebhookRepositoryTest {
     @Mock private JedisPool jedisPool;
     @Mock private Jedis jedis;
     @Spy private ObjectMapper objectMapper = createObjectMapper();
+    @Spy private CryptoService cryptoService = new CryptoService(""); // pass-through
     @InjectMocks private WebhookRepository repository;
 
     private static ObjectMapper createObjectMapper() {
