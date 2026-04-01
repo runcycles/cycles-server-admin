@@ -131,8 +131,8 @@ class WebhookUrlValidatorTest {
     void validate_noAllowedPatterns_doesNotFilter() {
         when(configRepository.get()).thenReturn(configNoCidrBlock(false));
 
-        // Should not throw — no patterns means allow all
-        urlValidator.validate("https://any-domain.com/webhook");
+        // Should not throw — no patterns means allow all (use example.com — IANA reserved, always resolves)
+        urlValidator.validate("https://example.com/webhook");
     }
 
     @Test
