@@ -5,13 +5,16 @@ import io.runcycles.admin.data.repository.WebhookDeliveryRepository;
 import io.runcycles.admin.data.repository.WebhookRepository;
 import io.runcycles.admin.model.event.Event;
 import io.runcycles.admin.model.event.EventType;
+import io.runcycles.admin.model.webhook.DeliveryStatus;
 import io.runcycles.admin.model.webhook.WebhookStatus;
 import io.runcycles.admin.model.webhook.WebhookSubscription;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
 
 import java.time.Instant;
 import java.util.List;
@@ -26,7 +29,16 @@ class WebhookDispatchServiceTest {
     @Mock private WebhookRepository webhookRepository;
     @Mock private WebhookDeliveryRepository deliveryRepository;
     @Mock private ObjectMapper objectMapper;
-    @InjectMocks private WebhookDispatchService webhookDispatchService;
+    @Mock private JedisPool jedisPool;
+    @Mock private Jedis jedis;
+
+    private WebhookDispatchService webhookDispatchService;
+
+    @BeforeEach
+    void setUp() {
+        lenient().when(jedisPool.getResource()).thenReturn(jedis);
+        webhookDispatchService = new WebhookDispatchService(webhookRepository, deliveryRepository, objectMapper, jedisPool);
+    }
 
     private Event buildEvent() {
         return Event.builder()
@@ -136,5 +148,19 @@ class WebhookDispatchServiceTest {
         String sig2 = webhookDispatchService.signPayload("payload2", secret);
 
         assertThat(sig1).isNotEqualTo(sig2);
+    }
+
+    @Test
+    void dispatchToSubscription_createsDeliveryAndEnqueues() {
+        Event event = buildEvent();
+        WebhookSubscription sub = buildSubscription("whsub_1");
+
+        webhookDispatchService.dispatchToSubscription(event, sub);
+
+        verify(deliveryRepository).save(argThat(d ->
+            d.getSubscriptionId().equals("whsub_1") &&
+            d.getEventId().equals("evt_1") &&
+            d.getStatus() == DeliveryStatus.PENDING));
+        verify(jedis).lpush(eq("dispatch:pending"), anyString());
     }
 }

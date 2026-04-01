@@ -62,6 +62,12 @@ public class WebhookRepository {
         }
     }
 
+    public String getSigningSecret(String subscriptionId) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            return jedis.get("webhook:secret:" + subscriptionId);
+        }
+    }
+
     public WebhookSubscription findById(String subscriptionId) {
         try (Jedis jedis = jedisPool.getResource()) {
             String data = jedis.get("webhook:" + subscriptionId);

@@ -23,15 +23,24 @@ public class WebhookService {
     private final WebhookDeliveryRepository deliveryRepository;
     private final WebhookSecurityConfigRepository securityConfigRepository;
     private final WebhookUrlValidator urlValidator;
+    private final WebhookDispatchService dispatchService;
+    private final EventRepository eventRepository;
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
     public WebhookService(WebhookRepository webhookRepository,
                           WebhookDeliveryRepository deliveryRepository,
                           WebhookSecurityConfigRepository securityConfigRepository,
-                          WebhookUrlValidator urlValidator) {
+                          WebhookUrlValidator urlValidator,
+                          WebhookDispatchService dispatchService,
+                          EventRepository eventRepository,
+                          com.fasterxml.jackson.databind.ObjectMapper objectMapper) {
         this.webhookRepository = webhookRepository;
         this.deliveryRepository = deliveryRepository;
         this.securityConfigRepository = securityConfigRepository;
         this.urlValidator = urlValidator;
+        this.dispatchService = dispatchService;
+        this.eventRepository = eventRepository;
+        this.objectMapper = objectMapper;
     }
 
     public WebhookCreateResponse create(String tenantId, WebhookCreateRequest request) {
@@ -113,6 +122,7 @@ public class WebhookService {
 
     public WebhookTestResponse test(String subscriptionId) {
         WebhookSubscription sub = webhookRepository.findById(subscriptionId);
+        String secret = webhookRepository.getSigningSecret(subscriptionId);
         String testEventId = "evt_test_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         Event testEvent = Event.builder()
             .eventId(testEventId)
@@ -125,20 +135,36 @@ public class WebhookService {
             .build();
         long start = System.currentTimeMillis();
         try {
-            // Placeholder: actual HTTP delivery will be in WebhookDispatchService
-            int responseStatus = 200; // TODO: actual HTTP call
-            long elapsed = System.currentTimeMillis() - start;
+            String payload = objectMapper.writeValueAsString(testEvent);
+            java.net.http.HttpRequest.Builder reqBuilder = java.net.http.HttpRequest.newBuilder()
+                .uri(java.net.URI.create(sub.getUrl()))
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "cycles-server-admin/test")
+                .header("X-Cycles-Event-Id", testEventId)
+                .header("X-Cycles-Event-Type", testEvent.getEventType().getValue())
+                .timeout(java.time.Duration.ofSeconds(10))
+                .POST(java.net.http.HttpRequest.BodyPublishers.ofString(payload));
+            if (secret != null && !secret.isBlank()) {
+                reqBuilder.header("X-Cycles-Signature", dispatchService.signPayload(payload, secret));
+            }
+            java.net.http.HttpResponse<String> response = java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(5))
+                .build()
+                .send(reqBuilder.build(), java.net.http.HttpResponse.BodyHandlers.ofString());
+            int elapsed = (int) (System.currentTimeMillis() - start);
+            boolean success = response.statusCode() >= 200 && response.statusCode() < 300;
             return WebhookTestResponse.builder()
-                .success(true)
-                .responseStatus(responseStatus)
-                .responseTimeMs((int) elapsed)
+                .success(success)
+                .responseStatus(response.statusCode())
+                .responseTimeMs(elapsed)
                 .eventId(testEventId)
+                .errorMessage(success ? null : "HTTP " + response.statusCode())
                 .build();
         } catch (Exception e) {
-            long elapsed = System.currentTimeMillis() - start;
+            int elapsed = (int) (System.currentTimeMillis() - start);
             return WebhookTestResponse.builder()
                 .success(false)
-                .responseTimeMs((int) elapsed)
+                .responseTimeMs(elapsed)
                 .errorMessage(e.getMessage())
                 .eventId(testEventId)
                 .build();
@@ -185,13 +211,34 @@ public class WebhookService {
     }
 
     public ReplayResponse replay(String subscriptionId, ReplayRequest request) {
-        webhookRepository.findById(subscriptionId); // Throws if not found
-        // TODO: check for active replay, queue events for re-delivery
+        WebhookSubscription sub = webhookRepository.findById(subscriptionId);
         String replayId = "replay_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        int maxEvents = request.getMaxEvents() != null ? Math.min(request.getMaxEvents(), 1000) : 100;
+        // Query events in the requested time range
+        List<Event> events = eventRepository.list(
+            sub.getTenantId().equals("__system__") ? null : sub.getTenantId(),
+            null, null, null, null,
+            request.getFrom(), request.getTo(), null, maxEvents);
+        // Filter by event types if specified in replay request
+        if (request.getEventTypes() != null && !request.getEventTypes().isEmpty()) {
+            events = events.stream()
+                .filter(e -> request.getEventTypes().contains(e.getEventType()))
+                .toList();
+        }
+        // Queue each matching event for re-delivery to this subscription
+        int queued = 0;
+        for (Event event : events) {
+            try {
+                dispatchService.dispatchToSubscription(event, sub);
+                queued++;
+            } catch (Exception e) {
+                LOG.warn("Failed to queue replay delivery for event {}: {}", event.getEventId(), e.getMessage());
+            }
+        }
         return ReplayResponse.builder()
             .replayId(replayId)
-            .eventsQueued(0) // Placeholder
-            .estimatedCompletionSeconds(0)
+            .eventsQueued(queued)
+            .estimatedCompletionSeconds(queued > 0 ? Math.max(1, queued / 10) : 0)
             .build();
     }
 

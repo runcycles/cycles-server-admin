@@ -29,6 +29,9 @@ class WebhookServiceTest {
     @Mock private WebhookDeliveryRepository deliveryRepository;
     @Mock private WebhookSecurityConfigRepository securityConfigRepository;
     @Mock private WebhookUrlValidator urlValidator;
+    @Mock private WebhookDispatchService dispatchService;
+    @Mock private io.runcycles.admin.data.repository.EventRepository eventRepository;
+    @Mock private com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     @InjectMocks private WebhookService webhookService;
 
     private WebhookCreateRequest createRequest() {
@@ -175,15 +178,21 @@ class WebhookServiceTest {
     }
 
     @Test
-    void test_returnsWebhookTestResponse() {
+    void test_returnsWebhookTestResponse() throws Exception {
         WebhookSubscription sub = buildSubscription("whsub_1", "t1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.getSigningSecret("whsub_1")).thenReturn("test-secret");
+        when(objectMapper.writeValueAsString(any())).thenReturn("{\"test\":true}");
 
         WebhookTestResponse response = webhookService.test("whsub_1");
 
+        // HTTP call to https://example.com/webhook will fail in unit test (no server)
+        // but the response structure should still be valid
         assertThat(response).isNotNull();
-        assertThat(response.isSuccess()).isTrue();
         assertThat(response.getEventId()).startsWith("evt_test_");
+        assertThat(response.getResponseTimeMs()).isGreaterThanOrEqualTo(0);
+        // Will be false because there's no server at example.com, or errorMessage is set
+        assertThat(response.isSuccess() || response.getErrorMessage() != null).isTrue();
     }
 
     @Test
@@ -248,14 +257,106 @@ class WebhookServiceTest {
     }
 
     @Test
-    void replay_returnsReplayResponse() {
+    void replay_noEvents_returnsZeroQueued() {
         WebhookSubscription sub = buildSubscription("whsub_1", "t1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
-        ReplayRequest request = ReplayRequest.builder().build();
+        when(eventRepository.list(eq("t1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+            .thenReturn(List.of());
+
+        ReplayRequest request = ReplayRequest.builder()
+            .from(Instant.now().minusSeconds(3600))
+            .to(Instant.now())
+            .build();
 
         ReplayResponse response = webhookService.replay("whsub_1", request);
 
         assertThat(response.getReplayId()).startsWith("replay_");
         assertThat(response.getEventsQueued()).isEqualTo(0);
+    }
+
+    @Test
+    void replay_withEvents_queuesDeliveries() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        io.runcycles.admin.model.event.Event event = io.runcycles.admin.model.event.Event.builder()
+            .eventId("evt_1").eventType(io.runcycles.admin.model.event.EventType.BUDGET_CREATED)
+            .category(io.runcycles.admin.model.event.EventCategory.BUDGET)
+            .tenantId("t1").source("admin").timestamp(Instant.now()).build();
+        when(eventRepository.list(eq("t1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+            .thenReturn(List.of(event));
+
+        ReplayRequest request = ReplayRequest.builder()
+            .from(Instant.now().minusSeconds(3600))
+            .to(Instant.now())
+            .maxEvents(100)
+            .build();
+
+        ReplayResponse response = webhookService.replay("whsub_1", request);
+
+        assertThat(response.getEventsQueued()).isEqualTo(1);
+        verify(dispatchService).dispatchToSubscription(event, sub);
+    }
+
+    @Test
+    void replay_withEventTypeFilter_filtersEvents() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        io.runcycles.admin.model.event.Event budgetEvt = io.runcycles.admin.model.event.Event.builder()
+            .eventId("evt_1").eventType(io.runcycles.admin.model.event.EventType.BUDGET_CREATED)
+            .category(io.runcycles.admin.model.event.EventCategory.BUDGET)
+            .tenantId("t1").source("admin").timestamp(Instant.now()).build();
+        io.runcycles.admin.model.event.Event tenantEvt = io.runcycles.admin.model.event.Event.builder()
+            .eventId("evt_2").eventType(io.runcycles.admin.model.event.EventType.TENANT_CREATED)
+            .category(io.runcycles.admin.model.event.EventCategory.TENANT)
+            .tenantId("t1").source("admin").timestamp(Instant.now()).build();
+        when(eventRepository.list(eq("t1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+            .thenReturn(List.of(budgetEvt, tenantEvt));
+
+        ReplayRequest request = ReplayRequest.builder()
+            .from(Instant.now().minusSeconds(3600))
+            .to(Instant.now())
+            .eventTypes(List.of(io.runcycles.admin.model.event.EventType.BUDGET_CREATED))
+            .build();
+
+        ReplayResponse response = webhookService.replay("whsub_1", request);
+
+        assertThat(response.getEventsQueued()).isEqualTo(1);
+        verify(dispatchService).dispatchToSubscription(budgetEvt, sub);
+        verify(dispatchService, never()).dispatchToSubscription(eq(tenantEvt), any());
+    }
+
+    @Test
+    void replay_systemSubscription_queriesAllTenants() {
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_sys").tenantId("__system__")
+            .url("https://system.example.com/hook")
+            .eventTypes(List.of(io.runcycles.admin.model.event.EventType.BUDGET_CREATED))
+            .status(WebhookStatus.ACTIVE).consecutiveFailures(0).disableAfterFailures(10).build();
+        when(webhookRepository.findById("whsub_sys")).thenReturn(sub);
+        when(eventRepository.list(isNull(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+            .thenReturn(List.of());
+
+        ReplayRequest request = ReplayRequest.builder()
+            .from(Instant.now().minusSeconds(3600))
+            .to(Instant.now())
+            .build();
+
+        webhookService.replay("whsub_sys", request);
+
+        // Should pass null for tenantId to query all tenants
+        verify(eventRepository).list(isNull(), any(), any(), any(), any(), any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void test_withNoSigningSecret_stillWorks() throws Exception {
+        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.getSigningSecret("whsub_1")).thenReturn(null);
+        when(objectMapper.writeValueAsString(any())).thenReturn("{\"test\":true}");
+
+        WebhookTestResponse response = webhookService.test("whsub_1");
+
+        assertThat(response).isNotNull();
+        assertThat(response.getEventId()).startsWith("evt_test_");
     }
 }

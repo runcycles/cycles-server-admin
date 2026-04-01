@@ -57,6 +57,13 @@ public class WebhookDispatchService {
         }
     }
 
+    /**
+     * Dispatch a single event to a specific subscription (used by replay).
+     */
+    public void dispatchToSubscription(Event event, WebhookSubscription sub) {
+        createDelivery(event, sub);
+    }
+
     private void createDelivery(Event event, WebhookSubscription sub) {
         WebhookDelivery delivery = WebhookDelivery.builder()
             .deliveryId("del_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16))

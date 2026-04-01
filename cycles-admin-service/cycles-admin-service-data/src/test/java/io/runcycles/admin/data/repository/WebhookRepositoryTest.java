@@ -625,4 +625,22 @@ class WebhookRepositoryTest {
 
         assertThat(result).hasSize(1);
     }
+
+    @Test
+    void getSigningSecret_found() {
+        when(jedis.get("webhook:secret:whsub_1")).thenReturn("my-secret");
+
+        String secret = repository.getSigningSecret("whsub_1");
+
+        assertThat(secret).isEqualTo("my-secret");
+    }
+
+    @Test
+    void getSigningSecret_notFound() {
+        when(jedis.get("webhook:secret:whsub_missing")).thenReturn(null);
+
+        String secret = repository.getSigningSecret("whsub_missing");
+
+        assertThat(secret).isNull();
+    }
 }
