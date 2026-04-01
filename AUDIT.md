@@ -1,8 +1,55 @@
 # Complete Budget Governance v0.1.25 — Admin Server Audit
 
-**Date:** 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Date:** 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-01 — Admin + Events Integration Audit & Hardening
+
+Cross-service integration audit and end-to-end verification between cycles-server-admin and cycles-server-events.
+
+**Build verification:**
+- Admin: 309 unit tests, 0 failures, 95%+ coverage (all modules)
+- Events: 102 unit tests, 0 failures, 95%+ coverage
+- E2E: 12 event types verified delivered with HMAC signatures (14 total webhooks)
+
+**Bugs found and fixed during E2E testing:**
+
+| Bug | Severity | Fix |
+|-----|----------|-----|
+| `WebhookRepository.findMatchingSubscriptions` checked `webhooks:_system` but subscriptions stored at `webhooks:__system__` | Critical | Fixed key to `webhooks:__system__` |
+| `DispatchLoop.@Scheduled(fixedDelay=0)` crashes Spring Boot 3.5 | Critical | Changed to `fixedDelay=1` (in events repo) |
+| `ActorType` serialized as `ADMIN` not spec-required `admin` | High | Added `@JsonValue`/`@JsonCreator` with lowercase values |
+| `EventCategory` serialized as `BUDGET` not spec-required `budget` | High | Added `@JsonValue`/`@JsonCreator` with lowercase values |
+| `EventRepository` category filter used `.name()` instead of `.getValue()` | Medium | Changed to `.getValue()` for spec compliance |
+| `WebhookDispatchService.signPayload()` used Base64 encoding | Medium | Changed to `sha256=<hex>` format matching events service and spec |
+| `DeliveryHandler` retry count off-by-one (allowed N-1 retries instead of N) | Medium | Changed `>=` to `>` (in events repo) |
+| `WebhookService.test()` was a placeholder returning hardcoded success | Medium | Implemented actual HTTP POST with HMAC signing |
+| `WebhookService.replay()` was a stub returning eventsQueued=0 | Medium | Implemented event querying and delivery creation |
+
+**Security hardening: AES-256-GCM encryption for webhook signing secrets**
+
+Webhook signing secrets were stored as plaintext in Redis at `webhook:secret:{id}`. Now encrypted using AES-256-GCM with a shared master key (`WEBHOOK_SECRET_ENCRYPTION_KEY` env var).
+
+- Admin `WebhookRepository.save()` encrypts before storing
+- Admin `WebhookRepository.getSigningSecret()` decrypts on read
+- Admin `WebhookRepository.update()` encrypts rotated secrets
+- Events `SubscriptionRepository.getSigningSecret()` decrypts on read
+- New `CryptoService` class in both repos (identical implementation)
+- Encrypted values prefixed with `enc:` for detection
+- Backward compatible: plaintext secrets (no `enc:` prefix) returned as-is
+- Pass-through mode when key not configured (dev/test environments)
+- Generate key: `openssl rand -base64 32`
+
+**New files:**
+- `cycles-admin-service-data/.../service/CryptoService.java` + test (10 tests)
+- `cycles-server-events/.../config/CryptoService.java` + test (9 tests)
+
+**Docker-compose updates:**
+- `docker-compose.full-stack.yml`: added `WEBHOOK_SECRET_ENCRYPTION_KEY` to admin + events
+- `docker-compose.full-stack.prod.yml`: same
+
+---
 
 ### 2026-03-31 — v0.1.25: Pillar 4 Implementation Complete
 

@@ -4,17 +4,18 @@
 
 # RunCycles Server Admin
 
-Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.24](complete-budget-governance-v0.1.24.yaml).
+Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25](complete-budget-governance-v0.1.25.yaml).
 
 ## Overview
 
-This service implements a budget governance system built on three integrated pillars:
+This service implements a budget governance system built on four integrated pillars:
 
 | Pillar | Plane | Purpose |
 |--------|-------|---------|
 | **Tenant & Budget Management** | Configuration | Tenant lifecycle, budget ledgers, policy configuration |
 | **Authentication & Authorization** | Identity | API key validation, permission enforcement, audit logging |
 | **Runtime Enforcement** | Reservation | Budget reservations, commits, balance queries (Cycles Protocol v0.1.24) |
+| **Events & Webhooks** | Observability | Event emission, webhook subscriptions, delivery with HMAC signing |
 
 ## Architecture
 
@@ -42,11 +43,16 @@ docker compose -f docker-compose.prod.yml up -d
 
 The server starts at `http://localhost:7979`. Swagger UI: http://localhost:7979/swagger-ui.html
 
-To run the full stack (Admin Server + Runtime Server + Redis):
+To run the full stack (Admin + Runtime + Events + Redis):
 
 ```bash
+# Generate encryption key for webhook signing secrets
+export WEBHOOK_SECRET_ENCRYPTION_KEY=$(openssl rand -base64 32)
+
 docker compose -f docker-compose.full-stack.prod.yml up -d
 ```
+
+Services: Redis (6379), Admin (7979), Runtime Server (7878), Events (7980)
 
 > For the complete deployment walkthrough including tenant setup, API key creation, and budget allocation, see the [full stack deployment guide](https://runcycles.io/quickstart/deploying-the-full-cycles-stack).
 
@@ -93,6 +99,41 @@ The API uses two authentication schemes:
 | **ApiKeyAuth** | `X-Cycles-API-Key` | Tenant-scoped operations (budgets, reservations, balances) |
 
 API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` (test), where the random part is 32 cryptographically random characters. Keys are stored as bcrypt hashes; the full secret is only returned once at creation time. Recommended expiry: 90 days.
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `REDIS_HOST` | Yes | — | Redis hostname |
+| `REDIS_PORT` | Yes | — | Redis port |
+| `REDIS_PASSWORD` | Yes | — | Redis password (empty for no auth) |
+| `ADMIN_API_KEY` | Yes | — | Master admin API key for `X-Admin-API-Key` header |
+| `WEBHOOK_SECRET_ENCRYPTION_KEY` | No | (empty) | AES-256-GCM encryption key for webhook signing secrets at rest. Base64-encoded 32 bytes. If empty, secrets stored in plaintext (dev mode). |
+
+### Webhook Secret Encryption
+
+Webhook signing secrets are encrypted at rest in Redis using AES-256-GCM. Both `cycles-server-admin` (writes) and `cycles-server-events` (reads) must share the same encryption key.
+
+**Generate a key:**
+```bash
+openssl rand -base64 32
+```
+
+**Configure in docker-compose or environment:**
+```bash
+export WEBHOOK_SECRET_ENCRYPTION_KEY=$(openssl rand -base64 32)
+```
+
+**How it works:**
+1. Admin encrypts the signing secret before storing in Redis: `webhook:secret:{id}` = `enc:<base64(IV + ciphertext + auth_tag)>`
+2. Events service decrypts on read before computing HMAC-SHA256 signatures
+3. Backward compatible: existing plaintext secrets (no `enc:` prefix) are returned as-is
+4. If key is not set, both services operate in pass-through mode (no encryption)
+
+**Key management:**
+- Store the key in a secrets manager (Vault, AWS Secrets Manager, etc.) — not in git
+- Rotating the key requires re-encrypting all existing secrets
+- Both services must be restarted with the new key simultaneously
 
 ## API Endpoints
 
@@ -388,13 +429,15 @@ All errors return a standard `ErrorResponse`:
 
 | Model | Description |
 |-------|-------------|
-| **Single-service** | All three pillars in one deployment |
-| **Split-plane** | Separate admin/auth services from runtime enforcement |
-| **Federated** | Multiple runtime enforcement instances, shared admin plane |
+| **Single-service** | All four pillars in one deployment |
+| **Split-plane** | Admin + events separate from runtime enforcement |
+| **Full stack** | Admin (7979) + Runtime (7878) + Events (7980) + Redis |
 
 ## Protocol Specification
 
-The full OpenAPI 3.1.0 specification is in [`complete-budget-governance-v0.1.24.yaml`](complete-budget-governance-v0.1.24.yaml).
+The full OpenAPI 3.1.0 specification is in [`complete-budget-governance-v0.1.25.yaml`](complete-budget-governance-v0.1.25.yaml).
+
+v0.1.25 adds Pillar 4 (Events & Webhooks): 40 event types, 20 webhook endpoints, HMAC-SHA256 signing, at-least-once delivery, and webhook secret encryption at rest.
 
 ## Documentation
 
