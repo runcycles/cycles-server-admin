@@ -144,8 +144,19 @@ public class WebhookService {
             .data(Map.of("subscription_id", subscriptionId, "test", true))
             .build();
         long start = System.currentTimeMillis();
+        String payload;
         try {
-            String payload = objectMapper.writeValueAsString(testEvent);
+            payload = objectMapper.writeValueAsString(testEvent);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            LOG.error("Failed to serialize test event for {}: {}", subscriptionId, e.getMessage());
+            return WebhookTestResponse.builder()
+                .success(false)
+                .responseTimeMs(0)
+                .errorMessage("Internal error: event serialization failed")
+                .eventId(testEventId)
+                .build();
+        }
+        try {
             java.net.http.HttpRequest.Builder reqBuilder = java.net.http.HttpRequest.newBuilder()
                 .uri(java.net.URI.create(sub.getUrl()))
                 .header("Content-Type", "application/json")
