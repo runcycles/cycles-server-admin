@@ -37,6 +37,7 @@ services:
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
       REDIS_PASSWORD: ""
     depends_on:
       redis:
