@@ -46,13 +46,24 @@ The server starts at `http://localhost:7979`. Swagger UI: http://localhost:7979/
 To run the full stack (Admin + Runtime + Events + Redis):
 
 ```bash
-# Generate encryption key for webhook signing secrets
+# Generate encryption key for webhook signing secrets (shared across all services)
 export WEBHOOK_SECRET_ENCRYPTION_KEY=$(openssl rand -base64 32)
 
+# Development (builds from source)
+docker compose -f docker-compose.full-stack.yml up
+
+# Production (pre-built images)
 docker compose -f docker-compose.full-stack.prod.yml up -d
 ```
 
-Services: Redis (6379), Admin (7979), Runtime Server (7878), Events (7980)
+| Service | Port | Purpose |
+|---------|------|---------|
+| Redis | 6379 | Shared state store |
+| Admin (`cycles-server-admin`) | 7979 | Tenant/budget/webhook CRUD, event persistence |
+| Runtime (`cycles-server`) | 7878 | Reserve/commit/release, sub-10ms enforcement |
+| Events (`cycles-server-events`) | 7980 | Async webhook delivery with HMAC signing |
+
+The events service is optional — if not deployed, admin and runtime continue operating normally. Events and deliveries accumulate in Redis (with TTL) until the events service is started.
 
 > For the complete deployment walkthrough including tenant setup, API key creation, and budget allocation, see the [full stack deployment guide](https://runcycles.io/quickstart/deploying-the-full-cycles-stack).
 

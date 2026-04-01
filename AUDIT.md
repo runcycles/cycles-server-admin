@@ -1,8 +1,20 @@
 # Complete Budget Governance v0.1.25 — Admin Server Audit
 
-**Date:** 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Date:** 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-01 — TTL Retention for Event/Delivery Data
+
+Added Redis TTL to all event and delivery keys per spec: "90 days hot, 1 year cold."
+
+- `event:{id}` keys: 90-day TTL via EXPIRE in Lua script (configurable via `EVENT_TTL_DAYS`)
+- `delivery:{id}` keys: 14-day TTL via EXPIRE in Lua script (configurable via `DELIVERY_TTL_DAYS`)
+- `events:correlation:{id}` keys: 90-day TTL via EXPIRE in Lua script
+
+Admin: 309 tests, 0 failures, 95%+ coverage.
+
+---
 
 ### 2026-04-01 — Admin + Events Integration Audit & Hardening
 
