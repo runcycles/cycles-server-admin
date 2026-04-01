@@ -6,6 +6,7 @@ import io.runcycles.admin.model.event.EventType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.*;
 import java.time.Instant;
@@ -16,14 +17,18 @@ public class EventRepository {
     @Autowired private JedisPool jedisPool;
     @Autowired private ObjectMapper objectMapper;
 
-    // Lua script for atomic event creation: SET event JSON + ZADD tenant index + ZADD global index
-    // + optional SADD correlation index. Prevents orphaned entries on partial failure.
+    @Value("${events.retention.event-ttl-days:90}")
+    private int eventTtlDays;
+
+    // Lua script for atomic event creation with TTL
     private static final String SAVE_EVENT_LUA =
         "redis.call('SET', KEYS[1], ARGV[1])\n" +
+        "redis.call('EXPIRE', KEYS[1], ARGV[4])\n" +
         "redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3])\n" +
         "redis.call('ZADD', KEYS[3], ARGV[2], ARGV[3])\n" +
         "if KEYS[4] then\n" +
         "    redis.call('SADD', KEYS[4], ARGV[3])\n" +
+        "    redis.call('EXPIRE', KEYS[4], ARGV[4])\n" +
         "end\n" +
         "return 1\n";
 
@@ -47,7 +52,8 @@ public class EventRepository {
                 keys.add("events:correlation:" + event.getCorrelationId());
             }
 
-            jedis.eval(SAVE_EVENT_LUA, keys, List.of(json, score, id));
+            String ttlSeconds = String.valueOf(eventTtlDays * 86400L);
+            jedis.eval(SAVE_EVENT_LUA, keys, List.of(json, score, id, ttlSeconds));
         } catch (Exception e) {
             LOG.error("Failed to save event", e);
             throw new RuntimeException("Failed to save event", e);

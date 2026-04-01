@@ -5,6 +5,7 @@ import io.runcycles.admin.model.webhook.WebhookDelivery;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.*;
 import java.time.Instant;
@@ -15,9 +16,13 @@ public class WebhookDeliveryRepository {
     @Autowired private JedisPool jedisPool;
     @Autowired private ObjectMapper objectMapper;
 
-    // Lua script for atomic delivery creation: SET JSON + ZADD subscription index
+    @Value("${events.retention.delivery-ttl-days:14}")
+    private int deliveryTtlDays;
+
+    // Lua script for atomic delivery creation with TTL
     private static final String SAVE_DELIVERY_LUA =
         "redis.call('SET', KEYS[1], ARGV[1])\n" +
+        "redis.call('EXPIRE', KEYS[1], ARGV[4])\n" +
         "redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3])\n" +
         "return 1\n";
 
@@ -33,7 +38,7 @@ public class WebhookDeliveryRepository {
             jedis.eval(SAVE_DELIVERY_LUA,
                 List.of("delivery:" + deliveryId,
                         "deliveries:" + delivery.getSubscriptionId()),
-                List.of(json, score, deliveryId));
+                List.of(json, score, deliveryId, String.valueOf(deliveryTtlDays * 86400L)));
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
