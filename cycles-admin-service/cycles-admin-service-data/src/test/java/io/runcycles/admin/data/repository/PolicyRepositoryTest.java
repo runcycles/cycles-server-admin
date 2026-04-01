@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.policy.*;
-import io.runcycles.admin.model.shared.Caps;
+import io.runcycles.admin.model.shared.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -334,6 +334,128 @@ class PolicyRepositoryTest {
         assertThatThrownBy(() -> repository.update("wrong-tenant", "pol_123", request))
                 .isInstanceOf(GovernanceException.class)
                 .hasFieldOrPropertyWithValue("httpStatus", 403);
+    }
+
+    @Test
+    void update_withNullTenantId_passesEmptyString() throws Exception {
+        when(jedisPool.getResource()).thenReturn(jedis);
+        doNothing().when(jedis).close();
+
+        String updatedJson = objectMapper.writeValueAsString(Policy.builder()
+                .policyId("pol_123").name("P").scopePattern("org/*")
+                .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build());
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
+
+        PolicyUpdateRequest request = new PolicyUpdateRequest();
+        request.setName("P");
+
+        Policy result = repository.update(null, "pol_123", request);
+
+        verify(jedis).eval(anyString(), anyList(), argThat((List<String> args) ->
+            args.get(0).equals("")
+        ));
+        assertThat(result).isNotNull();
+    }
+
+    @Test
+    void update_withAllFields_sendsAllUpdates() throws Exception {
+        when(jedisPool.getResource()).thenReturn(jedis);
+        doNothing().when(jedis).close();
+
+        String updatedJson = objectMapper.writeValueAsString(Policy.builder()
+                .policyId("pol_123").tenantId("tenant1").name("New Name").description("New desc")
+                .scopePattern("org/*").priority(5).status(PolicyStatus.DISABLED).createdAt(Instant.now()).build());
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
+
+        PolicyUpdateRequest request = new PolicyUpdateRequest();
+        request.setName("New Name");
+        request.setDescription("New desc");
+        request.setPriority(5);
+        request.setCaps(Caps.builder().maxTokens(500).build());
+        request.setCommitOveragePolicy(CommitOveragePolicy.ALLOW_WITH_OVERDRAFT);
+        request.setReservationTtlOverride(ReservationTtlOverride.builder().defaultTtlMs(5000).build());
+        request.setRateLimits(RateLimits.builder().maxReservationsPerMinute(100).build());
+        request.setEffectiveFrom(Instant.parse("2025-01-01T00:00:00Z"));
+        request.setEffectiveUntil(Instant.parse("2026-01-01T00:00:00Z"));
+        request.setStatus(PolicyStatus.DISABLED);
+
+        Policy result = repository.update("tenant1", "pol_123", request);
+
+        assertThat(result).isNotNull();
+        verify(jedis).eval(anyString(), anyList(), argThat((List<String> args) -> {
+            String updatesJson = args.get(1);
+            return updatesJson.contains("New Name")
+                && updatesJson.contains("New desc")
+                && updatesJson.contains("ALLOW_WITH_OVERDRAFT")
+                && updatesJson.contains("DISABLED");
+        }));
+    }
+
+    @Test
+    void update_genericException_wrappedInRuntimeException() {
+        when(jedisPool.getResource()).thenReturn(jedis);
+        doNothing().when(jedis).close();
+        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
+
+        PolicyUpdateRequest request = new PolicyUpdateRequest();
+
+        assertThatThrownBy(() -> repository.update("tenant1", "pol_123", request))
+                .isInstanceOf(RuntimeException.class);
+    }
+
+    // ========== getScopePattern() tests ==========
+
+    @Test
+    void getScopePattern_success_returnsScopePattern() throws Exception {
+        Policy p = Policy.builder().policyId("pol_1").scopePattern("org/*").status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String pJson = objectMapper.writeValueAsString(p);
+        when(jedis.get("policy:pol_1")).thenReturn(pJson);
+
+        String result = repository.getScopePattern("pol_1");
+
+        assertThat(result).isEqualTo("org/*");
+    }
+
+    @Test
+    void getScopePattern_notFound_throwsGovernanceException() {
+        when(jedis.get("policy:pol_missing")).thenReturn(null);
+
+        assertThatThrownBy(() -> repository.getScopePattern("pol_missing"))
+                .isInstanceOf(GovernanceException.class)
+                .hasFieldOrPropertyWithValue("httpStatus", 404);
+    }
+
+    @Test
+    void getScopePattern_redisException_throwsRuntimeException() {
+        when(jedis.get("policy:pol_err")).thenThrow(new RuntimeException("Redis down"));
+
+        assertThatThrownBy(() -> repository.getScopePattern("pol_err"))
+                .isInstanceOf(RuntimeException.class);
+    }
+
+    @Test
+    void create_withAllOptionalFields() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        PolicyCreateRequest request = new PolicyCreateRequest();
+        request.setName("Full Policy");
+        request.setScopePattern("org/eng/*");
+        request.setDescription("Full description");
+        request.setPriority(5);
+        request.setCaps(Caps.builder().maxTokens(1000).build());
+        request.setCommitOveragePolicy(CommitOveragePolicy.ALLOW_IF_AVAILABLE);
+        request.setReservationTtlOverride(ReservationTtlOverride.builder().defaultTtlMs(5000).build());
+        request.setRateLimits(RateLimits.builder().maxReservationsPerMinute(100).build());
+        request.setEffectiveFrom(Instant.parse("2025-01-01T00:00:00Z"));
+        request.setEffectiveUntil(Instant.parse("2026-01-01T00:00:00Z"));
+
+        Policy result = repository.create("tenant1", request);
+
+        assertThat(result.getDescription()).isEqualTo("Full description");
+        assertThat(result.getCommitOveragePolicy()).isEqualTo(CommitOveragePolicy.ALLOW_IF_AVAILABLE);
+        assertThat(result.getReservationTtlOverride().getDefaultTtlMs()).isEqualTo(5000);
+        assertThat(result.getRateLimits().getMaxReservationsPerMinute()).isEqualTo(100);
+        assertThat(result.getEffectiveFrom()).isEqualTo(Instant.parse("2025-01-01T00:00:00Z"));
+        assertThat(result.getEffectiveUntil()).isEqualTo(Instant.parse("2026-01-01T00:00:00Z"));
     }
 
     @Test

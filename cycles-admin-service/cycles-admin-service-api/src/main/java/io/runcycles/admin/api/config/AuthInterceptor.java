@@ -16,6 +16,8 @@ import org.springframework.web.servlet.HandlerInterceptor;
 
 import io.runcycles.admin.api.filter.RequestIdFilter;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -31,12 +33,17 @@ public class AuthInterceptor implements HandlerInterceptor {
         Map.entry("POST:/v1/admin/budgets/fund", "admin:write"),
         Map.entry("POST:/v1/admin/budgets", "admin:write"),
         Map.entry("GET:/v1/admin/budgets", "admin:read"),
-        Map.entry("PATCH:/v1/admin/budgets", "admin:write"),
+        // PATCH /v1/admin/budgets uses AdminKeyAuth per spec v0.1.25 — no permission map entry needed
         Map.entry("POST:/v1/admin/policies", "admin:write"),
         Map.entry("PATCH:/v1/admin/policies", "admin:write"),
         Map.entry("GET:/v1/admin/policies", "admin:read"),
         Map.entry("GET:/v1/balances", "balances:read"),
-        Map.entry("GET:/v1/reservations", "reservations:list")
+        Map.entry("GET:/v1/reservations", "reservations:list"),
+        Map.entry("POST:/v1/webhooks", "webhooks:write"),
+        Map.entry("GET:/v1/webhooks", "webhooks:read"),
+        Map.entry("PATCH:/v1/webhooks", "webhooks:write"),
+        Map.entry("DELETE:/v1/webhooks", "webhooks:write"),
+        Map.entry("GET:/v1/events", "events:read")
     );
 
     @Value("${admin.api-key:}")
@@ -61,8 +68,8 @@ public class AuthInterceptor implements HandlerInterceptor {
             return true;
         }
 
-        // Determine which auth is required based on path
-        if (requiresAdminKey(path)) {
+        // Determine which auth is required based on path (and method for PATCH /v1/admin/budgets)
+        if (requiresAdminKey(method, path)) {
             return validateAdminKey(request, response);
         } else if (requiresApiKey(path)) {
             return validateApiKey(request, response);
@@ -72,11 +79,26 @@ public class AuthInterceptor implements HandlerInterceptor {
     }
 
     private boolean requiresAdminKey(String path) {
-        // Admin endpoints per spec: tenants, api-keys, auth/validate, audit
-        return path.startsWith("/v1/admin/tenants") ||
+        return requiresAdminKey(null, path);
+    }
+
+    private boolean requiresAdminKey(String method, String path) {
+        // Admin endpoints per spec: tenants, api-keys, auth/validate, audit, webhooks, events, config
+        // Also: PATCH /v1/admin/budgets requires AdminKeyAuth per spec v0.1.25
+        if (path.startsWith("/v1/admin/tenants") ||
                path.startsWith("/v1/admin/api-keys") ||
                path.startsWith("/v1/auth/validate") ||
-               path.startsWith("/v1/admin/audit");
+               path.startsWith("/v1/admin/audit") ||
+               path.startsWith("/v1/admin/webhooks") ||
+               path.startsWith("/v1/admin/events") ||
+               path.startsWith("/v1/admin/config")) {
+            return true;
+        }
+        // PATCH /v1/admin/budgets requires AdminKeyAuth per spec v0.1.25
+        if ("PATCH".equals(method) && path.startsWith("/v1/admin/budgets")) {
+            return true;
+        }
+        return false;
     }
 
     private boolean requiresApiKey(String path) {
@@ -84,7 +106,9 @@ public class AuthInterceptor implements HandlerInterceptor {
         return path.startsWith("/v1/admin/budgets") ||
                path.startsWith("/v1/admin/policies") ||
                path.startsWith("/v1/balances") ||
-               path.startsWith("/v1/reservations");
+               path.startsWith("/v1/reservations") ||
+               path.startsWith("/v1/webhooks") ||
+               path.startsWith("/v1/events");
     }
 
     private boolean validateAdminKey(HttpServletRequest request, HttpServletResponse response) throws Exception {
@@ -98,7 +122,7 @@ public class AuthInterceptor implements HandlerInterceptor {
             writeError(request, response, 500, ErrorCode.INTERNAL_ERROR, "Server misconfiguration: admin API key not set");
             return false;
         }
-        if (!adminApiKey.equals(key)) {
+        if (!MessageDigest.isEqual(adminApiKey.getBytes(StandardCharsets.UTF_8), key.getBytes(StandardCharsets.UTF_8))) {
             writeError(request, response, 401, ErrorCode.UNAUTHORIZED, "Invalid admin API key");
             return false;
         }

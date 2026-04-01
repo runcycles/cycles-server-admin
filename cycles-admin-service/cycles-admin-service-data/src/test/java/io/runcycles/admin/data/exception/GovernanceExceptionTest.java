@@ -103,4 +103,44 @@ class GovernanceExceptionTest {
         assertThat(ex.getHttpStatus()).isEqualTo(409);
         assertThat(ex.getMessage()).contains("org/team1");
     }
+
+    @Test
+    @DisplayName("webhookNotFound() returns WEBHOOK_NOT_FOUND with 404")
+    void webhookNotFound_returnsCorrectException() {
+        GovernanceException ex = GovernanceException.webhookNotFound("whsub_abc");
+
+        assertThat(ex.getErrorCode()).isEqualTo(ErrorCode.WEBHOOK_NOT_FOUND);
+        assertThat(ex.getHttpStatus()).isEqualTo(404);
+        assertThat(ex.getMessage()).contains("whsub_abc");
+    }
+
+    @Test
+    @DisplayName("webhookUrlInvalid() returns WEBHOOK_URL_INVALID with 400")
+    void webhookUrlInvalid_returnsCorrectException() {
+        GovernanceException ex = GovernanceException.webhookUrlInvalid("http://localhost", "private network");
+
+        assertThat(ex.getErrorCode()).isEqualTo(ErrorCode.WEBHOOK_URL_INVALID);
+        assertThat(ex.getHttpStatus()).isEqualTo(400);
+        assertThat(ex.getMessage()).contains("http://localhost").contains("private network");
+    }
+
+    @Test
+    @DisplayName("eventNotFound() returns EVENT_NOT_FOUND with 404")
+    void eventNotFound_returnsCorrectException() {
+        GovernanceException ex = GovernanceException.eventNotFound("evt_xyz");
+
+        assertThat(ex.getErrorCode()).isEqualTo(ErrorCode.EVENT_NOT_FOUND);
+        assertThat(ex.getHttpStatus()).isEqualTo(404);
+        assertThat(ex.getMessage()).contains("evt_xyz");
+    }
+
+    @Test
+    @DisplayName("replayInProgress() returns REPLAY_IN_PROGRESS with 409")
+    void replayInProgress_returnsCorrectException() {
+        GovernanceException ex = GovernanceException.replayInProgress("whsub_abc");
+
+        assertThat(ex.getErrorCode()).isEqualTo(ErrorCode.REPLAY_IN_PROGRESS);
+        assertThat(ex.getHttpStatus()).isEqualTo(409);
+        assertThat(ex.getMessage()).contains("whsub_abc");
+    }
 }

@@ -30,5 +30,5 @@ public class BudgetLedger {
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("period_start") private Instant periodStart;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("period_end") private Instant periodEnd;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("updated_at") private Instant updatedAt;
-    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("metadata") private Map<String, Object> metadata;
+    @JsonIgnore private Map<String, Object> metadata;
 }

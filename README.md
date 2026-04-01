@@ -4,17 +4,18 @@
 
 # RunCycles Server Admin
 
-Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.24](complete-budget-governance-v0.1.24.yaml).
+Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25](complete-budget-governance-v0.1.25.yaml).
 
 ## Overview
 
-This service implements a budget governance system built on three integrated pillars:
+This service implements a budget governance system built on four integrated pillars:
 
 | Pillar | Plane | Purpose |
 |--------|-------|---------|
 | **Tenant & Budget Management** | Configuration | Tenant lifecycle, budget ledgers, policy configuration |
 | **Authentication & Authorization** | Identity | API key validation, permission enforcement, audit logging |
 | **Runtime Enforcement** | Reservation | Budget reservations, commits, balance queries (Cycles Protocol v0.1.24) |
+| **Events & Webhooks** | Observability | Event emission, webhook subscriptions, delivery with HMAC signing |
 
 ## Architecture
 
@@ -42,11 +43,27 @@ docker compose -f docker-compose.prod.yml up -d
 
 The server starts at `http://localhost:7979`. Swagger UI: http://localhost:7979/swagger-ui.html
 
-To run the full stack (Admin Server + Runtime Server + Redis):
+To run the full stack (Admin + Runtime + Events + Redis):
 
 ```bash
+# Generate encryption key for webhook signing secrets (shared across all services)
+export WEBHOOK_SECRET_ENCRYPTION_KEY=$(openssl rand -base64 32)
+
+# Development (builds from source)
+docker compose -f docker-compose.full-stack.yml up
+
+# Production (pre-built images)
 docker compose -f docker-compose.full-stack.prod.yml up -d
 ```
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| Redis | 6379 | Shared state store |
+| Admin (`cycles-server-admin`) | 7979 | Tenant/budget/webhook CRUD, event persistence |
+| Runtime (`cycles-server`) | 7878 | Reserve/commit/release, sub-10ms enforcement |
+| Events (`cycles-server-events`) | 7980 | Async webhook delivery with HMAC signing |
+
+The events service is optional — if not deployed, admin and runtime continue operating normally. Events and deliveries accumulate in Redis (with TTL) until the events service is started.
 
 > For the complete deployment walkthrough including tenant setup, API key creation, and budget allocation, see the [full stack deployment guide](https://runcycles.io/quickstart/deploying-the-full-cycles-stack).
 
@@ -94,6 +111,90 @@ The API uses two authentication schemes:
 
 API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` (test), where the random part is 32 cryptographically random characters. Keys are stored as bcrypt hashes; the full secret is only returned once at creation time. Recommended expiry: 90 days.
 
+### API Key Permissions (23 total)
+
+| Category | Permissions | Notes |
+|---|---|---|
+| **Runtime (6 defaults)** | `reservations:create/commit/release/extend/list`, `balances:read` | Assigned by default when no permissions specified |
+| **Webhooks (3, v0.1.25)** | `webhooks:write`, `webhooks:read`, `events:read` | For tenant self-service at `/v1/webhooks` and `/v1/events` |
+| **Admin wildcards (2)** | `admin:read`, `admin:write` | Broad access to all admin endpoints |
+| **Admin granular (12, v0.1.25)** | `admin:tenants:read/write`, `admin:budgets:read/write`, `admin:policies:read/write`, `admin:apikeys:read/write`, `admin:webhooks:read/write`, `admin:events:read`, `admin:audit:read` | Finer-grained alternative to wildcards |
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `REDIS_HOST` | Yes | — | Redis hostname |
+| `REDIS_PORT` | Yes | — | Redis port |
+| `REDIS_PASSWORD` | Yes | — | Redis password (empty for no auth) |
+| `ADMIN_API_KEY` | Yes | — | Master admin API key for `X-Admin-API-Key` header |
+| `WEBHOOK_SECRET_ENCRYPTION_KEY` | No | (empty) | AES-256-GCM encryption key for webhook signing secrets at rest. Base64-encoded 32 bytes. If empty, secrets stored in plaintext (dev mode). |
+
+### Webhook Secret Encryption
+
+Webhook signing secrets are encrypted at rest in Redis using AES-256-GCM. Both `cycles-server-admin` (writes) and `cycles-server-events` (reads) must share the same encryption key.
+
+**Generate a key:**
+```bash
+openssl rand -base64 32
+```
+
+**Configure in docker-compose or environment:**
+```bash
+export WEBHOOK_SECRET_ENCRYPTION_KEY=$(openssl rand -base64 32)
+```
+
+**How it works:**
+1. Admin encrypts the signing secret before storing in Redis: `webhook:secret:{id}` = `enc:<base64(IV + ciphertext + auth_tag)>`
+2. Events service decrypts on read before computing HMAC-SHA256 signatures
+3. Backward compatible: existing plaintext secrets (no `enc:` prefix) are returned as-is
+4. If key is not set, both services operate in pass-through mode (no encryption)
+
+**Key management:**
+- Store the key in a secrets manager (Vault, AWS Secrets Manager, etc.) — not in git
+- Rotating the key requires re-encrypting all existing secrets
+- Both services must be restarted with the new key simultaneously
+
+### Webhook Security (SSRF Protection)
+
+Webhook URLs are validated on creation and update to prevent SSRF attacks:
+
+| Check | Default | Description |
+|-------|---------|-------------|
+| HTTPS required | `allow_http: false` | Only HTTPS URLs accepted. Set `true` for local dev. |
+| Private IP blocking | RFC 1918 ranges blocked | Resolved IPs checked against `blocked_cidr_ranges` |
+| URL patterns | (none) | Optional allowlist via `allowed_url_patterns` |
+
+**Default blocked CIDRs:** `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`, `169.254.0.0/16`, `::1/128`, `fc00::/7`
+
+**Manage via API:**
+
+```bash
+# View current config
+curl http://localhost:7979/v1/admin/config/webhook-security \
+  -H "X-Admin-API-Key: $ADMIN_API_KEY"
+
+# Update config
+curl -X PUT http://localhost:7979/v1/admin/config/webhook-security \
+  -H "X-Admin-API-Key: $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"allow_http": true, "blocked_cidr_ranges": []}'
+```
+
+**Local development with Docker:** When running the full stack via `docker-compose`, webhook receivers on `localhost` or Docker gateway IPs are blocked by default. To test webhooks locally:
+
+1. Enable HTTP and clear CIDR blocks:
+   ```bash
+   curl -X PUT http://localhost:7979/v1/admin/config/webhook-security \
+     -H "X-Admin-API-Key: $ADMIN_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"allow_http": true, "blocked_cidr_ranges": []}'
+   ```
+2. Use `host.docker.internal` (macOS/Windows) or the Docker bridge IP as the webhook URL
+3. Or run your webhook receiver as a container on the same Docker network
+
+> **Production:** Always keep `allow_http: false` and the default CIDR blocks enabled.
+
 ## API Endpoints
 
 ### Pillar 1: Tenant & Budget Management
@@ -106,7 +207,7 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 | `PATCH` | `/v1/admin/tenants/{tenant_id}` | Update tenant | Admin |
 | `POST` | `/v1/admin/budgets` | Create budget ledger | ApiKey |
 | `GET` | `/v1/admin/budgets` | List budget ledgers | ApiKey |
-| `PATCH` | `/v1/admin/budgets?scope={scope}&unit={unit}` | Update budget | ApiKey |
+| `PATCH` | `/v1/admin/budgets?scope={scope}&unit={unit}` | Update budget | Admin |
 | `POST` | `/v1/admin/budgets/fund?scope={scope}&unit={unit}` | Fund/adjust budget | ApiKey |
 | `POST` | `/v1/admin/policies` | Create policy | ApiKey |
 | `GET` | `/v1/admin/policies` | List policies | ApiKey |
@@ -129,6 +230,44 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 | `POST` | `/v1/reservations` | Create budget reservation | ApiKey |
 | `POST` | `/v1/reservations/{reservation_id}/commit` | Commit actual spend | ApiKey |
 | `GET` | `/v1/balances` | Query budget balances | ApiKey |
+
+### Pillar 4: Events & Webhooks (v0.1.25)
+
+**Admin webhook management** (`X-Admin-API-Key`):
+
+| Method | Path | Operation | Auth |
+|--------|------|-----------|------|
+| `POST` | `/v1/admin/webhooks` | Create webhook subscription | Admin |
+| `GET` | `/v1/admin/webhooks` | List subscriptions | Admin |
+| `GET` | `/v1/admin/webhooks/{id}` | Get subscription | Admin |
+| `PATCH` | `/v1/admin/webhooks/{id}` | Update subscription | Admin |
+| `DELETE` | `/v1/admin/webhooks/{id}` | Delete subscription | Admin |
+| `POST` | `/v1/admin/webhooks/{id}/test` | Test webhook | Admin |
+| `GET` | `/v1/admin/webhooks/{id}/deliveries` | List deliveries | Admin |
+| `POST` | `/v1/admin/webhooks/{id}/replay` | Replay events | Admin |
+| `GET` | `/v1/admin/events` | Query events | Admin |
+| `GET` | `/v1/admin/events/{id}` | Get event | Admin |
+| `GET` | `/v1/admin/config/webhook-security` | Get URL policy | Admin |
+| `PUT` | `/v1/admin/config/webhook-security` | Update URL policy | Admin |
+
+**Tenant self-service** (`X-Cycles-API-Key`, requires `webhooks:read/write` or `events:read`):
+
+| Method | Path | Operation | Auth |
+|--------|------|-----------|------|
+| `POST` | `/v1/webhooks` | Create tenant webhook | ApiKey |
+| `GET` | `/v1/webhooks` | List tenant webhooks | ApiKey |
+| `GET` | `/v1/webhooks/{id}` | Get tenant webhook | ApiKey |
+| `PATCH` | `/v1/webhooks/{id}` | Update tenant webhook | ApiKey |
+| `DELETE` | `/v1/webhooks/{id}` | Delete tenant webhook | ApiKey |
+| `POST` | `/v1/webhooks/{id}/test` | Test tenant webhook | ApiKey |
+| `GET` | `/v1/webhooks/{id}/deliveries` | List tenant deliveries | ApiKey |
+| `GET` | `/v1/events` | Query tenant events | ApiKey |
+
+Tenants can subscribe to `budget.*`, `reservation.*`, `tenant.*` (26 of 40 event types). Admin-only: `api_key.*`, `policy.*`, `system.*`.
+
+**40 event types** across 6 categories: budget (15), reservation (5), tenant (6), api_key (6), policy (3), system (5).
+
+**Webhook features:** HMAC-SHA256 signing, at-least-once delivery, exponential backoff retry, auto-disable on consecutive failures, event replay, SSRF prevention (private IP blocking by default).
 
 ## Core Concepts
 
@@ -350,13 +489,15 @@ All errors return a standard `ErrorResponse`:
 
 | Model | Description |
 |-------|-------------|
-| **Single-service** | All three pillars in one deployment |
-| **Split-plane** | Separate admin/auth services from runtime enforcement |
-| **Federated** | Multiple runtime enforcement instances, shared admin plane |
+| **Single-service** | All four pillars in one deployment |
+| **Split-plane** | Admin + events separate from runtime enforcement |
+| **Full stack** | Admin (7979) + Runtime (7878) + Events (7980) + Redis |
 
 ## Protocol Specification
 
-The full OpenAPI 3.1.0 specification is in [`complete-budget-governance-v0.1.24.yaml`](complete-budget-governance-v0.1.24.yaml).
+The full OpenAPI 3.1.0 specification is in [`complete-budget-governance-v0.1.25.yaml`](complete-budget-governance-v0.1.25.yaml).
+
+v0.1.25 adds Pillar 4 (Events & Webhooks): 40 event types, 20 webhook endpoints, HMAC-SHA256 signing, at-least-once delivery, and webhook secret encryption at rest.
 
 ## Documentation
 

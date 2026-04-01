@@ -1,12 +1,14 @@
 package io.runcycles.admin.api.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.data.repository.BudgetRepository;
 import io.runcycles.admin.model.auth.ApiKeyValidationResponse;
 import io.runcycles.admin.model.budget.*;
+import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.Amount;
 import io.runcycles.admin.model.shared.UnitEnum;
 import org.junit.jupiter.api.Test;
@@ -34,6 +36,7 @@ class BudgetControllerTest {
     @MockitoBean private AuditRepository auditRepository;
     @MockitoBean private ApiKeyRepository apiKeyRepository;
     @MockitoBean private JedisPool jedisPool;
+    @MockitoBean private EventService eventService;
 
     private void setupApiKeyAuth() {
         when(apiKeyRepository.validate("valid-api-key")).thenReturn(
@@ -546,19 +549,18 @@ class BudgetControllerTest {
 
     @Test
     void updateBudget_returns200() throws Exception {
-        setupApiKeyAuth();
         BudgetLedger ledger = BudgetLedger.builder()
                 .ledgerId("led-1").scope("org_team1").unit(UnitEnum.USD_MICROCENTS)
                 .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000000L))
                 .remaining(new Amount(UnitEnum.USD_MICROCENTS, 500000L))
                 .overdraftLimit(new Amount(UnitEnum.USD_MICROCENTS, 50000L))
                 .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(budgetRepository.update(eq("t1"), eq("org_team1"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(ledger);
+        when(budgetRepository.update(isNull(), eq("org_team1"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(ledger);
 
         mockMvc.perform(patch("/v1/admin/budgets")
                         .param("scope", "org_team1")
                         .param("unit", "USD_MICROCENTS")
-                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .header("X-Admin-API-Key", "test-admin-key")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"overdraft_limit\":{\"unit\":\"USD_MICROCENTS\",\"amount\":50000}}"))
                 .andExpect(status().isOk())
@@ -568,14 +570,13 @@ class BudgetControllerTest {
 
     @Test
     void updateBudget_notFound_returns404() throws Exception {
-        setupApiKeyAuth();
-        when(budgetRepository.update(eq("t1"), eq("missing"), eq(UnitEnum.USD_MICROCENTS), any()))
+        when(budgetRepository.update(isNull(), eq("missing"), eq(UnitEnum.USD_MICROCENTS), any()))
                 .thenThrow(GovernanceException.budgetNotFound("missing:USD_MICROCENTS"));
 
         mockMvc.perform(patch("/v1/admin/budgets")
                         .param("scope", "missing")
                         .param("unit", "USD_MICROCENTS")
-                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .header("X-Admin-API-Key", "test-admin-key")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"overdraft_limit\":{\"unit\":\"USD_MICROCENTS\",\"amount\":50000}}"))
                 .andExpect(status().isNotFound())
@@ -584,14 +585,13 @@ class BudgetControllerTest {
 
     @Test
     void updateBudget_closed_returns409() throws Exception {
-        setupApiKeyAuth();
-        when(budgetRepository.update(eq("t1"), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any()))
+        when(budgetRepository.update(isNull(), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any()))
                 .thenThrow(GovernanceException.budgetClosed("scope"));
 
         mockMvc.perform(patch("/v1/admin/budgets")
                         .param("scope", "scope")
                         .param("unit", "USD_MICROCENTS")
-                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .header("X-Admin-API-Key", "test-admin-key")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"commit_overage_policy\":\"REJECT\"}"))
                 .andExpect(status().isConflict())
@@ -600,30 +600,28 @@ class BudgetControllerTest {
 
     @Test
     void updateBudget_logsAuditEntry() throws Exception {
-        setupApiKeyAuth();
         BudgetLedger ledger = BudgetLedger.builder()
                 .ledgerId("led-1").scope("scope").unit(UnitEnum.USD_MICROCENTS)
                 .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .remaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(budgetRepository.update(eq("t1"), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(ledger);
+        when(budgetRepository.update(isNull(), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(ledger);
 
         mockMvc.perform(patch("/v1/admin/budgets")
                         .param("scope", "scope")
                         .param("unit", "USD_MICROCENTS")
-                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .header("X-Admin-API-Key", "test-admin-key")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"overdraft_limit\":{\"unit\":\"USD_MICROCENTS\",\"amount\":100}}"))
                 .andExpect(status().isOk());
 
         verify(auditRepository).log(argThat(entry ->
                 "updateBudget".equals(entry.getOperation()) &&
-                "t1".equals(entry.getTenantId()) &&
                 entry.getStatus() == 200));
     }
 
     @Test
-    void updateBudget_noApiKey_returns401() throws Exception {
+    void updateBudget_noAdminKey_returns401() throws Exception {
         mockMvc.perform(patch("/v1/admin/budgets")
                         .param("scope", "scope")
                         .param("unit", "USD_MICROCENTS")
@@ -634,26 +632,25 @@ class BudgetControllerTest {
 
     @Test
     void updateBudget_workspaceScope_returns200() throws Exception {
-        setupApiKeyAuth();
         BudgetLedger ledger = BudgetLedger.builder()
                 .ledgerId("led-1").scope("tenant:acme/workspace:prod").unit(UnitEnum.USD_MICROCENTS)
                 .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000000L))
                 .remaining(new Amount(UnitEnum.USD_MICROCENTS, 500000L))
                 .overdraftLimit(new Amount(UnitEnum.USD_MICROCENTS, 50000L))
                 .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(budgetRepository.update(eq("t1"), eq("tenant:acme/workspace:prod"), eq(UnitEnum.USD_MICROCENTS), any()))
+        when(budgetRepository.update(isNull(), eq("tenant:acme/workspace:prod"), eq(UnitEnum.USD_MICROCENTS), any()))
                 .thenReturn(ledger);
 
         mockMvc.perform(patch("/v1/admin/budgets")
                         .param("scope", "tenant:acme/workspace:prod")
                         .param("unit", "USD_MICROCENTS")
-                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .header("X-Admin-API-Key", "test-admin-key")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"overdraft_limit\":{\"unit\":\"USD_MICROCENTS\",\"amount\":50000}}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.scope").value("tenant:acme/workspace:prod"));
 
-        verify(budgetRepository).update(eq("t1"), eq("tenant:acme/workspace:prod"), eq(UnitEnum.USD_MICROCENTS), any());
+        verify(budgetRepository).update(isNull(), eq("tenant:acme/workspace:prod"), eq(UnitEnum.USD_MICROCENTS), any());
     }
 
     // ========== Unit mismatch validation ==========
@@ -686,15 +683,77 @@ class BudgetControllerTest {
 
     @Test
     void updateBudget_unitMismatch_returns400() throws Exception {
-        setupApiKeyAuth();
-
         mockMvc.perform(patch("/v1/admin/budgets")
                         .param("scope", "scope")
                         .param("unit", "USD_MICROCENTS")
-                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .header("X-Admin-API-Key", "test-admin-key")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"overdraft_limit\":{\"unit\":\"TOKENS\",\"amount\":100}}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("UNIT_MISMATCH"));
+    }
+
+    // ========== Event emission ==========
+
+    @Test
+    void createBudget_emitsEvent() throws Exception {
+        setupApiKeyAuth();
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1").scope("org/team1").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 1000000L))
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(budgetRepository.create(eq("t1"), any())).thenReturn(ledger);
+
+        mockMvc.perform(post("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"scope\":\"org/team1\",\"unit\":\"USD_MICROCENTS\",\"allocated\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000000}}"))
+                .andExpect(status().isCreated());
+
+        verify(eventService).emit(eq(EventType.BUDGET_CREATED), eq("t1"), eq("org/team1"), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void updateBudget_emitsEvent() throws Exception {
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1").scope("scope").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(budgetRepository.update(isNull(), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(ledger);
+
+        mockMvc.perform(patch("/v1/admin/budgets")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"overdraft_limit\":{\"unit\":\"USD_MICROCENTS\",\"amount\":100}}"))
+                .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(EventType.BUDGET_UPDATED), any(), eq("scope"), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void fundBudget_emitsCreditEvent() throws Exception {
+        setupApiKeyAuth();
+        BudgetFundingResponse funding = BudgetFundingResponse.builder()
+                .operation(FundingOperation.CREDIT)
+                .previousAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .newAllocated(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
+                .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
+                .timestamp(Instant.now()).build();
+        when(budgetRepository.fund(eq("t1"), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+
+        mockMvc.perform(post("/v1/admin/budgets/fund")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000}}"))
+                .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(EventType.BUDGET_FUNDED), eq("t1"), eq("scope"), any(), any(), any(), any(), any());
     }
 }

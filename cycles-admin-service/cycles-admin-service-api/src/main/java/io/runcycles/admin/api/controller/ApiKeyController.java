@@ -7,6 +7,11 @@ import io.runcycles.admin.model.auth.ApiKeyCreateResponse;
 import io.runcycles.admin.model.auth.ApiKeyListResponse;
 import io.runcycles.admin.model.auth.ApiKeyResponse;
 import io.runcycles.admin.model.auth.ApiKeyStatus;
+import io.runcycles.admin.api.service.EventService;
+import io.runcycles.admin.model.event.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -14,11 +19,15 @@ import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import java.util.Map;
 import java.util.stream.Collectors;
 @RestController @RequestMapping("/v1/admin/api-keys") @Tag(name = "API Keys")
 public class ApiKeyController {
+    private static final Logger LOG = LoggerFactory.getLogger(ApiKeyController.class);
     @Autowired private ApiKeyRepository repository;
     @Autowired private AuditRepository auditRepository;
+    @Autowired private EventService eventService;
+    @Autowired private ObjectMapper objectMapper;
     @PostMapping @Operation(operationId = "createApiKey")
     public ResponseEntity<ApiKeyCreateResponse> create(@Valid @RequestBody ApiKeyCreateRequest request, HttpServletRequest httpRequest) {
         ApiKeyCreateResponse response = repository.create(request);
@@ -27,6 +36,16 @@ public class ApiKeyController {
             .operation("createApiKey")
             .status(201)
             .build());
+        try {
+            eventService.emit(EventType.API_KEY_CREATED, request.getTenantId(), null, "cycles-admin",
+                Actor.builder().type(ActorType.ADMIN).build(),
+                objectMapper.convertValue(EventDataApiKey.builder()
+                    .keyId(response.getKeyId()).keyName(request.getName())
+                    .newStatus("ACTIVE").permissions(request.getPermissions()).build(), Map.class),
+                null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
+        } catch (Exception e) {
+            LOG.warn("Failed to emit event: {}", e.getMessage());
+        }
         return ResponseEntity.status(201).body(response);
     }
     @GetMapping @Operation(operationId = "listApiKeys")
@@ -54,6 +73,15 @@ public class ApiKeyController {
             .operation("revokeApiKey")
             .status(200)
             .build());
+        try {
+            eventService.emit(EventType.API_KEY_REVOKED, response.getTenantId(), null, "cycles-admin",
+                Actor.builder().type(ActorType.ADMIN).build(),
+                objectMapper.convertValue(EventDataApiKey.builder()
+                    .keyId(keyId).newStatus("REVOKED").failureReason(reason).build(), Map.class),
+                null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
+        } catch (Exception e) {
+            LOG.warn("Failed to emit event: {}", e.getMessage());
+        }
         return ResponseEntity.ok(response);
     }
 

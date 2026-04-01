@@ -8,6 +8,11 @@ import io.runcycles.admin.model.policy.PolicyListResponse;
 import io.runcycles.admin.model.policy.PolicyStatus;
 import io.runcycles.admin.model.policy.PolicyUpdateRequest;
 import io.runcycles.admin.api.config.ScopeFilterUtil;
+import io.runcycles.admin.api.service.EventService;
+import io.runcycles.admin.model.event.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -15,12 +20,16 @@ import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import java.util.Map;
 // v0: policies (caps, overage overrides, TTL overrides, rate limits) are stored for future consumption.
 // Runtime enforcement by the protocol server is deferred to a future version.
 @RestController @RequestMapping("/v1/admin/policies") @Tag(name = "Policies")
 public class PolicyController {
+    private static final Logger LOG = LoggerFactory.getLogger(PolicyController.class);
     @Autowired private PolicyRepository repository;
     @Autowired private AuditRepository auditRepository;
+    @Autowired private EventService eventService;
+    @Autowired private ObjectMapper objectMapper;
     @PostMapping @Operation(operationId = "createPolicy")
     public ResponseEntity<Policy> create(@Valid @RequestBody PolicyCreateRequest request, HttpServletRequest httpRequest) {
         ScopeFilterUtil.enforceScopeFilter(httpRequest, request.getScopePattern());
@@ -32,6 +41,17 @@ public class PolicyController {
             .operation("createPolicy")
             .status(201)
             .build());
+        try {
+            eventService.emit(EventType.POLICY_CREATED, tenantId, request.getScopePattern(), "cycles-admin",
+                Actor.builder().type(ActorType.API_KEY)
+                    .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
+                objectMapper.convertValue(EventDataPolicy.builder()
+                    .policyId(policy.getPolicyId()).name(request.getName())
+                    .scopePattern(request.getScopePattern()).build(), Map.class),
+                null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
+        } catch (Exception e) {
+            LOG.warn("Failed to emit event: {}", e.getMessage());
+        }
         return ResponseEntity.status(201).body(policy);
     }
     @PatchMapping("/{policy_id}") @Operation(operationId = "updatePolicy")
@@ -46,6 +66,16 @@ public class PolicyController {
             .operation("updatePolicy")
             .status(200)
             .build());
+        try {
+            eventService.emit(EventType.POLICY_UPDATED, tenantId, scopePattern, "cycles-admin",
+                Actor.builder().type(ActorType.API_KEY)
+                    .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
+                objectMapper.convertValue(EventDataPolicy.builder()
+                    .policyId(policyId).scopePattern(scopePattern).build(), Map.class),
+                null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
+        } catch (Exception e) {
+            LOG.warn("Failed to emit event: {}", e.getMessage());
+        }
         return ResponseEntity.ok(policy);
     }
     @GetMapping @Operation(operationId = "listPolicies")

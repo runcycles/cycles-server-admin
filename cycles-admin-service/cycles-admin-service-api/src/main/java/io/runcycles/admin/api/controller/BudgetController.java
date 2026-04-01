@@ -6,17 +6,26 @@ import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.budget.*;
 import io.runcycles.admin.model.shared.UnitEnum;
 import io.runcycles.admin.api.config.ScopeFilterUtil;
+import io.runcycles.admin.api.service.EventService;
+import io.runcycles.admin.model.event.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import java.util.Map;
 @RestController @RequestMapping("/v1/admin/budgets") @Tag(name = "Budgets")
 public class BudgetController {
+    private static final Logger LOG = LoggerFactory.getLogger(BudgetController.class);
     @Autowired private BudgetRepository repository;
     @Autowired private AuditRepository auditRepository;
+    @Autowired private EventService eventService;
+    @Autowired private ObjectMapper objectMapper;
     @PostMapping @Operation(operationId = "createBudget")
     public ResponseEntity<BudgetLedger> create(@Valid @RequestBody BudgetCreateRequest request, HttpServletRequest httpRequest) {
         validateCreateUnits(request);
@@ -29,6 +38,17 @@ public class BudgetController {
             .operation("createBudget")
             .status(201)
             .build());
+        try {
+            eventService.emit(EventType.BUDGET_CREATED, tenantId, request.getScope(), "cycles-admin",
+                Actor.builder().type(ActorType.API_KEY)
+                    .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
+                objectMapper.convertValue(EventDataBudgetLifecycle.builder()
+                    .ledgerId(ledger.getLedgerId()).scope(request.getScope())
+                    .unit(request.getUnit()).operation("create").build(), Map.class),
+                null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
+        } catch (Exception e) {
+            LOG.warn("Failed to emit event: {}", e.getMessage());
+        }
         return ResponseEntity.status(201).body(ledger);
     }
     @GetMapping @Operation(operationId = "listBudgets")
@@ -55,10 +75,11 @@ public class BudgetController {
     @PatchMapping @Operation(operationId = "updateBudget")
     public ResponseEntity<BudgetLedger> update(@RequestParam String scope, @RequestParam UnitEnum unit,
             @Valid @RequestBody BudgetUpdateRequest request, HttpServletRequest httpRequest) {
-        ScopeFilterUtil.enforceScopeFilter(httpRequest, scope);
+        // PATCH /v1/admin/budgets uses AdminKeyAuth per spec v0.1.25 — no tenant scoping
         if (request.getOverdraftLimit() != null && request.getOverdraftLimit().getUnit() != unit) {
             throw GovernanceException.unitMismatch(unit.name(), request.getOverdraftLimit().getUnit().name());
         }
+        // Admin auth: tenantId is null, Lua script skips ownership check
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         BudgetLedger ledger = repository.update(tenantId, scope, unit, request);
         auditRepository.log(buildAuditEntry(httpRequest)
@@ -67,6 +88,20 @@ public class BudgetController {
             .operation("updateBudget")
             .status(200)
             .build());
+        try {
+            // Derive tenant from the budget's stored tenant_id for event emission
+            String eventTenantId = tenantId != null ? tenantId : ledger.getTenantId();
+            ActorType actorType = tenantId != null ? ActorType.API_KEY : ActorType.ADMIN;
+            String keyId = (String) httpRequest.getAttribute("authenticated_key_id");
+            eventService.emit(EventType.BUDGET_UPDATED, eventTenantId, scope, "cycles-admin",
+                Actor.builder().type(actorType).keyId(keyId).build(),
+                objectMapper.convertValue(EventDataBudgetLifecycle.builder()
+                    .ledgerId(ledger.getLedgerId()).scope(scope)
+                    .unit(unit).operation("update").build(), Map.class),
+                null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
+        } catch (Exception e) {
+            LOG.warn("Failed to emit event: {}", e.getMessage());
+        }
         return ResponseEntity.ok(ledger);
     }
     @PostMapping("/fund") @Operation(operationId = "fundBudget")
@@ -84,6 +119,25 @@ public class BudgetController {
             .operation("fundBudget")
             .status(200)
             .build());
+        try {
+            EventType fundEventType;
+            switch (request.getOperation()) {
+                case CREDIT: fundEventType = EventType.BUDGET_FUNDED; break;
+                case DEBIT: fundEventType = EventType.BUDGET_DEBITED; break;
+                case RESET: fundEventType = EventType.BUDGET_RESET; break;
+                case REPAY_DEBT: fundEventType = EventType.BUDGET_DEBT_REPAID; break;
+                default: fundEventType = EventType.BUDGET_FUNDED; break;
+            }
+            eventService.emit(fundEventType, tenantId, scope, "cycles-admin",
+                Actor.builder().type(ActorType.API_KEY)
+                    .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
+                objectMapper.convertValue(EventDataBudgetLifecycle.builder()
+                    .scope(scope).unit(unit).operation(request.getOperation().name().toLowerCase())
+                    .reason(request.getReason()).build(), Map.class),
+                null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
+        } catch (Exception e) {
+            LOG.warn("Failed to emit event: {}", e.getMessage());
+        }
         return ResponseEntity.ok(response);
     }
 
