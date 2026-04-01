@@ -162,6 +162,35 @@ class WebhookAdminControllerTest {
     }
 
     @Test
+    void listWebhooks_clampsLimitTo100() throws Exception {
+        WebhookListResponse response = WebhookListResponse.builder()
+            .subscriptions(List.of()).hasMore(false).build();
+        when(webhookService.listAll(any(), any(), any(), any(), eq(100))).thenReturn(response);
+
+        mockMvc.perform(get("/v1/admin/webhooks")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("limit", "999"))
+                .andExpect(status().isOk());
+
+        verify(webhookService).listAll(any(), any(), any(), any(), eq(100));
+    }
+
+    @Test
+    void listDeliveries_clampsLimitTo100() throws Exception {
+        WebhookDeliveryListResponse response = WebhookDeliveryListResponse.builder()
+            .deliveries(List.of()).hasMore(false).build();
+        when(webhookService.listDeliveries(eq("whsub_1"), any(), any(), any(), any(), eq(100)))
+            .thenReturn(response);
+
+        mockMvc.perform(get("/v1/admin/webhooks/whsub_1/deliveries")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("limit", "999"))
+                .andExpect(status().isOk());
+
+        verify(webhookService).listDeliveries(eq("whsub_1"), any(), any(), any(), any(), eq(100));
+    }
+
+    @Test
     void replay_returns202() throws Exception {
         ReplayResponse response = ReplayResponse.builder()
             .replayId("replay_1").eventsQueued(5).estimatedCompletionSeconds(10).build();

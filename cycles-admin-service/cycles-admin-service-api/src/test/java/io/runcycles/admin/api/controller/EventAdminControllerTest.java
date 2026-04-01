@@ -85,6 +85,21 @@ class EventAdminControllerTest {
     }
 
     @Test
+    void listEvents_clampsLimitTo100() throws Exception {
+        EventListResponse response = EventListResponse.builder()
+            .events(List.of()).hasMore(false).build();
+        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(100)))
+            .thenReturn(response);
+
+        mockMvc.perform(get("/v1/admin/events")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("limit", "999"))
+                .andExpect(status().isOk());
+
+        verify(eventService).list(any(), any(), any(), any(), any(), any(), any(), any(), eq(100));
+    }
+
+    @Test
     void getEvent_notFound_returns404() throws Exception {
         when(eventService.findById("evt_missing"))
             .thenThrow(GovernanceException.eventNotFound("evt_missing"));

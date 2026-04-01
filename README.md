@@ -129,6 +129,10 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 | `REDIS_PASSWORD` | Yes | — | Redis password (empty for no auth) |
 | `ADMIN_API_KEY` | Yes | — | Master admin API key for `X-Admin-API-Key` header |
 | `WEBHOOK_SECRET_ENCRYPTION_KEY` | No | (empty) | AES-256-GCM encryption key for webhook signing secrets at rest. Base64-encoded 32 bytes. If empty, secrets stored in plaintext (dev mode). |
+| `LOG_LEVEL` | No | `INFO` | Application logging level (`DEBUG`, `INFO`, `WARN`, `ERROR`) |
+| `SWAGGER_ENABLED` | No | `false` | Enable Swagger UI at `/swagger-ui.html` |
+| `EVENT_TTL_DAYS` | No | `90` | Event retention in Redis (days) |
+| `DELIVERY_TTL_DAYS` | No | `14` | Webhook delivery retention in Redis (days) |
 
 ### Webhook Secret Encryption
 
@@ -462,7 +466,7 @@ All list endpoints use **cursor-based pagination**:
 | Parameter | Description |
 |-----------|-------------|
 | `cursor` | Opaque cursor from previous response's `next_cursor` |
-| `limit` | Page size (default: 50, max: 200) |
+| `limit` | Page size (default: 50, max: 100) |
 
 Responses include `next_cursor` and `has_more` fields.
 
@@ -483,7 +487,7 @@ All errors return a standard `ErrorResponse`:
 `INVALID_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `BUDGET_EXCEEDED`, `RESERVATION_EXPIRED`, `RESERVATION_FINALIZED`, `IDEMPOTENCY_MISMATCH`, `UNIT_MISMATCH`, `OVERDRAFT_LIMIT_EXCEEDED`, `DEBT_OUTSTANDING`, `INTERNAL_ERROR`
 
 **Governance error codes:**
-`TENANT_NOT_FOUND`, `TENANT_SUSPENDED`, `TENANT_CLOSED`, `BUDGET_NOT_FOUND`, `BUDGET_FROZEN`, `POLICY_VIOLATION`, `INSUFFICIENT_PERMISSIONS`, `KEY_REVOKED`, `KEY_EXPIRED`, `DUPLICATE_RESOURCE`
+`TENANT_NOT_FOUND`, `TENANT_SUSPENDED`, `TENANT_CLOSED`, `BUDGET_NOT_FOUND`, `BUDGET_FROZEN`, `BUDGET_CLOSED`, `POLICY_VIOLATION`, `INSUFFICIENT_PERMISSIONS`, `KEY_REVOKED`, `KEY_EXPIRED`, `DUPLICATE_RESOURCE`, `WEBHOOK_NOT_FOUND`, `WEBHOOK_URL_INVALID`, `EVENT_NOT_FOUND`, `REPLAY_IN_PROGRESS`
 
 ## Deployment Models
 

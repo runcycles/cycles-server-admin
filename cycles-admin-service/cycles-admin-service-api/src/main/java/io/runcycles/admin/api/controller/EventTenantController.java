@@ -49,6 +49,7 @@ public class EventTenantController {
             throw new GovernanceException(ErrorCode.INVALID_REQUEST,
                 "Category " + category + " is admin-only; tenants can query budget, reservation, tenant only", 400);
         }
+        limit = Math.max(1, Math.min(limit, 100));
         return ResponseEntity.ok(eventService.list(tenantId, event_type, category, scope,
             correlation_id, from, to, cursor, limit));
     }

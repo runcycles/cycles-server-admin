@@ -236,6 +236,41 @@ class WebhookTenantControllerTest {
     }
 
     @Test
+    void listWebhooks_clampsLimitTo100() throws Exception {
+        setupApiKeyAuth();
+        WebhookListResponse response = WebhookListResponse.builder()
+            .subscriptions(List.of()).hasMore(false).build();
+        when(webhookService.listByTenant(eq("t1"), any(), any(), any(), eq(100))).thenReturn(response);
+
+        mockMvc.perform(get("/v1/webhooks")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("limit", "999"))
+                .andExpect(status().isOk());
+
+        verify(webhookService).listByTenant(eq("t1"), any(), any(), any(), eq(100));
+    }
+
+    @Test
+    void listDeliveries_clampsLimitTo100() throws Exception {
+        setupApiKeyAuth();
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(sub);
+        WebhookDeliveryListResponse response = WebhookDeliveryListResponse.builder()
+            .deliveries(List.of()).hasMore(false).build();
+        when(webhookService.listDeliveries(eq("whsub_1"), any(), any(), any(), any(), eq(100)))
+            .thenReturn(response);
+
+        mockMvc.perform(get("/v1/webhooks/whsub_1/deliveries")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("limit", "999"))
+                .andExpect(status().isOk());
+
+        verify(webhookService).listDeliveries(eq("whsub_1"), any(), any(), any(), any(), eq(100));
+    }
+
+    @Test
     void listWebhooks_returns200() throws Exception {
         setupApiKeyAuth();
         WebhookListResponse response = WebhookListResponse.builder()

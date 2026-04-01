@@ -37,6 +37,7 @@ public class WebhookAdminController {
             @RequestParam(required = false) String event_type,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit) {
+        limit = Math.max(1, Math.min(limit, 100));
         return ResponseEntity.ok(webhookService.listAll(tenant_id, status, event_type, cursor, limit));
     }
 
@@ -76,6 +77,7 @@ public class WebhookAdminController {
             @RequestParam(required = false) Instant to,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit) {
+        limit = Math.max(1, Math.min(limit, 100));
         return ResponseEntity.ok(webhookService.listDeliveries(subscriptionId, status, from, to, cursor, limit));
     }
 
