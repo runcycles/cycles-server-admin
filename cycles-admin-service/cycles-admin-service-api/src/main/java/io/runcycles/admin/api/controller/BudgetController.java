@@ -13,12 +13,15 @@ import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import java.util.Map;
 @RestController @RequestMapping("/v1/admin/budgets") @Tag(name = "Budgets")
 public class BudgetController {
+    private static final Logger LOG = LoggerFactory.getLogger(BudgetController.class);
     @Autowired private BudgetRepository repository;
     @Autowired private AuditRepository auditRepository;
     @Autowired private EventService eventService;
@@ -44,7 +47,7 @@ public class BudgetController {
                     .unit(request.getUnit()).operation("create").build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
-            // Non-blocking: don't break the business operation
+            LOG.warn("Failed to emit event: {}", e.getMessage());
         }
         return ResponseEntity.status(201).body(ledger);
     }
@@ -72,10 +75,11 @@ public class BudgetController {
     @PatchMapping @Operation(operationId = "updateBudget")
     public ResponseEntity<BudgetLedger> update(@RequestParam String scope, @RequestParam UnitEnum unit,
             @Valid @RequestBody BudgetUpdateRequest request, HttpServletRequest httpRequest) {
-        ScopeFilterUtil.enforceScopeFilter(httpRequest, scope);
+        // PATCH /v1/admin/budgets uses AdminKeyAuth per spec v0.1.25 — no tenant scoping
         if (request.getOverdraftLimit() != null && request.getOverdraftLimit().getUnit() != unit) {
             throw GovernanceException.unitMismatch(unit.name(), request.getOverdraftLimit().getUnit().name());
         }
+        // Admin auth: tenantId is null, Lua script skips ownership check
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         BudgetLedger ledger = repository.update(tenantId, scope, unit, request);
         auditRepository.log(buildAuditEntry(httpRequest)
@@ -85,15 +89,18 @@ public class BudgetController {
             .status(200)
             .build());
         try {
-            eventService.emit(EventType.BUDGET_UPDATED, tenantId, scope, "cycles-admin",
-                Actor.builder().type(ActorType.API_KEY)
-                    .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
+            // Derive tenant from the budget's stored tenant_id for event emission
+            String eventTenantId = tenantId != null ? tenantId : ledger.getTenantId();
+            ActorType actorType = tenantId != null ? ActorType.API_KEY : ActorType.ADMIN;
+            String keyId = (String) httpRequest.getAttribute("authenticated_key_id");
+            eventService.emit(EventType.BUDGET_UPDATED, eventTenantId, scope, "cycles-admin",
+                Actor.builder().type(actorType).keyId(keyId).build(),
                 objectMapper.convertValue(EventDataBudgetLifecycle.builder()
                     .ledgerId(ledger.getLedgerId()).scope(scope)
                     .unit(unit).operation("update").build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
-            // Non-blocking: don't break the business operation
+            LOG.warn("Failed to emit event: {}", e.getMessage());
         }
         return ResponseEntity.ok(ledger);
     }
@@ -129,7 +136,7 @@ public class BudgetController {
                     .reason(request.getReason()).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
-            // Non-blocking: don't break the business operation
+            LOG.warn("Failed to emit event: {}", e.getMessage());
         }
         return ResponseEntity.ok(response);
     }

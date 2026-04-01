@@ -145,6 +145,20 @@ class WebhookServiceTest {
     }
 
     @Test
+    void update_rejectsDisabledStatus() {
+        WebhookSubscription existing = buildSubscription("whsub_1", "t1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(existing);
+
+        WebhookUpdateRequest request = WebhookUpdateRequest.builder()
+            .status(WebhookStatus.DISABLED)
+            .build();
+
+        assertThatThrownBy(() -> webhookService.update("whsub_1", request))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("DISABLED");
+    }
+
+    @Test
     void update_validatesUrlIfProvided() {
         WebhookSubscription existing = buildSubscription("whsub_1", "t1");
         when(webhookRepository.findById("whsub_1")).thenReturn(existing);

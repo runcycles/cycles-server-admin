@@ -44,18 +44,17 @@ public class WebhookUrlValidator {
         if (host == null || host.isBlank()) {
             throw GovernanceException.webhookUrlInvalid(url, "No host in URL");
         }
-        if (config.getBlockedCidrRanges() != null && !config.getBlockedCidrRanges().isEmpty()) {
-            try {
-                InetAddress[] addresses = InetAddress.getAllByName(host);
-                for (InetAddress addr : addresses) {
-                    if (isPrivateOrReserved(addr)) {
-                        throw GovernanceException.webhookUrlInvalid(url,
-                            "Resolves to private/reserved IP: " + addr.getHostAddress());
-                    }
+        // Always check for private/reserved IPs to prevent SSRF
+        try {
+            InetAddress[] addresses = InetAddress.getAllByName(host);
+            for (InetAddress addr : addresses) {
+                if (isPrivateOrReserved(addr)) {
+                    throw GovernanceException.webhookUrlInvalid(url,
+                        "Resolves to private/reserved IP: " + addr.getHostAddress());
                 }
-            } catch (UnknownHostException e) {
-                throw GovernanceException.webhookUrlInvalid(url, "Cannot resolve hostname: " + host);
             }
+        } catch (UnknownHostException e) {
+            throw GovernanceException.webhookUrlInvalid(url, "Cannot resolve hostname: " + host);
         }
         // Check allowed URL patterns
         List<String> patterns = config.getAllowedUrlPatterns();

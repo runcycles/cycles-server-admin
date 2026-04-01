@@ -36,8 +36,11 @@ public class WebhookRepository {
 
     public void save(WebhookSubscription sub) {
         try (Jedis jedis = jedisPool.getResource()) {
-            String subscriptionId = "whsub_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
-            sub.setSubscriptionId(subscriptionId);
+            String subscriptionId = sub.getSubscriptionId();
+            if (subscriptionId == null || subscriptionId.isBlank()) {
+                subscriptionId = "whsub_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+                sub.setSubscriptionId(subscriptionId);
+            }
             if (sub.getCreatedAt() == null) {
                 sub.setCreatedAt(Instant.now());
             }

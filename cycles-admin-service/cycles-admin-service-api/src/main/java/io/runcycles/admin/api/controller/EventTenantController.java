@@ -5,6 +5,7 @@ import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventListResponse;
 import io.runcycles.admin.model.event.EventType;
+import io.runcycles.admin.model.shared.ErrorCode;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -37,16 +38,16 @@ public class EventTenantController {
             try {
                 EventType type = EventType.fromValue(event_type);
                 if (!type.isTenantAccessible()) {
-                    throw GovernanceException.webhookUrlInvalid(event_type,
-                        "Event type " + event_type + " is admin-only; tenants can query budget.*, reservation.*, tenant.* only");
+                    throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                        "Event type " + event_type + " is admin-only; tenants can query budget.*, reservation.*, tenant.* only", 400);
                 }
             } catch (IllegalArgumentException e) {
-                throw GovernanceException.webhookUrlInvalid(event_type, "Unknown event type");
+                throw new GovernanceException(ErrorCode.INVALID_REQUEST, "Unknown event type: " + event_type, 400);
             }
         }
         if (category != null && !TENANT_ACCESSIBLE_CATEGORIES.contains(category.toLowerCase())) {
-            throw GovernanceException.webhookUrlInvalid(category,
-                "Category " + category + " is admin-only; tenants can query budget, reservation, tenant only");
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                "Category " + category + " is admin-only; tenants can query budget, reservation, tenant only", 400);
         }
         return ResponseEntity.ok(eventService.list(tenantId, event_type, category, scope,
             correlation_id, from, to, cursor, limit));

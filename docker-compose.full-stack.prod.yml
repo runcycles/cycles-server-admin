@@ -14,40 +14,63 @@ services:
 
   cycles-admin:
     image: ghcr.io/runcycles/cycles-server-admin:latest
+    restart: unless-stopped
     ports:
       - "7979:7979"
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      REDIS_PASSWORD: ""
-      ADMIN_API_KEY: ${ADMIN_API_KEY:-admin-bootstrap-key}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?ADMIN_API_KEY must be set}
       WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
+      EVENT_TTL_DAYS: ${EVENT_TTL_DAYS:-90}
+      DELIVERY_TTL_DAYS: ${DELIVERY_TTL_DAYS:-14}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7979/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
       redis:
         condition: service_healthy
 
   cycles-server:
     image: ghcr.io/runcycles/cycles-server:latest
+    restart: unless-stopped
     ports:
       - "7878:7878"
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      REDIS_PASSWORD: ""
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7878/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
       redis:
         condition: service_healthy
 
   cycles-events:
-    image: ghcr.io/runcycles/cycles-server-events:latest
+    image: ghcr.io/runcycles/cycles-server-events:0.1.25.1
+    restart: unless-stopped
     ports:
       - "7980:7980"
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
-      REDIS_PASSWORD: ""
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7980/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
       redis:
         condition: service_healthy

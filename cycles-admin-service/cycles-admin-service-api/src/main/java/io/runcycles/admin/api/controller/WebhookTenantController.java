@@ -3,6 +3,7 @@ package io.runcycles.admin.api.controller;
 import io.runcycles.admin.api.service.WebhookService;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.event.EventType;
+import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.webhook.*;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -111,8 +112,8 @@ public class WebhookTenantController {
         if (eventTypes == null) return;
         for (EventType type : eventTypes) {
             if (!type.isTenantAccessible()) {
-                throw GovernanceException.webhookUrlInvalid(type.getValue(),
-                    "Event type " + type.getValue() + " is admin-only; tenants can subscribe to budget.*, reservation.*, tenant.* only");
+                throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                    "Event type " + type.getValue() + " is admin-only; tenants can subscribe to budget.*, reservation.*, tenant.* only", 400);
             }
         }
     }

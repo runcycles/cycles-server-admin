@@ -74,4 +74,37 @@ class EventTenantControllerTest {
 
         verify(eventService).list(eq("t1"), eq("budget.created"), eq("budget"), any(), any(), any(), any(), any(), anyInt());
     }
+
+    @Test
+    void listEvents_adminOnlyEventType_returns400() throws Exception {
+        setupApiKeyAuth();
+
+        mockMvc.perform(get("/v1/events")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("event_type", "api_key.created"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void listEvents_adminOnlyCategory_returns400() throws Exception {
+        setupApiKeyAuth();
+
+        mockMvc.perform(get("/v1/events")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("category", "system"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void listEvents_unknownEventType_returns400() throws Exception {
+        setupApiKeyAuth();
+
+        mockMvc.perform(get("/v1/events")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("event_type", "fake.nonexistent"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
 }

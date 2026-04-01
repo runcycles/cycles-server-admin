@@ -11,6 +11,8 @@ import io.runcycles.admin.api.config.ScopeFilterUtil;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -23,6 +25,7 @@ import java.util.Map;
 // Runtime enforcement by the protocol server is deferred to a future version.
 @RestController @RequestMapping("/v1/admin/policies") @Tag(name = "Policies")
 public class PolicyController {
+    private static final Logger LOG = LoggerFactory.getLogger(PolicyController.class);
     @Autowired private PolicyRepository repository;
     @Autowired private AuditRepository auditRepository;
     @Autowired private EventService eventService;
@@ -47,7 +50,7 @@ public class PolicyController {
                     .scopePattern(request.getScopePattern()).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
-            // Non-blocking: don't break the business operation
+            LOG.warn("Failed to emit event: {}", e.getMessage());
         }
         return ResponseEntity.status(201).body(policy);
     }
@@ -71,7 +74,7 @@ public class PolicyController {
                     .policyId(policyId).scopePattern(scopePattern).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
-            // Non-blocking: don't break the business operation
+            LOG.warn("Failed to emit event: {}", e.getMessage());
         }
         return ResponseEntity.ok(policy);
     }

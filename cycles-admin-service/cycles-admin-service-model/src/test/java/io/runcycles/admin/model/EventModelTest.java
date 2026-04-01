@@ -235,4 +235,25 @@ class EventModelTest {
         assertNotNull(EventCategory.valueOf("RESERVATION"));
         assertNotNull(EventCategory.valueOf("SYSTEM"));
     }
+
+    // ---- SystemSeverity enum (lowercase serialization per spec) ----
+
+    @Test
+    void systemSeverity_serializesToLowercase() throws Exception {
+        assertEquals("\"info\"", mapper.writeValueAsString(SystemSeverity.INFO));
+        assertEquals("\"warning\"", mapper.writeValueAsString(SystemSeverity.WARNING));
+        assertEquals("\"critical\"", mapper.writeValueAsString(SystemSeverity.CRITICAL));
+    }
+
+    @Test
+    void systemSeverity_deserializesFromLowercase() throws Exception {
+        assertEquals(SystemSeverity.INFO, mapper.readValue("\"info\"", SystemSeverity.class));
+        assertEquals(SystemSeverity.WARNING, mapper.readValue("\"warning\"", SystemSeverity.class));
+        assertEquals(SystemSeverity.CRITICAL, mapper.readValue("\"critical\"", SystemSeverity.class));
+    }
+
+    @Test
+    void systemSeverity_unknownValue_throws() {
+        assertThrows(Exception.class, () -> SystemSeverity.fromValue("unknown"));
+    }
 }

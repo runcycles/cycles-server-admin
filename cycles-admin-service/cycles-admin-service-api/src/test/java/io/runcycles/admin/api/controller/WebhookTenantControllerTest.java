@@ -69,7 +69,7 @@ class WebhookTenantControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"url\":\"https://example.com/wh\",\"event_types\":[\"api_key.created\"]}"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error").value("WEBHOOK_URL_INVALID"));
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
     }
 
     @Test
@@ -156,7 +156,7 @@ class WebhookTenantControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"event_types\":[\"api_key.created\"]}"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error").value("WEBHOOK_URL_INVALID"));
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
     }
 
     @Test

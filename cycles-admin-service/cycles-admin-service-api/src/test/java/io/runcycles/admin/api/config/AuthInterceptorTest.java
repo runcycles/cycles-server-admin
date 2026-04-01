@@ -133,7 +133,37 @@ class AuthInterceptorTest {
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
     }
 
-    // --- API key auth (budgets, policies, balances) ---
+    // --- PATCH /v1/admin/budgets requires AdminKeyAuth per spec v0.1.25 ---
+
+    @Test
+    void preHandle_patchBudget_requiresAdminKey() throws Exception {
+        request.setMethod("PATCH");
+        request.setRequestURI("/v1/admin/budgets");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_patchBudget_missingAdminKey_returns401() throws Exception {
+        request.setMethod("PATCH");
+        request.setRequestURI("/v1/admin/budgets");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    void preHandle_patchBudget_apiKeyNotAccepted() throws Exception {
+        request.setMethod("PATCH");
+        request.setRequestURI("/v1/admin/budgets");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    // --- API key auth (budgets POST/GET, policies, balances) ---
 
     @Test
     void preHandle_budgetEndpoint_missingHeader_returns401() throws Exception {

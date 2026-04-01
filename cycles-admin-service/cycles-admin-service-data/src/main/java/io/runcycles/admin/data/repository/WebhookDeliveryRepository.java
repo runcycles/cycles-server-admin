@@ -28,8 +28,11 @@ public class WebhookDeliveryRepository {
 
     public void save(WebhookDelivery delivery) {
         try (Jedis jedis = jedisPool.getResource()) {
-            String deliveryId = "del_" + UUID.randomUUID().toString().substring(0, 16);
-            delivery.setDeliveryId(deliveryId);
+            String deliveryId = delivery.getDeliveryId();
+            if (deliveryId == null || deliveryId.isBlank()) {
+                deliveryId = "del_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+                delivery.setDeliveryId(deliveryId);
+            }
             if (delivery.getAttemptedAt() == null) {
                 delivery.setAttemptedAt(Instant.now());
             }

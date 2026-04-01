@@ -1,5 +1,6 @@
 package io.runcycles.admin.model.event;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
 
 public enum EventType {
@@ -69,6 +70,7 @@ public enum EventType {
                category == EventCategory.TENANT;
     }
 
+    @JsonCreator
     public static EventType fromValue(String value) {
         for (EventType t : values()) {
             if (t.value.equals(value)) return t;

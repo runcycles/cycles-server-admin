@@ -79,6 +79,26 @@ class RequestIdFilterTest {
     }
 
     @Test
+    void doFilterInternal_honorsClientProvidedRequestId() throws Exception {
+        request.addHeader("X-Request-Id", "client-trace-123");
+        filter.doFilterInternal(request, response, filterChain);
+
+        String requestId = request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE).toString();
+        assertThat(requestId).isEqualTo("client-trace-123");
+        assertThat(response.getHeader("X-Request-Id")).isEqualTo("client-trace-123");
+    }
+
+    @Test
+    void doFilterInternal_ignoresBlankClientRequestId() throws Exception {
+        request.addHeader("X-Request-Id", "   ");
+        filter.doFilterInternal(request, response, filterChain);
+
+        String requestId = request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE).toString();
+        assertThat(requestId).isNotEqualTo("   ");
+        assertThat(requestId).matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+    }
+
+    @Test
     void constants_haveExpectedValues() {
         assertThat(RequestIdFilter.REQUEST_ID_HEADER).isEqualTo("X-Request-Id");
         assertThat(RequestIdFilter.REQUEST_ID_ATTRIBUTE).isEqualTo("requestId");

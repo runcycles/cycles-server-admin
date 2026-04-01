@@ -157,6 +157,16 @@ class WebhookUrlValidatorTest {
     }
 
     @Test
+    void validate_privateIp_blockedEvenWithoutCidrConfig() {
+        // SSRF fix: private IPs must be blocked even when no CIDR ranges are configured
+        when(configRepository.get()).thenReturn(configNoCidrBlock(true));
+
+        assertThatThrownBy(() -> urlValidator.validate("http://127.0.0.1/webhook"))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("private/reserved IP");
+    }
+
+    @Test
     void validate_ftpScheme_throws() {
         when(configRepository.get()).thenReturn(configNoCidrBlock(true));
 

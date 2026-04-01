@@ -6,6 +6,7 @@ import io.runcycles.admin.data.repository.WebhookSecurityConfigRepository;
 import io.runcycles.admin.data.repository.EventRepository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.event.*;
+import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.webhook.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,6 +20,9 @@ import java.util.*;
 public class WebhookService {
     private static final Logger LOG = LoggerFactory.getLogger(WebhookService.class);
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final java.net.http.HttpClient HTTP_CLIENT = java.net.http.HttpClient.newBuilder()
+        .connectTimeout(java.time.Duration.ofSeconds(5))
+        .build();
     private final WebhookRepository webhookRepository;
     private final WebhookDeliveryRepository deliveryRepository;
     private final WebhookSecurityConfigRepository securityConfigRepository;
@@ -105,6 +109,12 @@ public class WebhookService {
         if (request.getDisableAfterFailures() != null) existing.setDisableAfterFailures(request.getDisableAfterFailures());
         if (request.getMetadata() != null) existing.setMetadata(request.getMetadata());
         if (request.getStatus() != null) {
+            // Spec restricts update status to ACTIVE or PAUSED only; DISABLED is system-managed
+            if (request.getStatus() == WebhookStatus.DISABLED) {
+                throw new GovernanceException(
+                    ErrorCode.INVALID_REQUEST,
+                    "Cannot set status to DISABLED via update; only ACTIVE and PAUSED are allowed", 400);
+            }
             existing.setStatus(request.getStatus());
             if (request.getStatus() == WebhookStatus.ACTIVE) {
                 existing.setConsecutiveFailures(0); // Reset on re-enable
@@ -147,9 +157,7 @@ public class WebhookService {
             if (secret != null && !secret.isBlank()) {
                 reqBuilder.header("X-Cycles-Signature", dispatchService.signPayload(payload, secret));
             }
-            java.net.http.HttpResponse<String> response = java.net.http.HttpClient.newBuilder()
-                .connectTimeout(java.time.Duration.ofSeconds(5))
-                .build()
+            java.net.http.HttpResponse<String> response = HTTP_CLIENT
                 .send(reqBuilder.build(), java.net.http.HttpResponse.BodyHandlers.ofString());
             int elapsed = (int) (System.currentTimeMillis() - start);
             boolean success = response.statusCode() >= 200 && response.statusCode() < 300;
@@ -162,10 +170,16 @@ public class WebhookService {
                 .build();
         } catch (Exception e) {
             int elapsed = (int) (System.currentTimeMillis() - start);
+            LOG.warn("Webhook test delivery failed for {}: {}", subscriptionId, e.getMessage());
+            // Sanitize error message to avoid leaking internal details (hostnames, IPs)
+            String safeMessage = e instanceof java.net.http.HttpConnectTimeoutException ? "Connection timed out"
+                : e instanceof java.net.http.HttpTimeoutException ? "Request timed out"
+                : e instanceof java.net.ConnectException ? "Connection refused"
+                : "Delivery failed";
             return WebhookTestResponse.builder()
                 .success(false)
                 .responseTimeMs(elapsed)
-                .errorMessage(e.getMessage())
+                .errorMessage(safeMessage)
                 .eventId(testEventId)
                 .build();
         }

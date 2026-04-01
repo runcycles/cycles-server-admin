@@ -4,6 +4,74 @@
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
+### 2026-04-01 — Production Readiness Audit (Security, Bugs, Docs, Coverage)
+
+Comprehensive production readiness audit covering security vulnerabilities, code bugs, documentation gaps, and test coverage.
+
+**CRITICAL security fixes:**
+
+| Issue | Fix |
+|-------|-----|
+| Timing attack on admin API key comparison (`String.equals()`) | Replaced with `MessageDigest.isEqual()` for constant-time comparison |
+| SSRF bypass: private IP check skipped when `blockedCidrRanges` empty | Always check private/reserved IPs regardless of CIDR config |
+| Webhook subscription ID overwritten by `WebhookRepository.save()` | Preserve caller-set ID; only generate if null/blank |
+| Delivery ID overwritten by `WebhookDeliveryRepository.save()` | Same fix — preserve caller-set ID |
+
+**HIGH priority fixes:**
+
+| Issue | Fix |
+|-------|-----|
+| Wrong error code `WEBHOOK_URL_INVALID` for tenant event type/category validation | Changed to `INVALID_REQUEST` in `EventTenantController` and `WebhookTenantController` |
+| Event emission exceptions silently swallowed (no logging) | Added `LOG.warn` in catch blocks across 5 controllers (BudgetController, TenantController, PolicyController, AuthController, ApiKeyController) |
+| `RequestIdFilter` ignores client `X-Request-Id` header | Now honors client-provided header for cross-service tracing |
+| `HttpClient` created per webhook test request (resource leak) | Replaced with shared static `HTTP_CLIENT` instance |
+| Webhook test error leaks internal hostnames/IPs in `errorMessage` | Sanitized to generic messages (Connection timed out, Connection refused, Delivery failed) |
+| `EventType.fromValue()` missing `@JsonCreator` annotation | Added `@JsonCreator` for explicit Jackson deserialization support |
+
+**Documentation & config hardening:**
+
+| Issue | Fix |
+|-------|-----|
+| Docker prod compose: no `restart` policy or app health checks | Added `restart: unless-stopped` + health checks on all prod services |
+| Docker prod compose: hardcoded default `ADMIN_API_KEY` | Changed to `${ADMIN_API_KEY:?...}` (required, no default) |
+| Application logging set to `DEBUG` in production | Changed to `${LOG_LEVEL:INFO}` (configurable, defaults to INFO) |
+| Swagger UI enabled unconditionally | Changed to `${SWAGGER_ENABLED:false}` (disabled by default) |
+| `CLAUDE.md` version stale (`0.1.24.0`) | Updated to `0.1.25.1` |
+| `EVENT_TTL_DAYS`/`DELIVERY_TTL_DAYS` not in docker-compose | Added to prod compose environment blocks |
+
+**Known issues documented (not fixed — design decisions needed):**
+
+- Unbounded `SMEMBERS` calls in repositories (performance risk at scale; needs SSCAN migration)
+- No TTL on webhook subscription, audit log, or sorted set index keys (unbounded growth)
+- Pagination `limit * 3` heuristic may miss filtered results
+- Missing request body validation constraints (@Min/@Max) on several DTOs
+
+**Tests:** 319 tests, 0 failures, 95%+ coverage (all JaCoCo checks pass). Added 6 new tests: SSRF bypass prevention, RequestIdFilter client header, tenant event type restrictions (3), EventType `@JsonCreator` coverage via existing tests.
+
+---
+
+### 2026-04-01 — Spec Compliance Audit (v0.1.25)
+
+Full validation of all code against `complete-budget-governance-v0.1.25.yaml`. Validated controllers, models, error codes, and auth against spec.
+
+**Discrepancies found and fixed:**
+
+| Issue | Severity | Fix |
+|-------|----------|-----|
+| `SystemSeverity` enum serialized as `INFO`/`WARNING`/`CRITICAL` but spec requires `info`/`warning`/`critical` | Critical | Added `@JsonValue`/`@JsonCreator` with lowercase values, matching `EventCategory`/`ActorType` pattern |
+| `PATCH /v1/admin/budgets` used `ApiKeyAuth` but spec v0.1.25 changed it to `AdminKeyAuth` | Critical | Updated `AuthInterceptor` to route PATCH budgets through admin key auth; updated `BudgetController` to work without tenant scoping |
+| `BudgetLedger.metadata` field serialized in API responses but spec has `additionalProperties: false` and no metadata property | Medium | Changed `@JsonProperty` to `@JsonIgnore` (Redis storage unaffected as it uses hash fields) |
+| `WebhookUpdateRequest.status` accepted `DISABLED` but spec restricts updates to `[ACTIVE, PAUSED]` | Medium | Added validation in `WebhookService.update()` rejecting `DISABLED` with `INVALID_REQUEST` error |
+
+**Not a defect (validated as correct):**
+- `ApiKey.keyHash` has `@JsonProperty` for Redis serialization but is never exposed in API responses (controllers use `ApiKeyResponse` DTO)
+- Reservation endpoints not implemented (served by separate `cycles-server-events` runtime service)
+- `ApiKeyListResponse` uses `ApiKeyResponse` instead of `ApiKey` — deliberate DTO projection to mask internal fields
+
+**Tests:** 313 tests, 0 failures, 95%+ coverage (all JaCoCo checks pass). Added 7 new tests for spec compliance: 3 for `SystemSeverity` serialization, 3 for `AuthInterceptor` PATCH budget admin auth, 1 for `WebhookService` DISABLED status rejection.
+
+---
+
 ### 2026-04-01 — TTL Retention for Event/Delivery Data
 
 Added Redis TTL to all event and delivery keys per spec: "90 days hot, 1 year cold."
@@ -312,7 +380,7 @@ Compared the following across spec YAML and server Java source:
 | `/v1/admin/tenants/{tenant_id}` | PATCH | `TenantController.update` | AdminKeyAuth | PASS |
 | `/v1/admin/budgets` | POST | `BudgetController.create` | ApiKeyAuth | PASS |
 | `/v1/admin/budgets` | GET | `BudgetController.list` | ApiKeyAuth | PASS |
-| `/v1/admin/budgets?scope=&unit=` | PATCH | `BudgetController.update` | ApiKeyAuth | PASS |
+| `/v1/admin/budgets?scope=&unit=` | PATCH | `BudgetController.update` | AdminKeyAuth | PASS |
 | `/v1/admin/budgets/fund?scope=&unit=` | POST | `BudgetController.fund` | ApiKeyAuth | PASS |
 | `/v1/admin/policies` | POST | `PolicyController.create` | ApiKeyAuth | PASS |
 | `/v1/admin/policies` | GET | `PolicyController.list` | ApiKeyAuth | PASS |

@@ -10,6 +10,8 @@ import io.runcycles.admin.model.auth.ApiKeyStatus;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -21,6 +23,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 @RestController @RequestMapping("/v1/admin/api-keys") @Tag(name = "API Keys")
 public class ApiKeyController {
+    private static final Logger LOG = LoggerFactory.getLogger(ApiKeyController.class);
     @Autowired private ApiKeyRepository repository;
     @Autowired private AuditRepository auditRepository;
     @Autowired private EventService eventService;
@@ -41,7 +44,7 @@ public class ApiKeyController {
                     .newStatus("ACTIVE").permissions(request.getPermissions()).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
-            // Non-blocking: don't break the business operation
+            LOG.warn("Failed to emit event: {}", e.getMessage());
         }
         return ResponseEntity.status(201).body(response);
     }
@@ -77,7 +80,7 @@ public class ApiKeyController {
                     .keyId(keyId).newStatus("REVOKED").failureReason(reason).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
-            // Non-blocking: don't break the business operation
+            LOG.warn("Failed to emit event: {}", e.getMessage());
         }
         return ResponseEntity.ok(response);
     }

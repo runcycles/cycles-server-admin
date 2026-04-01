@@ -158,7 +158,7 @@ export WEBHOOK_SECRET_ENCRYPTION_KEY=$(openssl rand -base64 32)
 | `PATCH` | `/v1/admin/tenants/{tenant_id}` | Update tenant | Admin |
 | `POST` | `/v1/admin/budgets` | Create budget ledger | ApiKey |
 | `GET` | `/v1/admin/budgets` | List budget ledgers | ApiKey |
-| `PATCH` | `/v1/admin/budgets?scope={scope}&unit={unit}` | Update budget | ApiKey |
+| `PATCH` | `/v1/admin/budgets?scope={scope}&unit={unit}` | Update budget | Admin |
 | `POST` | `/v1/admin/budgets/fund?scope={scope}&unit={unit}` | Fund/adjust budget | ApiKey |
 | `POST` | `/v1/admin/policies` | Create policy | ApiKey |
 | `GET` | `/v1/admin/policies` | List policies | ApiKey |

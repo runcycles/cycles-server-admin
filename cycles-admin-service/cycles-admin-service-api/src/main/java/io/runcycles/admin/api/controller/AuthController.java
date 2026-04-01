@@ -5,6 +5,8 @@ import io.runcycles.admin.model.auth.ApiKeyValidationResponse;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -15,6 +17,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.Map;
 @RestController @RequestMapping("/v1/auth") @Tag(name = "Authentication")
 public class AuthController {
+    private static final Logger LOG = LoggerFactory.getLogger(AuthController.class);
     @Autowired private ApiKeyRepository repository;
     @Autowired private EventService eventService;
     @Autowired private ObjectMapper objectMapper;
@@ -31,7 +34,7 @@ public class AuthController {
                         .sourceIp(httpRequest.getRemoteAddr()).build(), Map.class),
                     null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
             } catch (Exception e) {
-                // Non-blocking: don't break the business operation
+                LOG.warn("Failed to emit event: {}", e.getMessage());
             }
         }
         return ResponseEntity.ok(response);
