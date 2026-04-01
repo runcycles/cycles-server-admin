@@ -25,6 +25,7 @@ public class EventAdminController {
             @RequestParam(required = false) Instant to,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit) {
+        limit = Math.max(1, Math.min(limit, 100));
         return ResponseEntity.ok(eventService.list(tenant_id, event_type, category, scope,
             correlation_id, from, to, cursor, limit));
     }

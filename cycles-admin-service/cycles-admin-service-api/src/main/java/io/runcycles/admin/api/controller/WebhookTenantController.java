@@ -35,6 +35,7 @@ public class WebhookTenantController {
             @RequestParam(defaultValue = "50") int limit,
             HttpServletRequest httpRequest) {
         String tenantId = getAuthenticatedTenantId(httpRequest);
+        limit = Math.max(1, Math.min(limit, 100));
         return ResponseEntity.ok(webhookService.listByTenant(tenantId, status, null, cursor, limit));
     }
 
@@ -91,6 +92,7 @@ public class WebhookTenantController {
         String tenantId = getAuthenticatedTenantId(httpRequest);
         WebhookSubscription existing = webhookService.get(subscriptionId);
         enforceTenantOwnership(existing, tenantId);
+        limit = Math.max(1, Math.min(limit, 100));
         return ResponseEntity.ok(webhookService.listDeliveries(subscriptionId, status, from, to, cursor, limit));
     }
 

@@ -76,6 +76,22 @@ class EventTenantControllerTest {
     }
 
     @Test
+    void listEvents_clampsLimitTo100() throws Exception {
+        setupApiKeyAuth();
+        EventListResponse response = EventListResponse.builder()
+            .events(List.of()).hasMore(false).build();
+        when(eventService.list(eq("t1"), any(), any(), any(), any(), any(), any(), any(), eq(100)))
+            .thenReturn(response);
+
+        mockMvc.perform(get("/v1/events")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("limit", "999"))
+                .andExpect(status().isOk());
+
+        verify(eventService).list(eq("t1"), any(), any(), any(), any(), any(), any(), any(), eq(100));
+    }
+
+    @Test
     void listEvents_adminOnlyEventType_returns400() throws Exception {
         setupApiKeyAuth();
 

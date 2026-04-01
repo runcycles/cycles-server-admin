@@ -1,8 +1,35 @@
 # Complete Budget Governance v0.1.25 — Admin Server Audit
 
-**Date:** 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Date:** 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-01 — Spec Compliance Review: README, Pagination, Error Codes
+
+Full review of code, README, and spec compliance against `complete-budget-governance-v0.1.25.yaml`.
+
+**Spec compliance fixes:**
+
+| Issue | Fix |
+|-------|-----|
+| Pillar 4 list endpoints (webhooks, events) missing `limit` clamping | Added `Math.max(1, Math.min(limit, 100))` to 6 controller methods per spec `maximum: 100` |
+| `WebhookUpdateRequest.status` accepted `DISABLED` | Already validated in `WebhookService.update()` — confirmed spec-compliant (only `ACTIVE`/`PAUSED` allowed) |
+
+**README fixes:**
+
+| Issue | Fix |
+|-------|-----|
+| Pagination `max: 200` incorrect | Changed to `max: 100` per spec |
+| 5 governance error codes missing | Added `BUDGET_CLOSED`, `WEBHOOK_NOT_FOUND`, `WEBHOOK_URL_INVALID`, `EVENT_NOT_FOUND`, `REPLAY_IN_PROGRESS` |
+| 4 environment variables undocumented | Added `LOG_LEVEL`, `SWAGGER_ENABLED`, `EVENT_TTL_DAYS`, `DELIVERY_TTL_DAYS` to env var table |
+
+**Tests added:** 6 new tests verifying limit clamping on all Pillar 4 list endpoints (WebhookAdminController, WebhookTenantController, EventAdminController, EventTenantController). Total: 331 tests, 0 failures.
+
+**Confirmed correct:**
+- All 27 ErrorCode enum values match spec
+- All 40 EventType values match spec
+- All 38 admin endpoints implemented with correct paths, methods, auth schemes
+- Auth routing (AdminKeyAuth vs ApiKeyAuth) matches spec for all endpoints
 
 ### 2026-04-01 — Release Prep: Docker + Docs
 
