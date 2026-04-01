@@ -111,6 +111,15 @@ The API uses two authentication schemes:
 
 API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` (test), where the random part is 32 cryptographically random characters. Keys are stored as bcrypt hashes; the full secret is only returned once at creation time. Recommended expiry: 90 days.
 
+### API Key Permissions (23 total)
+
+| Category | Permissions | Notes |
+|---|---|---|
+| **Runtime (6 defaults)** | `reservations:create/commit/release/extend/list`, `balances:read` | Assigned by default when no permissions specified |
+| **Webhooks (3, v0.1.25)** | `webhooks:write`, `webhooks:read`, `events:read` | For tenant self-service at `/v1/webhooks` and `/v1/events` |
+| **Admin wildcards (2)** | `admin:read`, `admin:write` | Broad access to all admin endpoints |
+| **Admin granular (12, v0.1.25)** | `admin:tenants:read/write`, `admin:budgets:read/write`, `admin:policies:read/write`, `admin:apikeys:read/write`, `admin:webhooks:read/write`, `admin:events:read`, `admin:audit:read` | Finer-grained alternative to wildcards |
+
 ## Environment Variables
 
 | Variable | Required | Default | Description |

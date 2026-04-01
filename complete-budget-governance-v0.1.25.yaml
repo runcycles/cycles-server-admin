@@ -2158,6 +2158,7 @@ paths:
       tags: [Tenants]
       operationId: getTenant
       summary: Get tenant details
+      description: Returns the full tenant configuration including status, defaults, and metadata.
       security:
         - AdminKeyAuth: []
       parameters:
@@ -3472,6 +3473,7 @@ paths:
       tags: [Webhooks]
       operationId: updateTenantWebhook
       summary: Update a tenant's webhook subscription
+      description: Partial update — only provided fields are modified. Restricted to tenant-accessible event types.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -3510,6 +3512,7 @@ paths:
       tags: [Webhooks]
       operationId: deleteTenantWebhook
       summary: Delete a tenant's webhook subscription
+      description: Permanently removes the subscription. Pending deliveries for this subscription will fail.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -3533,6 +3536,7 @@ paths:
       tags: [Webhooks]
       operationId: testTenantWebhook
       summary: Send a test event to a tenant's webhook
+      description: Sends a synthetic system.webhook_test event. Does not count toward consecutive failures.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -3560,6 +3564,7 @@ paths:
       tags: [Webhooks]
       operationId: listTenantWebhookDeliveries
       summary: List delivery attempts for a tenant's webhook
+      description: Returns delivery history with status, response codes, and error details. Supports filtering by status and date range.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -3707,12 +3712,18 @@ paths:
       summary: Commit actual spend (Cycles v0.1.24)
       description: >-
         See Cycles Protocol v0.1.24 specification.
-        
+
         GOVERNANCE INTEGRATION:
         - Validates key and tenant as in reservation
         - Supports ALLOW_WITH_OVERDRAFT policy
         - Creates debt if overdraft_limit configured
         - Logs commit to audit trail
+      parameters:
+        - name: reservation_id
+          in: path
+          required: true
+          schema:
+            type: string
       security:
         - ApiKeyAuth: []
       responses:
