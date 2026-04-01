@@ -146,6 +146,46 @@ export WEBHOOK_SECRET_ENCRYPTION_KEY=$(openssl rand -base64 32)
 - Rotating the key requires re-encrypting all existing secrets
 - Both services must be restarted with the new key simultaneously
 
+### Webhook Security (SSRF Protection)
+
+Webhook URLs are validated on creation and update to prevent SSRF attacks:
+
+| Check | Default | Description |
+|-------|---------|-------------|
+| HTTPS required | `allow_http: false` | Only HTTPS URLs accepted. Set `true` for local dev. |
+| Private IP blocking | RFC 1918 ranges blocked | Resolved IPs checked against `blocked_cidr_ranges` |
+| URL patterns | (none) | Optional allowlist via `allowed_url_patterns` |
+
+**Default blocked CIDRs:** `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`, `169.254.0.0/16`, `::1/128`, `fc00::/7`
+
+**Manage via API:**
+
+```bash
+# View current config
+curl http://localhost:7979/v1/admin/config/webhook-security \
+  -H "X-Admin-API-Key: $ADMIN_API_KEY"
+
+# Update config
+curl -X PUT http://localhost:7979/v1/admin/config/webhook-security \
+  -H "X-Admin-API-Key: $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"allow_http": true, "blocked_cidr_ranges": []}'
+```
+
+**Local development with Docker:** When running the full stack via `docker-compose`, webhook receivers on `localhost` or Docker gateway IPs are blocked by default. To test webhooks locally:
+
+1. Enable HTTP and clear CIDR blocks:
+   ```bash
+   curl -X PUT http://localhost:7979/v1/admin/config/webhook-security \
+     -H "X-Admin-API-Key: $ADMIN_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"allow_http": true, "blocked_cidr_ranges": []}'
+   ```
+2. Use `host.docker.internal` (macOS/Windows) or the Docker bridge IP as the webhook URL
+3. Or run your webhook receiver as a container on the same Docker network
+
+> **Production:** Always keep `allow_http: false` and the default CIDR blocks enabled.
+
 ## API Endpoints
 
 ### Pillar 1: Tenant & Budget Management

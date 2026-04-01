@@ -13,7 +13,7 @@ services:
       retries: 5
 
   cycles-admin:
-    image: ghcr.io/runcycles/cycles-server-admin:latest
+    image: ghcr.io/runcycles/cycles-server-admin:0.1.25.1
     restart: unless-stopped
     ports:
       - "7979:7979"
@@ -36,7 +36,7 @@ services:
         condition: service_healthy
 
   cycles-server:
-    image: ghcr.io/runcycles/cycles-server:latest
+    image: ghcr.io/runcycles/cycles-server:0.1.25.1
     restart: unless-stopped
     ports:
       - "7878:7878"

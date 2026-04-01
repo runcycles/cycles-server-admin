@@ -4,6 +4,13 @@
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
+### 2026-04-01 — Release Prep: Docker + Docs
+
+| Change | Details |
+|--------|---------|
+| docker-compose.full-stack.prod.yml: `:latest` → `0.1.25.1` | All three services now use versioned image tags for deterministic deployments |
+| README: webhook security section | Documented SSRF protection, `allow_http`, blocked CIDRs, local dev setup with Docker |
+
 ### 2026-04-01 — Production Readiness Audit (Security, Bugs, Docs, Coverage)
 
 Comprehensive production readiness audit covering security vulnerabilities, code bugs, documentation gaps, and test coverage.
