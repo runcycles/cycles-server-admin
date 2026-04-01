@@ -373,4 +373,123 @@ class WebhookServiceTest {
         assertThat(response).isNotNull();
         assertThat(response.getEventId()).startsWith("evt_test_");
     }
+
+    @Test
+    void test_serializationError_returnsFailure() throws Exception {
+        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.getSigningSecret("whsub_1")).thenReturn("secret");
+        when(objectMapper.writeValueAsString(any()))
+            .thenThrow(new com.fasterxml.jackson.core.JsonProcessingException("fail") {});
+
+        WebhookTestResponse response = webhookService.test("whsub_1");
+
+        assertThat(response.isSuccess()).isFalse();
+        assertThat(response.getErrorMessage()).contains("serialization");
+        assertThat(response.getEventId()).startsWith("evt_test_");
+    }
+
+    @Test
+    void replay_withEventTypeFilter_filtersCorrectly() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+
+        io.runcycles.admin.model.event.Event evt1 = io.runcycles.admin.model.event.Event.builder()
+            .eventId("evt_1").eventType(EventType.BUDGET_CREATED).tenantId("t1")
+            .timestamp(Instant.now()).build();
+        io.runcycles.admin.model.event.Event evt2 = io.runcycles.admin.model.event.Event.builder()
+            .eventId("evt_2").eventType(EventType.TENANT_CREATED).tenantId("t1")
+            .timestamp(Instant.now()).build();
+
+        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+            .thenReturn(List.of(evt1, evt2));
+
+        ReplayRequest request = ReplayRequest.builder()
+            .from(Instant.now().minusSeconds(3600))
+            .to(Instant.now())
+            .eventTypes(List.of(EventType.BUDGET_CREATED))
+            .build();
+
+        ReplayResponse response = webhookService.replay("whsub_1", request);
+
+        // Only evt1 matches the filter, so only 1 should be dispatched
+        assertThat(response.getEventsQueued()).isEqualTo(1);
+        verify(dispatchService, times(1)).dispatchToSubscription(any(), any());
+    }
+
+    @Test
+    void replay_dispatchFailure_continuesAndCounts() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+
+        io.runcycles.admin.model.event.Event evt1 = io.runcycles.admin.model.event.Event.builder()
+            .eventId("evt_1").eventType(EventType.BUDGET_CREATED).tenantId("t1")
+            .timestamp(Instant.now()).build();
+        io.runcycles.admin.model.event.Event evt2 = io.runcycles.admin.model.event.Event.builder()
+            .eventId("evt_2").eventType(EventType.BUDGET_FUNDED).tenantId("t1")
+            .timestamp(Instant.now()).build();
+
+        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+            .thenReturn(List.of(evt1, evt2));
+        doThrow(new RuntimeException("dispatch error")).when(dispatchService)
+            .dispatchToSubscription(eq(evt1), any());
+        doNothing().when(dispatchService).dispatchToSubscription(eq(evt2), any());
+
+        ReplayRequest request = ReplayRequest.builder()
+            .from(Instant.now().minusSeconds(3600))
+            .to(Instant.now())
+            .build();
+
+        ReplayResponse response = webhookService.replay("whsub_1", request);
+
+        // evt1 failed, evt2 succeeded
+        assertThat(response.getEventsQueued()).isEqualTo(1);
+    }
+
+    @Test
+    void update_statusDisabled_throws() {
+        WebhookSubscription existing = buildSubscription("whsub_1", "t1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(existing);
+
+        WebhookUpdateRequest request = WebhookUpdateRequest.builder()
+            .status(WebhookStatus.DISABLED)
+            .build();
+
+        assertThatThrownBy(() -> webhookService.update("whsub_1", request))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("DISABLED");
+    }
+
+    @Test
+    void update_statusActive_resetsConsecutiveFailures() {
+        WebhookSubscription existing = buildSubscription("whsub_1", "t1");
+        existing.setConsecutiveFailures(5);
+        existing.setStatus(WebhookStatus.PAUSED);
+        when(webhookRepository.findById("whsub_1")).thenReturn(existing);
+
+        WebhookUpdateRequest request = WebhookUpdateRequest.builder()
+            .status(WebhookStatus.ACTIVE)
+            .build();
+
+        // findById is called again in get() after update
+        when(webhookRepository.findById("whsub_1")).thenReturn(existing);
+        webhookService.update("whsub_1", request);
+
+        // Should reset consecutive failures on re-enable
+        verify(webhookRepository).update(eq("whsub_1"), argThat(sub ->
+            sub.getConsecutiveFailures() == 0 && sub.getStatus() == WebhookStatus.ACTIVE));
+    }
+
+    @Test
+    void listAll_withTenantFilter_filtersResults() {
+        WebhookSubscription sub1 = buildSubscription("whsub_1", "t1");
+        WebhookSubscription sub2 = buildSubscription("whsub_2", "t2");
+        when(webhookRepository.listAll(any(), any(), any(), anyInt()))
+            .thenReturn(List.of(sub1, sub2));
+
+        WebhookListResponse response = webhookService.listAll("t1", null, null, null, 50);
+
+        assertThat(response.getSubscriptions()).hasSize(1);
+        assertThat(response.getSubscriptions().get(0).getSubscriptionId()).isEqualTo("whsub_1");
+    }
 }
