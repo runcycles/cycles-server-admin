@@ -113,7 +113,12 @@ public class WebhookDeliveryRepository {
                     "Delivery not found: " + delivery.getDeliveryId(), 404);
             }
             String json = objectMapper.writeValueAsString(delivery);
-            jedis.set("delivery:" + delivery.getDeliveryId(), json);
+            String key = "delivery:" + delivery.getDeliveryId();
+            long ttl = jedis.ttl(key);
+            jedis.set(key, json);
+            if (ttl > 0) {
+                jedis.expire(key, ttl); // Preserve existing TTL after SET
+            }
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
