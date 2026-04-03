@@ -13,9 +13,15 @@
 | Replaced hardcoded `isPrivateOrReserved()` with CIDR-range matching against `config.getBlockedCidrRanges()` | `WebhookUrlValidator.java` |
 | Added `CidrRange` inner class for CIDR parsing and IP containment checks | `WebhookUrlValidator.java` |
 | When `blocked_cidr_ranges` is empty, no IP-based blocking occurs (user opted out) | `WebhookUrlValidator.java` |
-| Updated and added tests: 9 new tests (CIDR matching, range removal, IPv6, boundary cases) | `WebhookUrlValidatorTest.java` |
+| Validates CIDR prefix lengths (rejects negative or out-of-range values) | `WebhookUrlValidator.CidrRange.parse()` |
+| Handles IPv4-mapped IPv6 addresses (`::ffff:x.x.x.x`) against IPv4 CIDR ranges | `WebhookUrlValidator.CidrRange.contains()` |
+| Null-safe CIDR list parsing (skips null entries) | `WebhookUrlValidator.parseCidrRanges()` |
+| Fixed glob pattern matching to escape regex metacharacters (`+`, `?`, `[`, `]`, etc.) | `WebhookUrlValidator.matchesGlob()` |
+| Added 16 new tests (CIDR matching, prefix validation, boundary, IPv4-mapped IPv6, glob escaping) | `WebhookUrlValidatorTest.java` |
 
-**Tests:** 341 total, 0 failures. All coverage checks passed.
+**Known limitation (pre-existing, out of scope):** DNS is resolved at webhook creation/update time only. A DNS rebinding attack (changing DNS after validation) could bypass CIDR checks at delivery time. Mitigation requires delivery-time re-validation in `cycles-server-events`.
+
+**Tests:** 348 total, 0 failures. All coverage checks passed.
 
 Related: runcycles/cycles-server-admin#55
 

@@ -10,6 +10,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.net.InetAddress;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -248,6 +249,67 @@ class WebhookUrlValidatorTest {
         WebhookUrlValidator.CidrRange range = WebhookUrlValidator.CidrRange.parse("::1/128");
         assertThat(range.contains(InetAddress.getByName("::1"))).isTrue();
         assertThat(range.contains(InetAddress.getByName("::2"))).isFalse();
+    }
+
+    @Test
+    void cidrRange_parse_invalidPrefixLength_returnsNull() {
+        assertThat(WebhookUrlValidator.CidrRange.parse("10.0.0.0/33")).isNull();
+        assertThat(WebhookUrlValidator.CidrRange.parse("10.0.0.0/-1")).isNull();
+        assertThat(WebhookUrlValidator.CidrRange.parse("::1/129")).isNull();
+    }
+
+    @Test
+    void cidrRange_parse_bareIp_defaultsToHostRoute() throws Exception {
+        WebhookUrlValidator.CidrRange range = WebhookUrlValidator.CidrRange.parse("10.0.0.1");
+        assertThat(range).isNotNull();
+        assertThat(range.contains(InetAddress.getByName("10.0.0.1"))).isTrue();
+        assertThat(range.contains(InetAddress.getByName("10.0.0.2"))).isFalse();
+    }
+
+    @Test
+    void cidrRange_prefixZero_matchesAll() throws Exception {
+        WebhookUrlValidator.CidrRange range = WebhookUrlValidator.CidrRange.parse("0.0.0.0/0");
+        assertThat(range.contains(InetAddress.getByName("1.2.3.4"))).isTrue();
+        assertThat(range.contains(InetAddress.getByName("255.255.255.255"))).isTrue();
+    }
+
+    @Test
+    void cidrRange_ipv4MappedIpv6_resolvedAsIpv4() throws Exception {
+        // Java's InetAddress.getByName("::ffff:x.x.x.x") returns Inet4Address,
+        // so IPv4-mapped IPv6 addresses are naturally matched against IPv4 CIDR ranges
+        WebhookUrlValidator.CidrRange range = WebhookUrlValidator.CidrRange.parse("127.0.0.0/8");
+        InetAddress mapped = InetAddress.getByName("::ffff:127.0.0.1");
+        assertThat(mapped.getAddress().length).isEqualTo(4); // JVM resolves to IPv4
+        assertThat(range.contains(mapped)).isTrue();
+    }
+
+    @Test
+    void cidrRange_ipv4MappedIpv6_nonMatchingRange() throws Exception {
+        WebhookUrlValidator.CidrRange range = WebhookUrlValidator.CidrRange.parse("10.0.0.0/8");
+        InetAddress mapped = InetAddress.getByName("::ffff:127.0.0.1");
+        assertThat(range.contains(mapped)).isFalse();
+    }
+
+    @Test
+    void cidrRange_nullCidrInList_skipped() {
+        // Null elements in the CIDR list should be silently skipped
+        WebhookSecurityConfig config = WebhookSecurityConfig.builder()
+            .allowHttp(true)
+            .blockedCidrRanges(Arrays.asList("127.0.0.0/8", null, "10.0.0.0/8"))
+            .build();
+        when(configRepository.get()).thenReturn(config);
+
+        assertThatThrownBy(() -> urlValidator.validate("http://127.0.0.1/webhook"))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("blocked IP");
+    }
+
+    @Test
+    void matchesGlob_regexMetacharsEscaped() {
+        // Regex metacharacters in patterns should be treated as literals
+        assertThat(urlValidator.matchesGlob("https://example.com/webhook?foo=bar", "https://example.com/webhook?foo=bar")).isTrue();
+        assertThat(urlValidator.matchesGlob("https://example.com/webhook(1)", "https://example.com/webhook(1)")).isTrue();
+        assertThat(urlValidator.matchesGlob("https://example.com/a", "https://example.com/[a-z]")).isFalse();
     }
 
     @Test
