@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.budget.*;
+import io.runcycles.admin.model.budget.FundingOperation;
 import io.runcycles.admin.model.shared.Amount;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.UnitEnum;
@@ -742,5 +743,36 @@ class BudgetRepositoryTest {
 
         verify(jedis).eval(anyString(), anyList(), argThat((List<String> args) ->
                 args.get(2).equals("ALLOW_WITH_OVERDRAFT")));
+    }
+
+    @Test
+    void create_lowercasesMixedCaseScope() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+
+        BudgetCreateRequest request = new BudgetCreateRequest();
+        request.setScope("tenant:Rider/app:riderApp");
+        request.setUnit(UnitEnum.USD_MICROCENTS);
+        request.setAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000000L));
+
+        BudgetLedger result = repository.create("tenant1", request);
+
+        assertThat(result.getScope()).isEqualTo("tenant:rider/app:riderapp");
+    }
+
+    @Test
+    void fund_lowercasesMixedCaseScope() {
+        when(jedis.eval(anyString(), anyList(), anyList()))
+                .thenReturn(Arrays.asList("OK", "1000000", "2000000", "0", "0", "0", "0", "false"));
+
+        BudgetFundingRequest request = new BudgetFundingRequest();
+        request.setOperation(FundingOperation.CREDIT);
+        request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000000L));
+
+        repository.fund("tenant1", "tenant:Rider/app:RiderApp", UnitEnum.USD_MICROCENTS, request);
+
+        // Verify the Redis key uses lowercased scope
+        verify(jedis).eval(anyString(),
+                argThat((List<String> keys) -> keys.get(0).equals("budget:tenant:rider/app:riderapp:USD_MICROCENTS")),
+                anyList());
     }
 }
