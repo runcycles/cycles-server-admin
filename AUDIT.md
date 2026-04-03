@@ -17,11 +17,13 @@
 | Handles IPv4-mapped IPv6 addresses (`::ffff:x.x.x.x`) against IPv4 CIDR ranges | `WebhookUrlValidator.CidrRange.contains()` |
 | Null-safe CIDR list parsing (skips null entries) | `WebhookUrlValidator.parseCidrRanges()` |
 | Fixed glob pattern matching to escape regex metacharacters (`+`, `?`, `[`, `]`, etc.) | `WebhookUrlValidator.matchesGlob()` |
-| Added 16 new tests (CIDR matching, prefix validation, boundary, IPv4-mapped IPv6, glob escaping) | `WebhookUrlValidatorTest.java` |
+| Enforced `additionalProperties: false` on `WebhookSecurityConfig` per spec (rejects unknown JSON fields) | `WebhookSecurityConfig.java` |
+| Bumped version to `0.1.25.3` | `pom.xml` |
+| Added 20 new tests (CIDR matching, prefix validation, boundary, non-aligned prefix, unresolvable host, no-host URL, additionalProperties rejection, glob escaping) | `WebhookUrlValidatorTest.java`, `WebhookSecurityConfigControllerTest.java` |
 
 **Known limitation (pre-existing, out of scope):** DNS is resolved at webhook creation/update time only. A DNS rebinding attack (changing DNS after validation) could bypass CIDR checks at delivery time. Mitigation requires delivery-time re-validation in `cycles-server-events`.
 
-**Tests:** 348 total, 0 failures. All coverage checks passed.
+**Tests:** 352 total, 0 failures. All coverage checks passed.
 
 Related: runcycles/cycles-server-admin#55
 

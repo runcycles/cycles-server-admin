@@ -74,6 +74,16 @@ class WebhookSecurityConfigControllerTest {
     }
 
     @Test
+    void updateConfig_unknownField_returns400() throws Exception {
+        // Spec: additionalProperties: false — unknown fields must be rejected
+        mockMvc.perform(put("/v1/admin/config/webhook-security")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"allow_http\":true,\"unknown_field\":\"value\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void updateConfig_noAdminKey_returns401() throws Exception {
         mockMvc.perform(put("/v1/admin/config/webhook-security")
                         .contentType(MediaType.APPLICATION_JSON)

@@ -5,6 +5,11 @@ import java.util.List;
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class WebhookSecurityConfig {
+
+    @JsonAnySetter
+    public void rejectUnknownProperty(String key, Object value) {
+        throw new IllegalArgumentException("Unknown property: " + key);
+    }
     @JsonProperty("blocked_cidr_ranges") @Builder.Default
     private List<String> blockedCidrRanges = List.of(
         "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",

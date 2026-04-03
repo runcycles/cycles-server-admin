@@ -69,6 +69,28 @@ class WebhookUrlValidatorTest {
     }
 
     @Test
+    void validate_noHost_throws() {
+        when(configRepository.get()).thenReturn(configNoCidrBlock(true));
+
+        assertThatThrownBy(() -> urlValidator.validate("http:///webhook"))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("No host in URL");
+    }
+
+    @Test
+    void validate_unresolvableHost_throws() {
+        WebhookSecurityConfig config = WebhookSecurityConfig.builder()
+            .allowHttp(false)
+            .blockedCidrRanges(List.of("10.0.0.0/8"))
+            .build();
+        when(configRepository.get()).thenReturn(config);
+
+        assertThatThrownBy(() -> urlValidator.validate("https://host.invalid.test.nonexistent/webhook"))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("Cannot resolve hostname");
+    }
+
+    @Test
     void validate_httpUrlWithAllowHttpFalse_throws() {
         when(configRepository.get()).thenReturn(configNoCidrBlock(false));
 
@@ -236,6 +258,15 @@ class WebhookUrlValidatorTest {
         WebhookUrlValidator.CidrRange range = WebhookUrlValidator.CidrRange.parse("192.168.1.0/24");
         assertThat(range.contains(InetAddress.getByName("192.168.1.255"))).isTrue();
         assertThat(range.contains(InetAddress.getByName("192.168.2.0"))).isFalse();
+    }
+
+    @Test
+    void cidrRange_contains_nonAlignedPrefix() throws Exception {
+        // /12 = 1.5 bytes — exercises the remaining-bits mask logic
+        WebhookUrlValidator.CidrRange range = WebhookUrlValidator.CidrRange.parse("172.16.0.0/12");
+        assertThat(range.contains(InetAddress.getByName("172.16.0.1"))).isTrue();
+        assertThat(range.contains(InetAddress.getByName("172.31.255.255"))).isTrue();
+        assertThat(range.contains(InetAddress.getByName("172.32.0.0"))).isFalse();
     }
 
     @Test
