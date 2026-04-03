@@ -222,16 +222,17 @@ class WebhookServiceTest {
     }
 
     @Test
-    void listAll_delegatesAndFilters() {
+    void listAll_withTenantId_delegatesToListByTenant() {
         WebhookSubscription sub1 = buildSubscription("whsub_1", "t1");
-        WebhookSubscription sub2 = buildSubscription("whsub_2", "t2");
-        when(webhookRepository.listAll(null, null, null, 50))
-            .thenReturn(List.of(sub1, sub2));
+        when(webhookRepository.listByTenant("t1", null, null, null, 50))
+            .thenReturn(List.of(sub1));
 
         WebhookListResponse response = webhookService.listAll("t1", null, null, null, 50);
 
         assertThat(response.getSubscriptions()).hasSize(1);
         assertThat(response.getSubscriptions().get(0).getTenantId()).isEqualTo("t1");
+        verify(webhookRepository).listByTenant("t1", null, null, null, 50);
+        verify(webhookRepository, never()).listAll(any(), any(), any(), anyInt());
     }
 
     @Test
@@ -481,15 +482,19 @@ class WebhookServiceTest {
     }
 
     @Test
-    void listAll_withTenantFilter_filtersResults() {
+    void listAll_withTenantFilter_paginatesCorrectly() {
+        // Verifies fix for #57: tenant filter now uses tenant-specific Redis set
+        // so hasMore and nextCursor reflect tenant-scoped pagination
         WebhookSubscription sub1 = buildSubscription("whsub_1", "t1");
-        WebhookSubscription sub2 = buildSubscription("whsub_2", "t2");
-        when(webhookRepository.listAll(any(), any(), any(), anyInt()))
+        WebhookSubscription sub2 = buildSubscription("whsub_2", "t1");
+        when(webhookRepository.listByTenant("t1", null, null, null, 2))
             .thenReturn(List.of(sub1, sub2));
 
-        WebhookListResponse response = webhookService.listAll("t1", null, null, null, 50);
+        WebhookListResponse response = webhookService.listAll("t1", null, null, null, 2);
 
-        assertThat(response.getSubscriptions()).hasSize(1);
-        assertThat(response.getSubscriptions().get(0).getSubscriptionId()).isEqualTo("whsub_1");
+        assertThat(response.getSubscriptions()).hasSize(2);
+        assertThat(response.isHasMore()).isTrue();
+        assertThat(response.getNextCursor()).isEqualTo("whsub_2");
+        verify(webhookRepository, never()).listAll(any(), any(), any(), anyInt());
     }
 }

@@ -4,6 +4,22 @@
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
+### 2026-04-03 — Fix: listAll() pagination with tenant_id delegates to listByTenant (#57)
+
+**Bug fix:** `WebhookService.listAll()` applied the `tenant_id` filter in-memory after fetching `limit` items from the global `webhooks:_all` Redis set. This caused `has_more` to report `false` prematurely when the filtered result count dropped below the requested limit, silently truncating paginated results.
+
+| Fix | Location |
+|-----|----------|
+| When `tenantId` is provided, `listAll()` now delegates to `listByTenant()` which queries the tenant-specific `webhooks:{tenantId}` Redis set directly | `WebhookService.java:214` |
+| Removed dead in-memory tenant filter code | `WebhookService.java` |
+| Updated tests to verify delegation to `listByTenant` and correct pagination (`hasMore`, `nextCursor`) | `WebhookServiceTest.java` |
+
+**Tests:** 352 total, 0 failures. All coverage checks passed.
+
+Related: runcycles/cycles-server-admin#57
+
+---
+
 ### 2026-04-03 — v0.1.25.3: Webhook URL validation respects blocked_cidr_ranges config
 
 **Bug fix:** `WebhookUrlValidator` had a hardcoded `isPrivateOrReserved()` check using Java's `InetAddress.isLoopbackAddress()` / `isSiteLocalAddress()` etc. that ran unconditionally, ignoring the configurable `blocked_cidr_ranges` in `WebhookSecurityConfig`. Users could not register webhook URLs pointing to local/Docker endpoints even after removing the corresponding CIDR ranges via `PUT /v1/admin/config/webhook-security`.

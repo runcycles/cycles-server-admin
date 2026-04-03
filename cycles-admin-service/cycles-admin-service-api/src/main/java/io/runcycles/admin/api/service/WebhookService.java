@@ -210,11 +210,11 @@ public class WebhookService {
 
     public WebhookListResponse listAll(String tenantId, String status, String eventType,
                                         String cursor, int limit) {
+        if (tenantId != null) {
+            return listByTenant(tenantId, status, eventType, cursor, limit);
+        }
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         List<WebhookSubscription> subs = webhookRepository.listAll(status, eventType, cursor, effectiveLimit);
-        if (tenantId != null) {
-            subs = subs.stream().filter(s -> tenantId.equals(s.getTenantId())).toList();
-        }
         subs.forEach(s -> { s.setSigningSecret(null); });
         return WebhookListResponse.builder()
             .subscriptions(subs)
