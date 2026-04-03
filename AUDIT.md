@@ -4,6 +4,31 @@
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
+### 2026-04-03 — v0.1.25.3: Webhook URL validation respects blocked_cidr_ranges config
+
+**Bug fix:** `WebhookUrlValidator` had a hardcoded `isPrivateOrReserved()` check using Java's `InetAddress.isLoopbackAddress()` / `isSiteLocalAddress()` etc. that ran unconditionally, ignoring the configurable `blocked_cidr_ranges` in `WebhookSecurityConfig`. Users could not register webhook URLs pointing to local/Docker endpoints even after removing the corresponding CIDR ranges via `PUT /v1/admin/config/webhook-security`.
+
+| Fix | Location |
+|-----|----------|
+| Replaced hardcoded `isPrivateOrReserved()` with CIDR-range matching against `config.getBlockedCidrRanges()` | `WebhookUrlValidator.java` |
+| Added `CidrRange` inner class for CIDR parsing and IP containment checks | `WebhookUrlValidator.java` |
+| When `blocked_cidr_ranges` is empty, no IP-based blocking occurs (user opted out) | `WebhookUrlValidator.java` |
+| Validates CIDR prefix lengths (rejects negative or out-of-range values) | `WebhookUrlValidator.CidrRange.parse()` |
+| Handles IPv4-mapped IPv6 addresses (`::ffff:x.x.x.x`) against IPv4 CIDR ranges | `WebhookUrlValidator.CidrRange.contains()` |
+| Null-safe CIDR list parsing (skips null entries) | `WebhookUrlValidator.parseCidrRanges()` |
+| Fixed glob pattern matching to escape regex metacharacters (`+`, `?`, `[`, `]`, etc.) | `WebhookUrlValidator.matchesGlob()` |
+| Enforced `additionalProperties: false` on `WebhookSecurityConfig` per spec (rejects unknown JSON fields) | `WebhookSecurityConfig.java` |
+| Bumped version to `0.1.25.3` | `pom.xml` |
+| Added 20 new tests (CIDR matching, prefix validation, boundary, non-aligned prefix, unresolvable host, no-host URL, additionalProperties rejection, glob escaping) | `WebhookUrlValidatorTest.java`, `WebhookSecurityConfigControllerTest.java` |
+
+**Known limitation (pre-existing, out of scope):** DNS is resolved at webhook creation/update time only. A DNS rebinding attack (changing DNS after validation) could bypass CIDR checks at delivery time. Mitigation requires delivery-time re-validation in `cycles-server-events`.
+
+**Tests:** 352 total, 0 failures. All coverage checks passed.
+
+Related: runcycles/cycles-server-admin#55
+
+---
+
 ### 2026-04-03 — v0.1.25.2: Lowercase scope normalization
 
 **Bug fix:** The admin API stored scope values verbatim (mixed case), but the runtime server's `ScopeDerivationService` lowercases all scope values. This caused budgets created via the admin API with mixed-case scopes (e.g. `app:riderApp`) to be invisible to the runtime server's `GET /v1/balances` endpoint.
