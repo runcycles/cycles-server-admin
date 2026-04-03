@@ -4,6 +4,18 @@
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
+### 2026-04-03 — v0.1.25.2: Lowercase scope normalization
+
+**Bug fix:** The admin API stored scope values verbatim (mixed case), but the runtime server's `ScopeDerivationService` lowercases all scope values. This caused budgets created via the admin API with mixed-case scopes (e.g. `app:riderApp`) to be invisible to the runtime server's `GET /v1/balances` endpoint.
+
+| Fix | Location |
+|-----|----------|
+| Added `normalizeScope()` to `BudgetRepository` — lowercases scope in `create()`, `update()`, and `fund()` | `BudgetRepository.java` |
+
+Related: runcycles/cycles-openclaw-budget-guard#70
+
+---
+
 ### 2026-04-01 — Spec Compliance Review: README, Pagination, Error Codes
 
 Full review of code, README, and spec compliance against `complete-budget-governance-v0.1.25.yaml`.
