@@ -9,6 +9,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.net.InetAddress;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -97,7 +98,7 @@ class WebhookUrlValidatorTest {
 
         assertThatThrownBy(() -> urlValidator.validate("https://127.0.0.1/webhook"))
             .isInstanceOf(GovernanceException.class)
-            .hasMessageContaining("private/reserved IP");
+            .hasMessageContaining("blocked IP");
     }
 
     @Test
@@ -157,13 +158,96 @@ class WebhookUrlValidatorTest {
     }
 
     @Test
-    void validate_privateIp_blockedEvenWithoutCidrConfig() {
-        // SSRF fix: private IPs must be blocked even when no CIDR ranges are configured
+    void validate_privateIp_allowedWhenCidrRangesEmpty() {
+        // When blocked_cidr_ranges is empty, no IP-based blocking occurs
         when(configRepository.get()).thenReturn(configNoCidrBlock(true));
+
+        // Should not throw — CIDR ranges are empty, HTTP is allowed
+        urlValidator.validate("http://127.0.0.1/webhook");
+    }
+
+    @Test
+    void validate_privateIp_blockedWhenCidrRangesConfigured() {
+        WebhookSecurityConfig config = WebhookSecurityConfig.builder()
+            .allowHttp(true)
+            .blockedCidrRanges(List.of("127.0.0.0/8"))
+            .build();
+        when(configRepository.get()).thenReturn(config);
 
         assertThatThrownBy(() -> urlValidator.validate("http://127.0.0.1/webhook"))
             .isInstanceOf(GovernanceException.class)
-            .hasMessageContaining("private/reserved IP");
+            .hasMessageContaining("blocked IP");
+    }
+
+    @Test
+    void validate_privateIp_allowedWhenSpecificRangeRemoved() {
+        // Removing 127.0.0.0/8 from blocked ranges allows loopback
+        WebhookSecurityConfig config = WebhookSecurityConfig.builder()
+            .allowHttp(true)
+            .blockedCidrRanges(List.of("10.0.0.0/8", "192.168.0.0/16"))
+            .build();
+        when(configRepository.get()).thenReturn(config);
+
+        // Should not throw — 127.0.0.0/8 is not in the blocked ranges
+        urlValidator.validate("http://127.0.0.1/webhook");
+    }
+
+    @Test
+    void validate_siteLocalIp_blockedByCidr() {
+        WebhookSecurityConfig config = WebhookSecurityConfig.builder()
+            .allowHttp(true)
+            .blockedCidrRanges(List.of("192.168.0.0/16"))
+            .build();
+        when(configRepository.get()).thenReturn(config);
+
+        assertThatThrownBy(() -> urlValidator.validate("http://192.168.1.100/webhook"))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("blocked IP");
+    }
+
+    // --- CidrRange unit tests ---
+
+    @Test
+    void cidrRange_parse_validIpv4() {
+        WebhookUrlValidator.CidrRange range = WebhookUrlValidator.CidrRange.parse("10.0.0.0/8");
+        assertThat(range).isNotNull();
+    }
+
+    @Test
+    void cidrRange_parse_invalidCidr_returnsNull() {
+        assertThat(WebhookUrlValidator.CidrRange.parse("not-a-cidr")).isNull();
+    }
+
+    @Test
+    void cidrRange_contains_matchingIp() throws Exception {
+        WebhookUrlValidator.CidrRange range = WebhookUrlValidator.CidrRange.parse("10.0.0.0/8");
+        assertThat(range.contains(InetAddress.getByName("10.255.0.1"))).isTrue();
+    }
+
+    @Test
+    void cidrRange_contains_nonMatchingIp() throws Exception {
+        WebhookUrlValidator.CidrRange range = WebhookUrlValidator.CidrRange.parse("10.0.0.0/8");
+        assertThat(range.contains(InetAddress.getByName("11.0.0.1"))).isFalse();
+    }
+
+    @Test
+    void cidrRange_contains_exactBoundary() throws Exception {
+        WebhookUrlValidator.CidrRange range = WebhookUrlValidator.CidrRange.parse("192.168.1.0/24");
+        assertThat(range.contains(InetAddress.getByName("192.168.1.255"))).isTrue();
+        assertThat(range.contains(InetAddress.getByName("192.168.2.0"))).isFalse();
+    }
+
+    @Test
+    void cidrRange_ipv4v6_mismatch_returnsFalse() throws Exception {
+        WebhookUrlValidator.CidrRange range = WebhookUrlValidator.CidrRange.parse("10.0.0.0/8");
+        assertThat(range.contains(InetAddress.getByName("::1"))).isFalse();
+    }
+
+    @Test
+    void cidrRange_ipv6_loopback() throws Exception {
+        WebhookUrlValidator.CidrRange range = WebhookUrlValidator.CidrRange.parse("::1/128");
+        assertThat(range.contains(InetAddress.getByName("::1"))).isTrue();
+        assertThat(range.contains(InetAddress.getByName("::2"))).isFalse();
     }
 
     @Test

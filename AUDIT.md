@@ -4,6 +4,23 @@
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
+### 2026-04-03 — v0.1.25.3: Webhook URL validation respects blocked_cidr_ranges config
+
+**Bug fix:** `WebhookUrlValidator` had a hardcoded `isPrivateOrReserved()` check using Java's `InetAddress.isLoopbackAddress()` / `isSiteLocalAddress()` etc. that ran unconditionally, ignoring the configurable `blocked_cidr_ranges` in `WebhookSecurityConfig`. Users could not register webhook URLs pointing to local/Docker endpoints even after removing the corresponding CIDR ranges via `PUT /v1/admin/config/webhook-security`.
+
+| Fix | Location |
+|-----|----------|
+| Replaced hardcoded `isPrivateOrReserved()` with CIDR-range matching against `config.getBlockedCidrRanges()` | `WebhookUrlValidator.java` |
+| Added `CidrRange` inner class for CIDR parsing and IP containment checks | `WebhookUrlValidator.java` |
+| When `blocked_cidr_ranges` is empty, no IP-based blocking occurs (user opted out) | `WebhookUrlValidator.java` |
+| Updated and added tests: 9 new tests (CIDR matching, range removal, IPv6, boundary cases) | `WebhookUrlValidatorTest.java` |
+
+**Tests:** 341 total, 0 failures. All coverage checks passed.
+
+Related: runcycles/cycles-server-admin#55
+
+---
+
 ### 2026-04-03 — v0.1.25.2: Lowercase scope normalization
 
 **Bug fix:** The admin API stored scope values verbatim (mixed case), but the runtime server's `ScopeDerivationService` lowercases all scope values. This caused budgets created via the admin API with mixed-case scopes (e.g. `app:riderApp`) to be invisible to the runtime server's `GET /v1/balances` endpoint.
