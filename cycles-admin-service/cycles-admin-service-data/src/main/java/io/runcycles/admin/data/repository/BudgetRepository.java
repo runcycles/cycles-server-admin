@@ -18,6 +18,16 @@ import java.util.*;
 @Repository
 public class BudgetRepository {
     private static final Logger LOG = LoggerFactory.getLogger(BudgetRepository.class);
+
+    /**
+     * Normalize scope values to lowercase to match the runtime server's
+     * ScopeDerivationService which lowercases all scope segments.
+     * Preserves the "level:value" structure but lowercases the values.
+     */
+    private static String normalizeScope(String scope) {
+        if (scope == null) return null;
+        return scope.toLowerCase();
+    }
     @Autowired private JedisPool jedisPool;
     @Autowired private ObjectMapper objectMapper;
 
@@ -116,15 +126,16 @@ public class BudgetRepository {
         "return 1\n";
 
     public BudgetLedger create(String tenantId, BudgetCreateRequest request) {
-        LOG.info("Creating budget: scope={}, unit={}", request.getScope(), request.getUnit());
+        String normalizedScope = normalizeScope(request.getScope());
+        LOG.info("Creating budget: scope={}, unit={}", normalizedScope, request.getUnit());
         try (Jedis jedis = jedisPool.getResource()) {
-            String key = "budget:" + request.getScope() + ":" + request.getUnit();
+            String key = "budget:" + normalizedScope + ":" + request.getUnit();
             String indexKey = "budgets:" + tenantId;
 
             BudgetLedger ledger = BudgetLedger.builder()
                 .ledgerId(UUID.randomUUID().toString())
                 .tenantId(tenantId)
-                .scope(request.getScope())
+                .scope(normalizedScope)
                 .unit(request.getUnit())
                 .allocated(request.getAllocated())
                 .remaining(request.getAllocated())
@@ -226,6 +237,7 @@ public class BudgetRepository {
         "return {'OK'}\n";
 
     public BudgetLedger update(String tenantId, String scope, UnitEnum unit, BudgetUpdateRequest request) {
+        scope = normalizeScope(scope);
         LOG.info("Updating budget: scope={}, unit={}", scope, unit);
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "budget:" + scope + ":" + unit;
@@ -305,6 +317,7 @@ public class BudgetRepository {
     }
 
     public BudgetFundingResponse fund(String tenantId, String scope, UnitEnum unit, BudgetFundingRequest request) {
+        scope = normalizeScope(scope);
         LOG.info("Funding budget: scope={}, unit={}, op={}, tenant={}", scope, unit, request.getOperation(), tenantId);
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "budget:" + scope + ":" + unit;
