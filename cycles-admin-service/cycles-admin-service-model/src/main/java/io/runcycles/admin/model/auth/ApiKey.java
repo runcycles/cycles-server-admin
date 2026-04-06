@@ -16,6 +16,7 @@ import java.util.Map;
 @NoArgsConstructor
 @AllArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
+@com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = false)
 public class ApiKey {
     @JsonProperty("key_id") private String keyId;
     @JsonProperty("tenant_id") private String tenantId;

@@ -238,33 +238,41 @@ public class WebhookService {
     public ReplayResponse replay(String subscriptionId, ReplayRequest request) {
         WebhookSubscription sub = webhookRepository.findById(subscriptionId);
         String replayId = "replay_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
-        int maxEvents = request.getMaxEvents() != null ? Math.min(request.getMaxEvents(), 1000) : 100;
-        // Query events in the requested time range
-        List<Event> events = eventRepository.list(
-            sub.getTenantId().equals("__system__") ? null : sub.getTenantId(),
-            null, null, null, null,
-            request.getFrom(), request.getTo(), null, maxEvents);
-        // Filter by event types if specified in replay request
-        if (request.getEventTypes() != null && !request.getEventTypes().isEmpty()) {
-            events = events.stream()
-                .filter(e -> request.getEventTypes().contains(e.getEventType()))
-                .toList();
+        // Acquire distributed lock — spec requires 409 REPLAY_IN_PROGRESS if already running
+        if (!webhookRepository.acquireReplayLock(subscriptionId, replayId)) {
+            throw GovernanceException.replayInProgress(subscriptionId);
         }
-        // Queue each matching event for re-delivery to this subscription
-        int queued = 0;
-        for (Event event : events) {
-            try {
-                dispatchService.dispatchToSubscription(event, sub);
-                queued++;
-            } catch (Exception e) {
-                LOG.warn("Failed to queue replay delivery for event {}: {}", event.getEventId(), e.getMessage());
+        try {
+            int maxEvents = request.getMaxEvents() != null ? Math.min(request.getMaxEvents(), 1000) : 100;
+            // Query events in the requested time range
+            List<Event> events = eventRepository.list(
+                sub.getTenantId().equals("__system__") ? null : sub.getTenantId(),
+                null, null, null, null,
+                request.getFrom(), request.getTo(), null, maxEvents);
+            // Filter by event types if specified in replay request
+            if (request.getEventTypes() != null && !request.getEventTypes().isEmpty()) {
+                events = events.stream()
+                    .filter(e -> request.getEventTypes().contains(e.getEventType()))
+                    .toList();
             }
+            // Queue each matching event for re-delivery to this subscription
+            int queued = 0;
+            for (Event event : events) {
+                try {
+                    dispatchService.dispatchToSubscription(event, sub);
+                    queued++;
+                } catch (Exception e) {
+                    LOG.warn("Failed to queue replay delivery for event {}: {}", event.getEventId(), e.getMessage());
+                }
+            }
+            return ReplayResponse.builder()
+                .replayId(replayId)
+                .eventsQueued(queued)
+                .estimatedCompletionSeconds(queued > 0 ? Math.max(1, queued / 10) : 0)
+                .build();
+        } finally {
+            webhookRepository.releaseReplayLock(subscriptionId, replayId);
         }
-        return ReplayResponse.builder()
-            .replayId(replayId)
-            .eventsQueued(queued)
-            .estimatedCompletionSeconds(queued > 0 ? Math.max(1, queued / 10) : 0)
-            .build();
     }
 
     private String generateSigningSecret() {

@@ -6,6 +6,7 @@ import io.runcycles.admin.model.shared.CommitOveragePolicy;
 import lombok.*;
 import java.time.Instant;
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
+@JsonIgnoreProperties(ignoreUnknown = false)
 public class Policy {
     // Required per spec: policy_id, scope_pattern, status, created_at
     @JsonProperty("policy_id") private String policyId;

@@ -5,6 +5,7 @@ import lombok.*;
 import java.time.Instant;
 import java.util.Map;
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
+@JsonIgnoreProperties(ignoreUnknown = false)
 public class Tenant {
     // Required per spec: tenant_id, name, status, created_at (always serialized)
     @JsonProperty("tenant_id") private String tenantId;

@@ -1,8 +1,45 @@
 # Complete Budget Governance v0.1.25 — Admin Server Audit
 
-**Date:** 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Date:** 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-06 — v0.1.25.4 (amended): Replay lock + response model additionalProperties enforcement
+
+**Critical fix:** `WebhookService.replay()` had no concurrent replay detection — the spec requires `409 REPLAY_IN_PROGRESS` but `GovernanceException.replayInProgress()` was never called. Multiple simultaneous replays could cause duplicate deliveries.
+
+| Fix | Location |
+|-----|----------|
+| Added `acquireReplayLock(subscriptionId, replayId)` using Redis SET NX EX (1h TTL) | `WebhookRepository.java` |
+| Added `releaseReplayLock(subscriptionId)` in finally block after replay completes | `WebhookRepository.java` |
+| `replay()` now throws `GovernanceException.replayInProgress()` when lock is held | `WebhookService.java` |
+| Added `@JsonIgnoreProperties(ignoreUnknown = false)` to 8 response/entity models | Tenant, BudgetLedger, Policy, ApiKey, Event, Actor, WebhookSubscription, WebhookDelivery |
+| Added 2 new replay lock tests (409 rejection + lock release verification) | `WebhookServiceTest.java` |
+| Updated 6 existing replay tests with `acquireReplayLock` mock | `WebhookServiceTest.java` |
+
+**Tests:** 717 total (85 model + 278 data + 354 API), 0 failures. All JaCoCo coverage checks passed.
+
+---
+
+### 2026-04-06 — v0.1.25.4: Spec validation compliance — additionalProperties, range constraints, size limits
+
+Full spec compliance audit of all request DTOs against `complete-budget-governance-v0.1.25.yaml`. Enforces `additionalProperties: false`, adds missing range/size constraints per spec, and removes a spurious permission mapping.
+
+| Category | Fix | Models affected |
+|----------|-----|-----------------|
+| `additionalProperties: false` | Added `@JsonIgnoreProperties(ignoreUnknown = false)` | TenantCreateRequest, TenantUpdateRequest, BudgetCreateRequest, BudgetFundingRequest, PolicyCreateRequest, RateLimits, ReservationTtlOverride, WebhookCreateRequest, WebhookUpdateRequest, WebhookRetryPolicy, WebhookThresholdConfig, ApiKeyCreateRequest |
+| TTL range constraints | Added `@Min(1000) @Max(86400000)` on `defaultReservationTtlMs`, `maxReservationTtlMs` | TenantCreateRequest, TenantUpdateRequest |
+| Extension min constraint | Added `@Min(0)` on `maxReservationExtensions` | TenantCreateRequest, TenantUpdateRequest |
+| Retry policy ranges | Added `@Min/@Max` on maxRetries (0-10), initialDelayMs (100-60000), backoffMultiplier (1.0-10.0), maxDelayMs (1000-3600000) | WebhookRetryPolicy |
+| Threshold config ranges | Added `@DecimalMin/@DecimalMax` on rates (0.0-1.0), `@DecimalMin("1.5")` on burnRateMultiplier, `@Min(60) @Max(86400)` on window seconds | WebhookThresholdConfig |
+| String size limits | Added `@Size(max=256)` on name, `@Size(max=1024)` on description, `@Size(max=2048)` on url | WebhookCreateRequest, WebhookUpdateRequest, PolicyCreateRequest, ApiKeyCreateRequest |
+| Nested `@Valid` | Added `@Valid` on thresholds and retryPolicy fields | WebhookCreateRequest, WebhookUpdateRequest |
+| Spurious permission entry | Removed `GET:/v1/reservations → reservations:list` (no spec endpoint) | AuthInterceptor |
+| Version bump | `0.1.25.3` → `0.1.25.4` | pom.xml |
+
+**Tests:** 715 total (85 model + 278 data + 352 API), 0 failures. 19 new validation tests added (TenantModelTest, PolicyModelTest, WebhookModelTest, BudgetModelTest, AuthModelTest). All JaCoCo coverage checks passed.
+
+---
 
 ### 2026-04-03 — Fix: listAll() pagination with tenant_id delegates to listByTenant (#57)
 

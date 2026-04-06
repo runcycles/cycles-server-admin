@@ -1,8 +1,10 @@
 package io.runcycles.admin.model;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.admin.model.budget.BudgetCreateRequest;
+import io.runcycles.admin.model.budget.BudgetFundingRequest;
 import io.runcycles.admin.model.shared.*;
 import jakarta.validation.*;
 import org.junit.jupiter.api.BeforeAll;
@@ -85,5 +87,21 @@ class BudgetModelTest {
 
         Set<ConstraintViolation<BudgetCreateRequest>> violations = validator.validate(request);
         assertFalse(violations.isEmpty(), "Negative amount should fail @Min(0)");
+    }
+
+    @Test
+    void budgetCreateRequest_rejectsUnknownFields() {
+        String json = """
+            {"scope":"s","unit":"TOKENS","allocated":{"unit":"TOKENS","amount":100},"extra":"bad"}
+            """;
+        assertThrows(UnrecognizedPropertyException.class, () -> mapper.readValue(json, BudgetCreateRequest.class));
+    }
+
+    @Test
+    void budgetFundingRequest_rejectsUnknownFields() {
+        String json = """
+            {"operation":"CREDIT","amount":{"unit":"TOKENS","amount":100},"phantom":true}
+            """;
+        assertThrows(UnrecognizedPropertyException.class, () -> mapper.readValue(json, BudgetFundingRequest.class));
     }
 }

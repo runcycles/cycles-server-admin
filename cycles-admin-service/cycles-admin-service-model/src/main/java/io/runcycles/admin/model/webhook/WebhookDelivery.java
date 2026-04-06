@@ -4,6 +4,7 @@ import io.runcycles.admin.model.event.EventType;
 import lombok.*;
 import java.time.Instant;
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
+@com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = false)
 public class WebhookDelivery {
     @JsonProperty("delivery_id") private String deliveryId;
     @JsonProperty("subscription_id") private String subscriptionId;

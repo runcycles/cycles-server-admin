@@ -127,6 +127,38 @@ public class WebhookRepository {
         }
     }
 
+    // Lua script for atomic lock release: only delete if value matches (owner check)
+    private static final String RELEASE_LOCK_LUA =
+        "if redis.call('GET', KEYS[1]) == ARGV[1] then\n" +
+        "  return redis.call('DEL', KEYS[1])\n" +
+        "else\n" +
+        "  return 0\n" +
+        "end\n";
+
+    /**
+     * Acquire a distributed replay lock for a subscription. Returns true if lock acquired,
+     * false if a replay is already in progress. Lock expires after 1 hour.
+     */
+    public boolean acquireReplayLock(String subscriptionId, String replayId) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            String key = "replay:lock:" + subscriptionId;
+            String result = jedis.set(key, replayId, new redis.clients.jedis.params.SetParams().nx().ex(3600));
+            return "OK".equals(result);
+        }
+    }
+
+    /**
+     * Release the replay lock only if it is still owned by the given replayId.
+     * Prevents accidentally releasing a lock that was re-acquired by another process
+     * after the original lock expired.
+     */
+    public void releaseReplayLock(String subscriptionId, String replayId) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            String key = "replay:lock:" + subscriptionId;
+            jedis.eval(RELEASE_LOCK_LUA, List.of(key), List.of(replayId));
+        }
+    }
+
     public List<WebhookSubscription> listByTenant(String tenantId, String status, String eventType,
                                                    String cursor, int limit) {
         return listFromSet("webhooks:" + tenantId, status, eventType, cursor, limit);
