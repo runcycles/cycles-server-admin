@@ -248,7 +248,7 @@ curl -X PUT http://localhost:7979/v1/admin/config/webhook-security \
 | `DELETE` | `/v1/admin/webhooks/{id}` | Delete subscription | Admin |
 | `POST` | `/v1/admin/webhooks/{id}/test` | Test webhook | Admin |
 | `GET` | `/v1/admin/webhooks/{id}/deliveries` | List deliveries | Admin |
-| `POST` | `/v1/admin/webhooks/{id}/replay` | Replay events | Admin |
+| `POST` | `/v1/admin/webhooks/{id}/replay` | Replay events (202, 409 if in progress) | Admin |
 | `GET` | `/v1/admin/events` | Query events | Admin |
 | `GET` | `/v1/admin/events/{id}` | Get event | Admin |
 | `GET` | `/v1/admin/config/webhook-security` | Get URL policy | Admin |
@@ -271,7 +271,7 @@ Tenants can subscribe to `budget.*`, `reservation.*`, `tenant.*` (26 of 40 event
 
 **40 event types** across 6 categories: budget (15), reservation (5), tenant (6), api_key (6), policy (3), system (5).
 
-**Webhook features:** HMAC-SHA256 signing, at-least-once delivery, exponential backoff retry, auto-disable on consecutive failures, event replay, SSRF prevention (private IP blocking by default).
+**Webhook features:** HMAC-SHA256 signing, at-least-once delivery, exponential backoff retry, auto-disable on consecutive failures, event replay with distributed lock (prevents duplicate replays), SSRF prevention (private IP blocking by default).
 
 ## Core Concepts
 
@@ -487,7 +487,7 @@ All errors return a standard `ErrorResponse`:
 `INVALID_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `BUDGET_EXCEEDED`, `RESERVATION_EXPIRED`, `RESERVATION_FINALIZED`, `IDEMPOTENCY_MISMATCH`, `UNIT_MISMATCH`, `OVERDRAFT_LIMIT_EXCEEDED`, `DEBT_OUTSTANDING`, `INTERNAL_ERROR`
 
 **Governance error codes:**
-`TENANT_NOT_FOUND`, `TENANT_SUSPENDED`, `TENANT_CLOSED`, `BUDGET_NOT_FOUND`, `BUDGET_FROZEN`, `BUDGET_CLOSED`, `POLICY_VIOLATION`, `INSUFFICIENT_PERMISSIONS`, `KEY_REVOKED`, `KEY_EXPIRED`, `DUPLICATE_RESOURCE`, `WEBHOOK_NOT_FOUND`, `WEBHOOK_URL_INVALID`, `EVENT_NOT_FOUND`, `REPLAY_IN_PROGRESS`
+`TENANT_NOT_FOUND`, `TENANT_SUSPENDED`, `TENANT_CLOSED`, `BUDGET_NOT_FOUND`, `BUDGET_FROZEN`, `BUDGET_CLOSED`, `POLICY_VIOLATION`, `INSUFFICIENT_PERMISSIONS`, `KEY_REVOKED`, `KEY_EXPIRED`, `DUPLICATE_RESOURCE`, `WEBHOOK_NOT_FOUND`, `WEBHOOK_URL_INVALID`, `EVENT_NOT_FOUND`, `REPLAY_IN_PROGRESS` (409 — concurrent replay on same subscription)
 
 ## Deployment Models
 
@@ -502,6 +502,8 @@ All errors return a standard `ErrorResponse`:
 The full OpenAPI 3.1.0 specification is in [`complete-budget-governance-v0.1.25.yaml`](complete-budget-governance-v0.1.25.yaml).
 
 v0.1.25 adds Pillar 4 (Events & Webhooks): 40 event types, 20 webhook endpoints, HMAC-SHA256 signing, at-least-once delivery, and webhook secret encryption at rest.
+
+v0.1.25.4 enforces strict spec compliance: `additionalProperties: false` on all request and response models, range/size constraints on all fields per spec, distributed replay lock (409 `REPLAY_IN_PROGRESS`), and cascading `@Valid` on nested objects.
 
 ## Documentation
 
