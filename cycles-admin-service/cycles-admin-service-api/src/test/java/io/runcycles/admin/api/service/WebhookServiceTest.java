@@ -485,7 +485,7 @@ class WebhookServiceTest {
 
         webhookService.replay("whsub_1", request);
 
-        verify(webhookRepository).releaseReplayLock("whsub_1");
+        verify(webhookRepository).releaseReplayLock(eq("whsub_1"), any());
     }
 
     @Test

@@ -127,6 +127,14 @@ public class WebhookRepository {
         }
     }
 
+    // Lua script for atomic lock release: only delete if value matches (owner check)
+    private static final String RELEASE_LOCK_LUA =
+        "if redis.call('GET', KEYS[1]) == ARGV[1] then\n" +
+        "  return redis.call('DEL', KEYS[1])\n" +
+        "else\n" +
+        "  return 0\n" +
+        "end\n";
+
     /**
      * Acquire a distributed replay lock for a subscription. Returns true if lock acquired,
      * false if a replay is already in progress. Lock expires after 1 hour.
@@ -139,9 +147,15 @@ public class WebhookRepository {
         }
     }
 
-    public void releaseReplayLock(String subscriptionId) {
+    /**
+     * Release the replay lock only if it is still owned by the given replayId.
+     * Prevents accidentally releasing a lock that was re-acquired by another process
+     * after the original lock expired.
+     */
+    public void releaseReplayLock(String subscriptionId, String replayId) {
         try (Jedis jedis = jedisPool.getResource()) {
-            jedis.del("replay:lock:" + subscriptionId);
+            String key = "replay:lock:" + subscriptionId;
+            jedis.eval(RELEASE_LOCK_LUA, List.of(key), List.of(replayId));
         }
     }
 

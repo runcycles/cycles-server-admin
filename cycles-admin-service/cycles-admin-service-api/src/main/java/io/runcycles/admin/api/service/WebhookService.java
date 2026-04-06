@@ -271,7 +271,7 @@ public class WebhookService {
                 .estimatedCompletionSeconds(queued > 0 ? Math.max(1, queued / 10) : 0)
                 .build();
         } finally {
-            webhookRepository.releaseReplayLock(subscriptionId);
+            webhookRepository.releaseReplayLock(subscriptionId, replayId);
         }
     }
 
