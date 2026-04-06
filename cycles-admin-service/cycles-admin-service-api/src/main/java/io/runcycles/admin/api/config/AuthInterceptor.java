@@ -38,7 +38,6 @@ public class AuthInterceptor implements HandlerInterceptor {
         Map.entry("PATCH:/v1/admin/policies", "admin:write"),
         Map.entry("GET:/v1/admin/policies", "admin:read"),
         Map.entry("GET:/v1/balances", "balances:read"),
-        Map.entry("GET:/v1/reservations", "reservations:list"),
         Map.entry("POST:/v1/webhooks", "webhooks:write"),
         Map.entry("GET:/v1/webhooks", "webhooks:read"),
         Map.entry("PATCH:/v1/webhooks", "webhooks:write"),

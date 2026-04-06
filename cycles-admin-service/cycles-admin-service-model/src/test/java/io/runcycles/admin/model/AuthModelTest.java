@@ -1,6 +1,7 @@
 package io.runcycles.admin.model;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.admin.model.auth.ApiKeyCreateRequest;
 import io.runcycles.admin.model.auth.ApiKeyStatus;
@@ -76,5 +77,32 @@ class AuthModelTest {
         assertNotNull(ApiKeyStatus.valueOf("ACTIVE"));
         assertNotNull(ApiKeyStatus.valueOf("REVOKED"));
         assertNotNull(ApiKeyStatus.valueOf("EXPIRED"));
+    }
+
+    @Test
+    void apiKeyCreateRequest_rejectsUnknownFields() {
+        String json = """
+            {"tenant_id":"t1","name":"k","unknown":true}
+            """;
+        assertThrows(UnrecognizedPropertyException.class, () -> mapper.readValue(json, ApiKeyCreateRequest.class));
+    }
+
+    @Test
+    void apiKeyCreateRequest_nameTooLong_fails() {
+        ApiKeyCreateRequest request = new ApiKeyCreateRequest();
+        request.setTenantId("t1");
+        request.setName("x".repeat(257));
+        Set<ConstraintViolation<ApiKeyCreateRequest>> violations = validator.validate(request);
+        assertFalse(violations.isEmpty());
+    }
+
+    @Test
+    void apiKeyCreateRequest_descriptionTooLong_fails() {
+        ApiKeyCreateRequest request = new ApiKeyCreateRequest();
+        request.setTenantId("t1");
+        request.setName("valid");
+        request.setDescription("x".repeat(1025));
+        Set<ConstraintViolation<ApiKeyCreateRequest>> violations = validator.validate(request);
+        assertFalse(violations.isEmpty());
     }
 }

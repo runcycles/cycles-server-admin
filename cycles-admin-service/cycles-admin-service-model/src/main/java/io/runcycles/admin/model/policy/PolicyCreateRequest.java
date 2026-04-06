@@ -8,9 +8,10 @@ import jakarta.validation.constraints.*;
 import lombok.*;
 import java.time.Instant;
 @Data @NoArgsConstructor @AllArgsConstructor
+@com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = false)
 public class PolicyCreateRequest {
-    @NotBlank @JsonProperty("name") private String name;
-    @JsonProperty("description") private String description;
+    @NotBlank @Size(max = 256) @JsonProperty("name") private String name;
+    @Size(max = 1024) @JsonProperty("description") private String description;
     @NotBlank @JsonProperty("scope_pattern") private String scopePattern;
     @JsonProperty("priority") private Integer priority;
     @Valid @JsonProperty("caps") private Caps caps;

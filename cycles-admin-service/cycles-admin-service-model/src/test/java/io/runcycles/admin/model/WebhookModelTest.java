@@ -2,20 +2,25 @@ package io.runcycles.admin.model;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.webhook.*;
+import jakarta.validation.*;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class WebhookModelTest {
 
+    private static Validator validator;
     private final ObjectMapper mapper = createObjectMapper();
 
     private static ObjectMapper createObjectMapper() {
@@ -23,6 +28,12 @@ class WebhookModelTest {
         m.registerModule(new JavaTimeModule());
         m.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
         return m;
+    }
+
+    @BeforeAll
+    static void setUpValidator() {
+        ValidatorFactory factory = Validation.buildDefaultValidatorFactory();
+        validator = factory.getValidator();
     }
 
     // ---- WebhookSubscription ----
@@ -304,5 +315,144 @@ class WebhookModelTest {
         assertTrue(json.contains("\"delivery_id\""));
         assertTrue(json.contains("\"subscription_id\""));
         assertTrue(json.contains("\"response_time_ms\""));
+    }
+
+    // ---- additionalProperties: false enforcement ----
+
+    @Test
+    void webhookCreateRequest_rejectsUnknownFields() {
+        String json = """
+            {"url":"https://example.com","event_types":["budget.created"],"unknown_field":"bad"}
+            """;
+        assertThrows(UnrecognizedPropertyException.class, () -> mapper.readValue(json, WebhookCreateRequest.class));
+    }
+
+    @Test
+    void webhookUpdateRequest_rejectsUnknownFields() {
+        String json = """
+            {"name":"updated","bogus":true}
+            """;
+        assertThrows(UnrecognizedPropertyException.class, () -> mapper.readValue(json, WebhookUpdateRequest.class));
+    }
+
+    @Test
+    void webhookRetryPolicy_rejectsUnknownFields() {
+        String json = """
+            {"max_retries":3,"extra":"nope"}
+            """;
+        assertThrows(UnrecognizedPropertyException.class, () -> mapper.readValue(json, WebhookRetryPolicy.class));
+    }
+
+    @Test
+    void webhookThresholdConfig_rejectsUnknownFields() {
+        String json = """
+            {"burn_rate_multiplier":2.0,"not_a_field":1}
+            """;
+        assertThrows(UnrecognizedPropertyException.class, () -> mapper.readValue(json, WebhookThresholdConfig.class));
+    }
+
+    // ---- WebhookCreateRequest size constraints ----
+
+    @Test
+    void webhookCreateRequest_nameTooLong_fails() {
+        WebhookCreateRequest req = WebhookCreateRequest.builder()
+                .name("x".repeat(257))
+                .url("https://example.com/hook")
+                .eventTypes(List.of(EventType.BUDGET_CREATED))
+                .build();
+        Set<ConstraintViolation<WebhookCreateRequest>> violations = validator.validate(req);
+        assertFalse(violations.isEmpty());
+    }
+
+    @Test
+    void webhookCreateRequest_urlTooLong_fails() {
+        WebhookCreateRequest req = WebhookCreateRequest.builder()
+                .url("https://example.com/" + "a".repeat(2048))
+                .eventTypes(List.of(EventType.BUDGET_CREATED))
+                .build();
+        Set<ConstraintViolation<WebhookCreateRequest>> violations = validator.validate(req);
+        assertFalse(violations.isEmpty());
+    }
+
+    // ---- WebhookRetryPolicy range constraints ----
+
+    @Test
+    void webhookRetryPolicy_maxRetriesOutOfRange_fails() {
+        WebhookRetryPolicy policy = WebhookRetryPolicy.builder().maxRetries(11).build();
+        Set<ConstraintViolation<WebhookRetryPolicy>> violations = validator.validate(policy);
+        assertFalse(violations.isEmpty());
+    }
+
+    @Test
+    void webhookRetryPolicy_negativeMaxRetries_fails() {
+        WebhookRetryPolicy policy = WebhookRetryPolicy.builder().maxRetries(-1).build();
+        Set<ConstraintViolation<WebhookRetryPolicy>> violations = validator.validate(policy);
+        assertFalse(violations.isEmpty());
+    }
+
+    @Test
+    void webhookRetryPolicy_initialDelayTooLow_fails() {
+        WebhookRetryPolicy policy = WebhookRetryPolicy.builder().initialDelayMs(50).build();
+        Set<ConstraintViolation<WebhookRetryPolicy>> violations = validator.validate(policy);
+        assertFalse(violations.isEmpty());
+    }
+
+    @Test
+    void webhookRetryPolicy_backoffMultiplierTooHigh_fails() {
+        WebhookRetryPolicy policy = WebhookRetryPolicy.builder().backoffMultiplier(11.0).build();
+        Set<ConstraintViolation<WebhookRetryPolicy>> violations = validator.validate(policy);
+        assertFalse(violations.isEmpty());
+    }
+
+    @Test
+    void webhookRetryPolicy_maxDelayTooLow_fails() {
+        WebhookRetryPolicy policy = WebhookRetryPolicy.builder().maxDelayMs(500).build();
+        Set<ConstraintViolation<WebhookRetryPolicy>> violations = validator.validate(policy);
+        assertFalse(violations.isEmpty());
+    }
+
+    @Test
+    void webhookRetryPolicy_validBoundaryValues_passes() {
+        WebhookRetryPolicy policy = WebhookRetryPolicy.builder()
+                .maxRetries(0).initialDelayMs(100).backoffMultiplier(1.0).maxDelayMs(1000).build();
+        Set<ConstraintViolation<WebhookRetryPolicy>> violations = validator.validate(policy);
+        assertTrue(violations.isEmpty(), "Boundary values should pass: " + violations);
+    }
+
+    // ---- WebhookThresholdConfig range constraints ----
+
+    @Test
+    void webhookThresholdConfig_burnRateMultiplierTooLow_fails() {
+        WebhookThresholdConfig config = WebhookThresholdConfig.builder().burnRateMultiplier(1.0).build();
+        Set<ConstraintViolation<WebhookThresholdConfig>> violations = validator.validate(config);
+        assertFalse(violations.isEmpty());
+    }
+
+    @Test
+    void webhookThresholdConfig_windowSecondsTooLow_fails() {
+        WebhookThresholdConfig config = WebhookThresholdConfig.builder().burnRateWindowSeconds(30).build();
+        Set<ConstraintViolation<WebhookThresholdConfig>> violations = validator.validate(config);
+        assertFalse(violations.isEmpty());
+    }
+
+    @Test
+    void webhookThresholdConfig_denialRateAboveOne_fails() {
+        WebhookThresholdConfig config = WebhookThresholdConfig.builder().denialRateThreshold(1.5).build();
+        Set<ConstraintViolation<WebhookThresholdConfig>> violations = validator.validate(config);
+        assertFalse(violations.isEmpty());
+    }
+
+    @Test
+    void webhookThresholdConfig_rateWindowTooHigh_fails() {
+        WebhookThresholdConfig config = WebhookThresholdConfig.builder().rateWindowSeconds(100000).build();
+        Set<ConstraintViolation<WebhookThresholdConfig>> violations = validator.validate(config);
+        assertFalse(violations.isEmpty());
+    }
+
+    @Test
+    void webhookThresholdConfig_validDefaults_passes() {
+        WebhookThresholdConfig config = WebhookThresholdConfig.builder().build();
+        Set<ConstraintViolation<WebhookThresholdConfig>> violations = validator.validate(config);
+        assertTrue(violations.isEmpty(), "Default values should pass: " + violations);
     }
 }

@@ -7,6 +7,7 @@ import lombok.*;
 import java.time.Instant;
 import java.util.Map;
 @Data @NoArgsConstructor @AllArgsConstructor
+@com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = false)
 public class BudgetCreateRequest {
     @NotBlank @JsonProperty("scope") private String scope;
     @NotNull @JsonProperty("unit") private UnitEnum unit;
