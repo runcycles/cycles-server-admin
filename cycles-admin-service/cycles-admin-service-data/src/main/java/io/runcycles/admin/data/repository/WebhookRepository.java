@@ -127,6 +127,24 @@ public class WebhookRepository {
         }
     }
 
+    /**
+     * Acquire a distributed replay lock for a subscription. Returns true if lock acquired,
+     * false if a replay is already in progress. Lock expires after 1 hour.
+     */
+    public boolean acquireReplayLock(String subscriptionId, String replayId) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            String key = "replay:lock:" + subscriptionId;
+            String result = jedis.set(key, replayId, new redis.clients.jedis.params.SetParams().nx().ex(3600));
+            return "OK".equals(result);
+        }
+    }
+
+    public void releaseReplayLock(String subscriptionId) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.del("replay:lock:" + subscriptionId);
+        }
+    }
+
     public List<WebhookSubscription> listByTenant(String tenantId, String status, String eventType,
                                                    String cursor, int limit) {
         return listFromSet("webhooks:" + tenantId, status, eventType, cursor, limit);

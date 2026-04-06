@@ -275,6 +275,7 @@ class WebhookServiceTest {
     void replay_noEvents_returnsZeroQueued() {
         WebhookSubscription sub = buildSubscription("whsub_1", "t1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
         when(eventRepository.list(eq("t1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
             .thenReturn(List.of());
 
@@ -293,6 +294,7 @@ class WebhookServiceTest {
     void replay_withEvents_queuesDeliveries() {
         WebhookSubscription sub = buildSubscription("whsub_1", "t1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
         io.runcycles.admin.model.event.Event event = io.runcycles.admin.model.event.Event.builder()
             .eventId("evt_1").eventType(io.runcycles.admin.model.event.EventType.BUDGET_CREATED)
             .category(io.runcycles.admin.model.event.EventCategory.BUDGET)
@@ -316,6 +318,7 @@ class WebhookServiceTest {
     void replay_withEventTypeFilter_filtersEvents() {
         WebhookSubscription sub = buildSubscription("whsub_1", "t1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
         io.runcycles.admin.model.event.Event budgetEvt = io.runcycles.admin.model.event.Event.builder()
             .eventId("evt_1").eventType(io.runcycles.admin.model.event.EventType.BUDGET_CREATED)
             .category(io.runcycles.admin.model.event.EventCategory.BUDGET)
@@ -348,6 +351,7 @@ class WebhookServiceTest {
             .eventTypes(List.of(io.runcycles.admin.model.event.EventType.BUDGET_CREATED))
             .status(WebhookStatus.ACTIVE).consecutiveFailures(0).disableAfterFailures(10).build();
         when(webhookRepository.findById("whsub_sys")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_sys"), any())).thenReturn(true);
         when(eventRepository.list(isNull(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
             .thenReturn(List.of());
 
@@ -394,6 +398,7 @@ class WebhookServiceTest {
     void replay_withEventTypeFilter_filtersCorrectly() {
         WebhookSubscription sub = buildSubscription("whsub_1", "t1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
 
         io.runcycles.admin.model.event.Event evt1 = io.runcycles.admin.model.event.Event.builder()
             .eventId("evt_1").eventType(EventType.BUDGET_CREATED).tenantId("t1")
@@ -422,6 +427,7 @@ class WebhookServiceTest {
     void replay_dispatchFailure_continuesAndCounts() {
         WebhookSubscription sub = buildSubscription("whsub_1", "t1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
 
         io.runcycles.admin.model.event.Event evt1 = io.runcycles.admin.model.event.Event.builder()
             .eventId("evt_1").eventType(EventType.BUDGET_CREATED).tenantId("t1")
@@ -445,6 +451,41 @@ class WebhookServiceTest {
 
         // evt1 failed, evt2 succeeded
         assertThat(response.getEventsQueued()).isEqualTo(1);
+    }
+
+    @Test
+    void replay_lockAlreadyHeld_throws409() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(false);
+
+        ReplayRequest request = ReplayRequest.builder()
+            .from(Instant.now().minusSeconds(3600))
+            .to(Instant.now())
+            .build();
+
+        assertThatThrownBy(() -> webhookService.replay("whsub_1", request))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("Replay already in progress");
+        verify(eventRepository, never()).list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void replay_releasesLockAfterCompletion() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
+        when(eventRepository.list(eq("t1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+            .thenReturn(List.of());
+
+        ReplayRequest request = ReplayRequest.builder()
+            .from(Instant.now().minusSeconds(3600))
+            .to(Instant.now())
+            .build();
+
+        webhookService.replay("whsub_1", request);
+
+        verify(webhookRepository).releaseReplayLock("whsub_1");
     }
 
     @Test

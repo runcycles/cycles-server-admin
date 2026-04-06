@@ -4,6 +4,23 @@
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
+### 2026-04-06 — v0.1.25.4 (amended): Replay lock + response model additionalProperties enforcement
+
+**Critical fix:** `WebhookService.replay()` had no concurrent replay detection — the spec requires `409 REPLAY_IN_PROGRESS` but `GovernanceException.replayInProgress()` was never called. Multiple simultaneous replays could cause duplicate deliveries.
+
+| Fix | Location |
+|-----|----------|
+| Added `acquireReplayLock(subscriptionId, replayId)` using Redis SET NX EX (1h TTL) | `WebhookRepository.java` |
+| Added `releaseReplayLock(subscriptionId)` in finally block after replay completes | `WebhookRepository.java` |
+| `replay()` now throws `GovernanceException.replayInProgress()` when lock is held | `WebhookService.java` |
+| Added `@JsonIgnoreProperties(ignoreUnknown = false)` to 8 response/entity models | Tenant, BudgetLedger, Policy, ApiKey, Event, Actor, WebhookSubscription, WebhookDelivery |
+| Added 2 new replay lock tests (409 rejection + lock release verification) | `WebhookServiceTest.java` |
+| Updated 6 existing replay tests with `acquireReplayLock` mock | `WebhookServiceTest.java` |
+
+**Tests:** 717 total (85 model + 278 data + 354 API), 0 failures. All JaCoCo coverage checks passed.
+
+---
+
 ### 2026-04-06 — v0.1.25.4: Spec validation compliance — additionalProperties, range constraints, size limits
 
 Full spec compliance audit of all request DTOs against `complete-budget-governance-v0.1.25.yaml`. Enforces `additionalProperties: false`, adds missing range/size constraints per spec, and removes a spurious permission mapping.

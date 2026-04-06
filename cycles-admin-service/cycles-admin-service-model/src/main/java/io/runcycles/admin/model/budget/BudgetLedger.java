@@ -8,6 +8,7 @@ import lombok.*;
 import java.time.Instant;
 import java.util.Map;
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
+@JsonIgnoreProperties(ignoreUnknown = false)
 public class BudgetLedger {
     // Required per spec: ledger_id, scope, unit, allocated, remaining, status, created_at
     @JsonProperty("ledger_id") private String ledgerId;

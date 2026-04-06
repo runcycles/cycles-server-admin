@@ -7,6 +7,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
+@com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = false)
 public class WebhookSubscription {
     @JsonProperty("subscription_id") private String subscriptionId;
     @JsonProperty("tenant_id") private String tenantId;

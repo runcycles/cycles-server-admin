@@ -12,6 +12,7 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
+@com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = false)
 public class Actor {
 
     @JsonProperty("type")
