@@ -185,9 +185,9 @@ components:
         When using AdminKeyAuth on list endpoints (GET /v1/admin/budgets,
         GET /v1/admin/policies), the tenant_id query parameter is required for
         scoping. GET /v1/admin/budgets/lookup does NOT require tenant_id because
-        the Redis key is deterministic from scope + unit. The allowlist uses exact
-        method:path matching — no prefix matching, no wildcards — so new endpoints
-        do not accidentally inherit admin-readable status.
+        the budget is uniquely identified by the (scope, unit) pair. The allowlist
+        uses exact method:path matching — no prefix matching, no wildcards — so
+        new endpoints do not accidentally inherit admin-readable status.
 
     ApiKeyAuth:
       type: apiKey
@@ -2093,7 +2093,7 @@ components:
 
     AdminOverviewResponse:
       type: object
-      required: [as_of, event_window_seconds, tenant_counts, budget_counts, webhook_counts, event_counts]
+      required: [as_of, event_window_seconds, tenant_counts, budget_counts, over_limit_scopes, debt_scopes, webhook_counts, failing_webhooks, event_counts, recent_denials, recent_expiries]
       description: >-
         Server-aggregated operational dashboard payload. Single-request overview
         for the admin dashboard — avoids client-side aggregation across paginated endpoints.
@@ -2171,7 +2171,7 @@ components:
               last_failure_at: { type: string, format: date-time }
         event_counts:
           type: object
-          required: [total_recent]
+          required: [total_recent, by_category]
           properties:
             total_recent:
               type: integer
@@ -2213,7 +2213,8 @@ components:
           description: Raw permission strings (e.g., ["*"] for admin)
         capabilities:
           type: object
-          description: Derived boolean capabilities for dashboard UI
+          description: Derived boolean capabilities for dashboard UI. All fields are always present (explicit false, never omitted).
+          required: [view_overview, view_budgets, view_events, view_webhooks, view_audit, view_tenants, view_api_keys, view_policies]
           properties:
             view_overview: { type: boolean }
             view_budgets: { type: boolean }
@@ -2523,6 +2524,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API key scope_filter denies access to the requested scope_prefix
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     patch:
       tags: [Budgets]
       operationId: updateBudget
@@ -2660,12 +2667,13 @@ paths:
       description: >-
         Returns a single budget ledger matching the exact (scope, unit) pair.
         Unlike listBudgets which uses scope_prefix (prefix match), this endpoint
-        performs exact scope matching via direct Redis key lookup.
+        performs exact scope matching — the budget is uniquely identified by
+        the (scope, unit) pair.
 
         AUTHORIZATION:
         - ApiKeyAuth: scope_filter is enforced; only accessible if scope matches key's filter.
         - AdminKeyAuth: Accepted as alternative (v0.1.25.1 dual-auth allowlist).
-          No tenant_id required — the key is deterministic from scope + unit.
+          No tenant_id required — the budget is uniquely identified by (scope, unit).
       security:
         - ApiKeyAuth: []
         - AdminKeyAuth: []
@@ -2804,6 +2812,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API key scope_filter denies access to the requested scope_pattern
           content:
             application/json:
               schema:

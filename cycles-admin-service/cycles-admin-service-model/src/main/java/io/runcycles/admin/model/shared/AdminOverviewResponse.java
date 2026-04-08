@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
-@JsonInclude(JsonInclude.Include.NON_NULL)
+@JsonInclude(JsonInclude.Include.ALWAYS)
 public class AdminOverviewResponse {
     @JsonProperty("as_of") private Instant asOf;
     @JsonProperty("event_window_seconds") private int eventWindowSeconds;
