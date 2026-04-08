@@ -42,7 +42,7 @@ public class AuthController {
         return ResponseEntity.ok(response);
     }
 
-    @GetMapping("/introspect") @Operation(operationId = "introspectAuth")
+    @GetMapping("/introspect") @Operation(operationId = "introspectAuth", tags = {"Dashboard"})
     public ResponseEntity<AuthIntrospectResponse> introspect(HttpServletRequest request) {
         // Admin key already validated by interceptor (v1: AdminKeyAuth only)
         List<String> permissions = List.of("*");

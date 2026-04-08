@@ -756,4 +756,90 @@ class BudgetControllerTest {
 
         verify(eventService).emit(eq(EventType.BUDGET_FUNDED), eq("t1"), eq("scope"), any(), any(), any(), any(), any());
     }
+
+    // ========== INSUFFICIENT_PERMISSIONS ==========
+
+    @Test
+    void createBudget_insufficientPermissions_returns403() throws Exception {
+        // API key with only balances:read — lacks admin:write required for POST /v1/admin/budgets
+        when(apiKeyRepository.validate("readonly-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_ro")
+                        .permissions(List.of("balances:read")).build());
+
+        mockMvc.perform(post("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "readonly-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"scope\":\"org/team1\",\"unit\":\"USD_MICROCENTS\",\"allocated\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000000}}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("INSUFFICIENT_PERMISSIONS"));
+    }
+
+    @Test
+    void fundBudget_insufficientPermissions_returns403() throws Exception {
+        // API key with only admin:read — lacks admin:write required for POST /v1/admin/budgets/fund
+        when(apiKeyRepository.validate("read-only-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_ro")
+                        .permissions(List.of("admin:read")).build());
+
+        mockMvc.perform(post("/v1/admin/budgets/fund")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Cycles-API-Key", "read-only-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000}}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("INSUFFICIENT_PERMISSIONS"));
+    }
+
+    @Test
+    void listBudgets_insufficientPermissions_returns403() throws Exception {
+        // API key with only balances:read — lacks admin:read required for GET /v1/admin/budgets
+        when(apiKeyRepository.validate("balance-only-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_bo")
+                        .permissions(List.of("balances:read")).build());
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "balance-only-key"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("INSUFFICIENT_PERMISSIONS"));
+    }
+
+    // ========== IDEMPOTENCY_MISMATCH (controller level) ==========
+
+    @Test
+    void fundBudget_idempotencyMismatch_returns409() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.fund(eq("t1"), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any()))
+                .thenThrow(new GovernanceException(
+                        io.runcycles.admin.model.shared.ErrorCode.IDEMPOTENCY_MISMATCH,
+                        "Idempotency key already used with different payload", 409));
+
+        mockMvc.perform(post("/v1/admin/budgets/fund")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000},\"idempotency_key\":\"dup-key\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("IDEMPOTENCY_MISMATCH"));
+    }
+
+    // ========== ApiKey hash not exposed in responses ==========
+
+    @Test
+    void listBudgets_apiKeyHashNeverInResponse() throws Exception {
+        // Verify the ApiKey internal model is never directly serialized — controllers use ApiKeyResponse DTO
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("t1"), any(), any(), any(), any(), anyInt())).thenReturn(List.of());
+
+        String responseBody = mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        org.assertj.core.api.Assertions.assertThat(responseBody).doesNotContain("key_hash");
+    }
 }

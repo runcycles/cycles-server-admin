@@ -3,7 +3,9 @@ package io.runcycles.admin.model;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.runcycles.admin.model.auth.ApiKey;
 import io.runcycles.admin.model.auth.ApiKeyCreateRequest;
+import io.runcycles.admin.model.auth.ApiKeyResponse;
 import io.runcycles.admin.model.auth.ApiKeyStatus;
 import jakarta.validation.*;
 import org.junit.jupiter.api.BeforeAll;
@@ -104,5 +106,43 @@ class AuthModelTest {
         request.setDescription("x".repeat(1025));
         Set<ConstraintViolation<ApiKeyCreateRequest>> violations = validator.validate(request);
         assertFalse(violations.isEmpty());
+    }
+
+    // --- ApiKeyResponse never exposes key_hash ---
+
+    @Test
+    void apiKeyResponse_doesNotContainKeyHash() throws Exception {
+        ApiKey key = ApiKey.builder()
+                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyHash("$2a$12$secret_hash_value")
+                .name("test").status(ApiKeyStatus.ACTIVE)
+                .permissions(List.of("balances:read"))
+                .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(3600))
+                .build();
+
+        ApiKeyResponse response = ApiKeyResponse.from(key);
+        String json = mapper.writeValueAsString(response);
+        assertFalse(json.contains("key_hash"), "ApiKeyResponse must never expose key_hash");
+        assertFalse(json.contains("secret_hash"), "ApiKeyResponse must never expose hash contents");
+        assertTrue(json.contains("\"key_id\""));
+        assertTrue(json.contains("\"key_prefix\""));
+    }
+
+    @Test
+    void apiKey_internalModel_containsKeyHashForRedis() throws Exception {
+        // ApiKey is the internal model used for Redis serialization — key_hash MUST be present
+        ApiKey key = ApiKey.builder()
+                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyHash("$2a$12$secret_hash")
+                .status(ApiKeyStatus.ACTIVE)
+                .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(3600))
+                .build();
+
+        String json = mapper.writeValueAsString(key);
+        assertTrue(json.contains("\"key_hash\""), "Internal ApiKey model needs key_hash for Redis storage");
+
+        // Verify round-trip: deserialize back and check hash is preserved
+        ApiKey deserialized = mapper.readValue(json, ApiKey.class);
+        assertEquals("$2a$12$secret_hash", deserialized.getKeyHash());
     }
 }
