@@ -2,7 +2,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Coverage](https://img.shields.io/badge/coverage-95%25+-brightgreen)](https://github.com/runcycles/cycles-server-admin/actions)
 
-# RunCycles Server Admin
+# Cycles Server Admin
 
 Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25.5](complete-budget-governance-v0.1.25.yaml).
 
