@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Complete Budget Governance System API
-  version: 0.1.25.1
+  version: 0.1.25.5
   license:
     name: Apache 2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -116,11 +116,13 @@ info:
           fields, enum values, or response codes were removed. Clients built against v0.1.24
           work unchanged against v0.1.25.
 
-      v0.1.25.1 (2026-04-08):
+      v0.1.25.5 (2026-04-08):
         - Dashboard support: Added dual-auth allowlist for admin dashboard reads.
             * GET /v1/admin/budgets and GET /v1/admin/policies now accept AdminKeyAuth
               as an alternative security scheme for read access. When using AdminKeyAuth,
-              the tenant_id query parameter is required for scoping.
+              the tenant_id query parameter is required for scoping (400 if missing).
+            * GET /v1/admin/budgets/lookup does not require tenant_id — budget is
+              uniquely identified by (scope, unit) pair.
         - Added tenant_id query parameter to GET /v1/admin/policies (was missing;
           GET /v1/admin/budgets already had it).
         - Added 3 new endpoints:
@@ -129,8 +131,12 @@ info:
               with entity counts, top-offender arrays, and recent event summaries.
             * GET /v1/auth/introspect — returns effective capabilities for the
               authenticated credential (AdminKeyAuth only in v1).
-        - Added 2 new schemas: AdminOverviewResponse, AuthIntrospectResponse.
-        - Documented dual-auth allowlist semantics in security schemes section.
+        - Added 2 new schemas: AdminOverviewResponse (strict: all fields required,
+          additionalProperties: false on nested objects), AuthIntrospectResponse
+          (all capability booleans required).
+        - Added Dashboard tag for overview and introspect endpoints.
+        - Added 400/401/403 error responses on all new and modified endpoints.
+        - Documented dual-auth allowlist semantics in AdminKeyAuth security scheme.
         - Backward compatibility: All changes are purely additive. Existing ApiKeyAuth
           callers are unaffected.
 
@@ -2088,7 +2094,7 @@ components:
           type: boolean
 
     # ========================================================================
-    # DASHBOARD SCHEMAS (v0.1.25.1)
+    # DASHBOARD SCHEMAS (v0.1.25.5)
     # ========================================================================
 
     AdminOverviewResponse:
@@ -2475,7 +2481,7 @@ paths:
 
         AUTHORIZATION:
         - ApiKeyAuth: Tenant can list their own budgets only (scoped by authenticated tenant)
-        - AdminKeyAuth: Accepted as alternative for read access (v0.1.25.1 dual-auth allowlist).
+        - AdminKeyAuth: Accepted as alternative for read access (v0.1.25.5 dual-auth allowlist).
           When using AdminKeyAuth, tenant_id query parameter is REQUIRED for scoping.
       security:
         - ApiKeyAuth: []
@@ -2682,7 +2688,7 @@ paths:
 
         AUTHORIZATION:
         - ApiKeyAuth: scope_filter is enforced; only accessible if scope matches key's filter.
-        - AdminKeyAuth: Accepted as alternative (v0.1.25.1 dual-auth allowlist).
+        - AdminKeyAuth: Accepted as alternative (v0.1.25.5 dual-auth allowlist).
           No tenant_id required — the budget is uniquely identified by (scope, unit).
       security:
         - ApiKeyAuth: []
@@ -2773,7 +2779,7 @@ paths:
       description: >-
         AUTHORIZATION:
         - ApiKeyAuth: Tenant can list their own policies only (scoped by authenticated tenant)
-        - AdminKeyAuth: Accepted as alternative for read access (v0.1.25.1 dual-auth allowlist).
+        - AdminKeyAuth: Accepted as alternative for read access (v0.1.25.5 dual-auth allowlist).
           When using AdminKeyAuth, tenant_id query parameter is REQUIRED for scoping.
       security:
         - ApiKeyAuth: []

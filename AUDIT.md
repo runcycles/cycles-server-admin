@@ -1,27 +1,44 @@
 # Complete Budget Governance v0.1.25 — Admin Server Audit
 
-**Date:** 2026-04-08 (v0.1.25.1 dashboard support — spec updates), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
-**Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25.1)
+**Date:** 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25.5)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
-### 2026-04-08 — v0.1.25.1: Dashboard support — spec + code complete
+### 2026-04-08 — v0.1.25.5: Admin dashboard support
 
-Spec-first updates to `complete-budget-governance-v0.1.25.yaml` for the admin dashboard (cycles-dashboard v1). All changes are additive — no breaking changes to existing endpoints or schemas.
+Backend changes for the Cycles Admin Dashboard (cycles-dashboard v1). All changes are additive — no breaking changes to existing endpoints or schemas. Spec updated first (YAML is the authority), then code, then multiple rounds of spec review.
+
+**Spec changes** (`complete-budget-governance-v0.1.25.yaml`):
 
 | Change | Details |
 |--------|---------|
-| `info.version` bumped | `0.1.25` → `0.1.25.1` to match changelog and prevent codegen/SDK confusion. |
-| Dual-auth allowlist | `GET /v1/admin/budgets`, `GET /v1/admin/policies`: added `AdminKeyAuth` as alternative security scheme. AdminKeyAuth description updated to document allowlist semantics — `tenant_id` required on list endpoints but NOT on `budgets/lookup` (key is deterministic from scope+unit). |
-| `tenant_id` on policies | `GET /v1/admin/policies`: added `tenant_id` query param (required for AdminKeyAuth, ignored for ApiKeyAuth). Budgets already had it. |
-| Budget lookup endpoint | `GET /v1/admin/budgets/lookup`: new endpoint for exact (scope, unit) retrieval. Dual-auth. Added 401/403/404 responses. |
-| Overview endpoint | `GET /v1/admin/overview`: new AdminKeyAuth-only endpoint returning `AdminOverviewResponse`. Tagged under `Dashboard`. Added 401 response. |
-| Introspect endpoint | `GET /v1/auth/introspect`: new AdminKeyAuth-only endpoint returning `AuthIntrospectResponse`. Tagged under `Dashboard`. Added 401 response. |
-| Error responses | Added 400/401 to `GET /v1/admin/budgets` and `GET /v1/admin/policies` list endpoints (400 for missing tenant_id with AdminKeyAuth). |
-| New tag | `Dashboard` — groups overview and introspect endpoints. |
-| New schemas | `AdminOverviewResponse`, `AuthIntrospectResponse` added to components/schemas. |
-| Changelog | Added v0.1.25.1 entry documenting all changes. |
+| `info.version` | `0.1.25` → `0.1.25.5` |
+| Dual-auth allowlist | `GET /v1/admin/budgets`, `GET /v1/admin/budgets/lookup`, `GET /v1/admin/policies` now accept `AdminKeyAuth` as alternative. `tenant_id` required on list endpoints, not on lookup (budget uniquely identified by scope+unit). |
+| `tenant_id` on policies | `GET /v1/admin/policies`: added `tenant_id` query param (required for AdminKeyAuth, ignored for ApiKeyAuth). |
+| Budget lookup endpoint | `GET /v1/admin/budgets/lookup`: exact (scope, unit) retrieval. Dual-auth. 200/401/403/404 responses. |
+| Overview endpoint | `GET /v1/admin/overview`: server-aggregated dashboard payload (`AdminOverviewResponse`). AdminKeyAuth only. 200/401 responses. |
+| Introspect endpoint | `GET /v1/auth/introspect`: auth introspection with capabilities (`AuthIntrospectResponse`). AdminKeyAuth only. 200/401 responses. |
+| Dashboard tag | New `Dashboard` tag groups overview and introspect. |
+| Error responses | 400/401/403 added to budget list, budget lookup, policy list endpoints. |
+| Schema strictness | `AdminOverviewResponse`: all fields required, `additionalProperties: false` on all nested objects. `AuthIntrospectResponse.capabilities`: all 8 booleans required. `EventCounts.by_category` required. |
+| No Redis in spec | Removed implementation details — spec uses protocol terms ("uniquely identified by scope+unit"). |
 
-**Code implementation complete** — 375 tests pass, all JaCoCo coverage checks met.
+**Code changes:**
+
+| File | Change |
+|------|--------|
+| `AuthInterceptor.java` | `ADMIN_READABLE_ENDPOINTS` allowlist, `hasAdminKeyHeader()`, `/v1/admin/overview` + `/v1/auth/introspect` routed to AdminKeyAuth |
+| `BudgetController.java` | `list()` requires `tenant_id` for admin callers (400 if missing); new `lookup()` endpoint |
+| `BudgetRepository.java` | New `getByExactScope(scope, unit)` |
+| `PolicyController.java` | Added `tenant_id` param, same admin-key fallback |
+| `AuthController.java` | New `GET /v1/auth/introspect` with capability derivation |
+| `AdminOverviewResponse.java` | Response DTO with 8 nested inner classes, `@JsonInclude(ALWAYS)` |
+| `AuthIntrospectResponse.java` | Capabilities response, `@JsonInclude(ALWAYS)` |
+| `AdminOverviewService.java` | Aggregation through TenantRepository, BudgetRepository, WebhookRepository, EventRepository |
+| `AdminOverviewController.java` | `GET /v1/admin/overview` |
+| `WebConfig.java` | CORS with configurable `dashboard.cors.origin` |
+
+**Tests:** 375 total, 0 failures, all JaCoCo coverage checks met. New tests cover dual-auth allowlist (accept/reject), write escalation prevention, overview controller/service, introspect endpoint.
 
 ---
 

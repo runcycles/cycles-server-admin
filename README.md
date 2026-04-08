@@ -4,7 +4,7 @@
 
 # RunCycles Server Admin
 
-Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25](complete-budget-governance-v0.1.25.yaml).
+Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25.5](complete-budget-governance-v0.1.25.yaml).
 
 ## Overview
 
@@ -106,8 +106,10 @@ The API uses two authentication schemes:
 
 | Scheme | Header | Use |
 |--------|--------|-----|
-| **AdminKeyAuth** | `X-Admin-API-Key` | System administration (tenant/key management, audit) |
+| **AdminKeyAuth** | `X-Admin-API-Key` | System administration (tenant/key management, audit, dashboard) |
 | **ApiKeyAuth** | `X-Cycles-API-Key` | Tenant-scoped operations (budgets, reservations, balances) |
+
+AdminKeyAuth is also accepted as an alternative on `GET /v1/admin/budgets`, `GET /v1/admin/budgets/lookup`, and `GET /v1/admin/policies` (dual-auth allowlist, v0.1.25.5). On list endpoints, `tenant_id` is required for scoping.
 
 API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` (test), where the random part is 32 cryptographically random characters. Keys are stored as bcrypt hashes; the full secret is only returned once at creation time. Recommended expiry: 90 days.
 
@@ -210,11 +212,12 @@ curl -X PUT http://localhost:7979/v1/admin/config/webhook-security \
 | `GET` | `/v1/admin/tenants/{tenant_id}` | Get tenant | Admin |
 | `PATCH` | `/v1/admin/tenants/{tenant_id}` | Update tenant | Admin |
 | `POST` | `/v1/admin/budgets` | Create budget ledger | ApiKey |
-| `GET` | `/v1/admin/budgets` | List budget ledgers | ApiKey |
+| `GET` | `/v1/admin/budgets` | List budget ledgers | ApiKey / Admin |
+| `GET` | `/v1/admin/budgets/lookup?scope={scope}&unit={unit}` | Exact budget lookup | ApiKey / Admin |
 | `PATCH` | `/v1/admin/budgets?scope={scope}&unit={unit}` | Update budget | Admin |
 | `POST` | `/v1/admin/budgets/fund?scope={scope}&unit={unit}` | Fund/adjust budget | ApiKey |
 | `POST` | `/v1/admin/policies` | Create policy | ApiKey |
-| `GET` | `/v1/admin/policies` | List policies | ApiKey |
+| `GET` | `/v1/admin/policies` | List policies | ApiKey / Admin |
 | `PATCH` | `/v1/admin/policies/{policy_id}` | Update policy | ApiKey |
 
 ### Pillar 2: Authentication & Authorization
@@ -225,6 +228,7 @@ curl -X PUT http://localhost:7979/v1/admin/config/webhook-security \
 | `GET` | `/v1/admin/api-keys` | List API keys | Admin |
 | `DELETE` | `/v1/admin/api-keys/{key_id}` | Revoke API key | Admin |
 | `POST` | `/v1/auth/validate` | Validate key & resolve tenant | Admin |
+| `GET` | `/v1/auth/introspect` | Introspect auth & capabilities | Admin |
 | `GET` | `/v1/admin/audit/logs` | Query audit logs | Admin |
 
 ### Pillar 3: Runtime Enforcement (Cycles Protocol v0.1.24)
@@ -268,6 +272,15 @@ curl -X PUT http://localhost:7979/v1/admin/config/webhook-security \
 | `GET` | `/v1/events` | Query tenant events | ApiKey |
 
 Tenants can subscribe to `budget.*`, `reservation.*`, `tenant.*` (26 of 40 event types). Admin-only: `api_key.*`, `policy.*`, `system.*`.
+
+### Dashboard (v0.1.25.5)
+
+| Method | Path | Operation | Auth |
+|--------|------|-----------|------|
+| `GET` | `/v1/admin/overview` | Operational health overview | Admin |
+| `GET` | `/v1/auth/introspect` | Auth introspection & capabilities | Admin |
+
+The overview endpoint returns a single-request aggregated payload with tenant/budget/webhook counts, top-offender arrays (over-limit, debt, failing webhooks), and recent event summaries. The introspect endpoint returns effective capabilities for dashboard UI gating.
 
 **40 event types** across 6 categories: budget (15), reservation (5), tenant (6), api_key (6), policy (3), system (5).
 
@@ -504,6 +517,8 @@ The full OpenAPI 3.1.0 specification is in [`complete-budget-governance-v0.1.25.
 v0.1.25 adds Pillar 4 (Events & Webhooks): 40 event types, 20 webhook endpoints, HMAC-SHA256 signing, at-least-once delivery, and webhook secret encryption at rest.
 
 v0.1.25.4 enforces strict spec compliance: `additionalProperties: false` on all request and response models, range/size constraints on all fields per spec, distributed replay lock (409 `REPLAY_IN_PROGRESS`), and cascading `@Valid` on nested objects.
+
+v0.1.25.5 adds admin dashboard support: dual-auth allowlist (AdminKeyAuth on budget/policy reads), exact budget lookup, server-aggregated overview endpoint, auth introspection with capabilities, and strict dashboard response schemas.
 
 ## Documentation
 
