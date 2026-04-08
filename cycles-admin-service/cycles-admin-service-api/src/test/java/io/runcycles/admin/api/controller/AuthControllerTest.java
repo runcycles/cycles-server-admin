@@ -112,4 +112,76 @@ class AuthControllerTest {
         mockMvc.perform(get("/v1/auth/introspect"))
                 .andExpect(status().isUnauthorized());
     }
+
+    // --- KEY_EXPIRED / KEY_REVOKED validation ---
+
+    @Test
+    void validate_expiredKey_returns200WithReasonKeyExpired() throws Exception {
+        when(apiKeyRepository.validate("expired_key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(false).tenantId("t1").keyId("key_exp")
+                        .reason("KEY_EXPIRED")
+                        .build());
+
+        mockMvc.perform(post("/v1/auth/validate")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"key_secret\":\"expired_key\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.valid").value(false))
+                .andExpect(jsonPath("$.reason").value("KEY_EXPIRED"))
+                .andExpect(jsonPath("$.key_id").value("key_exp"));
+    }
+
+    @Test
+    void validate_revokedKey_returns200WithReasonKeyRevoked() throws Exception {
+        when(apiKeyRepository.validate("revoked_key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(false).tenantId("t1").keyId("key_rev")
+                        .reason("KEY_REVOKED")
+                        .build());
+
+        mockMvc.perform(post("/v1/auth/validate")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"key_secret\":\"revoked_key\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.valid").value(false))
+                .andExpect(jsonPath("$.reason").value("KEY_REVOKED"))
+                .andExpect(jsonPath("$.key_id").value("key_rev"));
+    }
+
+    @Test
+    void validate_suspendedTenant_returns200WithReasonTenantSuspended() throws Exception {
+        when(apiKeyRepository.validate("suspended_tenant_key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(false).tenantId("t_sus").keyId("key_st")
+                        .reason("TENANT_SUSPENDED")
+                        .build());
+
+        mockMvc.perform(post("/v1/auth/validate")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"key_secret\":\"suspended_tenant_key\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.valid").value(false))
+                .andExpect(jsonPath("$.reason").value("TENANT_SUSPENDED"));
+    }
+
+    @Test
+    void validate_closedTenant_returns200WithReasonTenantClosed() throws Exception {
+        when(apiKeyRepository.validate("closed_tenant_key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(false).tenantId("t_cls").keyId("key_ct")
+                        .reason("TENANT_CLOSED")
+                        .build());
+
+        mockMvc.perform(post("/v1/auth/validate")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"key_secret\":\"closed_tenant_key\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.valid").value(false))
+                .andExpect(jsonPath("$.reason").value("TENANT_CLOSED"));
+    }
 }

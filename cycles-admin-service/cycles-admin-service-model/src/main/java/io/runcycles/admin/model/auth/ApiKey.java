@@ -21,6 +21,7 @@ public class ApiKey {
     @JsonProperty("key_id") private String keyId;
     @JsonProperty("tenant_id") private String tenantId;
     @JsonProperty("key_prefix") private String keyPrefix;
+    // Internal field — required for Redis serialization; never returned in API responses (use ApiKeyResponse DTO)
     @JsonProperty("key_hash") private String keyHash;
     @JsonProperty("name") private String name;
     @JsonProperty("description") private String description;

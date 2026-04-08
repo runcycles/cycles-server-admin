@@ -4,6 +4,19 @@
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25.5)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
+### 2026-04-08 — Spec compliance audit: test coverage gaps + ApiKey hardening
+
+**Audit findings:** Deep spec compliance review of all 78 model classes, data layer, and 45 test files.
+
+| Finding | Resolution |
+|---------|------------|
+| `ApiKey.key_hash` has `@JsonProperty` (needed for Redis serialization) but could leak if model accidentally returned in API | Added guard tests: `AuthModelTest.apiKeyResponse_doesNotContainKeyHash()` verifies `ApiKeyResponse` DTO never includes hash; `apiKey_internalModel_containsKeyHashForRedis()` verifies Redis round-trip still works. Added defensive comment on field. |
+| KEY_EXPIRED / KEY_REVOKED validation reasons untested at controller level | Added 4 tests to `AuthControllerTest`: expired key, revoked key, suspended tenant, closed tenant validation responses |
+| INSUFFICIENT_PERMISSIONS error code untested at controller level | Added 3 tests to `BudgetControllerTest`: create, fund, and list with keys lacking required permissions |
+| IDEMPOTENCY_MISMATCH untested at controller level (only repo-level) | Added `fundBudget_idempotencyMismatch_returns409` to `BudgetControllerTest` |
+
+**Test count:** 375 → 384 (all passing, 95%+ coverage maintained).
+
 ### 2026-04-08 — Swagger tag compliance fix
 
 **Issue:** Spec compliance review found two OpenAPI tag mismatches:
