@@ -141,6 +141,9 @@ info:
         - Added 403 responses to POST /v1/admin/budgets, POST /v1/admin/policies,
           PATCH /v1/admin/policies/{policy_id}, POST /v1/admin/budgets/fund for
           permission and scope_filter denial.
+        - Added 403 responses and PERMISSIONS documentation to all tenant webhook
+          self-service endpoints (GET/PATCH/DELETE/POST /v1/webhooks/...) and
+          GET /v1/events for permission consistency with budgets/policies.
         - Freeze/unfreeze endpoint descriptions now explicitly document event emission
           (budget.frozen, budget.unfrozen).
         - Updated AdminKeyAuth description to include fund in allowlist.
@@ -4057,6 +4060,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookListResponse'
+        '403':
+          description: API key lacks webhooks:read permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /v1/webhooks/{subscription_id}:
     get:
@@ -4065,6 +4074,9 @@ paths:
       summary: Get a tenant's webhook subscription
       description: >-
         Returns webhook details. Returns 404 if subscription belongs to a different tenant.
+
+        PERMISSIONS:
+        - Requires webhooks:read permission on the API key.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -4080,6 +4092,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookSubscription'
+        '403':
+          description: API key lacks webhooks:read permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Subscription not found or belongs to different tenant
           content:
@@ -4091,7 +4109,11 @@ paths:
       tags: [Webhooks]
       operationId: updateTenantWebhook
       summary: Update a tenant's webhook subscription
-      description: Partial update — only provided fields are modified. Restricted to tenant-accessible event types.
+      description: >-
+        Partial update — only provided fields are modified. Restricted to tenant-accessible event types.
+
+        PERMISSIONS:
+        - Requires webhooks:write permission on the API key.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -4119,6 +4141,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API key lacks webhooks:write permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Subscription not found or belongs to different tenant
           content:
@@ -4130,7 +4158,11 @@ paths:
       tags: [Webhooks]
       operationId: deleteTenantWebhook
       summary: Delete a tenant's webhook subscription
-      description: Permanently removes the subscription. Pending deliveries for this subscription will fail.
+      description: >-
+        Permanently removes the subscription. Pending deliveries for this subscription will fail.
+
+        PERMISSIONS:
+        - Requires webhooks:write permission on the API key.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -4142,6 +4174,12 @@ paths:
       responses:
         '204':
           description: Subscription deleted
+        '403':
+          description: API key lacks webhooks:write permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Subscription not found or belongs to different tenant
           content:
@@ -4154,7 +4192,11 @@ paths:
       tags: [Webhooks]
       operationId: testTenantWebhook
       summary: Send a test event to a tenant's webhook
-      description: Sends a synthetic system.webhook_test event. Does not count toward consecutive failures.
+      description: >-
+        Sends a synthetic system.webhook_test event. Does not count toward consecutive failures.
+
+        PERMISSIONS:
+        - Requires webhooks:write permission on the API key.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -4170,6 +4212,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookTestResponse'
+        '403':
+          description: API key lacks webhooks:write permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Subscription not found or belongs to different tenant
           content:
@@ -4182,7 +4230,12 @@ paths:
       tags: [Webhooks]
       operationId: listTenantWebhookDeliveries
       summary: List delivery attempts for a tenant's webhook
-      description: Returns delivery history with status, response codes, and error details. Supports filtering by status and date range.
+      description: >-
+        Returns delivery history with status, response codes, and error details.
+        Supports filtering by status and date range.
+
+        PERMISSIONS:
+        - Requires webhooks:read permission on the API key.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -4224,6 +4277,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookDeliveryListResponse'
+        '403':
+          description: API key lacks webhooks:read permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Subscription not found or belongs to different tenant
           content:
@@ -4289,6 +4348,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/EventListResponse'
+        '403':
+          description: API key lacks events:read permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ==========================================================================
   # PILLAR 3: RUNTIME ENFORCEMENT (from Cycles v0.1.24)
