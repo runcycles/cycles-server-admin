@@ -529,14 +529,31 @@ class AuthInterceptorTest {
     }
 
     @Test
-    void preHandle_postBudgetsFund_withAdminKey_rejected() throws Exception {
+    void preHandle_postBudgetsFund_withAdminKey_accepted() throws Exception {
         request.setMethod("POST");
         request.setRequestURI("/v1/admin/budgets/fund");
         request.addHeader("X-Admin-API-Key", "admin-secret-key");
-        // POST /v1/admin/budgets/fund is NOT in the allowlist — should require ApiKeyAuth
+        // POST /v1/admin/budgets/fund is now in the dual-auth allowlist (v0.1.25.6)
 
-        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
-        assertThat(response.getStatus()).isEqualTo(401);
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_postBudgetsFreeze_withAdminKey_accepted() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/budgets/freeze");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_postBudgetsUnfreeze_withAdminKey_accepted() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/budgets/unfreeze");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
     }
 
     // --- Dual-auth: API key still works on allowlisted endpoints ---

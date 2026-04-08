@@ -217,6 +217,21 @@ public class BudgetRepository {
     // ARGV[1] = tenant_id (for ownership check, empty = skip)
     // ARGV[2] = new_overdraft_limit (empty = no change)
     // ARGV[3] = new_commit_overage_policy (empty = no change)
+    // KEYS[1] = budget key
+    // ARGV[1] = now_millis
+    // ARGV[2] = target_status ("FROZEN" or "ACTIVE")
+    private static final String TRANSITION_STATUS_LUA =
+        "local key = KEYS[1]\n" +
+        "if redis.call('EXISTS', key) == 0 then return {'NOT_FOUND'} end\n" +
+        "local status = redis.call('HGET', key, 'status') or 'ACTIVE'\n" +
+        "local target = ARGV[2]\n" +
+        "if status == 'CLOSED' then return {'BUDGET_CLOSED'} end\n" +
+        "if status == target then return {'ALREADY_' .. target} end\n" +
+        "if target == 'FROZEN' and status ~= 'ACTIVE' then return {'INVALID_TRANSITION'} end\n" +
+        "if target == 'ACTIVE' and status ~= 'FROZEN' then return {'INVALID_TRANSITION'} end\n" +
+        "redis.call('HMSET', key, 'status', target, 'updated_at', ARGV[1])\n" +
+        "return {'OK'}\n";
+
     // ARGV[4] = new_metadata_json (empty = no change)
     // ARGV[5] = now_iso
     private static final String UPDATE_BUDGET_LUA =
@@ -270,6 +285,49 @@ public class BudgetRepository {
             }
 
             // Re-read and return the updated budget
+            Map<String, String> hash = jedis.hgetAll(key);
+            return hashToBudgetLedger(hash, key);
+        } catch (GovernanceException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public BudgetLedger freeze(String scope, UnitEnum unit) {
+        return transitionStatus(scope, unit, "FROZEN");
+    }
+
+    public BudgetLedger unfreeze(String scope, UnitEnum unit) {
+        return transitionStatus(scope, unit, "ACTIVE");
+    }
+
+    private BudgetLedger transitionStatus(String scope, UnitEnum unit, String targetStatus) {
+        scope = normalizeScope(scope);
+        LOG.info("Transitioning budget status: scope={}, unit={}, target={}", scope, unit, targetStatus);
+        try (Jedis jedis = jedisPool.getResource()) {
+            String key = "budget:" + scope + ":" + unit;
+            String now = String.valueOf(Instant.now().toEpochMilli());
+
+            @SuppressWarnings("unchecked")
+            List<String> result = (List<String>) jedis.eval(TRANSITION_STATUS_LUA,
+                List.of(key),
+                List.of(now, targetStatus));
+
+            String status = result.get(0);
+            if ("NOT_FOUND".equals(status)) {
+                throw GovernanceException.budgetNotFound(scope + ":" + unit);
+            }
+            if ("BUDGET_CLOSED".equals(status)) {
+                throw GovernanceException.budgetClosed(scope);
+            }
+            if (status.startsWith("ALREADY_") || "INVALID_TRANSITION".equals(status)) {
+                String msg = "FROZEN".equals(targetStatus)
+                    ? "Budget is already frozen" : "Budget is not frozen";
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST, msg, 409);
+            }
+
             Map<String, String> hash = jedis.hgetAll(key);
             return hashToBudgetLedger(hash, key);
         } catch (GovernanceException e) {
