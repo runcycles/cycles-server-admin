@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Complete Budget Governance System API
-  version: 0.1.25
+  version: 0.1.25.1
   license:
     name: Apache 2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -169,6 +169,8 @@ tags:
     description: "Pillar 4: Webhook subscription management (admin and tenant self-service)"
   - name: Events
     description: "Pillar 4: Event types, delivery tracking, and replay"
+  - name: Dashboard
+    description: "Admin dashboard: operational overview and auth introspection"
 
 components:
   securitySchemes:
@@ -180,10 +182,12 @@ components:
         Administrative API key with full system access. Also accepted as an
         alternative to ApiKeyAuth on an explicit allowlist of read-only endpoints
         (GET /v1/admin/budgets, GET /v1/admin/budgets/lookup, GET /v1/admin/policies).
-        When using AdminKeyAuth on these endpoints, the tenant_id query parameter
-        is required for scoping. The allowlist uses exact method:path matching —
-        no prefix matching, no wildcards — so new endpoints do not accidentally
-        inherit admin-readable status.
+        When using AdminKeyAuth on list endpoints (GET /v1/admin/budgets,
+        GET /v1/admin/policies), the tenant_id query parameter is required for
+        scoping. GET /v1/admin/budgets/lookup does NOT require tenant_id because
+        the Redis key is deterministic from scope + unit. The allowlist uses exact
+        method:path matching — no prefix matching, no wildcards — so new endpoints
+        do not accidentally inherit admin-readable status.
 
     ApiKeyAuth:
       type: apiKey
@@ -2507,6 +2511,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BudgetListResponse'
+        '400':
+          description: Missing tenant_id when using AdminKeyAuth
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     patch:
       tags: [Budgets]
       operationId: updateBudget
@@ -2672,6 +2688,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BudgetLedger'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API key scope_filter denies access to the requested scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No budget exists for this (scope, unit) pair
           content:
@@ -2768,7 +2796,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PolicyListResponse'
-  
+        '400':
+          description: Missing tenant_id when using AdminKeyAuth
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /v1/admin/policies/{policy_id}:
     patch:
       tags: [Policies]
@@ -2983,7 +3023,7 @@ paths:
 
   /v1/auth/introspect:
     get:
-      tags: [Authentication]
+      tags: [Dashboard]
       operationId: introspectAuth
       summary: Introspect authenticated credential and return effective capabilities
       description: >-
@@ -3009,6 +3049,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthIntrospectResponse'
+        '401':
+          description: Missing or invalid admin API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /v1/admin/audit/logs:
     get:
@@ -3078,7 +3124,7 @@ paths:
 
   /v1/admin/overview:
     get:
-      tags: [Budgets]
+      tags: [Dashboard]
       operationId: getAdminOverview
       summary: Get server-aggregated operational dashboard overview
       description: >-
@@ -3105,6 +3151,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AdminOverviewResponse'
+        '401':
+          description: Missing or invalid admin API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ==========================================================================
   # PILLAR 4: EVENTS & WEBHOOKS

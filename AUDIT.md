@@ -4,21 +4,24 @@
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25.1)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
-### 2026-04-08 — v0.1.25.1: Dashboard support — spec updates (code changes pending)
+### 2026-04-08 — v0.1.25.1: Dashboard support — spec + code complete
 
 Spec-first updates to `complete-budget-governance-v0.1.25.yaml` for the admin dashboard (cycles-dashboard v1). All changes are additive — no breaking changes to existing endpoints or schemas.
 
 | Change | Details |
 |--------|---------|
-| Dual-auth allowlist | `GET /v1/admin/budgets`, `GET /v1/admin/policies`: added `AdminKeyAuth` as alternative security scheme. AdminKeyAuth description updated to document allowlist semantics. |
+| `info.version` bumped | `0.1.25` → `0.1.25.1` to match changelog and prevent codegen/SDK confusion. |
+| Dual-auth allowlist | `GET /v1/admin/budgets`, `GET /v1/admin/policies`: added `AdminKeyAuth` as alternative security scheme. AdminKeyAuth description updated to document allowlist semantics — `tenant_id` required on list endpoints but NOT on `budgets/lookup` (key is deterministic from scope+unit). |
 | `tenant_id` on policies | `GET /v1/admin/policies`: added `tenant_id` query param (required for AdminKeyAuth, ignored for ApiKeyAuth). Budgets already had it. |
-| Budget lookup endpoint | `GET /v1/admin/budgets/lookup`: new endpoint for exact (scope, unit) retrieval. Dual-auth. |
-| Overview endpoint | `GET /v1/admin/overview`: new AdminKeyAuth-only endpoint returning `AdminOverviewResponse` — server-aggregated counts, top-offender arrays, recent events. |
-| Introspect endpoint | `GET /v1/auth/introspect`: new AdminKeyAuth-only endpoint returning `AuthIntrospectResponse` — effective capabilities for dashboard UI gating. |
+| Budget lookup endpoint | `GET /v1/admin/budgets/lookup`: new endpoint for exact (scope, unit) retrieval. Dual-auth. Added 401/403/404 responses. |
+| Overview endpoint | `GET /v1/admin/overview`: new AdminKeyAuth-only endpoint returning `AdminOverviewResponse`. Tagged under `Dashboard`. Added 401 response. |
+| Introspect endpoint | `GET /v1/auth/introspect`: new AdminKeyAuth-only endpoint returning `AuthIntrospectResponse`. Tagged under `Dashboard`. Added 401 response. |
+| Error responses | Added 400/401 to `GET /v1/admin/budgets` and `GET /v1/admin/policies` list endpoints (400 for missing tenant_id with AdminKeyAuth). |
+| New tag | `Dashboard` — groups overview and introspect endpoints. |
 | New schemas | `AdminOverviewResponse`, `AuthIntrospectResponse` added to components/schemas. |
 | Changelog | Added v0.1.25.1 entry documenting all changes. |
 
-**Code implementation pending** — spec updated first per project rules (YAML spec is the authority).
+**Code implementation complete** — 375 tests pass, all JaCoCo coverage checks met.
 
 ---
 
