@@ -4,6 +4,17 @@
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25.5)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
+### 2026-04-08 — Swagger tag compliance fix
+
+**Issue:** Spec compliance review found two OpenAPI tag mismatches:
+
+| File | Was | Should Be | Affected Endpoint |
+|------|-----|-----------|-------------------|
+| `AdminOverviewController.java` | `@Tag(name = "Budgets")` | `@Tag(name = "Dashboard")` | `GET /v1/admin/overview` |
+| `AuthController.java` | Class-level `@Tag(name = "Authentication")` applied to introspect | Method-level `tags = {"Dashboard"}` on `@Operation` | `GET /v1/auth/introspect` |
+
+**Impact:** Swagger UI grouping only — no runtime behavior change. Both endpoints now appear under the `Dashboard` tag per spec section `tags:` (line 178) and endpoint definitions (lines 3057, 3157).
+
 ### 2026-04-08 — v0.1.25.5: Admin dashboard support
 
 Backend changes for the Cycles Admin Dashboard (cycles-dashboard v1). All changes are additive — no breaking changes to existing endpoints or schemas. Spec updated first (YAML is the authority), then code, then multiple rounds of spec review.

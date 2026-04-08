@@ -11,7 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/v1/admin/overview")
-@Tag(name = "Budgets")
+@Tag(name = "Dashboard")
 public class AdminOverviewController {
 
     private final AdminOverviewService overviewService;
