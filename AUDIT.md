@@ -1,8 +1,55 @@
-# Complete Budget Governance v0.1.25 — Admin Server Audit
+# Complete Budget Governance v0.1.25.6 — Admin Server Audit
 
-**Date:** 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
-**Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25.5)
+**Date:** 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25.6)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-08 — v0.1.25.6: Budget freeze/unfreeze + admin fund
+
+Two spec gaps identified during dashboard development. All changes are additive — no breaking changes.
+
+**Spec changes** (`complete-budget-governance-v0.1.25.yaml`):
+
+| Change | Details |
+|--------|---------|
+| Budget freeze endpoint | `POST /v1/admin/budgets/freeze` — transitions ACTIVE → FROZEN (AdminKeyAuth). Optional body: reason, metadata. 200/401/404/409. |
+| Budget unfreeze endpoint | `POST /v1/admin/budgets/unfreeze` — transitions FROZEN → ACTIVE (AdminKeyAuth). Same shape. |
+| Admin fund dual-auth | `POST /v1/admin/budgets/fund` now accepts `AdminKeyAuth` as alternative. `tenant_id` required for admin auth. |
+| New schema | `BudgetStatusTransitionRequest`: reason (optional), metadata (optional). |
+
+**Code changes:**
+
+| File | Change |
+|------|--------|
+| `BudgetRepository.java` | New `TRANSITION_STATUS_LUA` script; `freeze()` and `unfreeze()` methods |
+| `BudgetController.java` | New `POST /freeze` and `POST /unfreeze` endpoints; `fund()` updated with `tenant_id` param and admin-key fallback |
+| `AuthInterceptor.java` | `ADMIN_READABLE_ENDPOINTS` → `ADMIN_ALLOWED_ENDPOINTS` (includes `POST:/v1/admin/budgets/fund`); freeze/unfreeze routed to admin auth |
+| `BudgetStatusTransitionRequest.java` | New request model |
+| `pom.xml` | `<revision>0.1.25.6</revision>` |
+
+**Tenant permission model** (review feedback):
+
+| Change | Details |
+|--------|---------|
+| New permissions | `budgets:read`, `budgets:write`, `policies:read`, `policies:write` added to ApiKey.permissions enum |
+| Permission enforcement | `AuthInterceptor.PERMISSION_MAP` updated: budget endpoints require `budgets:read`/`budgets:write`, policy endpoints require `policies:read`/`policies:write` (was `admin:read`/`admin:write`) |
+| 403 responses | Added to `POST /v1/admin/budgets`, `POST /v1/admin/policies`, `PATCH /v1/admin/policies/{policy_id}`, `POST /v1/admin/budgets/fund` |
+| Event emission docs | Freeze/unfreeze endpoint descriptions now explicitly state `budget.frozen`/`budget.unfrozen` event emission |
+| Schema header | Fixed stale `v0.1.25.5` → `v0.1.25.6` in DASHBOARD SCHEMAS comment |
+| Backward compatible | New permissions included in default tenant key set |
+
+**Audit trail completeness:**
+
+| Endpoint | Controller | Fix |
+|----------|-----------|-----|
+| `POST /v1/admin/webhooks/{id}/test` | WebhookAdminController | Added audit log (operation, status) |
+| `POST /v1/admin/webhooks/{id}/replay` | WebhookAdminController | Added audit log (operation, status) |
+| `POST /v1/webhooks` | WebhookTenantController | Added AuditRepository + audit log (tenantId, keyId, operation, status) |
+| `PATCH /v1/webhooks/{id}` | WebhookTenantController | Added audit log (tenantId, keyId, operation, status) |
+| `DELETE /v1/webhooks/{id}` | WebhookTenantController | Added audit log (tenantId, keyId, operation, status) |
+| `POST /v1/webhooks/{id}/test` | WebhookTenantController | Added audit log (tenantId, keyId, operation, status) |
+
+**Test count:** 384 → 401 (all passing, 95%+ coverage maintained).
 
 ### 2026-04-08 — Audit log completeness fix
 

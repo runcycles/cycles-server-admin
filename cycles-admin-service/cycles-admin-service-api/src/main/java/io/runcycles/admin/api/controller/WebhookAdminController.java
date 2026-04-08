@@ -68,8 +68,12 @@ public class WebhookAdminController {
     }
 
     @PostMapping("/{subscription_id}/test") @Operation(operationId = "testWebhookSubscription")
-    public ResponseEntity<WebhookTestResponse> test(@PathVariable("subscription_id") String subscriptionId) {
-        return ResponseEntity.ok(webhookService.test(subscriptionId));
+    public ResponseEntity<WebhookTestResponse> test(
+            @PathVariable("subscription_id") String subscriptionId, HttpServletRequest httpRequest) {
+        WebhookTestResponse response = webhookService.test(subscriptionId);
+        auditRepository.log(buildAuditEntry(httpRequest)
+            .operation("testWebhookSubscription").status(200).build());
+        return ResponseEntity.ok(response);
     }
 
     @GetMapping("/{subscription_id}/deliveries") @Operation(operationId = "listWebhookDeliveries")
@@ -87,8 +91,11 @@ public class WebhookAdminController {
     @PostMapping("/{subscription_id}/replay") @Operation(operationId = "replayEvents")
     public ResponseEntity<ReplayResponse> replay(
             @PathVariable("subscription_id") String subscriptionId,
-            @Valid @RequestBody ReplayRequest request) {
-        return ResponseEntity.accepted().body(webhookService.replay(subscriptionId, request));
+            @Valid @RequestBody ReplayRequest request, HttpServletRequest httpRequest) {
+        ReplayResponse response = webhookService.replay(subscriptionId, request);
+        auditRepository.log(buildAuditEntry(httpRequest)
+            .operation("replayEvents").status(202).build());
+        return ResponseEntity.accepted().body(response);
     }
 
     private AuditLogEntry.AuditLogEntryBuilder buildAuditEntry(HttpServletRequest request) {

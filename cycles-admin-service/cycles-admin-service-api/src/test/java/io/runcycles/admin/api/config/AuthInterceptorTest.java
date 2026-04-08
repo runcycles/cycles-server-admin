@@ -196,14 +196,14 @@ class AuthInterceptorTest {
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("admin:write", "balances:read"))
+                        .permissions(List.of("budgets:write", "balances:read"))
                         .scopeFilter(List.of("org/*"))
                         .build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
         assertThat(request.getAttribute("authenticated_tenant_id")).isEqualTo("t1");
         assertThat(request.getAttribute("authenticated_key_id")).isEqualTo("key_1");
-        assertThat(request.getAttribute("authenticated_permissions")).isEqualTo(List.of("admin:write", "balances:read"));
+        assertThat(request.getAttribute("authenticated_permissions")).isEqualTo(List.of("budgets:write", "balances:read"));
         assertThat(request.getAttribute("authenticated_scope_filter")).isEqualTo(List.of("org/*"));
     }
 
@@ -239,7 +239,7 @@ class AuthInterceptorTest {
     }
 
     @Test
-    void preHandle_budgetListEndpoint_adminReadPermission_allows() throws Exception {
+    void preHandle_budgetListEndpoint_budgetsReadPermission_allows() throws Exception {
         request.setMethod("GET");
         request.setRequestURI("/v1/admin/budgets");
         request.addHeader("X-Cycles-API-Key", "valid-key");
@@ -247,14 +247,14 @@ class AuthInterceptorTest {
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("admin:read"))
+                        .permissions(List.of("budgets:read"))
                         .build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
     }
 
     @Test
-    void preHandle_policyUpdate_withPathVariable_requiresAdminWrite() throws Exception {
+    void preHandle_policyUpdate_withPathVariable_requiresPoliciesWrite() throws Exception {
         request.setMethod("PATCH");
         request.setRequestURI("/v1/admin/policies/pol_123");
         request.addHeader("X-Cycles-API-Key", "valid-key");
@@ -262,7 +262,7 @@ class AuthInterceptorTest {
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("admin:read"))
+                        .permissions(List.of("policies:read"))
                         .build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
@@ -529,14 +529,31 @@ class AuthInterceptorTest {
     }
 
     @Test
-    void preHandle_postBudgetsFund_withAdminKey_rejected() throws Exception {
+    void preHandle_postBudgetsFund_withAdminKey_accepted() throws Exception {
         request.setMethod("POST");
         request.setRequestURI("/v1/admin/budgets/fund");
         request.addHeader("X-Admin-API-Key", "admin-secret-key");
-        // POST /v1/admin/budgets/fund is NOT in the allowlist — should require ApiKeyAuth
+        // POST /v1/admin/budgets/fund is now in the dual-auth allowlist (v0.1.25.6)
 
-        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
-        assertThat(response.getStatus()).isEqualTo(401);
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_postBudgetsFreeze_withAdminKey_accepted() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/budgets/freeze");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_postBudgetsUnfreeze_withAdminKey_accepted() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/budgets/unfreeze");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
     }
 
     // --- Dual-auth: API key still works on allowlisted endpoints ---
@@ -550,7 +567,7 @@ class AuthInterceptorTest {
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("admin:read"))
+                        .permissions(List.of("budgets:read"))
                         .build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
@@ -566,7 +583,7 @@ class AuthInterceptorTest {
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("admin:read"))
+                        .permissions(List.of("policies:read"))
                         .build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Complete Budget Governance System API
-  version: 0.1.25.5
+  version: 0.1.25.6
   license:
     name: Apache 2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -116,6 +116,44 @@ info:
           fields, enum values, or response codes were removed. Clients built against v0.1.24
           work unchanged against v0.1.25.
 
+      v0.1.25.6 (2026-04-08):
+        - Budget freeze/unfreeze: Added dedicated action endpoints for operational
+          status transitions. BudgetLedger.status already included FROZEN, events
+          budget.frozen/budget.unfrozen already existed, and fund() already blocked
+          on frozen budgets — but there was no API to transition status.
+            * POST /v1/admin/budgets/freeze — transitions ACTIVE → FROZEN (AdminKeyAuth)
+            * POST /v1/admin/budgets/unfreeze — transitions FROZEN → ACTIVE (AdminKeyAuth)
+            * Query params: scope (required), unit (required)
+            * Optional request body: reason, metadata
+            * Responses: 200 (BudgetLedger), 400, 401, 404, 409 (invalid transition)
+            * 409 cases: already frozen, already active, budget closed
+        - Admin fund: Extended POST /v1/admin/budgets/fund with dual-auth.
+            * AdminKeyAuth now accepted as alternative security scheme.
+            * When using AdminKeyAuth: tenant_id query parameter is REQUIRED.
+            * When using ApiKeyAuth: existing behavior unchanged (tenant_id ignored,
+              uses authenticated tenant).
+            * Added 400 response for missing tenant_id with AdminKeyAuth.
+            * Added 403 response for scope_filter denial (ApiKeyAuth callers).
+        - Added 1 new schema: BudgetStatusTransitionRequest (reason, metadata).
+        - Added 4 new tenant API key permissions: budgets:read, budgets:write,
+          policies:read, policies:write. Budget/policy tenant endpoints now require
+          explicit permissions (403 if missing), consistent with webhooks/events model.
+        - Added 403 responses to POST /v1/admin/budgets, POST /v1/admin/policies,
+          PATCH /v1/admin/policies/{policy_id}, POST /v1/admin/budgets/fund for
+          permission and scope_filter denial.
+        - Added 403 responses and PERMISSIONS documentation to all tenant webhook
+          self-service endpoints (GET/PATCH/DELETE/POST /v1/webhooks/...) and
+          GET /v1/events for permission consistency with budgets/policies.
+        - Freeze/unfreeze endpoint descriptions now explicitly document event emission
+          (budget.frozen, budget.unfrozen).
+        - Updated AdminKeyAuth description to include fund in allowlist.
+        - Backward compatibility: All changes are purely additive. Keys created with
+          default permissions include the new budget/policy permissions automatically.
+          Keys created before v0.1.25.6 with explicitly specified permission sets may
+          need migration if they do not include budgets:read/write or policies:read/write.
+          Servers SHOULD apply fallback semantics (grant budget/policy access to pre-existing
+          keys that lack explicit permission strings) or migrate persisted keys at startup.
+
       v0.1.25.5 (2026-04-08):
         - Dashboard support: Added dual-auth allowlist for admin dashboard reads.
             * GET /v1/admin/budgets and GET /v1/admin/policies now accept AdminKeyAuth
@@ -186,14 +224,15 @@ components:
       name: X-Admin-API-Key
       description: >-
         Administrative API key with full system access. Also accepted as an
-        alternative to ApiKeyAuth on an explicit allowlist of read-only endpoints
-        (GET /v1/admin/budgets, GET /v1/admin/budgets/lookup, GET /v1/admin/policies).
-        When using AdminKeyAuth on list endpoints (GET /v1/admin/budgets,
-        GET /v1/admin/policies), the tenant_id query parameter is required for
-        scoping. GET /v1/admin/budgets/lookup does NOT require tenant_id because
+        alternative to ApiKeyAuth on an explicit allowlist of endpoints
+        (GET /v1/admin/budgets, GET /v1/admin/budgets/lookup, GET /v1/admin/policies,
+        POST /v1/admin/budgets/fund).
+        When using AdminKeyAuth on list or fund endpoints, the tenant_id query
+        parameter is required for scoping (400 if missing).
+        GET /v1/admin/budgets/lookup does NOT require tenant_id because
         the budget is uniquely identified by the (scope, unit) pair. The allowlist
         uses exact method:path matching — no prefix matching, no wildcards — so
-        new endpoints do not accidentally inherit admin-readable status.
+        new endpoints do not accidentally inherit admin-accessible status.
 
     ApiKeyAuth:
       type: apiKey
@@ -541,6 +580,21 @@ components:
           type: object
           additionalProperties: true
     
+    BudgetStatusTransitionRequest:
+      type: object
+      additionalProperties: false
+      description: >-
+        Request body for budget freeze/unfreeze operations.
+        All fields are optional — an empty body (or no body) is valid.
+      properties:
+        reason:
+          type: string
+          maxLength: 512
+          description: Human-readable justification for audit trail
+        metadata:
+          type: object
+          additionalProperties: true
+
     BudgetFundingRequest:
       type: object
       required: [operation, amount]
@@ -815,6 +869,10 @@ components:
               - 'reservations:extend'
               - 'reservations:list'
               - 'balances:read'
+              - 'budgets:read'
+              - 'budgets:write'
+              - 'policies:read'
+              - 'policies:write'
               - 'webhooks:read'
               - 'webhooks:write'
               - 'events:read'
@@ -836,7 +894,9 @@ components:
               - 'admin:audit:read'
           description: >-
             Granular permissions. Default for tenant keys:
-            [reservations:*, balances:read]
+            [reservations:create, reservations:commit, reservations:release,
+            reservations:extend, reservations:list, balances:read,
+            budgets:read, budgets:write, policies:read, policies:write]
         scope_filter:
           type: array
           items:
@@ -2094,7 +2154,7 @@ components:
           type: boolean
 
     # ========================================================================
-    # DASHBOARD SCHEMAS (v0.1.25.5)
+    # DASHBOARD SCHEMAS (v0.1.25.6)
     # ========================================================================
 
     AdminOverviewResponse:
@@ -2464,13 +2524,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API key lacks budgets:write permission or scope_filter denies access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: Budget already exists for this (scope, unit)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-    
+
     get:
       tags: [Budgets]
       operationId: listBudgets
@@ -2541,7 +2607,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: API key scope_filter denies access to the requested scope_prefix
+          description: API key lacks budgets:read permission or scope_filter denies access
           content:
             application/json:
               schema:
@@ -2600,6 +2666,148 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /v1/admin/budgets/freeze:
+    post:
+      tags: [Budgets]
+      operationId: freezeBudget
+      summary: Freeze a budget (ACTIVE → FROZEN)
+      description: >-
+        Transitions a budget from ACTIVE to FROZEN. Frozen budgets block all
+        fund operations and new reservations, but can still be updated
+        (overdraft_limit, commit_overage_policy, metadata).
+
+        AUTHORIZATION:
+        - Requires admin key (X-Admin-API-Key)
+
+        TRANSITION RULES:
+        - ACTIVE → FROZEN: Allowed
+        - FROZEN → FROZEN: 409 (already frozen)
+        - CLOSED → FROZEN: 409 (closed is irreversible)
+
+        EVENTS:
+        - Emits budget.frozen event on successful transition.
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: scope
+          in: query
+          required: true
+          description: Canonical scope identifier
+          schema:
+            type: string
+        - name: unit
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UnitEnum'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetStatusTransitionRequest'
+      responses:
+        '200':
+          description: Budget frozen
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetLedger'
+        '400':
+          description: Invalid request body (e.g., unknown fields, reason too long)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid admin API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Budget not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Invalid transition (already frozen or closed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/admin/budgets/unfreeze:
+    post:
+      tags: [Budgets]
+      operationId: unfreezeBudget
+      summary: Unfreeze a budget (FROZEN → ACTIVE)
+      description: >-
+        Transitions a budget from FROZEN back to ACTIVE, resuming normal operations.
+
+        AUTHORIZATION:
+        - Requires admin key (X-Admin-API-Key)
+
+        TRANSITION RULES:
+        - FROZEN → ACTIVE: Allowed
+        - ACTIVE → ACTIVE: 409 (already active)
+        - CLOSED → ACTIVE: 409 (closed is irreversible)
+
+        EVENTS:
+        - Emits budget.unfrozen event on successful transition.
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: scope
+          in: query
+          required: true
+          description: Canonical scope identifier
+          schema:
+            type: string
+        - name: unit
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UnitEnum'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetStatusTransitionRequest'
+      responses:
+        '200':
+          description: Budget unfrozen
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetLedger'
+        '400':
+          description: Invalid request body (e.g., unknown fields, reason too long)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid admin API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Budget not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Invalid transition (already active or closed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /v1/admin/budgets/fund:
     post:
       tags: [Budgets]
@@ -2610,7 +2818,9 @@ paths:
         reservation flow. Common operations:
 
         AUTHORIZATION:
-        - Tenant can fund their own budgets only
+        - ApiKeyAuth: Tenant can fund their own budgets only (scoped by authenticated tenant)
+        - AdminKeyAuth: Accepted as alternative (v0.1.25.6 dual-auth).
+          When using AdminKeyAuth, tenant_id query parameter is REQUIRED for scoping.
 
         CREDIT (top-up):
         - allocated += amount
@@ -2636,7 +2846,18 @@ paths:
         - Replayed requests return original response
       security:
         - ApiKeyAuth: []
+        - AdminKeyAuth: []
       parameters:
+        - name: tenant_id
+          in: query
+          required: false
+          description: >-
+            When using ApiKeyAuth: ignored — the authenticated tenant from the
+            API key is always used for scoping.
+            When using AdminKeyAuth: REQUIRED — specifies which tenant's budget to fund.
+            Returns 400 if missing when using AdminKeyAuth.
+          schema:
+            type: string
         - name: scope
           in: query
           required: true
@@ -2662,6 +2883,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BudgetFundingResponse'
+        '400':
+          description: Missing tenant_id when using AdminKeyAuth
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API key lacks budgets:write permission or scope_filter denies access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Budget ledger not found
           content:
@@ -2719,7 +2958,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: API key scope_filter denies access to the requested scope
+          description: API key lacks budgets:read permission or scope_filter denies access
           content:
             application/json:
               schema:
@@ -2771,7 +3010,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Policy'
-    
+        '403':
+          description: API key lacks policies:write permission or scope_filter denies access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
     get:
       tags: [Policies]
       operationId: listPolicies
@@ -2833,7 +3078,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: API key scope_filter denies access to the requested scope_pattern
+          description: API key lacks policies:read permission or scope_filter denies access
           content:
             application/json:
               schema:
@@ -2878,6 +3123,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Policy'
+        '403':
+          description: API key lacks policies:write permission or scope_filter denies access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Policy not found
           content:
@@ -2904,8 +3155,11 @@ paths:
         - Stored as: bcrypt hash of full key
         
         PERMISSIONS:
-        - Default for tenant keys: [reservations:*, balances:read]
-        - Admin keys: [admin:*, reservations:*, balances:*]
+        - Default for tenant keys: [reservations:create, reservations:commit,
+          reservations:release, reservations:extend, reservations:list,
+          balances:read, budgets:read, budgets:write, policies:read,
+          policies:write]
+        - Admin keys: [admin:read, admin:write] (wildcards for all admin operations)
         - Can be restricted to specific scopes via scope_filter
         
         EXPIRY:
@@ -3806,6 +4060,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookListResponse'
+        '403':
+          description: API key lacks webhooks:read permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /v1/webhooks/{subscription_id}:
     get:
@@ -3814,6 +4074,9 @@ paths:
       summary: Get a tenant's webhook subscription
       description: >-
         Returns webhook details. Returns 404 if subscription belongs to a different tenant.
+
+        PERMISSIONS:
+        - Requires webhooks:read permission on the API key.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -3829,6 +4092,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookSubscription'
+        '403':
+          description: API key lacks webhooks:read permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Subscription not found or belongs to different tenant
           content:
@@ -3840,7 +4109,11 @@ paths:
       tags: [Webhooks]
       operationId: updateTenantWebhook
       summary: Update a tenant's webhook subscription
-      description: Partial update — only provided fields are modified. Restricted to tenant-accessible event types.
+      description: >-
+        Partial update — only provided fields are modified. Restricted to tenant-accessible event types.
+
+        PERMISSIONS:
+        - Requires webhooks:write permission on the API key.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -3868,6 +4141,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API key lacks webhooks:write permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Subscription not found or belongs to different tenant
           content:
@@ -3879,7 +4158,11 @@ paths:
       tags: [Webhooks]
       operationId: deleteTenantWebhook
       summary: Delete a tenant's webhook subscription
-      description: Permanently removes the subscription. Pending deliveries for this subscription will fail.
+      description: >-
+        Permanently removes the subscription. Pending deliveries for this subscription will fail.
+
+        PERMISSIONS:
+        - Requires webhooks:write permission on the API key.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -3891,6 +4174,12 @@ paths:
       responses:
         '204':
           description: Subscription deleted
+        '403':
+          description: API key lacks webhooks:write permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Subscription not found or belongs to different tenant
           content:
@@ -3903,7 +4192,11 @@ paths:
       tags: [Webhooks]
       operationId: testTenantWebhook
       summary: Send a test event to a tenant's webhook
-      description: Sends a synthetic system.webhook_test event. Does not count toward consecutive failures.
+      description: >-
+        Sends a synthetic system.webhook_test event. Does not count toward consecutive failures.
+
+        PERMISSIONS:
+        - Requires webhooks:write permission on the API key.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -3919,6 +4212,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookTestResponse'
+        '403':
+          description: API key lacks webhooks:write permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Subscription not found or belongs to different tenant
           content:
@@ -3931,7 +4230,12 @@ paths:
       tags: [Webhooks]
       operationId: listTenantWebhookDeliveries
       summary: List delivery attempts for a tenant's webhook
-      description: Returns delivery history with status, response codes, and error details. Supports filtering by status and date range.
+      description: >-
+        Returns delivery history with status, response codes, and error details.
+        Supports filtering by status and date range.
+
+        PERMISSIONS:
+        - Requires webhooks:read permission on the API key.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -3973,6 +4277,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookDeliveryListResponse'
+        '403':
+          description: API key lacks webhooks:read permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Subscription not found or belongs to different tenant
           content:
@@ -4038,6 +4348,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/EventListResponse'
+        '403':
+          description: API key lacks events:read permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ==========================================================================
   # PILLAR 3: RUNTIME ENFORCEMENT (from Cycles v0.1.24)

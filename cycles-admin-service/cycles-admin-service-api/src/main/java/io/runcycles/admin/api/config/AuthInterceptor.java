@@ -29,24 +29,25 @@ public class AuthInterceptor implements HandlerInterceptor {
     private static final String ADMIN_KEY_HEADER = "X-Admin-API-Key";
     private static final String API_KEY_HEADER = "X-Cycles-API-Key";
 
-    // Explicit allowlist of ApiKeyAuth endpoints that also accept AdminKeyAuth for reads.
+    // Explicit allowlist of ApiKeyAuth endpoints that also accept AdminKeyAuth.
     // Each entry MUST be reflected in the governance spec and API docs.
     // Uses exact method:path matching — no prefix matching, no wildcards.
-    private static final Set<String> ADMIN_READABLE_ENDPOINTS = Set.of(
+    private static final Set<String> ADMIN_ALLOWED_ENDPOINTS = Set.of(
         "GET:/v1/admin/budgets",
         "GET:/v1/admin/budgets/lookup",
-        "GET:/v1/admin/policies"
+        "GET:/v1/admin/policies",
+        "POST:/v1/admin/budgets/fund"
     );
 
     // Endpoint path+method → required permission per admin governance spec
     private static final Map<String, String> PERMISSION_MAP = Map.ofEntries(
-        Map.entry("POST:/v1/admin/budgets/fund", "admin:write"),
-        Map.entry("POST:/v1/admin/budgets", "admin:write"),
-        Map.entry("GET:/v1/admin/budgets", "admin:read"),
+        Map.entry("POST:/v1/admin/budgets/fund", "budgets:write"),
+        Map.entry("POST:/v1/admin/budgets", "budgets:write"),
+        Map.entry("GET:/v1/admin/budgets", "budgets:read"),
         // PATCH /v1/admin/budgets uses AdminKeyAuth per spec v0.1.25 — no permission map entry needed
-        Map.entry("POST:/v1/admin/policies", "admin:write"),
-        Map.entry("PATCH:/v1/admin/policies", "admin:write"),
-        Map.entry("GET:/v1/admin/policies", "admin:read"),
+        Map.entry("POST:/v1/admin/policies", "policies:write"),
+        Map.entry("PATCH:/v1/admin/policies", "policies:write"),
+        Map.entry("GET:/v1/admin/policies", "policies:read"),
         Map.entry("GET:/v1/balances", "balances:read"),
         Map.entry("POST:/v1/webhooks", "webhooks:write"),
         Map.entry("GET:/v1/webhooks", "webhooks:read"),
@@ -84,7 +85,7 @@ public class AuthInterceptor implements HandlerInterceptor {
             // Check dual-auth allowlist: some ApiKeyAuth endpoints also accept AdminKeyAuth for reads
             String normalizedPath = path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
             String lookupKey = method + ":" + normalizedPath;
-            if (ADMIN_READABLE_ENDPOINTS.contains(lookupKey) && hasAdminKeyHeader(request)) {
+            if (ADMIN_ALLOWED_ENDPOINTS.contains(lookupKey) && hasAdminKeyHeader(request)) {
                 return validateAdminKey(request, response);
             }
             return validateApiKey(request, response);
@@ -99,7 +100,7 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     private boolean requiresAdminKey(String method, String path) {
         // Admin endpoints per spec: tenants, api-keys, auth/validate, auth/introspect, audit, webhooks, events, config, overview
-        // Also: PATCH /v1/admin/budgets requires AdminKeyAuth per spec v0.1.25
+        // Also: PATCH /v1/admin/budgets, freeze, unfreeze require AdminKeyAuth
         if (path.startsWith("/v1/admin/tenants") ||
                path.startsWith("/v1/admin/api-keys") ||
                path.startsWith("/v1/auth/validate") ||
@@ -113,6 +114,11 @@ public class AuthInterceptor implements HandlerInterceptor {
         }
         // PATCH /v1/admin/budgets requires AdminKeyAuth per spec v0.1.25
         if ("PATCH".equals(method) && path.startsWith("/v1/admin/budgets")) {
+            return true;
+        }
+        // POST /v1/admin/budgets/freeze and /unfreeze require AdminKeyAuth
+        if ("POST".equals(method) && (path.startsWith("/v1/admin/budgets/freeze") ||
+                                       path.startsWith("/v1/admin/budgets/unfreeze"))) {
             return true;
         }
         return false;

@@ -123,16 +123,28 @@ public class BudgetController {
         return ResponseEntity.ok(ledger);
     }
     @PostMapping("/fund") @Operation(operationId = "fundBudget")
-    public ResponseEntity<BudgetFundingResponse> fund(@RequestParam String scope, @RequestParam UnitEnum unit,
+    public ResponseEntity<BudgetFundingResponse> fund(
+            @RequestParam(required = false) String tenant_id,
+            @RequestParam String scope, @RequestParam UnitEnum unit,
             @Valid @RequestBody BudgetFundingRequest request, HttpServletRequest httpRequest) {
         ScopeFilterUtil.enforceScopeFilter(httpRequest, scope);
         if (request.getAmount().getUnit() != unit) {
             throw GovernanceException.unitMismatch(unit.name(), request.getAmount().getUnit().name());
         }
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
+        if (tenantId == null) {
+            // Admin key auth — tenant_id query param is required for scoping
+            if (tenant_id == null || tenant_id.isBlank()) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                    "tenant_id query parameter is required when using admin key authentication",
+                    400);
+            }
+            tenantId = tenant_id;
+        }
         BudgetFundingResponse response = repository.fund(tenantId, scope, unit, request);
         auditRepository.log(buildAuditEntry(httpRequest)
-            .tenantId((String) httpRequest.getAttribute("authenticated_tenant_id"))
+            .tenantId(tenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
             .operation("fundBudget")
             .status(200)
@@ -146,8 +158,9 @@ public class BudgetController {
                 case REPAY_DEBT: fundEventType = EventType.BUDGET_DEBT_REPAID; break;
                 default: fundEventType = EventType.BUDGET_FUNDED; break;
             }
+            ActorType actorType = httpRequest.getAttribute("authenticated_tenant_id") != null ? ActorType.API_KEY : ActorType.ADMIN;
             eventService.emit(fundEventType, tenantId, scope, "cycles-admin",
-                Actor.builder().type(ActorType.API_KEY)
+                Actor.builder().type(actorType)
                     .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
                 objectMapper.convertValue(EventDataBudgetLifecycle.builder()
                     .scope(scope).unit(unit).operation(request.getOperation().name().toLowerCase())
@@ -157,6 +170,60 @@ public class BudgetController {
             LOG.warn("Failed to emit event: {}", e.getMessage());
         }
         return ResponseEntity.ok(response);
+    }
+
+    // ========== POST /v1/admin/budgets/freeze ==========
+
+    @PostMapping("/freeze") @Operation(operationId = "freezeBudget")
+    public ResponseEntity<BudgetLedger> freeze(@RequestParam String scope, @RequestParam UnitEnum unit,
+            @RequestBody(required = false) @Valid BudgetStatusTransitionRequest request,
+            HttpServletRequest httpRequest) {
+        BudgetLedger ledger = repository.freeze(scope, unit);
+        String auditTenantId = ledger.getTenantId();
+        auditRepository.log(buildAuditEntry(httpRequest)
+            .tenantId(auditTenantId)
+            .operation("freezeBudget")
+            .status(200)
+            .build());
+        try {
+            eventService.emit(EventType.BUDGET_FROZEN, auditTenantId, scope, "cycles-admin",
+                Actor.builder().type(ActorType.ADMIN).build(),
+                objectMapper.convertValue(EventDataBudgetLifecycle.builder()
+                    .ledgerId(ledger.getLedgerId()).scope(scope).unit(unit)
+                    .operation("STATUS_CHANGE")
+                    .reason(request != null ? request.getReason() : null).build(), Map.class),
+                null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
+        } catch (Exception e) {
+            LOG.warn("Failed to emit event: {}", e.getMessage());
+        }
+        return ResponseEntity.ok(ledger);
+    }
+
+    // ========== POST /v1/admin/budgets/unfreeze ==========
+
+    @PostMapping("/unfreeze") @Operation(operationId = "unfreezeBudget")
+    public ResponseEntity<BudgetLedger> unfreeze(@RequestParam String scope, @RequestParam UnitEnum unit,
+            @RequestBody(required = false) @Valid BudgetStatusTransitionRequest request,
+            HttpServletRequest httpRequest) {
+        BudgetLedger ledger = repository.unfreeze(scope, unit);
+        String auditTenantId = ledger.getTenantId();
+        auditRepository.log(buildAuditEntry(httpRequest)
+            .tenantId(auditTenantId)
+            .operation("unfreezeBudget")
+            .status(200)
+            .build());
+        try {
+            eventService.emit(EventType.BUDGET_UNFROZEN, auditTenantId, scope, "cycles-admin",
+                Actor.builder().type(ActorType.ADMIN).build(),
+                objectMapper.convertValue(EventDataBudgetLifecycle.builder()
+                    .ledgerId(ledger.getLedgerId()).scope(scope).unit(unit)
+                    .operation("STATUS_CHANGE")
+                    .reason(request != null ? request.getReason() : null).build(), Map.class),
+                null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
+        } catch (Exception e) {
+            LOG.warn("Failed to emit event: {}", e.getMessage());
+        }
+        return ResponseEntity.ok(ledger);
     }
 
     private void validateCreateUnits(BudgetCreateRequest request) {

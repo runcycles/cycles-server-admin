@@ -42,7 +42,7 @@ class BudgetControllerTest {
         when(apiKeyRepository.validate("valid-api-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("admin:read", "admin:write", "balances:read")).build());
+                        .permissions(List.of("budgets:read", "budgets:write", "balances:read")).build());
     }
 
     @Test
@@ -108,7 +108,7 @@ class BudgetControllerTest {
         when(apiKeyRepository.validate("restricted-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("admin:read", "admin:write", "balances:read"))
+                        .permissions(List.of("budgets:read", "budgets:write", "balances:read"))
                         .scopeFilter(List.of("workspace:eng"))
                         .build());
 
@@ -125,7 +125,7 @@ class BudgetControllerTest {
         when(apiKeyRepository.validate("restricted-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("admin:read", "admin:write", "balances:read"))
+                        .permissions(List.of("budgets:read", "budgets:write", "balances:read"))
                         .scopeFilter(List.of("workspace:eng"))
                         .build());
         BudgetLedger ledger = BudgetLedger.builder()
@@ -779,11 +779,11 @@ class BudgetControllerTest {
 
     @Test
     void fundBudget_insufficientPermissions_returns403() throws Exception {
-        // API key with only admin:read — lacks admin:write required for POST /v1/admin/budgets/fund
+        // API key with only budgets:read — lacks budgets:write required for POST /v1/admin/budgets/fund
         when(apiKeyRepository.validate("read-only-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_ro")
-                        .permissions(List.of("admin:read")).build());
+                        .permissions(List.of("budgets:read")).build());
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
                         .param("scope", "scope")
@@ -843,5 +843,264 @@ class BudgetControllerTest {
                 .andReturn().getResponse().getContentAsString();
 
         org.assertj.core.api.Assertions.assertThat(responseBody).doesNotContain("key_hash");
+    }
+
+    // ========== POST /v1/admin/budgets/freeze ==========
+
+    @Test
+    void freezeBudget_returns200() throws Exception {
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1").scope("org/team1").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 500000L))
+                .tenantId("t1")
+                .status(BudgetStatus.FROZEN).createdAt(Instant.now()).build();
+        when(budgetRepository.freeze("org/team1", UnitEnum.USD_MICROCENTS)).thenReturn(ledger);
+
+        mockMvc.perform(post("/v1/admin/budgets/freeze")
+                        .param("scope", "org/team1")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Admin-API-Key", "test-admin-key"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("FROZEN"))
+                .andExpect(jsonPath("$.ledger_id").value("led-1"));
+    }
+
+    @Test
+    void freezeBudget_withReason_returns200() throws Exception {
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1").scope("scope").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .tenantId("t1")
+                .status(BudgetStatus.FROZEN).createdAt(Instant.now()).build();
+        when(budgetRepository.freeze("scope", UnitEnum.USD_MICROCENTS)).thenReturn(ledger);
+
+        mockMvc.perform(post("/v1/admin/budgets/freeze")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"Suspicious activity\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("FROZEN"));
+    }
+
+    @Test
+    void freezeBudget_alreadyFrozen_returns409() throws Exception {
+        when(budgetRepository.freeze("scope", UnitEnum.USD_MICROCENTS))
+                .thenThrow(new GovernanceException(
+                        io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                        "Budget is already frozen", 409));
+
+        mockMvc.perform(post("/v1/admin/budgets/freeze")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Admin-API-Key", "test-admin-key"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void freezeBudget_closed_returns409() throws Exception {
+        when(budgetRepository.freeze("scope", UnitEnum.USD_MICROCENTS))
+                .thenThrow(GovernanceException.budgetClosed("scope"));
+
+        mockMvc.perform(post("/v1/admin/budgets/freeze")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Admin-API-Key", "test-admin-key"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("BUDGET_CLOSED"));
+    }
+
+    @Test
+    void freezeBudget_notFound_returns404() throws Exception {
+        when(budgetRepository.freeze("missing", UnitEnum.USD_MICROCENTS))
+                .thenThrow(GovernanceException.budgetNotFound("missing:USD_MICROCENTS"));
+
+        mockMvc.perform(post("/v1/admin/budgets/freeze")
+                        .param("scope", "missing")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Admin-API-Key", "test-admin-key"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error").value("BUDGET_NOT_FOUND"));
+    }
+
+    @Test
+    void freezeBudget_noAdminKey_returns401() throws Exception {
+        mockMvc.perform(post("/v1/admin/budgets/freeze")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void freezeBudget_logsAuditEntry() throws Exception {
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1").scope("scope").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .tenantId("t1")
+                .status(BudgetStatus.FROZEN).createdAt(Instant.now()).build();
+        when(budgetRepository.freeze("scope", UnitEnum.USD_MICROCENTS)).thenReturn(ledger);
+
+        mockMvc.perform(post("/v1/admin/budgets/freeze")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Admin-API-Key", "test-admin-key"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry ->
+                "freezeBudget".equals(entry.getOperation()) &&
+                "t1".equals(entry.getTenantId()) &&
+                entry.getStatus() == 200));
+    }
+
+    @Test
+    void freezeBudget_emitsEvent() throws Exception {
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1").scope("scope").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .tenantId("t1")
+                .status(BudgetStatus.FROZEN).createdAt(Instant.now()).build();
+        when(budgetRepository.freeze("scope", UnitEnum.USD_MICROCENTS)).thenReturn(ledger);
+
+        mockMvc.perform(post("/v1/admin/budgets/freeze")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Admin-API-Key", "test-admin-key"))
+                .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(EventType.BUDGET_FROZEN), eq("t1"), eq("scope"), any(), any(), any(), any(), any());
+    }
+
+    // ========== POST /v1/admin/budgets/unfreeze ==========
+
+    @Test
+    void unfreezeBudget_returns200() throws Exception {
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1").scope("org/team1").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 500000L))
+                .tenantId("t1")
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(budgetRepository.unfreeze("org/team1", UnitEnum.USD_MICROCENTS)).thenReturn(ledger);
+
+        mockMvc.perform(post("/v1/admin/budgets/unfreeze")
+                        .param("scope", "org/team1")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Admin-API-Key", "test-admin-key"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACTIVE"));
+    }
+
+    @Test
+    void unfreezeBudget_alreadyActive_returns409() throws Exception {
+        when(budgetRepository.unfreeze("scope", UnitEnum.USD_MICROCENTS))
+                .thenThrow(new GovernanceException(
+                        io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                        "Budget is not frozen", 409));
+
+        mockMvc.perform(post("/v1/admin/budgets/unfreeze")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Admin-API-Key", "test-admin-key"))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void unfreezeBudget_closed_returns409() throws Exception {
+        when(budgetRepository.unfreeze("scope", UnitEnum.USD_MICROCENTS))
+                .thenThrow(GovernanceException.budgetClosed("scope"));
+
+        mockMvc.perform(post("/v1/admin/budgets/unfreeze")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Admin-API-Key", "test-admin-key"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("BUDGET_CLOSED"));
+    }
+
+    @Test
+    void unfreezeBudget_emitsEvent() throws Exception {
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1").scope("scope").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .tenantId("t1")
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(budgetRepository.unfreeze("scope", UnitEnum.USD_MICROCENTS)).thenReturn(ledger);
+
+        mockMvc.perform(post("/v1/admin/budgets/unfreeze")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Admin-API-Key", "test-admin-key"))
+                .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(EventType.BUDGET_UNFROZEN), eq("t1"), eq("scope"), any(), any(), any(), any(), any());
+    }
+
+    // ========== POST /v1/admin/budgets/fund with AdminKeyAuth ==========
+
+    @Test
+    void fundBudget_withAdminKey_returns200() throws Exception {
+        BudgetFundingResponse funding = BudgetFundingResponse.builder()
+                .operation(FundingOperation.CREDIT)
+                .previousAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .newAllocated(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
+                .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
+                .timestamp(Instant.now()).build();
+        when(budgetRepository.fund(eq("t1"), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+
+        mockMvc.perform(post("/v1/admin/budgets/fund")
+                        .param("tenant_id", "t1")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operation").value("CREDIT"));
+    }
+
+    @Test
+    void fundBudget_withAdminKey_missingTenantId_returns400() throws Exception {
+        mockMvc.perform(post("/v1/admin/budgets/fund")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000}}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void fundBudget_withAdminKey_logsAuditWithTenantId() throws Exception {
+        BudgetFundingResponse funding = BudgetFundingResponse.builder()
+                .operation(FundingOperation.CREDIT)
+                .previousAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .newAllocated(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
+                .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
+                .timestamp(Instant.now()).build();
+        when(budgetRepository.fund(eq("t1"), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+
+        mockMvc.perform(post("/v1/admin/budgets/fund")
+                        .param("tenant_id", "t1")
+                        .param("scope", "scope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000}}"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry ->
+                "fundBudget".equals(entry.getOperation()) &&
+                "t1".equals(entry.getTenantId()) &&
+                entry.getStatus() == 200));
     }
 }

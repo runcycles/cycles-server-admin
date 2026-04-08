@@ -58,6 +58,12 @@ class WebhookTenantControllerTest {
                         .content("{\"url\":\"https://example.com/wh\",\"event_types\":[\"budget.created\"]}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.subscription.subscription_id").value("whsub_1"));
+
+        verify(auditRepository).log(argThat(entry ->
+                "createTenantWebhook".equals(entry.getOperation()) &&
+                "t1".equals(entry.getTenantId()) &&
+                "key_1".equals(entry.getKeyId()) &&
+                entry.getStatus() == 201));
     }
 
     @Test
@@ -113,6 +119,11 @@ class WebhookTenantControllerTest {
                 .andExpect(status().isNoContent());
 
         verify(webhookService).delete("whsub_1");
+        verify(auditRepository).log(argThat(entry ->
+                "deleteTenantWebhook".equals(entry.getOperation()) &&
+                "t1".equals(entry.getTenantId()) &&
+                "key_1".equals(entry.getKeyId()) &&
+                entry.getStatus() == 204));
     }
 
     @Test
@@ -141,6 +152,12 @@ class WebhookTenantControllerTest {
                         .content("{\"url\":\"https://example.com/wh2\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.subscription_id").value("whsub_1"));
+
+        verify(auditRepository).log(argThat(entry ->
+                "updateTenantWebhook".equals(entry.getOperation()) &&
+                "t1".equals(entry.getTenantId()) &&
+                "key_1".equals(entry.getKeyId()) &&
+                entry.getStatus() == 200));
     }
 
     @Test
@@ -189,6 +206,12 @@ class WebhookTenantControllerTest {
                         .header("X-Cycles-API-Key", "valid-api-key"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true));
+
+        verify(auditRepository).log(argThat(entry ->
+                "testTenantWebhook".equals(entry.getOperation()) &&
+                "t1".equals(entry.getTenantId()) &&
+                "key_1".equals(entry.getKeyId()) &&
+                entry.getStatus() == 200));
     }
 
     @Test

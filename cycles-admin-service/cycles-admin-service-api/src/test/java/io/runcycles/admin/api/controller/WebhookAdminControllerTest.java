@@ -153,6 +153,10 @@ class WebhookAdminControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.event_id").value("evt_test_1"));
+
+        verify(auditRepository).log(argThat(entry ->
+                "testWebhookSubscription".equals(entry.getOperation()) &&
+                entry.getStatus() == 200));
     }
 
     @Test
@@ -210,5 +214,9 @@ class WebhookAdminControllerTest {
                 .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.replay_id").value("replay_1"))
                 .andExpect(jsonPath("$.events_queued").value(5));
+
+        verify(auditRepository).log(argThat(entry ->
+                "replayEvents".equals(entry.getOperation()) &&
+                entry.getStatus() == 202));
     }
 }

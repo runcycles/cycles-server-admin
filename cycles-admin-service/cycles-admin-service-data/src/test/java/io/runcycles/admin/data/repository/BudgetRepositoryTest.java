@@ -775,4 +775,93 @@ class BudgetRepositoryTest {
                 argThat((List<String> keys) -> keys.get(0).equals("budget:tenant:rider/app:riderapp:USD_MICROCENTS")),
                 anyList());
     }
+
+    // ========== freeze / unfreeze ==========
+
+    @Test
+    void freeze_activeBudget_returnsLedgerWithFrozenStatus() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK"));
+        Map<String, String> hash = createBudgetHash("led-1", "org/team1", "USD_MICROCENTS");
+        hash.put("status", "FROZEN");
+        when(jedis.hgetAll("budget:org/team1:USD_MICROCENTS")).thenReturn(hash);
+
+        BudgetLedger result = repository.freeze("org/team1", UnitEnum.USD_MICROCENTS);
+
+        assertThat(result.getStatus()).isEqualTo(BudgetStatus.FROZEN);
+        assertThat(result.getLedgerId()).isEqualTo("led-1");
+    }
+
+    @Test
+    void freeze_alreadyFrozen_throws409() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("ALREADY_FROZEN"));
+
+        assertThatThrownBy(() -> repository.freeze("scope", UnitEnum.USD_MICROCENTS))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getHttpStatus()).isEqualTo(409);
+                });
+    }
+
+    @Test
+    void freeze_closedBudget_throws409() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("BUDGET_CLOSED"));
+
+        assertThatThrownBy(() -> repository.freeze("scope", UnitEnum.USD_MICROCENTS))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.BUDGET_CLOSED);
+                    assertThat(ge.getHttpStatus()).isEqualTo(409);
+                });
+    }
+
+    @Test
+    void freeze_notFound_throws404() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("NOT_FOUND"));
+
+        assertThatThrownBy(() -> repository.freeze("missing", UnitEnum.USD_MICROCENTS))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.BUDGET_NOT_FOUND);
+                    assertThat(ge.getHttpStatus()).isEqualTo(404);
+                });
+    }
+
+    @Test
+    void unfreeze_frozenBudget_returnsLedgerWithActiveStatus() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK"));
+        Map<String, String> hash = createBudgetHash("led-1", "org/team1", "USD_MICROCENTS");
+        hash.put("status", "ACTIVE");
+        when(jedis.hgetAll("budget:org/team1:USD_MICROCENTS")).thenReturn(hash);
+
+        BudgetLedger result = repository.unfreeze("org/team1", UnitEnum.USD_MICROCENTS);
+
+        assertThat(result.getStatus()).isEqualTo(BudgetStatus.ACTIVE);
+    }
+
+    @Test
+    void unfreeze_alreadyActive_throws409() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("ALREADY_ACTIVE"));
+
+        assertThatThrownBy(() -> repository.unfreeze("scope", UnitEnum.USD_MICROCENTS))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getHttpStatus()).isEqualTo(409);
+                });
+    }
+
+    @Test
+    void unfreeze_closedBudget_throws409() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("BUDGET_CLOSED"));
+
+        assertThatThrownBy(() -> repository.unfreeze("scope", UnitEnum.USD_MICROCENTS))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.BUDGET_CLOSED);
+                });
+    }
 }

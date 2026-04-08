@@ -15,7 +15,7 @@ import redis.clients.jedis.JedisPool;
 
 import java.util.List;
 
-import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -71,6 +71,9 @@ class WebhookSecurityConfigControllerTest {
                 .andExpect(jsonPath("$.allow_http").value(true));
 
         verify(repository).save(any());
+        verify(auditRepository).log(argThat(entry ->
+                "updateWebhookSecurityConfig".equals(entry.getOperation()) &&
+                entry.getStatus() == 200));
     }
 
     @Test
