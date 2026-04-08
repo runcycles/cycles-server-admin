@@ -2108,6 +2108,7 @@ components:
         tenant_counts:
           type: object
           required: [total, active, suspended, closed]
+          additionalProperties: false
           properties:
             total: { type: integer }
             active: { type: integer }
@@ -2115,7 +2116,8 @@ components:
             closed: { type: integer }
         budget_counts:
           type: object
-          required: [total, active, frozen, closed, over_limit, with_debt]
+          required: [total, active, frozen, closed, over_limit, with_debt, by_unit]
+          additionalProperties: false
           properties:
             total: { type: integer }
             active: { type: integer }
@@ -2133,6 +2135,8 @@ components:
           description: Top 10 budgets where is_over_limit is true
           items:
             type: object
+            required: [scope, unit, allocated, remaining, debt]
+            additionalProperties: false
             properties:
               scope: { type: string }
               unit: { $ref: '#/components/schemas/UnitEnum' }
@@ -2145,6 +2149,8 @@ components:
           description: Top 10 budgets with debt > 0
           items:
             type: object
+            required: [scope, unit, debt, overdraft_limit]
+            additionalProperties: false
             properties:
               scope: { type: string }
               unit: { $ref: '#/components/schemas/UnitEnum' }
@@ -2153,6 +2159,7 @@ components:
         webhook_counts:
           type: object
           required: [total, active, disabled, with_failures]
+          additionalProperties: false
           properties:
             total: { type: integer }
             active: { type: integer }
@@ -2164,6 +2171,8 @@ components:
           description: Top 10 webhook subscriptions with consecutive failures > 0
           items:
             type: object
+            required: [subscription_id, url, consecutive_failures]
+            additionalProperties: false
             properties:
               subscription_id: { type: string }
               url: { type: string }
@@ -2172,6 +2181,7 @@ components:
         event_counts:
           type: object
           required: [total_recent, by_category]
+          additionalProperties: false
           properties:
             total_recent:
               type: integer
