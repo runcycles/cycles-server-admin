@@ -133,6 +133,7 @@ info:
             * When using ApiKeyAuth: existing behavior unchanged (tenant_id ignored,
               uses authenticated tenant).
             * Added 400 response for missing tenant_id with AdminKeyAuth.
+            * Added 403 response for scope_filter denial (ApiKeyAuth callers).
         - Added 1 new schema: BudgetStatusTransitionRequest (reason, metadata).
         - Updated AdminKeyAuth description to include fund in allowlist.
         - Backward compatibility: All changes are purely additive. Existing ApiKeyAuth
@@ -2132,7 +2133,7 @@ components:
           type: boolean
 
     # ========================================================================
-    # DASHBOARD SCHEMAS (v0.1.25.5)
+    # DASHBOARD SCHEMAS (v0.1.25.6)
     # ========================================================================
 
     AdminOverviewResponse:
@@ -2682,6 +2683,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BudgetLedger'
+        '400':
+          description: Invalid request body (e.g., unknown fields, reason too long)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Missing or invalid admin API key
           content:
@@ -2743,6 +2750,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BudgetLedger'
+        '400':
+          description: Invalid request body (e.g., unknown fields, reason too long)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Missing or invalid admin API key
           content:
@@ -2845,6 +2858,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API key scope_filter denies access to the requested scope
           content:
             application/json:
               schema:
