@@ -443,4 +443,146 @@ class AuthInterceptorTest {
         request.setRequestURI("/api-docs/something");
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
     }
+
+    // --- New endpoint auth routing (v0.1.25.1) ---
+
+    @Test
+    void preHandle_overviewEndpoint_withoutAdminKey_returns401() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/admin/overview");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    void preHandle_overviewEndpoint_withValidAdminKey_succeeds() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/admin/overview");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_introspectEndpoint_withoutAdminKey_returns401() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/auth/introspect");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    void preHandle_introspectEndpoint_withValidAdminKey_succeeds() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/auth/introspect");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    // --- Dual-auth allowlist (v0.1.25.1) ---
+
+    @Test
+    void preHandle_getBudgets_withAdminKey_acceptedViaDualAuth() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/admin/budgets");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+        // Admin auth sets no request attributes
+        assertThat(request.getAttribute("authenticated_tenant_id")).isNull();
+    }
+
+    @Test
+    void preHandle_getBudgetLookup_withAdminKey_acceptedViaDualAuth() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/admin/budgets/lookup");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+        assertThat(request.getAttribute("authenticated_tenant_id")).isNull();
+    }
+
+    @Test
+    void preHandle_getPolicies_withAdminKey_acceptedViaDualAuth() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/admin/policies");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+        assertThat(request.getAttribute("authenticated_tenant_id")).isNull();
+    }
+
+    // --- Dual-auth: write escalation prevention ---
+
+    @Test
+    void preHandle_postBudgets_withAdminKey_rejected() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/budgets");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+        // POST /v1/admin/budgets is NOT in the allowlist — should require ApiKeyAuth
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    void preHandle_postBudgetsFund_withAdminKey_rejected() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/budgets/fund");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+        // POST /v1/admin/budgets/fund is NOT in the allowlist — should require ApiKeyAuth
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    // --- Dual-auth: API key still works on allowlisted endpoints ---
+
+    @Test
+    void preHandle_getBudgets_withApiKey_stillWorks() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/admin/budgets");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+
+        when(apiKeyRepository.validate("valid-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(List.of("admin:read"))
+                        .build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+        assertThat(request.getAttribute("authenticated_tenant_id")).isEqualTo("t1");
+    }
+
+    @Test
+    void preHandle_getPolicies_withApiKey_stillWorks() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/admin/policies");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+
+        when(apiKeyRepository.validate("valid-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(List.of("admin:read"))
+                        .build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+        assertThat(request.getAttribute("authenticated_tenant_id")).isEqualTo("t1");
+    }
+
+    // --- Dual-auth: scope filter no-op for admin key ---
+
+    @Test
+    void preHandle_getBudgetLookup_adminKey_noScopeFilterAttribute() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/admin/budgets/lookup");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+        // ScopeFilterUtil.enforceScopeFilter() no-ops when authenticated_scope_filter is null
+        assertThat(request.getAttribute("authenticated_scope_filter")).isNull();
+    }
 }

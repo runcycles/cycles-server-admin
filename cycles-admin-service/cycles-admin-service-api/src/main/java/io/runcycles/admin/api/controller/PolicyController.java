@@ -80,6 +80,7 @@ public class PolicyController {
     }
     @GetMapping @Operation(operationId = "listPolicies")
     public ResponseEntity<PolicyListResponse> list(
+            @RequestParam(required = false) String tenant_id,
             @RequestParam(required = false) String scope_pattern,
             @RequestParam(required = false) PolicyStatus status,
             @RequestParam(required = false) String cursor,
@@ -87,6 +88,16 @@ public class PolicyController {
             HttpServletRequest httpRequest) {
         ScopeFilterUtil.enforceScopeFilter(httpRequest, scope_pattern);
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
+        if (tenantId == null) {
+            // Admin key auth — tenant_id query param is required for scoping
+            if (tenant_id == null || tenant_id.isBlank()) {
+                throw new io.runcycles.admin.data.exception.GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                    "tenant_id query parameter is required when using admin key authentication",
+                    400);
+            }
+            tenantId = tenant_id;
+        }
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         var policies = repository.list(tenantId, scope_pattern, status, cursor, effectiveLimit);
         PolicyListResponse response = PolicyListResponse.builder()

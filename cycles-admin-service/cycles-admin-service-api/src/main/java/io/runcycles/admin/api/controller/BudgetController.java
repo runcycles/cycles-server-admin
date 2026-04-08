@@ -60,9 +60,18 @@ public class BudgetController {
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit,
             HttpServletRequest httpRequest) {
-        // Enforce tenant scoping: always use authenticated tenant, ignore user-supplied tenant_id
         ScopeFilterUtil.enforceScopeFilter(httpRequest, scope_prefix);
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
+        if (tenantId == null) {
+            // Admin key auth — tenant_id query param is required for scoping
+            if (tenant_id == null || tenant_id.isBlank()) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                    "tenant_id query parameter is required when using admin key authentication",
+                    400);
+            }
+            tenantId = tenant_id;
+        }
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         var ledgers = repository.list(tenantId, scope_prefix, unit, status, cursor, effectiveLimit);
         BudgetListResponse response = BudgetListResponse.builder()
@@ -71,6 +80,14 @@ public class BudgetController {
             .nextCursor(ledgers.size() >= effectiveLimit ? ledgers.get(ledgers.size() - 1).getLedgerId() : null)
             .build();
         return ResponseEntity.ok(response);
+    }
+    @GetMapping("/lookup") @Operation(operationId = "lookupBudget")
+    public ResponseEntity<BudgetLedger> lookup(
+            @RequestParam String scope, @RequestParam UnitEnum unit,
+            HttpServletRequest httpRequest) {
+        ScopeFilterUtil.enforceScopeFilter(httpRequest, scope);
+        BudgetLedger ledger = repository.getByExactScope(scope, unit);
+        return ResponseEntity.ok(ledger);
     }
     @PatchMapping @Operation(operationId = "updateBudget")
     public ResponseEntity<BudgetLedger> update(@RequestParam String scope, @RequestParam UnitEnum unit,

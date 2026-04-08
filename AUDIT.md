@@ -1,8 +1,26 @@
 # Complete Budget Governance v0.1.25 — Admin Server Audit
 
-**Date:** 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
-**Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25)
+**Date:** 2026-04-08 (v0.1.25.1 dashboard support — spec updates), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25.1)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-08 — v0.1.25.1: Dashboard support — spec updates (code changes pending)
+
+Spec-first updates to `complete-budget-governance-v0.1.25.yaml` for the admin dashboard (cycles-dashboard v1). All changes are additive — no breaking changes to existing endpoints or schemas.
+
+| Change | Details |
+|--------|---------|
+| Dual-auth allowlist | `GET /v1/admin/budgets`, `GET /v1/admin/policies`: added `AdminKeyAuth` as alternative security scheme. AdminKeyAuth description updated to document allowlist semantics. |
+| `tenant_id` on policies | `GET /v1/admin/policies`: added `tenant_id` query param (required for AdminKeyAuth, ignored for ApiKeyAuth). Budgets already had it. |
+| Budget lookup endpoint | `GET /v1/admin/budgets/lookup`: new endpoint for exact (scope, unit) retrieval. Dual-auth. |
+| Overview endpoint | `GET /v1/admin/overview`: new AdminKeyAuth-only endpoint returning `AdminOverviewResponse` — server-aggregated counts, top-offender arrays, recent events. |
+| Introspect endpoint | `GET /v1/auth/introspect`: new AdminKeyAuth-only endpoint returning `AuthIntrospectResponse` — effective capabilities for dashboard UI gating. |
+| New schemas | `AdminOverviewResponse`, `AuthIntrospectResponse` added to components/schemas. |
+| Changelog | Added v0.1.25.1 entry documenting all changes. |
+
+**Code implementation pending** — spec updated first per project rules (YAML spec is the authority).
+
+---
 
 ### 2026-04-06 — v0.1.25.4 (amended): Replay lock + response model additionalProperties enforcement
 

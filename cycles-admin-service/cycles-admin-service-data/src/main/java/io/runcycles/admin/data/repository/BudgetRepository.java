@@ -316,6 +316,16 @@ public class BudgetRepository {
         return list(tenantId, null, null, null, null, 1000);
     }
 
+    public BudgetLedger getByExactScope(String scope, UnitEnum unit) {
+        String normalizedScope = normalizeScope(scope);
+        String key = "budget:" + normalizedScope + ":" + unit;
+        try (Jedis jedis = jedisPool.getResource()) {
+            Map<String, String> hash = jedis.hgetAll(key);
+            if (hash.isEmpty()) throw GovernanceException.budgetNotFound(scope);
+            return hashToBudgetLedger(hash, key);
+        }
+    }
+
     public BudgetFundingResponse fund(String tenantId, String scope, UnitEnum unit, BudgetFundingRequest request) {
         scope = normalizeScope(scope);
         LOG.info("Funding budget: scope={}, unit={}, op={}, tenant={}", scope, unit, request.getOperation(), tenantId);

@@ -2,6 +2,7 @@ package io.runcycles.admin.api.controller;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.model.auth.ApiKeyValidationRequest;
 import io.runcycles.admin.model.auth.ApiKeyValidationResponse;
+import io.runcycles.admin.model.auth.AuthIntrospectResponse;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -14,6 +15,7 @@ import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import java.util.List;
 import java.util.Map;
 @RestController @RequestMapping("/v1/auth") @Tag(name = "Authentication")
 public class AuthController {
@@ -38,5 +40,31 @@ public class AuthController {
             }
         }
         return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/introspect") @Operation(operationId = "introspectAuth")
+    public ResponseEntity<AuthIntrospectResponse> introspect(HttpServletRequest request) {
+        // Admin key already validated by interceptor (v1: AdminKeyAuth only)
+        List<String> permissions = List.of("*");
+        return ResponseEntity.ok(AuthIntrospectResponse.builder()
+                .authenticated(true)
+                .authType("admin")
+                .permissions(permissions)
+                .capabilities(deriveCapabilities(permissions))
+                .build());
+    }
+
+    private Map<String, Boolean> deriveCapabilities(List<String> permissions) {
+        boolean isAdmin = permissions.contains("*");
+        return Map.of(
+                "view_overview",  isAdmin,
+                "view_budgets",   isAdmin || permissions.contains("admin:read") || permissions.contains("admin:budgets:read"),
+                "view_events",    isAdmin || permissions.contains("events:read") || permissions.contains("admin:events:read"),
+                "view_webhooks",  isAdmin || permissions.contains("webhooks:read") || permissions.contains("admin:webhooks:read"),
+                "view_audit",     isAdmin || permissions.contains("admin:audit:read"),
+                "view_tenants",   isAdmin || permissions.contains("admin:tenants:read"),
+                "view_api_keys",  isAdmin || permissions.contains("admin:apikeys:read"),
+                "view_policies",  isAdmin || permissions.contains("admin:read") || permissions.contains("admin:policies:read")
+        );
     }
 }
