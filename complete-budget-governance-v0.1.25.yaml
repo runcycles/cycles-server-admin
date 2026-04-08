@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Complete Budget Governance System API
-  version: 0.1.25
+  version: 0.1.25.5
   license:
     name: Apache 2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -116,6 +116,30 @@ info:
           fields, enum values, or response codes were removed. Clients built against v0.1.24
           work unchanged against v0.1.25.
 
+      v0.1.25.5 (2026-04-08):
+        - Dashboard support: Added dual-auth allowlist for admin dashboard reads.
+            * GET /v1/admin/budgets and GET /v1/admin/policies now accept AdminKeyAuth
+              as an alternative security scheme for read access. When using AdminKeyAuth,
+              the tenant_id query parameter is required for scoping (400 if missing).
+            * GET /v1/admin/budgets/lookup does not require tenant_id — budget is
+              uniquely identified by (scope, unit) pair.
+        - Added tenant_id query parameter to GET /v1/admin/policies (was missing;
+          GET /v1/admin/budgets already had it).
+        - Added 3 new endpoints:
+            * GET /v1/admin/budgets/lookup — exact single-budget retrieval by scope + unit.
+            * GET /v1/admin/overview — server-aggregated operational dashboard payload
+              with entity counts, top-offender arrays, and recent event summaries.
+            * GET /v1/auth/introspect — returns effective capabilities for the
+              authenticated credential (AdminKeyAuth only in v1).
+        - Added 2 new schemas: AdminOverviewResponse (strict: all fields required,
+          additionalProperties: false on nested objects), AuthIntrospectResponse
+          (all capability booleans required).
+        - Added Dashboard tag for overview and introspect endpoints.
+        - Added 400/401/403 error responses on all new and modified endpoints.
+        - Documented dual-auth allowlist semantics in AdminKeyAuth security scheme.
+        - Backward compatibility: All changes are purely additive. Existing ApiKeyAuth
+          callers are unaffected.
+
       v0.1.24 (2026-03-24):
         - Initial release of the Complete Budget Governance System API.
         - Three integrated pillars: Tenant & Budget Management, Authentication &
@@ -151,6 +175,8 @@ tags:
     description: "Pillar 4: Webhook subscription management (admin and tenant self-service)"
   - name: Events
     description: "Pillar 4: Event types, delivery tracking, and replay"
+  - name: Dashboard
+    description: "Admin dashboard: operational overview and auth introspection"
 
 components:
   securitySchemes:
@@ -158,8 +184,17 @@ components:
       type: apiKey
       in: header
       name: X-Admin-API-Key
-      description: Administrative API key with full system access
-    
+      description: >-
+        Administrative API key with full system access. Also accepted as an
+        alternative to ApiKeyAuth on an explicit allowlist of read-only endpoints
+        (GET /v1/admin/budgets, GET /v1/admin/budgets/lookup, GET /v1/admin/policies).
+        When using AdminKeyAuth on list endpoints (GET /v1/admin/budgets,
+        GET /v1/admin/policies), the tenant_id query parameter is required for
+        scoping. GET /v1/admin/budgets/lookup does NOT require tenant_id because
+        the budget is uniquely identified by the (scope, unit) pair. The allowlist
+        uses exact method:path matching — no prefix matching, no wildcards — so
+        new endpoints do not accidentally inherit admin-readable status.
+
     ApiKeyAuth:
       type: apiKey
       in: header
@@ -2058,6 +2093,154 @@ components:
         has_more:
           type: boolean
 
+    # ========================================================================
+    # DASHBOARD SCHEMAS (v0.1.25.5)
+    # ========================================================================
+
+    AdminOverviewResponse:
+      type: object
+      required: [as_of, event_window_seconds, tenant_counts, budget_counts, over_limit_scopes, debt_scopes, webhook_counts, failing_webhooks, event_counts, recent_denials, recent_expiries]
+      description: >-
+        Server-aggregated operational dashboard payload. Single-request overview
+        for the admin dashboard — avoids client-side aggregation across paginated endpoints.
+      properties:
+        as_of:
+          type: string
+          format: date-time
+          description: Timestamp when this snapshot was computed
+        event_window_seconds:
+          type: integer
+          description: Time window (in seconds) used for event_counts, recent_denials, and recent_expiries
+        tenant_counts:
+          type: object
+          required: [total, active, suspended, closed]
+          additionalProperties: false
+          properties:
+            total: { type: integer }
+            active: { type: integer }
+            suspended: { type: integer }
+            closed: { type: integer }
+        budget_counts:
+          type: object
+          required: [total, active, frozen, closed, over_limit, with_debt, by_unit]
+          additionalProperties: false
+          properties:
+            total: { type: integer }
+            active: { type: integer }
+            frozen: { type: integer }
+            closed: { type: integer }
+            over_limit: { type: integer }
+            with_debt: { type: integer }
+            by_unit:
+              type: object
+              additionalProperties: { type: integer }
+              description: Budget count per UnitEnum value
+        over_limit_scopes:
+          type: array
+          maxItems: 10
+          description: Top 10 budgets where is_over_limit is true
+          items:
+            type: object
+            required: [scope, unit, allocated, remaining, debt]
+            additionalProperties: false
+            properties:
+              scope: { type: string }
+              unit: { $ref: '#/components/schemas/UnitEnum' }
+              allocated: { type: integer }
+              remaining: { type: integer }
+              debt: { type: integer }
+        debt_scopes:
+          type: array
+          maxItems: 10
+          description: Top 10 budgets with debt > 0
+          items:
+            type: object
+            required: [scope, unit, debt, overdraft_limit]
+            additionalProperties: false
+            properties:
+              scope: { type: string }
+              unit: { $ref: '#/components/schemas/UnitEnum' }
+              debt: { type: integer }
+              overdraft_limit: { type: integer }
+        webhook_counts:
+          type: object
+          required: [total, active, disabled, with_failures]
+          additionalProperties: false
+          properties:
+            total: { type: integer }
+            active: { type: integer }
+            disabled: { type: integer }
+            with_failures: { type: integer }
+        failing_webhooks:
+          type: array
+          maxItems: 10
+          description: Top 10 webhook subscriptions with consecutive failures > 0
+          items:
+            type: object
+            required: [subscription_id, url, consecutive_failures]
+            additionalProperties: false
+            properties:
+              subscription_id: { type: string }
+              url: { type: string }
+              consecutive_failures: { type: integer }
+              last_failure_at: { type: string, format: date-time }
+        event_counts:
+          type: object
+          required: [total_recent, by_category]
+          additionalProperties: false
+          properties:
+            total_recent:
+              type: integer
+              description: Total events within event_window_seconds
+            by_category:
+              type: object
+              additionalProperties: { type: integer }
+              description: Event count per EventCategory within the window
+        recent_denials:
+          type: array
+          maxItems: 10
+          description: Most recent reservation.denied events within the window
+          items:
+            $ref: '#/components/schemas/Event'
+        recent_expiries:
+          type: array
+          maxItems: 10
+          description: Most recent reservation.expired events within the window
+          items:
+            $ref: '#/components/schemas/Event'
+
+    AuthIntrospectResponse:
+      type: object
+      required: [authenticated, auth_type, permissions, capabilities]
+      description: >-
+        Returns effective capabilities for the authenticated credential.
+        V1 supports AdminKeyAuth only; ApiKeyAuth support deferred to a future version.
+      properties:
+        authenticated:
+          type: boolean
+          description: Always true (request would have been rejected if not authenticated)
+        auth_type:
+          type: string
+          enum: [admin]
+          description: Type of credential used (v1 admin only; future api_key)
+        permissions:
+          type: array
+          items: { type: string }
+          description: Raw permission strings (e.g., ["*"] for admin)
+        capabilities:
+          type: object
+          description: Derived boolean capabilities for dashboard UI. All fields are always present (explicit false, never omitted).
+          required: [view_overview, view_budgets, view_events, view_webhooks, view_audit, view_tenants, view_api_keys, view_policies]
+          properties:
+            view_overview: { type: boolean }
+            view_budgets: { type: boolean }
+            view_events: { type: boolean }
+            view_webhooks: { type: boolean }
+            view_audit: { type: boolean }
+            view_tenants: { type: boolean }
+            view_api_keys: { type: boolean }
+            view_policies: { type: boolean }
+
 # ============================================================================
 # API ENDPOINTS
 # ============================================================================
@@ -2295,19 +2478,23 @@ paths:
       description: >-
         Query budget ledgers by tenant, scope pattern, or status.
         Returns all units for matching scopes.
-        
+
         AUTHORIZATION:
-        - Tenant can list their own budgets only (scoped by ApiKeyAuth)
+        - ApiKeyAuth: Tenant can list their own budgets only (scoped by authenticated tenant)
+        - AdminKeyAuth: Accepted as alternative for read access (v0.1.25.5 dual-auth allowlist).
+          When using AdminKeyAuth, tenant_id query parameter is REQUIRED for scoping.
       security:
         - ApiKeyAuth: []
+        - AdminKeyAuth: []
       parameters:
         - name: tenant_id
           in: query
           required: false
           description: >-
-            Ignored when using ApiKeyAuth — the authenticated tenant from the
-            API key is always used for scoping.  Accepted for backwards
-            compatibility but has no effect.
+            When using ApiKeyAuth: ignored — the authenticated tenant from the
+            API key is always used for scoping.
+            When using AdminKeyAuth: REQUIRED — specifies which tenant's budgets to list.
+            Returns 400 if missing when using AdminKeyAuth.
           schema:
             type: string
         - name: scope_prefix
@@ -2341,6 +2528,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BudgetListResponse'
+        '400':
+          description: Missing tenant_id when using AdminKeyAuth
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API key scope_filter denies access to the requested scope_prefix
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     patch:
       tags: [Budgets]
       operationId: updateBudget
@@ -2470,6 +2675,62 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
   
+  /v1/admin/budgets/lookup:
+    get:
+      tags: [Budgets]
+      operationId: lookupBudget
+      summary: Look up a single budget by exact scope and unit
+      description: >-
+        Returns a single budget ledger matching the exact (scope, unit) pair.
+        Unlike listBudgets which uses scope_prefix (prefix match), this endpoint
+        performs exact scope matching — the budget is uniquely identified by
+        the (scope, unit) pair.
+
+        AUTHORIZATION:
+        - ApiKeyAuth: scope_filter is enforced; only accessible if scope matches key's filter.
+        - AdminKeyAuth: Accepted as alternative (v0.1.25.5 dual-auth allowlist).
+          No tenant_id required — the budget is uniquely identified by (scope, unit).
+      security:
+        - ApiKeyAuth: []
+        - AdminKeyAuth: []
+      parameters:
+        - name: scope
+          in: query
+          required: true
+          description: Exact canonical scope identifier, e.g., "tenant:acme/workspace:prod"
+          schema:
+            type: string
+        - name: unit
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UnitEnum'
+      responses:
+        '200':
+          description: Budget ledger found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetLedger'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API key scope_filter denies access to the requested scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No budget exists for this (scope, unit) pair
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /v1/admin/policies:
     post:
       tags: [Policies]
@@ -2517,10 +2778,23 @@ paths:
       summary: List policies
       description: >-
         AUTHORIZATION:
-        - Tenant can list their own policies only
+        - ApiKeyAuth: Tenant can list their own policies only (scoped by authenticated tenant)
+        - AdminKeyAuth: Accepted as alternative for read access (v0.1.25.5 dual-auth allowlist).
+          When using AdminKeyAuth, tenant_id query parameter is REQUIRED for scoping.
       security:
         - ApiKeyAuth: []
+        - AdminKeyAuth: []
       parameters:
+        - name: tenant_id
+          in: query
+          required: false
+          description: >-
+            When using ApiKeyAuth: ignored — the authenticated tenant from the
+            API key is always used for scoping.
+            When using AdminKeyAuth: REQUIRED — specifies which tenant's policies to list.
+            Returns 400 if missing when using AdminKeyAuth.
+          schema:
+            type: string
         - name: scope_pattern
           in: query
           schema:
@@ -2546,7 +2820,25 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PolicyListResponse'
-  
+        '400':
+          description: Missing tenant_id when using AdminKeyAuth
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API key scope_filter denies access to the requested scope_pattern
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /v1/admin/policies/{policy_id}:
     patch:
       tags: [Policies]
@@ -2758,7 +3050,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiKeyValidationResponse'
-  
+
+  /v1/auth/introspect:
+    get:
+      tags: [Dashboard]
+      operationId: introspectAuth
+      summary: Introspect authenticated credential and return effective capabilities
+      description: >-
+        Returns the effective permissions and derived capabilities for the
+        authenticated credential. Used by the admin dashboard to determine
+        which pages/features the current user can access.
+
+        V1 SCOPE:
+        - AdminKeyAuth only. The dashboard is admin-key only.
+        - ApiKeyAuth support deferred to a future version (tenant console).
+
+        CAPABILITIES:
+        - Derived from raw permissions — the frontend uses booleans for UI gating.
+        - For admin key: all capabilities are true (permissions = ["*"]).
+        - For future API key support: capabilities are derived from the key's
+          actual permission set using the documented mapping.
+      security:
+        - AdminKeyAuth: []
+      responses:
+        '200':
+          description: Authentication introspection result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthIntrospectResponse'
+        '401':
+          description: Missing or invalid admin API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /v1/admin/audit/logs:
     get:
       tags: [Audit]
@@ -2821,6 +3148,46 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuditLogListResponse'
   
+  # ==========================================================================
+  # DASHBOARD: OPERATIONAL OVERVIEW
+  # ==========================================================================
+
+  /v1/admin/overview:
+    get:
+      tags: [Dashboard]
+      operationId: getAdminOverview
+      summary: Get server-aggregated operational dashboard overview
+      description: >-
+        Returns a single-request operational health snapshot for the admin dashboard.
+        Includes entity counts (tenants, budgets, webhooks), top-offender arrays
+        (over-limit budgets, debt scopes, failing webhooks), and recent event
+        summaries (denials, expiries) — all within a server-defined time window (default 1 hour, returned as event_window_seconds).
+
+        DESIGN:
+        - Aggregation is performed server-side through existing repositories.
+        - Top-offender arrays are capped at 10 items each.
+        - Recent events use a 1-hour window (event_window_seconds: 3600).
+        - No client-side pagination or aggregation needed.
+
+        PERFORMANCE:
+        - Pages through all tenants, budgets, and webhooks for accurate counts.
+        - For large deployments (100+ tenants), consider caching with short TTL.
+      security:
+        - AdminKeyAuth: []
+      responses:
+        '200':
+          description: Operational overview snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminOverviewResponse'
+        '401':
+          description: Missing or invalid admin API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   # ==========================================================================
   # PILLAR 4: EVENTS & WEBHOOKS
   # ==========================================================================

@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @Component
@@ -27,6 +28,15 @@ public class AuthInterceptor implements HandlerInterceptor {
     private static final Logger LOG = LoggerFactory.getLogger(AuthInterceptor.class);
     private static final String ADMIN_KEY_HEADER = "X-Admin-API-Key";
     private static final String API_KEY_HEADER = "X-Cycles-API-Key";
+
+    // Explicit allowlist of ApiKeyAuth endpoints that also accept AdminKeyAuth for reads.
+    // Each entry MUST be reflected in the governance spec and API docs.
+    // Uses exact method:path matching — no prefix matching, no wildcards.
+    private static final Set<String> ADMIN_READABLE_ENDPOINTS = Set.of(
+        "GET:/v1/admin/budgets",
+        "GET:/v1/admin/budgets/lookup",
+        "GET:/v1/admin/policies"
+    );
 
     // Endpoint path+method → required permission per admin governance spec
     private static final Map<String, String> PERMISSION_MAP = Map.ofEntries(
@@ -71,6 +81,12 @@ public class AuthInterceptor implements HandlerInterceptor {
         if (requiresAdminKey(method, path)) {
             return validateAdminKey(request, response);
         } else if (requiresApiKey(path)) {
+            // Check dual-auth allowlist: some ApiKeyAuth endpoints also accept AdminKeyAuth for reads
+            String normalizedPath = path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
+            String lookupKey = method + ":" + normalizedPath;
+            if (ADMIN_READABLE_ENDPOINTS.contains(lookupKey) && hasAdminKeyHeader(request)) {
+                return validateAdminKey(request, response);
+            }
             return validateApiKey(request, response);
         }
 
@@ -82,14 +98,16 @@ public class AuthInterceptor implements HandlerInterceptor {
     }
 
     private boolean requiresAdminKey(String method, String path) {
-        // Admin endpoints per spec: tenants, api-keys, auth/validate, audit, webhooks, events, config
+        // Admin endpoints per spec: tenants, api-keys, auth/validate, auth/introspect, audit, webhooks, events, config, overview
         // Also: PATCH /v1/admin/budgets requires AdminKeyAuth per spec v0.1.25
         if (path.startsWith("/v1/admin/tenants") ||
                path.startsWith("/v1/admin/api-keys") ||
                path.startsWith("/v1/auth/validate") ||
+               path.startsWith("/v1/auth/introspect") ||
                path.startsWith("/v1/admin/audit") ||
                path.startsWith("/v1/admin/webhooks") ||
                path.startsWith("/v1/admin/events") ||
+               path.startsWith("/v1/admin/overview") ||
                path.startsWith("/v1/admin/config")) {
             return true;
         }
@@ -98,6 +116,11 @@ public class AuthInterceptor implements HandlerInterceptor {
             return true;
         }
         return false;
+    }
+
+    private boolean hasAdminKeyHeader(HttpServletRequest request) {
+        String key = request.getHeader(ADMIN_KEY_HEADER);
+        return key != null && !key.isBlank();
     }
 
     private boolean requiresApiKey(String path) {

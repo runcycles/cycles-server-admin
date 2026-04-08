@@ -1,0 +1,83 @@
+package io.runcycles.admin.model.shared;
+
+import com.fasterxml.jackson.annotation.*;
+import io.runcycles.admin.model.event.Event;
+import lombok.*;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+
+@Data @Builder @NoArgsConstructor @AllArgsConstructor
+@JsonInclude(JsonInclude.Include.ALWAYS)
+public class AdminOverviewResponse {
+    @JsonProperty("as_of") private Instant asOf;
+    @JsonProperty("event_window_seconds") private int eventWindowSeconds;
+    @JsonProperty("tenant_counts") private TenantCounts tenantCounts;
+    @JsonProperty("budget_counts") private BudgetCounts budgetCounts;
+    @JsonProperty("over_limit_scopes") private List<OverLimitScope> overLimitScopes;
+    @JsonProperty("debt_scopes") private List<DebtScope> debtScopes;
+    @JsonProperty("webhook_counts") private WebhookCounts webhookCounts;
+    @JsonProperty("failing_webhooks") private List<FailingWebhook> failingWebhooks;
+    @JsonProperty("event_counts") private EventCounts eventCounts;
+    @JsonProperty("recent_denials") private List<Event> recentDenials;
+    @JsonProperty("recent_expiries") private List<Event> recentExpiries;
+
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class TenantCounts {
+        private int total;
+        private int active;
+        private int suspended;
+        private int closed;
+    }
+
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class BudgetCounts {
+        private int total;
+        private int active;
+        private int frozen;
+        private int closed;
+        @JsonProperty("over_limit") private int overLimit;
+        @JsonProperty("with_debt") private int withDebt;
+        @JsonProperty("by_unit") private Map<String, Integer> byUnit;
+    }
+
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class OverLimitScope {
+        private String scope;
+        private UnitEnum unit;
+        private long allocated;
+        private long remaining;
+        private long debt;
+    }
+
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class DebtScope {
+        private String scope;
+        private UnitEnum unit;
+        private long debt;
+        @JsonProperty("overdraft_limit") private long overdraftLimit;
+    }
+
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class WebhookCounts {
+        private int total;
+        private int active;
+        private int disabled;
+        @JsonProperty("with_failures") private int withFailures;
+    }
+
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class FailingWebhook {
+        @JsonProperty("subscription_id") private String subscriptionId;
+        private String url;
+        @JsonProperty("consecutive_failures") private int consecutiveFailures;
+        @JsonProperty("last_failure_at") private Instant lastFailureAt;
+    }
+
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class EventCounts {
+        @JsonProperty("total_recent") private int totalRecent;
+        @JsonProperty("by_category") private Map<String, Integer> byCategory;
+    }
+}

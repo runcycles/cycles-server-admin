@@ -14,6 +14,7 @@ import java.util.List;
 
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -83,6 +84,32 @@ class AuthControllerTest {
         mockMvc.perform(post("/v1/auth/validate")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"key_secret\":\"test\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    // --- Introspect endpoint (v0.1.25.1) ---
+
+    @Test
+    void introspect_withAdminKey_returnsCapabilities() throws Exception {
+        mockMvc.perform(get("/v1/auth/introspect")
+                        .header("X-Admin-API-Key", ADMIN_KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.authenticated").value(true))
+                .andExpect(jsonPath("$.auth_type").value("admin"))
+                .andExpect(jsonPath("$.permissions[0]").value("*"))
+                .andExpect(jsonPath("$.capabilities.view_overview").value(true))
+                .andExpect(jsonPath("$.capabilities.view_budgets").value(true))
+                .andExpect(jsonPath("$.capabilities.view_events").value(true))
+                .andExpect(jsonPath("$.capabilities.view_webhooks").value(true))
+                .andExpect(jsonPath("$.capabilities.view_audit").value(true))
+                .andExpect(jsonPath("$.capabilities.view_tenants").value(true))
+                .andExpect(jsonPath("$.capabilities.view_api_keys").value(true))
+                .andExpect(jsonPath("$.capabilities.view_policies").value(true));
+    }
+
+    @Test
+    void introspect_withoutAdminKey_returns401() throws Exception {
+        mockMvc.perform(get("/v1/auth/introspect"))
                 .andExpect(status().isUnauthorized());
     }
 }
