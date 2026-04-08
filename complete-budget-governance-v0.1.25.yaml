@@ -144,9 +144,12 @@ info:
         - Freeze/unfreeze endpoint descriptions now explicitly document event emission
           (budget.frozen, budget.unfrozen).
         - Updated AdminKeyAuth description to include fund in allowlist.
-        - Backward compatibility: All changes are purely additive. Existing ApiKeyAuth
-          callers with default permissions are unaffected (budgets:read, budgets:write,
-          policies:read, policies:write are included in the default permission set).
+        - Backward compatibility: All changes are purely additive. Keys created with
+          default permissions include the new budget/policy permissions automatically.
+          Keys created before v0.1.25.6 with explicitly specified permission sets may
+          need migration if they do not include budgets:read/write or policies:read/write.
+          Servers SHOULD apply fallback semantics (grant budget/policy access to pre-existing
+          keys that lack explicit permission strings) or migrate persisted keys at startup.
 
       v0.1.25.5 (2026-04-08):
         - Dashboard support: Added dual-auth allowlist for admin dashboard reads.
@@ -888,8 +891,9 @@ components:
               - 'admin:audit:read'
           description: >-
             Granular permissions. Default for tenant keys:
-            [reservations:*, balances:read, budgets:read, budgets:write,
-            policies:read, policies:write]
+            [reservations:create, reservations:commit, reservations:release,
+            reservations:extend, reservations:list, balances:read,
+            budgets:read, budgets:write, policies:read, policies:write]
         scope_filter:
           type: array
           items:
@@ -2889,7 +2893,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: API key lacks budgets:read permission or scope_filter denies access
+          description: API key lacks budgets:write permission or scope_filter denies access
           content:
             application/json:
               schema:
@@ -2951,7 +2955,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: API key lacks budgets:write permission or scope_filter denies access
+          description: API key lacks budgets:read permission or scope_filter denies access
           content:
             application/json:
               schema:
@@ -3148,9 +3152,11 @@ paths:
         - Stored as: bcrypt hash of full key
         
         PERMISSIONS:
-        - Default for tenant keys: [reservations:*, balances:read, budgets:read,
-          budgets:write, policies:read, policies:write]
-        - Admin keys: [admin:*, reservations:*, balances:*]
+        - Default for tenant keys: [reservations:create, reservations:commit,
+          reservations:release, reservations:extend, reservations:list,
+          balances:read, budgets:read, budgets:write, policies:read,
+          policies:write]
+        - Admin keys: [admin:read, admin:write] (wildcards for all admin operations)
         - Can be restricted to specific scopes via scope_filter
         
         EXPIRY:
