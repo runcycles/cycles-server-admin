@@ -196,14 +196,14 @@ class AuthInterceptorTest {
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("admin:write", "balances:read"))
+                        .permissions(List.of("budgets:write", "balances:read"))
                         .scopeFilter(List.of("org/*"))
                         .build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
         assertThat(request.getAttribute("authenticated_tenant_id")).isEqualTo("t1");
         assertThat(request.getAttribute("authenticated_key_id")).isEqualTo("key_1");
-        assertThat(request.getAttribute("authenticated_permissions")).isEqualTo(List.of("admin:write", "balances:read"));
+        assertThat(request.getAttribute("authenticated_permissions")).isEqualTo(List.of("budgets:write", "balances:read"));
         assertThat(request.getAttribute("authenticated_scope_filter")).isEqualTo(List.of("org/*"));
     }
 
@@ -239,7 +239,7 @@ class AuthInterceptorTest {
     }
 
     @Test
-    void preHandle_budgetListEndpoint_adminReadPermission_allows() throws Exception {
+    void preHandle_budgetListEndpoint_budgetsReadPermission_allows() throws Exception {
         request.setMethod("GET");
         request.setRequestURI("/v1/admin/budgets");
         request.addHeader("X-Cycles-API-Key", "valid-key");
@@ -247,14 +247,14 @@ class AuthInterceptorTest {
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("admin:read"))
+                        .permissions(List.of("budgets:read"))
                         .build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
     }
 
     @Test
-    void preHandle_policyUpdate_withPathVariable_requiresAdminWrite() throws Exception {
+    void preHandle_policyUpdate_withPathVariable_requiresPoliciesWrite() throws Exception {
         request.setMethod("PATCH");
         request.setRequestURI("/v1/admin/policies/pol_123");
         request.addHeader("X-Cycles-API-Key", "valid-key");
@@ -262,7 +262,7 @@ class AuthInterceptorTest {
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("admin:read"))
+                        .permissions(List.of("policies:read"))
                         .build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
@@ -567,7 +567,7 @@ class AuthInterceptorTest {
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("admin:read"))
+                        .permissions(List.of("budgets:read"))
                         .build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
@@ -583,7 +583,7 @@ class AuthInterceptorTest {
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("admin:read"))
+                        .permissions(List.of("policies:read"))
                         .build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();

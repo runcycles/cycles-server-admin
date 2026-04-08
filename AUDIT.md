@@ -27,6 +27,17 @@ Two spec gaps identified during dashboard development. All changes are additive 
 | `BudgetStatusTransitionRequest.java` | New request model |
 | `pom.xml` | `<revision>0.1.25.6</revision>` |
 
+**Tenant permission model** (review feedback):
+
+| Change | Details |
+|--------|---------|
+| New permissions | `budgets:read`, `budgets:write`, `policies:read`, `policies:write` added to ApiKey.permissions enum |
+| Permission enforcement | `AuthInterceptor.PERMISSION_MAP` updated: budget endpoints require `budgets:read`/`budgets:write`, policy endpoints require `policies:read`/`policies:write` (was `admin:read`/`admin:write`) |
+| 403 responses | Added to `POST /v1/admin/budgets`, `POST /v1/admin/policies`, `PATCH /v1/admin/policies/{policy_id}`, `POST /v1/admin/budgets/fund` |
+| Event emission docs | Freeze/unfreeze endpoint descriptions now explicitly state `budget.frozen`/`budget.unfrozen` event emission |
+| Schema header | Fixed stale `v0.1.25.5` → `v0.1.25.6` in DASHBOARD SCHEMAS comment |
+| Backward compatible | New permissions included in default tenant key set |
+
 **Test count:** 384 → 401 (all passing, 95%+ coverage maintained).
 
 ### 2026-04-08 — Audit log completeness fix

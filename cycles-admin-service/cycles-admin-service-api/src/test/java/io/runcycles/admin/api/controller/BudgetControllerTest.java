@@ -42,7 +42,7 @@ class BudgetControllerTest {
         when(apiKeyRepository.validate("valid-api-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("admin:read", "admin:write", "balances:read")).build());
+                        .permissions(List.of("budgets:read", "budgets:write", "balances:read")).build());
     }
 
     @Test
@@ -108,7 +108,7 @@ class BudgetControllerTest {
         when(apiKeyRepository.validate("restricted-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("admin:read", "admin:write", "balances:read"))
+                        .permissions(List.of("budgets:read", "budgets:write", "balances:read"))
                         .scopeFilter(List.of("workspace:eng"))
                         .build());
 
@@ -125,7 +125,7 @@ class BudgetControllerTest {
         when(apiKeyRepository.validate("restricted-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_1")
-                        .permissions(List.of("admin:read", "admin:write", "balances:read"))
+                        .permissions(List.of("budgets:read", "budgets:write", "balances:read"))
                         .scopeFilter(List.of("workspace:eng"))
                         .build());
         BudgetLedger ledger = BudgetLedger.builder()
@@ -779,11 +779,11 @@ class BudgetControllerTest {
 
     @Test
     void fundBudget_insufficientPermissions_returns403() throws Exception {
-        // API key with only admin:read — lacks admin:write required for POST /v1/admin/budgets/fund
+        // API key with only budgets:read — lacks budgets:write required for POST /v1/admin/budgets/fund
         when(apiKeyRepository.validate("read-only-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(true).tenantId("t1").keyId("key_ro")
-                        .permissions(List.of("admin:read")).build());
+                        .permissions(List.of("budgets:read")).build());
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
                         .param("scope", "scope")

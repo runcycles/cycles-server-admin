@@ -135,9 +135,18 @@ info:
             * Added 400 response for missing tenant_id with AdminKeyAuth.
             * Added 403 response for scope_filter denial (ApiKeyAuth callers).
         - Added 1 new schema: BudgetStatusTransitionRequest (reason, metadata).
+        - Added 4 new tenant API key permissions: budgets:read, budgets:write,
+          policies:read, policies:write. Budget/policy tenant endpoints now require
+          explicit permissions (403 if missing), consistent with webhooks/events model.
+        - Added 403 responses to POST /v1/admin/budgets, POST /v1/admin/policies,
+          PATCH /v1/admin/policies/{policy_id}, POST /v1/admin/budgets/fund for
+          permission and scope_filter denial.
+        - Freeze/unfreeze endpoint descriptions now explicitly document event emission
+          (budget.frozen, budget.unfrozen).
         - Updated AdminKeyAuth description to include fund in allowlist.
         - Backward compatibility: All changes are purely additive. Existing ApiKeyAuth
-          callers are unaffected.
+          callers with default permissions are unaffected (budgets:read, budgets:write,
+          policies:read, policies:write are included in the default permission set).
 
       v0.1.25.5 (2026-04-08):
         - Dashboard support: Added dual-auth allowlist for admin dashboard reads.
@@ -854,6 +863,10 @@ components:
               - 'reservations:extend'
               - 'reservations:list'
               - 'balances:read'
+              - 'budgets:read'
+              - 'budgets:write'
+              - 'policies:read'
+              - 'policies:write'
               - 'webhooks:read'
               - 'webhooks:write'
               - 'events:read'
@@ -875,7 +888,8 @@ components:
               - 'admin:audit:read'
           description: >-
             Granular permissions. Default for tenant keys:
-            [reservations:*, balances:read]
+            [reservations:*, balances:read, budgets:read, budgets:write,
+            policies:read, policies:write]
         scope_filter:
           type: array
           items:
@@ -2503,13 +2517,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: API key lacks budgets:write permission or scope_filter denies access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: Budget already exists for this (scope, unit)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-    
+
     get:
       tags: [Budgets]
       operationId: listBudgets
@@ -2656,6 +2676,9 @@ paths:
         - ACTIVE → FROZEN: Allowed
         - FROZEN → FROZEN: 409 (already frozen)
         - CLOSED → FROZEN: 409 (closed is irreversible)
+
+        EVENTS:
+        - Emits budget.frozen event on successful transition.
       security:
         - AdminKeyAuth: []
       parameters:
@@ -2723,6 +2746,9 @@ paths:
         - FROZEN → ACTIVE: Allowed
         - ACTIVE → ACTIVE: 409 (already active)
         - CLOSED → ACTIVE: 409 (closed is irreversible)
+
+        EVENTS:
+        - Emits budget.unfrozen event on successful transition.
       security:
         - AdminKeyAuth: []
       parameters:
@@ -2977,7 +3003,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Policy'
-    
+        '403':
+          description: API key lacks policies:write permission or scope_filter denies access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
     get:
       tags: [Policies]
       operationId: listPolicies
@@ -3084,6 +3116,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Policy'
+        '403':
+          description: API key lacks policies:write permission or scope_filter denies access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Policy not found
           content:

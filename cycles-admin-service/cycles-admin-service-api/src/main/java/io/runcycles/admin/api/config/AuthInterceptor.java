@@ -41,13 +41,13 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     // Endpoint path+method → required permission per admin governance spec
     private static final Map<String, String> PERMISSION_MAP = Map.ofEntries(
-        Map.entry("POST:/v1/admin/budgets/fund", "admin:write"),
-        Map.entry("POST:/v1/admin/budgets", "admin:write"),
-        Map.entry("GET:/v1/admin/budgets", "admin:read"),
+        Map.entry("POST:/v1/admin/budgets/fund", "budgets:write"),
+        Map.entry("POST:/v1/admin/budgets", "budgets:write"),
+        Map.entry("GET:/v1/admin/budgets", "budgets:read"),
         // PATCH /v1/admin/budgets uses AdminKeyAuth per spec v0.1.25 — no permission map entry needed
-        Map.entry("POST:/v1/admin/policies", "admin:write"),
-        Map.entry("PATCH:/v1/admin/policies", "admin:write"),
-        Map.entry("GET:/v1/admin/policies", "admin:read"),
+        Map.entry("POST:/v1/admin/policies", "policies:write"),
+        Map.entry("PATCH:/v1/admin/policies", "policies:write"),
+        Map.entry("GET:/v1/admin/policies", "policies:read"),
         Map.entry("GET:/v1/balances", "balances:read"),
         Map.entry("POST:/v1/webhooks", "webhooks:write"),
         Map.entry("GET:/v1/webhooks", "webhooks:read"),
