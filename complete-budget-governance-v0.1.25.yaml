@@ -3161,7 +3161,7 @@ paths:
         Returns a single-request operational health snapshot for the admin dashboard.
         Includes entity counts (tenants, budgets, webhooks), top-offender arrays
         (over-limit budgets, debt scopes, failing webhooks), and recent event
-        summaries (denials, expiries) — all within a configurable time window.
+        summaries (denials, expiries) — all within a server-defined time window (default 1 hour, returned as event_window_seconds).
 
         DESIGN:
         - Aggregation is performed server-side through existing repositories.
