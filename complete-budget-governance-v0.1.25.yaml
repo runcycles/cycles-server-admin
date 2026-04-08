@@ -2600,7 +2600,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: API key scope_filter denies access to the requested scope_prefix
+          description: API key lacks budgets:read permission or scope_filter denies access
           content:
             application/json:
               schema:
@@ -2889,7 +2889,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: API key scope_filter denies access to the requested scope
+          description: API key lacks budgets:read permission or scope_filter denies access
           content:
             application/json:
               schema:
@@ -2951,7 +2951,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: API key scope_filter denies access to the requested scope
+          description: API key lacks budgets:write permission or scope_filter denies access
           content:
             application/json:
               schema:
@@ -3071,7 +3071,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: API key scope_filter denies access to the requested scope_pattern
+          description: API key lacks policies:read permission or scope_filter denies access
           content:
             application/json:
               schema:
@@ -3148,7 +3148,8 @@ paths:
         - Stored as: bcrypt hash of full key
         
         PERMISSIONS:
-        - Default for tenant keys: [reservations:*, balances:read]
+        - Default for tenant keys: [reservations:*, balances:read, budgets:read,
+          budgets:write, policies:read, policies:write]
         - Admin keys: [admin:*, reservations:*, balances:*]
         - Can be restricted to specific scopes via scope_filter
         
