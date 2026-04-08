@@ -38,6 +38,17 @@ Two spec gaps identified during dashboard development. All changes are additive 
 | Schema header | Fixed stale `v0.1.25.5` → `v0.1.25.6` in DASHBOARD SCHEMAS comment |
 | Backward compatible | New permissions included in default tenant key set |
 
+**Audit trail completeness:**
+
+| Endpoint | Controller | Fix |
+|----------|-----------|-----|
+| `POST /v1/admin/webhooks/{id}/test` | WebhookAdminController | Added audit log (operation, status) |
+| `POST /v1/admin/webhooks/{id}/replay` | WebhookAdminController | Added audit log (operation, status) |
+| `POST /v1/webhooks` | WebhookTenantController | Added AuditRepository + audit log (tenantId, keyId, operation, status) |
+| `PATCH /v1/webhooks/{id}` | WebhookTenantController | Added audit log (tenantId, keyId, operation, status) |
+| `DELETE /v1/webhooks/{id}` | WebhookTenantController | Added audit log (tenantId, keyId, operation, status) |
+| `POST /v1/webhooks/{id}/test` | WebhookTenantController | Added audit log (tenantId, keyId, operation, status) |
+
 **Test count:** 384 → 401 (all passing, 95%+ coverage maintained).
 
 ### 2026-04-08 — Audit log completeness fix

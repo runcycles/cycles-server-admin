@@ -2,6 +2,8 @@ package io.runcycles.admin.api.controller;
 
 import io.runcycles.admin.api.service.WebhookService;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.repository.AuditRepository;
+import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.webhook.*;
@@ -18,6 +20,7 @@ import java.util.List;
 @RestController @RequestMapping("/v1/webhooks") @Tag(name = "Webhooks")
 public class WebhookTenantController {
     @Autowired private WebhookService webhookService;
+    @Autowired private AuditRepository auditRepository;
 
     @PostMapping @Operation(operationId = "createTenantWebhook")
     public ResponseEntity<WebhookCreateResponse> create(
@@ -25,6 +28,10 @@ public class WebhookTenantController {
         String tenantId = getAuthenticatedTenantId(httpRequest);
         validateTenantEventTypes(request.getEventTypes());
         WebhookCreateResponse response = webhookService.create(tenantId, request);
+        auditRepository.log(buildAuditEntry(httpRequest)
+            .tenantId(tenantId)
+            .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
+            .operation("createTenantWebhook").status(201).build());
         return ResponseEntity.status(201).body(response);
     }
 
@@ -58,7 +65,12 @@ public class WebhookTenantController {
         if (request.getEventTypes() != null) {
             validateTenantEventTypes(request.getEventTypes());
         }
-        return ResponseEntity.ok(webhookService.update(subscriptionId, request));
+        WebhookSubscription updated = webhookService.update(subscriptionId, request);
+        auditRepository.log(buildAuditEntry(httpRequest)
+            .tenantId(tenantId)
+            .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
+            .operation("updateTenantWebhook").status(200).build());
+        return ResponseEntity.ok(updated);
     }
 
     @DeleteMapping("/{subscription_id}") @Operation(operationId = "deleteTenantWebhook")
@@ -68,6 +80,10 @@ public class WebhookTenantController {
         WebhookSubscription existing = webhookService.get(subscriptionId);
         enforceTenantOwnership(existing, tenantId);
         webhookService.delete(subscriptionId);
+        auditRepository.log(buildAuditEntry(httpRequest)
+            .tenantId(tenantId)
+            .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
+            .operation("deleteTenantWebhook").status(204).build());
         return ResponseEntity.noContent().build();
     }
 
@@ -77,7 +93,12 @@ public class WebhookTenantController {
         String tenantId = getAuthenticatedTenantId(httpRequest);
         WebhookSubscription existing = webhookService.get(subscriptionId);
         enforceTenantOwnership(existing, tenantId);
-        return ResponseEntity.ok(webhookService.test(subscriptionId));
+        WebhookTestResponse response = webhookService.test(subscriptionId);
+        auditRepository.log(buildAuditEntry(httpRequest)
+            .tenantId(tenantId)
+            .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
+            .operation("testTenantWebhook").status(200).build());
+        return ResponseEntity.ok(response);
     }
 
     @GetMapping("/{subscription_id}/deliveries") @Operation(operationId = "listTenantWebhookDeliveries")
@@ -110,6 +131,13 @@ public class WebhookTenantController {
     /**
      * Tenant can only subscribe to budget.*, reservation.*, tenant.* event types.
      */
+    private AuditLogEntry.AuditLogEntryBuilder buildAuditEntry(HttpServletRequest request) {
+        return AuditLogEntry.builder()
+            .requestId(request.getAttribute("requestId") != null ? request.getAttribute("requestId").toString() : null)
+            .sourceIp(request.getRemoteAddr())
+            .userAgent(request.getHeader("User-Agent"));
+    }
+
     private void validateTenantEventTypes(List<EventType> eventTypes) {
         if (eventTypes == null) return;
         for (EventType type : eventTypes) {
