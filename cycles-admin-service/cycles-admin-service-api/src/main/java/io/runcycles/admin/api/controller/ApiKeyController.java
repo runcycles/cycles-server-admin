@@ -33,6 +33,7 @@ public class ApiKeyController {
         ApiKeyCreateResponse response = repository.create(request);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(request.getTenantId())
+            .keyId(response.getKeyId())
             .operation("createApiKey")
             .status(201)
             .build());

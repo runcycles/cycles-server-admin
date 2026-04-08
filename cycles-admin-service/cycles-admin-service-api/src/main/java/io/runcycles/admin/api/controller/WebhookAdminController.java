@@ -52,14 +52,17 @@ public class WebhookAdminController {
             @Valid @RequestBody WebhookUpdateRequest request, HttpServletRequest httpRequest) {
         WebhookSubscription updated = webhookService.update(subscriptionId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
+            .tenantId(updated.getTenantId())
             .operation("updateWebhookSubscription").status(200).build());
         return ResponseEntity.ok(updated);
     }
 
     @DeleteMapping("/{subscription_id}") @Operation(operationId = "deleteWebhookSubscription")
     public ResponseEntity<Void> delete(@PathVariable("subscription_id") String subscriptionId, HttpServletRequest httpRequest) {
+        WebhookSubscription sub = webhookService.get(subscriptionId);
         webhookService.delete(subscriptionId);
         auditRepository.log(buildAuditEntry(httpRequest)
+            .tenantId(sub.getTenantId())
             .operation("deleteWebhookSubscription").status(204).build());
         return ResponseEntity.noContent().build();
     }

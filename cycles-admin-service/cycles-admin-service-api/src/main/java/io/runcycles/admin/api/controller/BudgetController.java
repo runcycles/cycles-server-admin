@@ -99,8 +99,9 @@ public class BudgetController {
         // Admin auth: tenantId is null, Lua script skips ownership check
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         BudgetLedger ledger = repository.update(tenantId, scope, unit, request);
+        String auditTenantId = tenantId != null ? tenantId : ledger.getTenantId();
         auditRepository.log(buildAuditEntry(httpRequest)
-            .tenantId(tenantId)
+            .tenantId(auditTenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
             .operation("updateBudget")
             .status(200)
