@@ -4,6 +4,19 @@
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25.5)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
+### 2026-04-08 — Audit log completeness fix
+
+**Issue:** AdminKeyAuth endpoints logged incomplete audit entries — missing tenantId and/or keyId.
+
+| Controller | Endpoint | Fix |
+|-----------|----------|-----|
+| `WebhookAdminController.update()` | `PATCH /v1/admin/webhooks/{id}` | Added `tenantId` from `updated.getTenantId()` |
+| `WebhookAdminController.delete()` | `DELETE /v1/admin/webhooks/{id}` | Fetch subscription before delete to capture `tenantId` |
+| `BudgetController.update()` | `PATCH /v1/admin/budgets` | Fall back to `ledger.getTenantId()` when AdminKeyAuth (no `authenticated_tenant_id`) |
+| `ApiKeyController.create()` | `POST /v1/admin/api-keys` | Added `keyId` from `response.getKeyId()` (newly created key) |
+
+**Not changed (correct as-is):** `createTenant`, `updateTenant`, `createWebhookSubscription` — these already derive tenantId from request body/path/query params. AdminKeyAuth has no per-key identity so keyId=null is correct for admin-only operations.
+
 ### 2026-04-08 — Spec compliance audit: test coverage gaps + ApiKey hardening
 
 **Audit findings:** Deep spec compliance review of all 78 model classes, data layer, and 45 test files.

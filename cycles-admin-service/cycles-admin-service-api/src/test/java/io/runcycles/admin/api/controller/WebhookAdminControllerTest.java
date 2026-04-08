@@ -120,11 +120,17 @@ class WebhookAdminControllerTest {
 
         verify(auditRepository).log(argThat(entry ->
                 "updateWebhookSubscription".equals(entry.getOperation()) &&
+                "t1".equals(entry.getTenantId()) &&
                 entry.getStatus() == 200));
     }
 
     @Test
     void deleteWebhook_returns204() throws Exception {
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(sub);
+
         mockMvc.perform(delete("/v1/admin/webhooks/whsub_1")
                         .header("X-Admin-API-Key", ADMIN_KEY))
                 .andExpect(status().isNoContent());
@@ -132,6 +138,7 @@ class WebhookAdminControllerTest {
         verify(webhookService).delete("whsub_1");
         verify(auditRepository).log(argThat(entry ->
                 "deleteWebhookSubscription".equals(entry.getOperation()) &&
+                "t1".equals(entry.getTenantId()) &&
                 entry.getStatus() == 204));
     }
 

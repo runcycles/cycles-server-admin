@@ -604,6 +604,7 @@ class BudgetControllerTest {
                 .ledgerId("led-1").scope("scope").unit(UnitEnum.USD_MICROCENTS)
                 .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .remaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .tenantId("t1")
                 .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
         when(budgetRepository.update(isNull(), eq("scope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(ledger);
 
@@ -617,6 +618,7 @@ class BudgetControllerTest {
 
         verify(auditRepository).log(argThat(entry ->
                 "updateBudget".equals(entry.getOperation()) &&
+                "t1".equals(entry.getTenantId()) &&
                 entry.getStatus() == 200));
     }
 

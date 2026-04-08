@@ -121,6 +121,7 @@ class ApiKeyControllerTest {
         verify(auditRepository).log(argThat(entry ->
                 "createApiKey".equals(entry.getOperation()) &&
                 "t1".equals(entry.getTenantId()) &&
+                "key_123".equals(entry.getKeyId()) &&
                 entry.getStatus() == 201));
     }
 
