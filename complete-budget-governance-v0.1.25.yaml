@@ -866,11 +866,12 @@ components:
       type: string
       description: >-
         API key permission value. Tenant-scoped keys SHOULD only carry tenant
-        permissions (reservations:*, balances:read, budgets:*, policies:*,
-        webhooks:*, events:read). Admin permissions (admin:read, admin:write,
-        and granular admin permissions like admin:tenants:read) are reserved
-        for backward compatibility with pre-v0.1.25.6 keys and SHOULD NOT be
-        assigned to new tenant keys.
+        permissions (reservations:create/commit/release/extend/list, balances:read,
+        budgets:read/write, policies:read/write, webhooks:read/write, events:read).
+        Admin permissions (admin:read, admin:write, and granular admin permissions
+        like admin:tenants:read, admin:budgets:write) are reserved for backward
+        compatibility with pre-v0.1.25.6 keys and SHOULD NOT be assigned to new
+        tenant keys.
 
         WILDCARD SEMANTICS (v0.1.25.7):
         - admin:write satisfies any *:write requirement (budgets:write,
@@ -4078,9 +4079,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/EventListResponse'
-
         '401':
-          description: Missing or invalid API key / admin key
+          description: Missing or invalid admin API key
           content:
             application/json:
               schema:
@@ -4192,7 +4192,7 @@ paths:
                   estimated_completion_seconds:
                     type: integer
         '401':
-          description: Missing or invalid API key / admin key
+          description: Missing or invalid admin API key
           content:
             application/json:
               schema:
