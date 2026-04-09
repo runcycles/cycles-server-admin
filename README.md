@@ -215,7 +215,7 @@ curl -X PUT http://localhost:7979/v1/admin/config/webhook-security \
 | `GET` | `/v1/admin/budgets` | List budget ledgers | ApiKey / Admin |
 | `GET` | `/v1/admin/budgets/lookup?scope={scope}&unit={unit}` | Exact budget lookup | ApiKey / Admin |
 | `PATCH` | `/v1/admin/budgets?scope={scope}&unit={unit}` | Update budget | Admin |
-| `POST` | `/v1/admin/budgets/fund?scope={scope}&unit={unit}` | Fund/adjust budget | ApiKey |
+| `POST` | `/v1/admin/budgets/fund?scope={scope}&unit={unit}` | Fund/adjust budget | ApiKey / Admin |
 | `POST` | `/v1/admin/policies` | Create policy | ApiKey |
 | `GET` | `/v1/admin/policies` | List policies | ApiKey / Admin |
 | `PATCH` | `/v1/admin/policies/{policy_id}` | Update policy | ApiKey |
@@ -345,7 +345,7 @@ A budget ledger tracks finances for a specific `(scope, unit)` pair. Each ledger
 
 **Amount values** are `int64` integers (not floating-point). All `Amount` objects carry an explicit `unit` field to prevent mismatches.
 
-**Ledger status:** `ACTIVE` (normal operations) | `FROZEN` (read-only, no new reservations or commits) | `CLOSED` (archived)
+**Ledger status:** `ACTIVE` (normal operations) | `FROZEN` (no new reservations, commits, or funding; property updates still allowed) | `CLOSED` (archived)
 
 **Budget periods:** Ledgers support optional `period_start` / `period_end` with a rollover policy:
 
@@ -439,9 +439,11 @@ API keys carry granular permissions:
 | `admin:read` | Read admin resources |
 | `admin:write` | Modify admin resources |
 
-**Defaults:** Tenant keys get `[reservations:*, balances:read]`. Admin keys get `[admin:*, reservations:*, balances:*]`.
+**Defaults:** Tenant keys get the 10 default permissions listed in the table above. `admin:read` and `admin:write` act as wildcards for backward compatibility (see table).
 
 Keys can be further restricted to specific scopes via `scope_filter` (e.g., `["workspace:eng", "agent:*"]`).
+
+**Key update** (`PATCH /v1/admin/api-keys/{key_id}`) allows changing permissions, scope_filter, name, description, and metadata without rotating the key secret.
 
 **Key revocation** (`DELETE /v1/admin/api-keys/{key_id}`) is permanent and cannot be undone. Revoked keys remain in the database for audit trail. Active reservations created with a revoked key can still be committed/released, but no new operations are permitted.
 
@@ -478,7 +480,7 @@ When `POST /v1/reservations` is called, the governance layer executes:
 
 `GET /v1/admin/audit/logs` provides a compliance-ready audit trail (SOC2, GDPR).
 
-**Query filters:** `tenant_id`, `key_id`, `operation`, `status` (HTTP code), `from`/`to` (datetime range)
+**Query filters:** `tenant_id`, `key_id`, `operation`, `status` (HTTP code), `resource_type`, `resource_id`, `from`/`to` (datetime range)
 
 **Retention recommendation:** 90 days hot storage, 1 year cold storage.
 
