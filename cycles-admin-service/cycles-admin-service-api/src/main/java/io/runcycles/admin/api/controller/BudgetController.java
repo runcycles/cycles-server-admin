@@ -154,9 +154,7 @@ public class BudgetController {
             .resourceType("budget").resourceId(scope + ":" + unit.name())
             .operation("fundBudget")
             .status(200)
-            .metadata(Map.of("scope", scope, "unit", unit.name(),
-                "funding_operation", request.getOperation().name(),
-                "amount", request.getAmount().getAmount()))
+            .metadata(buildFundMetadata(scope, unit, request))
             .build());
         try {
             EventType fundEventType;
@@ -246,6 +244,17 @@ public class BudgetController {
         if (request.getOverdraftLimit() != null && request.getOverdraftLimit().getUnit() != request.getUnit()) {
             throw GovernanceException.unitMismatch(request.getUnit().name(), request.getOverdraftLimit().getUnit().name());
         }
+    }
+
+    private Map<String, Object> buildFundMetadata(String scope, UnitEnum unit, BudgetFundingRequest request) {
+        java.util.LinkedHashMap<String, Object> meta = new java.util.LinkedHashMap<>();
+        meta.put("scope", scope);
+        meta.put("unit", unit.name());
+        meta.put("funding_operation", request.getOperation().name());
+        meta.put("amount", request.getAmount().getAmount());
+        if (request.getReason() != null) meta.put("reason", request.getReason());
+        if (request.getIdempotencyKey() != null) meta.put("idempotency_key", request.getIdempotencyKey());
+        return meta;
     }
 
     private AuditLogEntry.AuditLogEntryBuilder buildAuditEntry(HttpServletRequest request) {

@@ -36,7 +36,9 @@ public class ApiKeyController {
             .resourceType("api_key").resourceId(response.getKeyId())
             .operation("createApiKey")
             .status(201)
-            .metadata(Map.of("name", request.getName()))
+            .metadata(request.getPermissions() != null
+                ? Map.of("name", request.getName(), "permissions", request.getPermissions())
+                : Map.of("name", request.getName()))
             .build());
         try {
             eventService.emit(EventType.API_KEY_CREATED, request.getTenantId(), null, "cycles-admin",
@@ -123,7 +125,7 @@ public class ApiKeyController {
             .resourceType("api_key").resourceId(keyId)
             .operation("revokeApiKey")
             .status(200)
-            .metadata(reason != null ? Map.of("reason", reason) : null)
+            .metadata(buildRevokeMeta(response.getName(), reason))
             .build());
         try {
             eventService.emit(EventType.API_KEY_REVOKED, response.getTenantId(), null, "cycles-admin",
@@ -135,6 +137,13 @@ public class ApiKeyController {
             LOG.warn("Failed to emit event: {}", e.getMessage());
         }
         return ResponseEntity.ok(response);
+    }
+
+    private Map<String, Object> buildRevokeMeta(String name, String reason) {
+        java.util.LinkedHashMap<String, Object> meta = new java.util.LinkedHashMap<>();
+        if (name != null) meta.put("name", name);
+        if (reason != null) meta.put("reason", reason);
+        return meta.isEmpty() ? null : meta;
     }
 
     private AuditLogEntry.AuditLogEntryBuilder buildAuditEntry(HttpServletRequest request) {

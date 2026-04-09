@@ -103,12 +103,17 @@ public class WebhookTenantController {
         WebhookSubscription existing = webhookService.get(subscriptionId);
         enforceTenantOwnership(existing, tenantId);
         WebhookTestResponse response = webhookService.test(subscriptionId);
+        java.util.Map<String, Object> testMeta = new java.util.LinkedHashMap<>();
+        testMeta.put("success", response.isSuccess());
+        if (response.getResponseStatus() != null) testMeta.put("response_status", response.getResponseStatus());
+        if (response.getErrorMessage() != null) testMeta.put("error_message", response.getErrorMessage());
+        if (response.getResponseTimeMs() != null) testMeta.put("response_time_ms", response.getResponseTimeMs());
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
             .resourceType("webhook").resourceId(subscriptionId)
             .operation("testTenantWebhook").status(200)
-            .metadata(java.util.Map.of("success", response.isSuccess()))
+            .metadata(testMeta)
             .build());
         return ResponseEntity.ok(response);
     }

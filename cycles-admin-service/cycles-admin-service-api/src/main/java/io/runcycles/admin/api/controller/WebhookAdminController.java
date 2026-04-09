@@ -81,10 +81,15 @@ public class WebhookAdminController {
     public ResponseEntity<WebhookTestResponse> test(
             @PathVariable("subscription_id") String subscriptionId, HttpServletRequest httpRequest) {
         WebhookTestResponse response = webhookService.test(subscriptionId);
+        java.util.Map<String, Object> testMeta = new java.util.LinkedHashMap<>();
+        testMeta.put("success", response.isSuccess());
+        if (response.getResponseStatus() != null) testMeta.put("response_status", response.getResponseStatus());
+        if (response.getErrorMessage() != null) testMeta.put("error_message", response.getErrorMessage());
+        if (response.getResponseTimeMs() != null) testMeta.put("response_time_ms", response.getResponseTimeMs());
         auditRepository.log(buildAuditEntry(httpRequest)
             .resourceType("webhook").resourceId(subscriptionId)
             .operation("testWebhookSubscription").status(200)
-            .metadata(java.util.Map.of("success", response.isSuccess()))
+            .metadata(testMeta)
             .build());
         return ResponseEntity.ok(response);
     }
@@ -109,7 +114,8 @@ public class WebhookAdminController {
         auditRepository.log(buildAuditEntry(httpRequest)
             .resourceType("webhook").resourceId(subscriptionId)
             .operation("replayEvents").status(202)
-            .metadata(java.util.Map.of("events_queued", response.getEventsQueued()))
+            .metadata(java.util.Map.of("replay_id", response.getReplayId(),
+                "events_queued", response.getEventsQueued()))
             .build());
         return ResponseEntity.accepted().body(response);
     }
