@@ -40,6 +40,7 @@ public class AuditRepository {
         }
     }
     public List<AuditLogEntry> list(String tenantId, String keyId, String operation, Integer status,
+                                     String resourceType, String resourceId,
                                      Instant from, Instant to, String cursor, int limit) {
         if (limit <= 0) {
             return new ArrayList<>();
@@ -76,6 +77,8 @@ public class AuditRepository {
                     if (keyId != null && !keyId.equals(entry.getKeyId())) continue;
                     if (operation != null && !operation.equals(entry.getOperation())) continue;
                     if (status != null && !status.equals(entry.getStatus())) continue;
+                    if (resourceType != null && !resourceType.equals(entry.getResourceType())) continue;
+                    if (resourceId != null && !resourceId.equals(entry.getResourceId())) continue;
                     logs.add(entry);
                     if (logs.size() >= limit) break;
                 } catch (Exception e) {
@@ -86,6 +89,6 @@ public class AuditRepository {
         }
     }
     public List<AuditLogEntry> list(String tenantId, int limit) {
-        return list(tenantId, null, null, null, null, null, null, limit);
+        return list(tenantId, null, null, null, null, null, null, null, null, limit);
     }
 }

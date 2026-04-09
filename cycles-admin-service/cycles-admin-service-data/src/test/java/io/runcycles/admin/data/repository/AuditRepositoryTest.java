@@ -94,7 +94,7 @@ class AuditRepositoryTest {
         when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
         when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
 
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, 50);
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(2);
     }
@@ -111,7 +111,7 @@ class AuditRepositoryTest {
         when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
         when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
 
-        List<AuditLogEntry> result = repository.list("t1", "key_A", null, null, null, null, null, 50);
+        List<AuditLogEntry> result = repository.list("t1", "key_A", null, null, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getKeyId()).isEqualTo("key_A");
@@ -129,7 +129,7 @@ class AuditRepositoryTest {
         when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
         when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
 
-        List<AuditLogEntry> result = repository.list("t1", null, "create", null, null, null, null, 50);
+        List<AuditLogEntry> result = repository.list("t1", null, "create", null, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getOperation()).isEqualTo("create");
@@ -147,7 +147,7 @@ class AuditRepositoryTest {
         when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
         when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
 
-        List<AuditLogEntry> result = repository.list("t1", null, null, 201, null, null, null, 50);
+        List<AuditLogEntry> result = repository.list("t1", null, null, 201, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getStatus()).isEqualTo(201);
@@ -162,7 +162,7 @@ class AuditRepositoryTest {
         String e1Json = objectMapper.writeValueAsString(e1);
         when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
 
-        List<AuditLogEntry> result = repository.list(null, null, null, null, null, null, null, 50);
+        List<AuditLogEntry> result = repository.list(null, null, null, null, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         verify(jedis).zrevrangeByScore(eq("audit:logs:_all"), anyDouble(), anyDouble(), eq(0), anyInt());
@@ -177,14 +177,14 @@ class AuditRepositoryTest {
         String e1Json = objectMapper.writeValueAsString(e1);
         when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
 
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, 1);
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, null, null, 1);
 
         assertThat(result).hasSize(1);
     }
 
     @Test
     void list_withZeroLimit_returnsEmpty() {
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, 0);
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, null, null, 0);
         assertThat(result).isEmpty();
     }
 
@@ -205,7 +205,7 @@ class AuditRepositoryTest {
         when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
         when(jedis.get("audit:log:log_3")).thenReturn(e3Json);
 
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, "log_1", 50);
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, null, "log_1", 50);
 
         assertThat(result).hasSize(2);
         assertThat(result.get(0).getLogId()).isEqualTo("log_2");
@@ -232,7 +232,7 @@ class AuditRepositoryTest {
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
 
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, 50);
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getLogId()).isEqualTo("log_2");
@@ -261,7 +261,7 @@ class AuditRepositoryTest {
         String e1Json = objectMapper.writeValueAsString(e1);
         when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
 
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, "nonexistent", 50);
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, null, "nonexistent", 50);
 
         assertThat(result).hasSize(1);
     }
@@ -279,7 +279,7 @@ class AuditRepositoryTest {
         String e1Json = objectMapper.writeValueAsString(e1);
         when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
 
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, from, to, null, 50);
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, from, to, null, 50);
 
         assertThat(result).hasSize(1);
         verify(jedis).zrevrangeByScore(eq("audit:logs:t1"), eq(2000.0), eq(1000.0), eq(0), anyInt());
@@ -287,7 +287,7 @@ class AuditRepositoryTest {
 
     @Test
     void list_negativeLimit_returnsEmptyList() {
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, -1);
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, null, null, -1);
         assertThat(result).isEmpty();
     }
 
@@ -301,7 +301,7 @@ class AuditRepositoryTest {
         String goodJson = objectMapper.writeValueAsString(good);
         when(jedis.get("audit:log:log_good")).thenReturn(goodJson);
 
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, 50);
+        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getLogId()).isEqualTo("log_good");
