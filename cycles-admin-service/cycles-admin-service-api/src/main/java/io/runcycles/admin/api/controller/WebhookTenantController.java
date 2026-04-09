@@ -73,7 +73,9 @@ public class WebhookTenantController {
             .tenantId(tenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
             .resourceType("webhook").resourceId(subscriptionId)
-            .operation("updateTenantWebhook").status(200).build());
+            .operation("updateTenantWebhook").status(200)
+            .metadata(java.util.Map.of("url", updated.getUrl()))
+            .build());
         return ResponseEntity.ok(updated);
     }
 
@@ -88,7 +90,9 @@ public class WebhookTenantController {
             .tenantId(tenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
             .resourceType("webhook").resourceId(subscriptionId)
-            .operation("deleteTenantWebhook").status(204).build());
+            .operation("deleteTenantWebhook").status(204)
+            .metadata(java.util.Map.of("url", existing.getUrl()))
+            .build());
         return ResponseEntity.noContent().build();
     }
 

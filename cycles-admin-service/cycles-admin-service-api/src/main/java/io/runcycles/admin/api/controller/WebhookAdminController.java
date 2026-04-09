@@ -58,7 +58,9 @@ public class WebhookAdminController {
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(updated.getTenantId())
             .resourceType("webhook").resourceId(subscriptionId)
-            .operation("updateWebhookSubscription").status(200).build());
+            .operation("updateWebhookSubscription").status(200)
+            .metadata(java.util.Map.of("url", updated.getUrl()))
+            .build());
         return ResponseEntity.ok(updated);
     }
 
