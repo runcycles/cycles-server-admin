@@ -123,6 +123,18 @@ info:
           *:read requirement (budgets:read, policies:read, events:read, etc.).
           This ensures pre-v0.1.25.6 keys with admin:write continue to work without
           migration. admin:read does NOT satisfy *:write.
+        - Added 401 responses to all 36 auth-gated endpoints that were missing them.
+          Every endpoint with a security scheme now documents 401.
+        - Centralized FROZEN semantics in BudgetLedger.status: now explicitly states
+          "no new reservations, commits, or funding operations" (was missing funding).
+        - Clarified webhook/event permissions are opt-in: webhooks:read, webhooks:write,
+          events:read are NOT in the default tenant key permission set.
+        - Clarified createApiKey provisions tenant-scoped keys only. The admin key
+          (X-Admin-API-Key) is server-configured, not provisioned through this endpoint.
+        - Added PATCH /v1/admin/api-keys/{key_id} for updating key permissions,
+          scope_filter, name, description, metadata without secret rotation.
+          Emits api_key.permissions_changed on permission/scope_filter changes.
+          409 on revoked/expired keys.
 
       v0.1.25.6 (2026-04-08):
         - Budget freeze/unfreeze: Added dedicated action endpoints for operational
@@ -531,7 +543,8 @@ components:
           enum: [ACTIVE, FROZEN, CLOSED]
           description: >-
             ACTIVE: Normal operations
-            FROZEN: Read-only, no new reservations or commits
+            FROZEN: No new reservations, commits, or funding operations.
+            Property updates (overdraft_limit, commit_overage_policy, metadata) are still allowed.
             CLOSED: Archived
         rollover_policy:
           type: string
@@ -904,7 +917,9 @@ components:
             Granular permissions. Default for tenant keys:
             [reservations:create, reservations:commit, reservations:release,
             reservations:extend, reservations:list, balances:read,
-            budgets:read, budgets:write, policies:read, policies:write]
+            budgets:read, budgets:write, policies:read, policies:write].
+            Webhook/event self-service permissions (webhooks:read, webhooks:write,
+            events:read) are NOT included by default and must be explicitly granted.
         scope_filter:
           type: array
           items:
@@ -2353,6 +2368,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Tenant'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '400':
           description: Invalid request
           content:
@@ -2404,6 +2425,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/TenantListResponse'
   
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/admin/tenants/{tenant_id}:
     get:
       tags: [Tenants]
@@ -2425,6 +2452,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Tenant'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Tenant not found
           content:
@@ -2489,6 +2522,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/Tenant'
   
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/admin/budgets:
     post:
       tags: [Budgets]
@@ -2526,6 +2565,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BudgetLedger'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '400':
           description: Invalid scope or tenant not found
           content:
@@ -2661,6 +2706,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BudgetLedger'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Budget not found for the given scope and unit
           content:
@@ -3018,6 +3069,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Policy'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: API key lacks policies:write permission or scope_filter denies access
           content:
@@ -3131,6 +3188,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Policy'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: API key lacks policies:write permission or scope_filter denies access
           content:
@@ -3167,7 +3230,11 @@ paths:
           reservations:release, reservations:extend, reservations:list,
           balances:read, budgets:read, budgets:write, policies:read,
           policies:write]
-        - Admin keys: [admin:read, admin:write] (wildcards for all admin operations)
+        - Webhook/event self-service requires explicit opt-in:
+          webhooks:read, webhooks:write, events:read are NOT in the default set.
+        - This endpoint provisions tenant-scoped API keys only. The admin key
+          (X-Admin-API-Key) is configured at the server level, not provisioned
+          through this endpoint.
         - Can be restricted to specific scopes via scope_filter
         
         EXPIRY:
@@ -3189,6 +3256,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiKeyCreateResponse'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '400':
           description: Invalid tenant or permissions
           content:
@@ -3233,7 +3306,93 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiKeyListResponse'
   
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/admin/api-keys/{key_id}:
+    patch:
+      tags: [API Keys]
+      operationId: updateApiKey
+      summary: Update API key properties
+      description: >-
+        Partial update — only provided fields are modified. Allows changing
+        permissions, scope restrictions, and metadata without rotating the
+        key secret.
+
+        MUTABLE FIELDS:
+        - permissions: Replace the full permission set
+        - scope_filter: Replace scope restrictions
+        - name, description, metadata: Update display/tagging info
+
+        IMMUTABLE FIELDS:
+        - tenant_id, key_id, key_prefix, key_hash, expires_at, status
+        - To change expiry: revoke and recreate
+        - To change tenant: revoke and recreate
+
+        EVENTS:
+        - Emits api_key.permissions_changed when permissions or scope_filter change.
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                  maxLength: 256
+                description:
+                  type: string
+                  maxLength: 1024
+                permissions:
+                  type: array
+                  items:
+                    type: string
+                scope_filter:
+                  type: array
+                  items:
+                    type: string
+                metadata:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: Key updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKey'
+        '401':
+          description: Missing or invalid admin API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Key not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Key is revoked or expired (cannot modify)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
     delete:
       tags: [API Keys]
       operationId: revokeApiKey
@@ -3267,6 +3426,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiKey'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Key not found
           content:
@@ -3313,6 +3478,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiKeyValidationResponse'
 
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/auth/introspect:
     get:
       tags: [Dashboard]
@@ -3414,6 +3585,12 @@ paths:
   # DASHBOARD: OPERATIONAL OVERVIEW
   # ==========================================================================
 
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/admin/overview:
     get:
       tags: [Dashboard]
@@ -3494,6 +3671,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookCreateResponse'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '400':
           description: Invalid request (e.g., non-HTTPS URL in production mode, invalid event type)
           content:
@@ -3550,6 +3733,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/WebhookListResponse'
 
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/admin/webhooks/{subscription_id}:
     get:
       tags: [Webhooks]
@@ -3573,6 +3762,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookSubscription'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Subscription not found
           content:
@@ -3613,6 +3808,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookSubscription'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '400':
           description: Invalid update
           content:
@@ -3644,6 +3845,12 @@ paths:
       responses:
         '204':
           description: Subscription deleted
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Subscription not found
           content:
@@ -3680,6 +3887,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookTestResponse'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Subscription not found
           content:
@@ -3737,6 +3950,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookDeliveryListResponse'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Subscription not found
           content:
@@ -3818,6 +4037,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/EventListResponse'
 
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/admin/events/{event_id}:
     get:
       tags: [Events]
@@ -3841,6 +4066,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Event'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Event not found
           content:
@@ -3918,6 +4149,12 @@ paths:
                     description: Number of events queued for replay
                   estimated_completion_seconds:
                     type: integer
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '400':
           description: Invalid replay request
           content:
@@ -3955,6 +4192,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/WebhookSecurityConfig'
 
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     put:
       tags: [Webhooks]
       operationId: updateWebhookSecurityConfig
@@ -3980,6 +4223,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookSecurityConfig'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '400':
           description: Invalid configuration
           content:
@@ -4020,6 +4269,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookCreateResponse'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '400':
           description: Invalid request (non-HTTPS URL, restricted event type, etc.)
           content:
@@ -4068,6 +4323,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookListResponse'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: API key lacks webhooks:read permission
           content:
@@ -4100,6 +4361,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookSubscription'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: API key lacks webhooks:read permission
           content:
@@ -4143,6 +4410,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookSubscription'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '400':
           description: Invalid update (restricted event type, invalid URL, etc.)
           content:
@@ -4182,6 +4455,12 @@ paths:
       responses:
         '204':
           description: Subscription deleted
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: API key lacks webhooks:write permission
           content:
@@ -4220,6 +4499,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookTestResponse'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: API key lacks webhooks:write permission
           content:
@@ -4285,6 +4570,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookDeliveryListResponse'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: API key lacks webhooks:read permission
           content:
@@ -4356,6 +4647,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/EventListResponse'
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: API key lacks events:read permission
           content:
@@ -4391,6 +4688,12 @@ paths:
       responses:
         '200':
           description: Reservation created (see Cycles v0.1.24)
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Tenant mismatch, suspended, or insufficient permissions
         '409':
@@ -4421,6 +4724,12 @@ paths:
         '200':
           description: Commit succeeded (see Cycles v0.1.24)
   
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/balances:
     get:
       tags: [Balances]
@@ -4464,3 +4773,9 @@ paths:
       responses:
         '200':
           description: Balance data (see Cycles v0.1.24)
+        '401':
+          description: Missing or invalid API key / admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
