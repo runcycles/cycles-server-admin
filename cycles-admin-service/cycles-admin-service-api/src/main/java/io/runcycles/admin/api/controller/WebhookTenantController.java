@@ -31,7 +31,10 @@ public class WebhookTenantController {
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
-            .operation("createTenantWebhook").status(201).build());
+            .resourceType("webhook").resourceId(response.getSubscription().getSubscriptionId())
+            .operation("createTenantWebhook").status(201)
+            .metadata(java.util.Map.of("url", request.getUrl()))
+            .build());
         return ResponseEntity.status(201).body(response);
     }
 
@@ -69,6 +72,7 @@ public class WebhookTenantController {
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
+            .resourceType("webhook").resourceId(subscriptionId)
             .operation("updateTenantWebhook").status(200).build());
         return ResponseEntity.ok(updated);
     }
@@ -83,6 +87,7 @@ public class WebhookTenantController {
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
+            .resourceType("webhook").resourceId(subscriptionId)
             .operation("deleteTenantWebhook").status(204).build());
         return ResponseEntity.noContent().build();
     }
@@ -97,7 +102,10 @@ public class WebhookTenantController {
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
-            .operation("testTenantWebhook").status(200).build());
+            .resourceType("webhook").resourceId(subscriptionId)
+            .operation("testTenantWebhook").status(200)
+            .metadata(java.util.Map.of("success", response.isSuccess()))
+            .build());
         return ResponseEntity.ok(response);
     }
 

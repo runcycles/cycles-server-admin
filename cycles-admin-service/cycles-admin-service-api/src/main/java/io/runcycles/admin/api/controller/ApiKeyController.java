@@ -33,8 +33,10 @@ public class ApiKeyController {
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(request.getTenantId())
             .keyId(response.getKeyId())
+            .resourceType("api_key").resourceId(response.getKeyId())
             .operation("createApiKey")
             .status(201)
+            .metadata(Map.of("name", request.getName()))
             .build());
         try {
             eventService.emit(EventType.API_KEY_CREATED, request.getTenantId(), null, "cycles-admin",
@@ -81,6 +83,7 @@ public class ApiKeyController {
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(response.getTenantId())
             .keyId(keyId)
+            .resourceType("api_key").resourceId(keyId)
             .operation("updateApiKey")
             .status(200)
             .build());
@@ -112,8 +115,10 @@ public class ApiKeyController {
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(response.getTenantId())
             .keyId(keyId)
+            .resourceType("api_key").resourceId(keyId)
             .operation("revokeApiKey")
             .status(200)
+            .metadata(reason != null ? Map.of("reason", reason) : null)
             .build());
         try {
             eventService.emit(EventType.API_KEY_REVOKED, response.getTenantId(), null, "cycles-admin",

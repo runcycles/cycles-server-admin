@@ -34,8 +34,10 @@ public class TenantController {
         int httpStatus = result.created() ? 201 : 200;
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(request.getTenantId())
+            .resourceType("tenant").resourceId(request.getTenantId())
             .operation("createTenant")
             .status(httpStatus)
+            .metadata(Map.of("name", request.getName()))
             .build());
         try {
             eventService.emit(EventType.TENANT_CREATED, request.getTenantId(), null, "cycles-admin",
@@ -72,8 +74,10 @@ public class TenantController {
         Tenant updated = repository.update(tenantId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
+            .resourceType("tenant").resourceId(tenantId)
             .operation("updateTenant")
             .status(200)
+            .metadata(request.getStatus() != null ? Map.of("new_status", request.getStatus().name()) : null)
             .build());
         try {
             EventType eventType = EventType.TENANT_UPDATED;

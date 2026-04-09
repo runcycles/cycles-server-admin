@@ -38,8 +38,10 @@ public class PolicyController {
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
+            .resourceType("policy").resourceId(policy.getPolicyId())
             .operation("createPolicy")
             .status(201)
+            .metadata(Map.of("name", request.getName(), "scope_pattern", request.getScopePattern()))
             .build());
         try {
             eventService.emit(EventType.POLICY_CREATED, tenantId, request.getScopePattern(), "cycles-admin",
@@ -63,8 +65,10 @@ public class PolicyController {
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
+            .resourceType("policy").resourceId(policyId)
             .operation("updatePolicy")
             .status(200)
+            .metadata(scopePattern != null ? Map.of("scope_pattern", scopePattern) : null)
             .build());
         try {
             eventService.emit(EventType.POLICY_UPDATED, tenantId, scopePattern, "cycles-admin",

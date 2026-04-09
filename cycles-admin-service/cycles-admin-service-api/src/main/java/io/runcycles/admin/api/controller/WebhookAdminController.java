@@ -26,7 +26,11 @@ public class WebhookAdminController {
         String tenantId = tenant_id != null ? tenant_id : "__system__";
         WebhookCreateResponse response = webhookService.create(tenantId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
-            .tenantId(tenantId).operation("createWebhookSubscription").status(201).build());
+            .tenantId(tenantId)
+            .resourceType("webhook").resourceId(response.getSubscription().getSubscriptionId())
+            .operation("createWebhookSubscription").status(201)
+            .metadata(java.util.Map.of("url", request.getUrl()))
+            .build());
         return ResponseEntity.status(201).body(response);
     }
 
@@ -53,6 +57,7 @@ public class WebhookAdminController {
         WebhookSubscription updated = webhookService.update(subscriptionId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(updated.getTenantId())
+            .resourceType("webhook").resourceId(subscriptionId)
             .operation("updateWebhookSubscription").status(200).build());
         return ResponseEntity.ok(updated);
     }
@@ -63,7 +68,10 @@ public class WebhookAdminController {
         webhookService.delete(subscriptionId);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(sub.getTenantId())
-            .operation("deleteWebhookSubscription").status(204).build());
+            .resourceType("webhook").resourceId(subscriptionId)
+            .operation("deleteWebhookSubscription").status(204)
+            .metadata(java.util.Map.of("url", sub.getUrl()))
+            .build());
         return ResponseEntity.noContent().build();
     }
 
@@ -72,7 +80,10 @@ public class WebhookAdminController {
             @PathVariable("subscription_id") String subscriptionId, HttpServletRequest httpRequest) {
         WebhookTestResponse response = webhookService.test(subscriptionId);
         auditRepository.log(buildAuditEntry(httpRequest)
-            .operation("testWebhookSubscription").status(200).build());
+            .resourceType("webhook").resourceId(subscriptionId)
+            .operation("testWebhookSubscription").status(200)
+            .metadata(java.util.Map.of("success", response.isSuccess()))
+            .build());
         return ResponseEntity.ok(response);
     }
 
@@ -94,7 +105,10 @@ public class WebhookAdminController {
             @Valid @RequestBody ReplayRequest request, HttpServletRequest httpRequest) {
         ReplayResponse response = webhookService.replay(subscriptionId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
-            .operation("replayEvents").status(202).build());
+            .resourceType("webhook").resourceId(subscriptionId)
+            .operation("replayEvents").status(202)
+            .metadata(java.util.Map.of("events_queued", response.getEventsQueued()))
+            .build());
         return ResponseEntity.accepted().body(response);
     }
 

@@ -1099,8 +1099,18 @@ components:
         operation:
           type: string
           description: >-
-            Operation performed, e.g., "POST /v1/reservations",
-            "POST /v1/budgets/fund"
+            Operation performed, e.g., "createBudget", "revokeApiKey",
+            "testWebhookSubscription"
+        resource_type:
+          type: string
+          description: >-
+            Type of resource acted upon. Standard values: tenant, budget,
+            api_key, policy, webhook, config.
+        resource_id:
+          type: string
+          description: >-
+            Identifier of the resource acted upon (e.g., ledger ID, key ID,
+            subscription ID, tenant ID).
         request_id:
           type: string
         status:
