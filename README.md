@@ -533,7 +533,7 @@ v0.1.25.5 adds admin dashboard support: dual-auth allowlist (AdminKeyAuth on bud
 
 v0.1.25.6 adds budget freeze/unfreeze action endpoints, dual-auth on fund, and granular tenant permissions (`budgets:read/write`, `policies:read/write`).
 
-v0.1.25.7 adds backward-compatible wildcard fallback (`admin:write` satisfies any `*:write`, `admin:read` any `*:read`), `PATCH /v1/admin/api-keys/{key_id}` for updating key permissions/metadata without secret rotation, reusable `Permission` enum schema, full 401 coverage on all 45 endpoints, and centralized FROZEN semantics.
+v0.1.25.7 adds backward-compatible wildcard fallback (`admin:write` satisfies any `*:write`, `admin:read` any `*:read`), `PATCH /v1/admin/api-keys/{key_id}` for updating key permissions/metadata without secret rotation, reusable `Permission` enum schema, full 401 coverage on all 45 endpoints, centralized FROZEN semantics, detailed webhook test error messages, and rich audit entries with `resource_type`, `resource_id`, and contextual `metadata` on all mutating endpoints.
 
 ## Documentation
 

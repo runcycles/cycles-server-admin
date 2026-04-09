@@ -4,6 +4,27 @@
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25.7)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
+### 2026-04-09 — v0.1.25.7: bug fixes, audit enrichment, spec polish
+
+**Bug fixes:**
+
+| Fix | Details |
+|-----|---------|
+| PATCH api-keys 500 | Redis `cjson.encode` converts `[]` → `{}`, corrupting `scope_filter`/`permissions`. Replaced Lua cjson roundtrip with Java read-modify-write using Jackson serialization. Fixes both 500 error and data corruption on update. |
+| Webhook test error messages | "Delivery failed" → specific messages: DNS resolution failed, TLS/SSL handshake failed, Connection refused, Socket timed out, etc. Unwraps cause chains. |
+
+**Audit enrichment:**
+
+| Change | Details |
+|--------|---------|
+| `resource_type` field | New standard field on AuditLogEntry: tenant, budget, api_key, policy, webhook, config |
+| `resource_id` field | New standard field: the specific resource acted on (ledger ID, key ID, subscription ID, etc.) |
+| `metadata` on all 22 endpoints | Every mutating endpoint now logs contextual details (scope, unit, amount, url, permissions, reason, etc.) |
+| Update operations detail | All 6 update operations log which fields were actually changed (not just boolean flags) |
+| Audit query filters | `GET /v1/admin/audit/logs` now accepts `resource_type` and `resource_id` query parameters |
+
+**Test count:** 412 → 419 (7 new: webhook error classification).
+
 ### 2026-04-09 — v0.1.25.7: wildcard fallback + spec polish
 
 **Wildcard fallback (code):** v0.1.25.6 broke pre-existing keys with `admin:write` (runcycles/.github#21). `AuthInterceptor.hasPermission()` now treats `admin:write` as a wildcard satisfying any `*:write`, and `admin:read` any `*:read`.
@@ -23,7 +44,7 @@
 | Component | Details |
 |-----------|---------|
 | `ApiKeyUpdateRequest.java` | New DTO: name, description, permissions, scope_filter, metadata. `@JsonIgnoreProperties(ignoreUnknown = false)` |
-| `ApiKeyRepository.update()` | Lua script for atomic partial update. Validates status (409 on REVOKED/EXPIRED). Only merges non-null fields. |
+| `ApiKeyRepository.update()` | Java read-modify-write with Jackson (replaced Lua cjson). Validates status (409 on REVOKED/EXPIRED). Only merges non-null fields. |
 | `ApiKeyController.update()` | PATCH endpoint with audit logging, change detection, conditional `api_key.permissions_changed` event emission |
 | Auth routing | Already handled: `/v1/admin/api-keys` requires AdminKeyAuth in AuthInterceptor |
 
