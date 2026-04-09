@@ -29,6 +29,7 @@ class ApiKeyControllerTest {
     @Autowired private ObjectMapper objectMapper;
     @MockitoBean private ApiKeyRepository apiKeyRepository;
     @MockitoBean private AuditRepository auditRepository;
+    @MockitoBean private io.runcycles.admin.api.service.EventService eventService;
     @MockitoBean private JedisPool jedisPool;
 
     private static final String ADMIN_KEY = "test-admin-key";
@@ -307,5 +308,128 @@ class ApiKeyControllerTest {
                         .header("X-Admin-API-Key", ADMIN_KEY))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("REVOKED"));
+    }
+
+    // ========== PATCH /v1/admin/api-keys/{key_id} ==========
+
+    @Test
+    void updateApiKey_returns200() throws Exception {
+        ApiKey updated = ApiKey.builder()
+                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .name("Updated Key").description("new desc")
+                .permissions(List.of("budgets:read", "budgets:write"))
+                .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(86400)).build();
+        when(apiKeyRepository.update(eq("key_1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/api-keys/key_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Updated Key\",\"permissions\":[\"budgets:read\",\"budgets:write\"]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("Updated Key"))
+                .andExpect(jsonPath("$.permissions[0]").value("budgets:read"));
+    }
+
+    @Test
+    void updateApiKey_notFound_returns404() throws Exception {
+        when(apiKeyRepository.update(eq("missing"), any()))
+                .thenThrow(GovernanceException.apiKeyNotFound("missing"));
+
+        mockMvc.perform(patch("/v1/admin/api-keys/missing")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"test\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error").value("NOT_FOUND"));
+    }
+
+    @Test
+    void updateApiKey_revokedKey_returns409() throws Exception {
+        when(apiKeyRepository.update(eq("key_rev"), any()))
+                .thenThrow(new GovernanceException(ErrorCode.INVALID_REQUEST,
+                        "Cannot modify a REVOKED key", 409));
+
+        mockMvc.perform(patch("/v1/admin/api-keys/key_rev")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"test\"}"))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void updateApiKey_noAdminKey_returns401() throws Exception {
+        mockMvc.perform(patch("/v1/admin/api-keys/key_1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"test\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void updateApiKey_logsAuditEntry() throws Exception {
+        ApiKey updated = ApiKey.builder()
+                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .name("Updated").status(ApiKeyStatus.ACTIVE)
+                .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(86400)).build();
+        when(apiKeyRepository.update(eq("key_1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/api-keys/key_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Updated\"}"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry ->
+                "updateApiKey".equals(entry.getOperation()) &&
+                "t1".equals(entry.getTenantId()) &&
+                "key_1".equals(entry.getKeyId()) &&
+                entry.getStatus() == 200));
+    }
+
+    @Test
+    void updateApiKey_permissionsChanged_emitsEvent() throws Exception {
+        // Mock old key with different permissions
+        ApiKey oldKey = ApiKey.builder()
+                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .permissions(List.of("balances:read"))
+                .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(86400)).build();
+        redis.clients.jedis.Jedis jedisMock = mock(redis.clients.jedis.Jedis.class);
+        when(jedisPool.getResource()).thenReturn(jedisMock);
+        when(jedisMock.get("apikey:key_1")).thenReturn(objectMapper.writeValueAsString(oldKey));
+
+        ApiKey updated = ApiKey.builder()
+                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .permissions(List.of("budgets:read", "budgets:write"))
+                .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(86400)).build();
+        when(apiKeyRepository.update(eq("key_1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/api-keys/key_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"permissions\":[\"budgets:read\",\"budgets:write\"]}"))
+                .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(io.runcycles.admin.model.event.EventType.API_KEY_PERMISSIONS_CHANGED),
+                eq("t1"), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void updateApiKey_nameOnlyChange_doesNotEmitPermissionsEvent() throws Exception {
+        ApiKey updated = ApiKey.builder()
+                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .name("New Name").status(ApiKeyStatus.ACTIVE)
+                .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(86400)).build();
+        when(apiKeyRepository.update(eq("key_1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/api-keys/key_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"New Name\"}"))
+                .andExpect(status().isOk());
+
+        verify(eventService, never()).emit(eq(io.runcycles.admin.model.event.EventType.API_KEY_PERMISSIONS_CHANGED),
+                any(), any(), any(), any(), any(), any(), any());
     }
 }

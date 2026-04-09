@@ -2,11 +2,7 @@ package io.runcycles.admin.api.controller;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
-import io.runcycles.admin.model.auth.ApiKeyCreateRequest;
-import io.runcycles.admin.model.auth.ApiKeyCreateResponse;
-import io.runcycles.admin.model.auth.ApiKeyListResponse;
-import io.runcycles.admin.model.auth.ApiKeyResponse;
-import io.runcycles.admin.model.auth.ApiKeyStatus;
+import io.runcycles.admin.model.auth.*;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -20,7 +16,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
+import redis.clients.jedis.JedisPool;
 @RestController @RequestMapping("/v1/admin/api-keys") @Tag(name = "API Keys")
 public class ApiKeyController {
     private static final Logger LOG = LoggerFactory.getLogger(ApiKeyController.class);
@@ -28,6 +26,7 @@ public class ApiKeyController {
     @Autowired private AuditRepository auditRepository;
     @Autowired private EventService eventService;
     @Autowired private ObjectMapper objectMapper;
+    @Autowired private JedisPool jedisPool;
     @PostMapping @Operation(operationId = "createApiKey")
     public ResponseEntity<ApiKeyCreateResponse> create(@Valid @RequestBody ApiKeyCreateRequest request, HttpServletRequest httpRequest) {
         ApiKeyCreateResponse response = repository.create(request);
@@ -65,6 +64,48 @@ public class ApiKeyController {
             .build();
         return ResponseEntity.ok(response);
     }
+    @PatchMapping("/{key_id}") @Operation(operationId = "updateApiKey")
+    public ResponseEntity<ApiKeyResponse> update(@PathVariable("key_id") String keyId,
+            @Valid @RequestBody ApiKeyUpdateRequest request, HttpServletRequest httpRequest) {
+        // Read old key state for change detection
+        ApiKey oldKey = null;
+        try (var jedis = jedisPool.getResource()) {
+            String data = jedis.get("apikey:" + keyId);
+            if (data != null) oldKey = objectMapper.readValue(data, ApiKey.class);
+        } catch (Exception e) {
+            LOG.warn("Failed to read old key for change detection: {}", e.getMessage());
+        }
+
+        ApiKey updated = repository.update(keyId, request);
+        ApiKeyResponse response = ApiKeyResponse.from(updated);
+        auditRepository.log(buildAuditEntry(httpRequest)
+            .tenantId(response.getTenantId())
+            .keyId(keyId)
+            .operation("updateApiKey")
+            .status(200)
+            .build());
+
+        // Emit api_key.permissions_changed only if permissions or scope_filter actually changed
+        boolean permissionsChanged = request.getPermissions() != null &&
+            (oldKey == null || !Objects.equals(oldKey.getPermissions(), updated.getPermissions()));
+        boolean scopeFilterChanged = request.getScopeFilter() != null &&
+            (oldKey == null || !Objects.equals(oldKey.getScopeFilter(), updated.getScopeFilter()));
+
+        if (permissionsChanged || scopeFilterChanged) {
+            try {
+                eventService.emit(EventType.API_KEY_PERMISSIONS_CHANGED, response.getTenantId(), null, "cycles-admin",
+                    Actor.builder().type(ActorType.ADMIN).build(),
+                    objectMapper.convertValue(EventDataApiKey.builder()
+                        .keyId(keyId).keyName(updated.getName())
+                        .permissions(updated.getPermissions()).build(), Map.class),
+                    null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
+            } catch (Exception e) {
+                LOG.warn("Failed to emit event: {}", e.getMessage());
+            }
+        }
+        return ResponseEntity.ok(response);
+    }
+
     @DeleteMapping("/{key_id}") @Operation(operationId = "revokeApiKey")
     public ResponseEntity<ApiKeyResponse> revoke(@PathVariable("key_id") String keyId, @RequestParam(required = false) String reason, HttpServletRequest httpRequest) {
         ApiKeyResponse response = ApiKeyResponse.from(repository.revoke(keyId, reason));

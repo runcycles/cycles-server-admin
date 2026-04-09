@@ -18,7 +18,16 @@
 | createApiKey clarified | Tenant-scoped keys only; admin key is server-configured, not provisioned |
 | PATCH /v1/admin/api-keys/{key_id} | New endpoint for updating permissions, scope_filter, name, description, metadata. Emits `api_key.permissions_changed`. 409 on revoked/expired. |
 
-**Test count:** 401 → 405 (4 new wildcard permission tests).
+**PATCH /v1/admin/api-keys/{key_id} implementation:**
+
+| Component | Details |
+|-----------|---------|
+| `ApiKeyUpdateRequest.java` | New DTO: name, description, permissions, scope_filter, metadata. `@JsonIgnoreProperties(ignoreUnknown = false)` |
+| `ApiKeyRepository.update()` | Lua script for atomic partial update. Validates status (409 on REVOKED/EXPIRED). Only merges non-null fields. |
+| `ApiKeyController.update()` | PATCH endpoint with audit logging, change detection, conditional `api_key.permissions_changed` event emission |
+| Auth routing | Already handled: `/v1/admin/api-keys` requires AdminKeyAuth in AuthInterceptor |
+
+**Test count:** 401 → 412 (12 new: 7 controller + 5 repository).
 
 ### 2026-04-08 — v0.1.25.6: Budget freeze/unfreeze + admin fund
 
