@@ -4,7 +4,7 @@
 
 # Cycles Server Admin
 
-Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25.5](complete-budget-governance-v0.1.25.yaml).
+Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25.7](complete-budget-governance-v0.1.25.yaml).
 
 ## Overview
 
@@ -109,17 +109,18 @@ The API uses two authentication schemes:
 | **AdminKeyAuth** | `X-Admin-API-Key` | System administration (tenant/key management, audit, dashboard) |
 | **ApiKeyAuth** | `X-Cycles-API-Key` | Tenant-scoped operations (budgets, reservations, balances) |
 
-AdminKeyAuth is also accepted as an alternative on `GET /v1/admin/budgets`, `GET /v1/admin/budgets/lookup`, and `GET /v1/admin/policies` (dual-auth allowlist, v0.1.25.5). On list endpoints, `tenant_id` is required for scoping.
+AdminKeyAuth is also accepted as an alternative on `GET /v1/admin/budgets`, `GET /v1/admin/budgets/lookup`, `GET /v1/admin/policies`, and `POST /v1/admin/budgets/fund` (dual-auth allowlist, v0.1.25.5+). On list and fund endpoints, `tenant_id` is required for scoping.
 
 API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` (test), where the random part is 32 cryptographically random characters. Keys are stored as bcrypt hashes; the full secret is only returned once at creation time. Recommended expiry: 90 days.
 
-### API Key Permissions (23 total)
+### API Key Permissions (27 total)
 
 | Category | Permissions | Notes |
 |---|---|---|
 | **Runtime (6 defaults)** | `reservations:create/commit/release/extend/list`, `balances:read` | Assigned by default when no permissions specified |
+| **Budgets/Policies (4, v0.1.25.6)** | `budgets:read`, `budgets:write`, `policies:read`, `policies:write` | Tenant budget/policy management; included in defaults |
 | **Webhooks (3, v0.1.25)** | `webhooks:write`, `webhooks:read`, `events:read` | For tenant self-service at `/v1/webhooks` and `/v1/events` |
-| **Admin wildcards (2)** | `admin:read`, `admin:write` | Broad access to all admin endpoints |
+| **Admin wildcards (2)** | `admin:read`, `admin:write` | Wildcards: `admin:write` satisfies any `*:write`, `admin:read` satisfies any `*:read` |
 | **Admin granular (12, v0.1.25)** | `admin:tenants:read/write`, `admin:budgets:read/write`, `admin:policies:read/write`, `admin:apikeys:read/write`, `admin:webhooks:read/write`, `admin:events:read`, `admin:audit:read` | Finer-grained alternative to wildcards |
 
 ## Environment Variables
@@ -272,6 +273,15 @@ curl -X PUT http://localhost:7979/v1/admin/config/webhook-security \
 | `GET` | `/v1/events` | Query tenant events | ApiKey |
 
 Tenants can subscribe to `budget.*`, `reservation.*`, `tenant.*` (26 of 40 event types). Admin-only: `api_key.*`, `policy.*`, `system.*`.
+
+### Budget Operations (v0.1.25.6)
+
+| Method | Path | Operation | Auth |
+|--------|------|-----------|------|
+| `POST` | `/v1/admin/budgets/freeze` | Freeze budget (ACTIVE → FROZEN) | Admin |
+| `POST` | `/v1/admin/budgets/unfreeze` | Unfreeze budget (FROZEN → ACTIVE) | Admin |
+
+`POST /v1/admin/budgets/fund` also accepts AdminKeyAuth (dual-auth, `tenant_id` required).
 
 ### Dashboard (v0.1.25.5)
 
@@ -519,6 +529,10 @@ v0.1.25 adds Pillar 4 (Events & Webhooks): 40 event types, 20 webhook endpoints,
 v0.1.25.4 enforces strict spec compliance: `additionalProperties: false` on all request and response models, range/size constraints on all fields per spec, distributed replay lock (409 `REPLAY_IN_PROGRESS`), and cascading `@Valid` on nested objects.
 
 v0.1.25.5 adds admin dashboard support: dual-auth allowlist (AdminKeyAuth on budget/policy reads), exact budget lookup, server-aggregated overview endpoint, auth introspection with capabilities, and strict dashboard response schemas.
+
+v0.1.25.6 adds budget freeze/unfreeze action endpoints, dual-auth on fund, and granular tenant permissions (`budgets:read/write`, `policies:read/write`).
+
+v0.1.25.7 adds backward-compatible wildcard fallback: `admin:write` satisfies any `*:write` permission, `admin:read` satisfies any `*:read`. Pre-v0.1.25.6 keys work without migration.
 
 ## Documentation
 

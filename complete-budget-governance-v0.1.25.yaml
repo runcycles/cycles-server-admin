@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Complete Budget Governance System API
-  version: 0.1.25.6
+  version: 0.1.25.7
   license:
     name: Apache 2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -115,6 +115,14 @@ info:
         - Backward compatibility: All changes are purely additive. No schemas, paths, methods,
           fields, enum values, or response codes were removed. Clients built against v0.1.24
           work unchanged against v0.1.25.
+
+      v0.1.25.7 (2026-04-09):
+        - Backward compatibility fix: admin:read and admin:write now act as wildcards
+          at the server level. admin:write satisfies any *:write permission requirement
+          (budgets:write, policies:write, webhooks:write). admin:read satisfies any
+          *:read requirement (budgets:read, policies:read, events:read, etc.).
+          This ensures pre-v0.1.25.6 keys with admin:write continue to work without
+          migration. admin:read does NOT satisfy *:write.
 
       v0.1.25.6 (2026-04-08):
         - Budget freeze/unfreeze: Added dedicated action endpoints for operational

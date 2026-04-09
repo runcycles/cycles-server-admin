@@ -1,8 +1,16 @@
-# Complete Budget Governance v0.1.25.6 — Admin Server Audit
+# Complete Budget Governance v0.1.25.7 — Admin Server Audit
 
-**Date:** 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
-**Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25.6)
+**Date:** 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25.7)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-09 — v0.1.25.7: admin:read/admin:write wildcard fallback
+
+**Root cause:** v0.1.25.6 changed `PERMISSION_MAP` from `admin:write` → `budgets:write` for budget endpoints. Pre-existing keys with `admin:write` but without explicit `budgets:write` started getting 403. Nightly integration build failed (runcycles/.github#21).
+
+**Fix:** `AuthInterceptor.hasPermission()` now treats `admin:write` as a wildcard satisfying any `*:write` permission, and `admin:read` as a wildcard satisfying any `*:read` permission. `admin:read` does NOT satisfy `*:write`.
+
+**Test count:** 401 → 405 (4 new wildcard permission tests).
 
 ### 2026-04-08 — v0.1.25.6: Budget freeze/unfreeze + admin fund
 

@@ -269,6 +269,69 @@ class AuthInterceptorTest {
         assertThat(response.getStatus()).isEqualTo(403);
     }
 
+    // --- admin:read/admin:write wildcard backward compatibility ---
+
+    @Test
+    void preHandle_adminWriteWildcard_satisfiesBudgetsWrite() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/budgets");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+
+        when(apiKeyRepository.validate("valid-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(List.of("admin:write"))
+                        .build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_adminReadWildcard_satisfiesBudgetsRead() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/admin/budgets");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+
+        when(apiKeyRepository.validate("valid-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(List.of("admin:read"))
+                        .build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_adminWriteWildcard_satisfiesPoliciesWrite() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/policies");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+
+        when(apiKeyRepository.validate("valid-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(List.of("admin:write"))
+                        .build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_adminReadWildcard_doesNotSatisfyWrite() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/budgets");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+
+        when(apiKeyRepository.validate("valid-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t1").keyId("key_1")
+                        .permissions(List.of("admin:read"))
+                        .build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+    }
+
     @Test
     void preHandle_nullPermissions_returns403() throws Exception {
         request.setMethod("POST");
