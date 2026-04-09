@@ -33,7 +33,7 @@ class AuditControllerTest {
         AuditLogEntry entry = AuditLogEntry.builder()
                 .logId("log_1").tenantId("t1").operation("createTenant")
                 .status(201).timestamp(Instant.now()).build();
-        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), anyInt()))
+        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
                 .thenReturn(List.of(entry));
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -45,7 +45,7 @@ class AuditControllerTest {
 
     @Test
     void listAuditLogs_withFilters() throws Exception {
-        when(auditRepository.list(eq("t1"), eq("key_1"), eq("createTenant"), eq(201), any(), any(), any(), anyInt()))
+        when(auditRepository.list(eq("t1"), eq("key_1"), eq("createTenant"), eq(201), any(), any(), any(), any(), any(), anyInt()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -66,7 +66,7 @@ class AuditControllerTest {
 
     @Test
     void listAuditLogs_emptyResult_returnsEmptyList() throws Exception {
-        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), anyInt()))
+        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -78,7 +78,7 @@ class AuditControllerTest {
 
     @Test
     void listAuditLogs_limitClampedToMax100() throws Exception {
-        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), eq(100)))
+        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(100)))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -86,12 +86,12 @@ class AuditControllerTest {
                         .param("limit", "500"))
                 .andExpect(status().isOk());
 
-        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), eq(100));
+        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(100));
     }
 
     @Test
     void listAuditLogs_limitClampedToMin1() throws Exception {
-        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), eq(1)))
+        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(1)))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -99,12 +99,12 @@ class AuditControllerTest {
                         .param("limit", "0"))
                 .andExpect(status().isOk());
 
-        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), eq(1));
+        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(1));
     }
 
     @Test
     void listAuditLogs_emptyResult_nextCursorIsNull() throws Exception {
-        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), anyInt()))
+        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -121,7 +121,7 @@ class AuditControllerTest {
         AuditLogEntry e2 = AuditLogEntry.builder()
                 .logId("log_2").tenantId("t1").operation("updateTenant")
                 .status(200).timestamp(Instant.now()).build();
-        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), eq(2)))
+        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(2)))
                 .thenReturn(List.of(e1, e2));
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -136,7 +136,7 @@ class AuditControllerTest {
     void listAuditLogs_withFromAndTo_passesInstantParams() throws Exception {
         Instant from = Instant.parse("2025-01-01T00:00:00Z");
         Instant to = Instant.parse("2025-12-31T23:59:59Z");
-        when(auditRepository.list(isNull(), isNull(), isNull(), isNull(), eq(from), eq(to), isNull(), eq(50)))
+        when(auditRepository.list(isNull(), isNull(), isNull(), isNull(), isNull(), isNull(), eq(from), eq(to), isNull(), eq(50)))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -146,6 +146,6 @@ class AuditControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.logs").isEmpty());
 
-        verify(auditRepository).list(isNull(), isNull(), isNull(), isNull(), eq(from), eq(to), isNull(), eq(50));
+        verify(auditRepository).list(isNull(), isNull(), isNull(), isNull(), isNull(), isNull(), eq(from), eq(to), isNull(), eq(50));
     }
 }

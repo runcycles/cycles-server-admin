@@ -16,12 +16,14 @@ public class AuditController {
             @RequestParam(required = false) String key_id,
             @RequestParam(required = false) String operation,
             @RequestParam(required = false) Integer status,
+            @RequestParam(required = false) String resource_type,
+            @RequestParam(required = false) String resource_id,
             @RequestParam(required = false) Instant from,
             @RequestParam(required = false) Instant to,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
-        var logs = repository.list(tenant_id, key_id, operation, status, from, to, cursor, effectiveLimit);
+        var logs = repository.list(tenant_id, key_id, operation, status, resource_type, resource_id, from, to, cursor, effectiveLimit);
         AuditLogListResponse response = AuditLogListResponse.builder()
             .logs(logs)
             .hasMore(logs.size() >= effectiveLimit)

@@ -3607,6 +3607,16 @@ paths:
           in: query
           schema:
             type: integer
+        - name: resource_type
+          in: query
+          description: Filter by resource type (e.g., budget, tenant, api_key, policy, webhook, config)
+          schema:
+            type: string
+        - name: resource_id
+          in: query
+          description: Filter by resource ID (e.g., ledger ID, key ID, subscription ID)
+          schema:
+            type: string
         - name: from
           in: query
           schema:
