@@ -182,15 +182,10 @@ public class WebhookService {
         } catch (Exception e) {
             int elapsed = (int) (System.currentTimeMillis() - start);
             LOG.warn("Webhook test delivery failed for {}: {}", subscriptionId, e.getMessage());
-            // Sanitize error message to avoid leaking internal details (hostnames, IPs)
-            String safeMessage = e instanceof java.net.http.HttpConnectTimeoutException ? "Connection timed out"
-                : e instanceof java.net.http.HttpTimeoutException ? "Request timed out"
-                : e instanceof java.net.ConnectException ? "Connection refused"
-                : "Delivery failed";
             return WebhookTestResponse.builder()
                 .success(false)
                 .responseTimeMs(elapsed)
-                .errorMessage(safeMessage)
+                .errorMessage(classifyDeliveryError(e))
                 .eventId(testEventId)
                 .build();
         }
@@ -273,6 +268,42 @@ public class WebhookService {
         } finally {
             webhookRepository.releaseReplayLock(subscriptionId, replayId);
         }
+    }
+
+    /**
+     * Classify a delivery exception into a user-facing error message.
+     * Unwraps cause chains (HttpClient wraps many errors in IOException)
+     * and maps to specific, actionable messages without leaking internal details.
+     */
+    static String classifyDeliveryError(Throwable e) {
+        // Unwrap: HttpClient often wraps the real cause in IOException or CompletionException
+        Throwable root = e;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        // Check both the outer exception and the root cause
+        for (Throwable t : new Throwable[]{e, root}) {
+            if (t instanceof java.net.http.HttpConnectTimeoutException)
+                return "Connection timed out";
+            if (t instanceof java.net.http.HttpTimeoutException)
+                return "Request timed out";
+            if (t instanceof java.net.UnknownHostException)
+                return "DNS resolution failed: " + t.getMessage();
+            if (t instanceof java.net.ConnectException)
+                return "Connection refused";
+            if (t instanceof javax.net.ssl.SSLHandshakeException)
+                return "TLS/SSL handshake failed";
+            if (t instanceof javax.net.ssl.SSLException)
+                return "TLS/SSL error: " + t.getMessage();
+            if (t instanceof java.net.SocketTimeoutException)
+                return "Socket timed out";
+            if (t instanceof java.net.SocketException)
+                return "Network error: " + t.getMessage();
+        }
+        // Fallback: include exception class name for diagnostics
+        String className = root.getClass().getSimpleName();
+        String message = root.getMessage();
+        return message != null ? className + ": " + message : className;
     }
 
     private String generateSigningSecret() {

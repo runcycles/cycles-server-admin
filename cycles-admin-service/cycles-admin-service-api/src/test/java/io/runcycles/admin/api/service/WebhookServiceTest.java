@@ -538,4 +538,57 @@ class WebhookServiceTest {
         assertThat(response.getNextCursor()).isEqualTo("whsub_2");
         verify(webhookRepository, never()).listAll(any(), any(), any(), anyInt());
     }
+
+    // ========== classifyDeliveryError ==========
+
+    @Test
+    void classifyDeliveryError_unknownHost() {
+        assertThat(WebhookService.classifyDeliveryError(
+                new java.net.UnknownHostException("bad.example.com")))
+                .isEqualTo("DNS resolution failed: bad.example.com");
+    }
+
+    @Test
+    void classifyDeliveryError_connectException() {
+        assertThat(WebhookService.classifyDeliveryError(
+                new java.net.ConnectException("Connection refused")))
+                .isEqualTo("Connection refused");
+    }
+
+    @Test
+    void classifyDeliveryError_sslHandshake() {
+        assertThat(WebhookService.classifyDeliveryError(
+                new javax.net.ssl.SSLHandshakeException("certificate expired")))
+                .isEqualTo("TLS/SSL handshake failed");
+    }
+
+    @Test
+    void classifyDeliveryError_socketTimeout() {
+        assertThat(WebhookService.classifyDeliveryError(
+                new java.net.SocketTimeoutException("Read timed out")))
+                .isEqualTo("Socket timed out");
+    }
+
+    @Test
+    void classifyDeliveryError_wrappedCause() {
+        // HttpClient wraps real errors in IOException
+        Exception wrapped = new java.io.IOException("wrapper",
+                new java.net.UnknownHostException("nested.example.com"));
+        assertThat(WebhookService.classifyDeliveryError(wrapped))
+                .isEqualTo("DNS resolution failed: nested.example.com");
+    }
+
+    @Test
+    void classifyDeliveryError_unknownException_includesClassName() {
+        assertThat(WebhookService.classifyDeliveryError(
+                new IllegalStateException("something broke")))
+                .isEqualTo("IllegalStateException: something broke");
+    }
+
+    @Test
+    void classifyDeliveryError_unknownException_noMessage() {
+        assertThat(WebhookService.classifyDeliveryError(
+                new NullPointerException()))
+                .isEqualTo("NullPointerException");
+    }
 }
