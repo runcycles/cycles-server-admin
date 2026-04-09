@@ -55,11 +55,17 @@ public class WebhookAdminController {
             @PathVariable("subscription_id") String subscriptionId,
             @Valid @RequestBody WebhookUpdateRequest request, HttpServletRequest httpRequest) {
         WebhookSubscription updated = webhookService.update(subscriptionId, request);
+        java.util.Map<String, Object> updateMeta = new java.util.LinkedHashMap<>();
+        updateMeta.put("url", updated.getUrl());
+        if (request.getName() != null) updateMeta.put("name", request.getName());
+        if (request.getUrl() != null) updateMeta.put("new_url", request.getUrl());
+        if (request.getEventTypes() != null) updateMeta.put("event_types", request.getEventTypes().stream().map(Object::toString).toList());
+        if (request.getStatus() != null) updateMeta.put("new_status", request.getStatus().name());
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(updated.getTenantId())
             .resourceType("webhook").resourceId(subscriptionId)
             .operation("updateWebhookSubscription").status(200)
-            .metadata(java.util.Map.of("url", updated.getUrl()))
+            .metadata(updateMeta)
             .build());
         return ResponseEntity.ok(updated);
     }

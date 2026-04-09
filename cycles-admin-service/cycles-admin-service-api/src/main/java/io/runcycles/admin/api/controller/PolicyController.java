@@ -68,7 +68,7 @@ public class PolicyController {
             .resourceType("policy").resourceId(policyId)
             .operation("updatePolicy")
             .status(200)
-            .metadata(scopePattern != null ? Map.of("scope_pattern", scopePattern) : null)
+            .metadata(buildUpdatePolicyMeta(scopePattern, request))
             .build());
         try {
             eventService.emit(EventType.POLICY_UPDATED, tenantId, scopePattern, "cycles-admin",
@@ -110,6 +110,17 @@ public class PolicyController {
             .nextCursor(policies.size() >= effectiveLimit ? policies.get(policies.size() - 1).getPolicyId() : null)
             .build();
         return ResponseEntity.ok(response);
+    }
+
+    private Map<String, Object> buildUpdatePolicyMeta(String scopePattern, PolicyUpdateRequest request) {
+        java.util.LinkedHashMap<String, Object> meta = new java.util.LinkedHashMap<>();
+        if (scopePattern != null) meta.put("scope_pattern", scopePattern);
+        if (request.getName() != null) meta.put("name", request.getName());
+        if (request.getPriority() != null) meta.put("priority", request.getPriority());
+        if (request.getStatus() != null) meta.put("new_status", request.getStatus().name());
+        if (request.getCaps() != null) meta.put("caps_updated", true);
+        if (request.getCommitOveragePolicy() != null) meta.put("commit_overage_policy", request.getCommitOveragePolicy().name());
+        return meta.isEmpty() ? null : meta;
     }
 
     private AuditLogEntry.AuditLogEntryBuilder buildAuditEntry(HttpServletRequest request) {

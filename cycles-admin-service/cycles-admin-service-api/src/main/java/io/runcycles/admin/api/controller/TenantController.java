@@ -77,7 +77,7 @@ public class TenantController {
             .resourceType("tenant").resourceId(tenantId)
             .operation("updateTenant")
             .status(200)
-            .metadata(request.getStatus() != null ? Map.of("new_status", request.getStatus().name()) : null)
+            .metadata(buildUpdateTenantMeta(request))
             .build());
         try {
             EventType eventType = EventType.TENANT_UPDATED;
@@ -100,6 +100,17 @@ public class TenantController {
             LOG.warn("Failed to emit event: {}", e.getMessage());
         }
         return ResponseEntity.ok(updated);
+    }
+
+    private Map<String, Object> buildUpdateTenantMeta(TenantUpdateRequest request) {
+        java.util.LinkedHashMap<String, Object> meta = new java.util.LinkedHashMap<>();
+        if (request.getStatus() != null) meta.put("new_status", request.getStatus().name());
+        if (request.getName() != null) meta.put("name", request.getName());
+        if (request.getDefaultCommitOveragePolicy() != null) meta.put("default_commit_overage_policy", request.getDefaultCommitOveragePolicy().name());
+        if (request.getDefaultReservationTtlMs() != null) meta.put("default_reservation_ttl_ms", request.getDefaultReservationTtlMs());
+        if (request.getMaxReservationTtlMs() != null) meta.put("max_reservation_ttl_ms", request.getMaxReservationTtlMs());
+        if (request.getMaxReservationExtensions() != null) meta.put("max_reservation_extensions", request.getMaxReservationExtensions());
+        return meta.isEmpty() ? null : meta;
     }
 
     private AuditLogEntry.AuditLogEntryBuilder buildAuditEntry(HttpServletRequest request) {

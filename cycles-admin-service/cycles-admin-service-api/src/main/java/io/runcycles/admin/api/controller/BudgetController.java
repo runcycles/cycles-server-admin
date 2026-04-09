@@ -109,7 +109,7 @@ public class BudgetController {
             .resourceType("budget").resourceId(ledger.getLedgerId())
             .operation("updateBudget")
             .status(200)
-            .metadata(Map.of("scope", scope, "unit", unit.name()))
+            .metadata(buildUpdateBudgetMeta(scope, unit, request))
             .build());
         try {
             // Derive tenant from the budget's stored tenant_id for event emission
@@ -244,6 +244,15 @@ public class BudgetController {
         if (request.getOverdraftLimit() != null && request.getOverdraftLimit().getUnit() != request.getUnit()) {
             throw GovernanceException.unitMismatch(request.getUnit().name(), request.getOverdraftLimit().getUnit().name());
         }
+    }
+
+    private Map<String, Object> buildUpdateBudgetMeta(String scope, UnitEnum unit, BudgetUpdateRequest request) {
+        java.util.LinkedHashMap<String, Object> meta = new java.util.LinkedHashMap<>();
+        meta.put("scope", scope);
+        meta.put("unit", unit.name());
+        if (request.getOverdraftLimit() != null) meta.put("overdraft_limit", request.getOverdraftLimit().getAmount());
+        if (request.getCommitOveragePolicy() != null) meta.put("commit_overage_policy", request.getCommitOveragePolicy().name());
+        return meta;
     }
 
     private Map<String, Object> buildFundMetadata(String scope, UnitEnum unit, BudgetFundingRequest request) {

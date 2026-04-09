@@ -32,8 +32,16 @@ public class WebhookSecurityConfigController {
             .resourceType("config").resourceId("webhook-security")
             .operation("updateWebhookSecurityConfig")
             .status(200)
-            .metadata(java.util.Map.of("allow_http", config.getAllowHttp() != null ? config.getAllowHttp() : false))
+            .metadata(buildConfigMeta(config))
             .build());
         return ResponseEntity.ok(repository.get());
+    }
+
+    private java.util.Map<String, Object> buildConfigMeta(WebhookSecurityConfig config) {
+        java.util.LinkedHashMap<String, Object> meta = new java.util.LinkedHashMap<>();
+        meta.put("allow_http", config.getAllowHttp() != null ? config.getAllowHttp() : false);
+        if (config.getBlockedCidrRanges() != null) meta.put("blocked_cidr_count", config.getBlockedCidrRanges().size());
+        if (config.getAllowedUrlPatterns() != null) meta.put("allowed_url_pattern_count", config.getAllowedUrlPatterns().size());
+        return meta;
     }
 }
