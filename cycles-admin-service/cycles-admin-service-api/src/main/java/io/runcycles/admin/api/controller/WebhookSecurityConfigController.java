@@ -29,8 +29,10 @@ public class WebhookSecurityConfigController {
             .requestId(httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null)
             .sourceIp(httpRequest.getRemoteAddr())
             .userAgent(httpRequest.getHeader("User-Agent"))
+            .resourceType("config").resourceId("webhook-security")
             .operation("updateWebhookSecurityConfig")
             .status(200)
+            .metadata(java.util.Map.of("allow_http", config.getAllowHttp() != null ? config.getAllowHttp() : false))
             .build());
         return ResponseEntity.ok(repository.get());
     }

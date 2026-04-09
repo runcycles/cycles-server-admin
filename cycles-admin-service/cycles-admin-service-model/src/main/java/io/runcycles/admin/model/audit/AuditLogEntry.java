@@ -15,6 +15,8 @@ public class AuditLogEntry {
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("user_agent") private String userAgent;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("source_ip") private String sourceIp;
     @JsonProperty("operation") private String operation;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("resource_type") private String resourceType;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("resource_id") private String resourceId;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("request_id") private String requestId;
     @JsonProperty("status") private Integer status;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("error_code") private String errorCode;

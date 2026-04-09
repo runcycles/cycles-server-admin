@@ -33,8 +33,10 @@ public class ApiKeyController {
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(request.getTenantId())
             .keyId(response.getKeyId())
+            .resourceType("api_key").resourceId(response.getKeyId())
             .operation("createApiKey")
             .status(201)
+            .metadata(Map.of("name", request.getName()))
             .build());
         try {
             eventService.emit(EventType.API_KEY_CREATED, request.getTenantId(), null, "cycles-admin",
@@ -78,11 +80,17 @@ public class ApiKeyController {
 
         ApiKey updated = repository.update(keyId, request);
         ApiKeyResponse response = ApiKeyResponse.from(updated);
+        java.util.HashMap<String, Object> auditMeta = new java.util.HashMap<>();
+        if (request.getPermissions() != null) auditMeta.put("permissions", request.getPermissions());
+        if (request.getScopeFilter() != null) auditMeta.put("scope_filter", request.getScopeFilter());
+        if (request.getName() != null) auditMeta.put("name", request.getName());
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(response.getTenantId())
             .keyId(keyId)
+            .resourceType("api_key").resourceId(keyId)
             .operation("updateApiKey")
             .status(200)
+            .metadata(auditMeta.isEmpty() ? null : auditMeta)
             .build());
 
         // Emit api_key.permissions_changed only if permissions or scope_filter actually changed
@@ -112,8 +120,10 @@ public class ApiKeyController {
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(response.getTenantId())
             .keyId(keyId)
+            .resourceType("api_key").resourceId(keyId)
             .operation("revokeApiKey")
             .status(200)
+            .metadata(reason != null ? Map.of("reason", reason) : null)
             .build());
         try {
             eventService.emit(EventType.API_KEY_REVOKED, response.getTenantId(), null, "cycles-admin",

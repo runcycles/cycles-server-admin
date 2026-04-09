@@ -35,8 +35,11 @@ public class BudgetController {
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
+            .resourceType("budget").resourceId(ledger.getLedgerId())
             .operation("createBudget")
             .status(201)
+            .metadata(Map.of("scope", request.getScope(), "unit", request.getUnit().name(),
+                "allocated", request.getAllocated().getAmount()))
             .build());
         try {
             eventService.emit(EventType.BUDGET_CREATED, tenantId, request.getScope(), "cycles-admin",
@@ -103,8 +106,10 @@ public class BudgetController {
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(auditTenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
+            .resourceType("budget").resourceId(ledger.getLedgerId())
             .operation("updateBudget")
             .status(200)
+            .metadata(Map.of("scope", scope, "unit", unit.name()))
             .build());
         try {
             // Derive tenant from the budget's stored tenant_id for event emission
@@ -146,8 +151,12 @@ public class BudgetController {
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
+            .resourceType("budget").resourceId(scope + ":" + unit.name())
             .operation("fundBudget")
             .status(200)
+            .metadata(Map.of("scope", scope, "unit", unit.name(),
+                "funding_operation", request.getOperation().name(),
+                "amount", request.getAmount().getAmount()))
             .build());
         try {
             EventType fundEventType;
@@ -182,8 +191,10 @@ public class BudgetController {
         String auditTenantId = ledger.getTenantId();
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(auditTenantId)
+            .resourceType("budget").resourceId(ledger.getLedgerId())
             .operation("freezeBudget")
             .status(200)
+            .metadata(Map.of("scope", scope, "unit", unit.name()))
             .build());
         try {
             eventService.emit(EventType.BUDGET_FROZEN, auditTenantId, scope, "cycles-admin",
@@ -209,8 +220,10 @@ public class BudgetController {
         String auditTenantId = ledger.getTenantId();
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(auditTenantId)
+            .resourceType("budget").resourceId(ledger.getLedgerId())
             .operation("unfreezeBudget")
             .status(200)
+            .metadata(Map.of("scope", scope, "unit", unit.name()))
             .build());
         try {
             eventService.emit(EventType.BUDGET_UNFROZEN, auditTenantId, scope, "cycles-admin",
