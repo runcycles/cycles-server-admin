@@ -27,6 +27,17 @@
 | `ApiKeyController.update()` | PATCH endpoint with audit logging, change detection, conditional `api_key.permissions_changed` event emission |
 | Auth routing | Already handled: `/v1/admin/api-keys` requires AdminKeyAuth in AuthInterceptor |
 
+**Spec polish (final pass):**
+
+| Change | Details |
+|--------|---------|
+| Permission enum | Reusable `Permission` schema extracted; `$ref` used in ApiKey, ApiKeyCreateRequest, ApiKeyCreateResponse, ApiKeyValidationResponse, EventDataApiKey, PATCH body |
+| Wildcard semantics normative | `admin:read`/`admin:write` wildcard behavior documented in Permission schema description (not just changelog) |
+| 401 precision | All 45 responses: 27 admin-only, 14 tenant-only, 4 dual-auth. Fixed orphan block, duplicates, introspect |
+| No wildcard prose | Replaced `reservations:*`, `budgets:*` etc. with concrete permission names throughout |
+| AuthIntrospectResponse | permissions field uses plain `string[]` (not Permission ref) because admin returns `["*"]` |
+| PATCH api-keys 400 | Added for invalid permission names |
+
 **Test count:** 401 → 412 (12 new: 7 controller + 5 repository).
 
 ### 2026-04-08 — v0.1.25.6: Budget freeze/unfreeze + admin fund

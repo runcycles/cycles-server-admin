@@ -227,6 +227,7 @@ curl -X PUT http://localhost:7979/v1/admin/config/webhook-security \
 |--------|------|-----------|------|
 | `POST` | `/v1/admin/api-keys` | Create API key | Admin |
 | `GET` | `/v1/admin/api-keys` | List API keys | Admin |
+| `PATCH` | `/v1/admin/api-keys/{key_id}` | Update key properties | Admin |
 | `DELETE` | `/v1/admin/api-keys/{key_id}` | Revoke API key | Admin |
 | `POST` | `/v1/auth/validate` | Validate key & resolve tenant | Admin |
 | `GET` | `/v1/auth/introspect` | Introspect auth & capabilities | Admin |
@@ -532,7 +533,7 @@ v0.1.25.5 adds admin dashboard support: dual-auth allowlist (AdminKeyAuth on bud
 
 v0.1.25.6 adds budget freeze/unfreeze action endpoints, dual-auth on fund, and granular tenant permissions (`budgets:read/write`, `policies:read/write`).
 
-v0.1.25.7 adds backward-compatible wildcard fallback: `admin:write` satisfies any `*:write` permission, `admin:read` satisfies any `*:read`. Pre-v0.1.25.6 keys work without migration.
+v0.1.25.7 adds backward-compatible wildcard fallback (`admin:write` satisfies any `*:write`, `admin:read` any `*:read`), `PATCH /v1/admin/api-keys/{key_id}` for updating key permissions/metadata without secret rotation, reusable `Permission` enum schema, full 401 coverage on all 45 endpoints, and centralized FROZEN semantics.
 
 ## Documentation
 
