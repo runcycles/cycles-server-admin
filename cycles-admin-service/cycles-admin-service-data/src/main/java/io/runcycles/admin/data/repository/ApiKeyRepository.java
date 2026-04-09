@@ -136,50 +136,37 @@ public class ApiKeyRepository {
     public List<ApiKey> list(String tenantId) {
         return list(tenantId, null, null, 1000);
     }
-    // Lua script for atomic API key update: reads, checks status, merges mutable fields.
-    // KEYS[1] = apikey:<keyId>
-    // ARGV[1] = name (empty = no change), ARGV[2] = description (empty = no change),
-    // ARGV[3] = permissions_json (empty = no change), ARGV[4] = scope_filter_json (empty = no change),
-    // ARGV[5] = metadata_json (empty = no change)
-    // Returns: {'OK', updated_json} or {'NOT_FOUND'} or {'KEY_REVOKED'} or {'KEY_EXPIRED'}
-    private static final String UPDATE_KEY_LUA =
-        "local json = redis.call('GET', KEYS[1])\n" +
-        "if not json then return {'NOT_FOUND'} end\n" +
-        "local key = cjson.decode(json)\n" +
-        "if key['status'] == 'REVOKED' then return {'KEY_REVOKED'} end\n" +
-        "if key['status'] == 'EXPIRED' then return {'KEY_EXPIRED'} end\n" +
-        "if ARGV[1] ~= '' then key['name'] = ARGV[1] end\n" +
-        "if ARGV[2] ~= '' then key['description'] = ARGV[2] end\n" +
-        "if ARGV[3] ~= '' then key['permissions'] = cjson.decode(ARGV[3]) end\n" +
-        "if ARGV[4] ~= '' then key['scope_filter'] = cjson.decode(ARGV[4]) end\n" +
-        "if ARGV[5] ~= '' then key['metadata'] = cjson.decode(ARGV[5]) end\n" +
-        "local updated = cjson.encode(key)\n" +
-        "redis.call('SET', KEYS[1], updated)\n" +
-        "return {'OK', updated}\n";
-
+    /**
+     * Update mutable fields on an API key. Uses Jackson for serialization
+     * (not Lua cjson roundtrip) to avoid the Redis cjson empty-array bug
+     * where [] becomes {} and breaks deserialization.
+     */
     public ApiKey update(String keyId, ApiKeyUpdateRequest request) {
         try (Jedis jedis = jedisPool.getResource()) {
-            @SuppressWarnings("unchecked")
-            List<String> result = (List<String>) jedis.eval(UPDATE_KEY_LUA,
-                List.of("apikey:" + keyId),
-                List.of(
-                    request.getName() != null ? request.getName() : "",
-                    request.getDescription() != null ? request.getDescription() : "",
-                    request.getPermissions() != null ? objectMapper.writeValueAsString(request.getPermissions()) : "",
-                    request.getScopeFilter() != null ? objectMapper.writeValueAsString(request.getScopeFilter()) : "",
-                    request.getMetadata() != null ? objectMapper.writeValueAsString(request.getMetadata()) : ""
-                ));
-
-            String status = result.get(0);
-            if ("NOT_FOUND".equals(status)) {
+            String json = jedis.get("apikey:" + keyId);
+            if (json == null) {
                 throw GovernanceException.apiKeyNotFound(keyId);
             }
-            if ("KEY_REVOKED".equals(status) || "KEY_EXPIRED".equals(status)) {
+            ApiKey key = objectMapper.readValue(json, ApiKey.class);
+            if (key.getStatus() == ApiKeyStatus.REVOKED) {
                 throw new GovernanceException(
                     io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
-                    "Cannot modify a " + status.substring(4) + " key", 409);
+                    "Cannot modify a REVOKED key", 409);
             }
-            return objectMapper.readValue(result.get(1), ApiKey.class);
+            if (key.getStatus() == ApiKeyStatus.EXPIRED) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                    "Cannot modify an EXPIRED key", 409);
+            }
+            // Apply partial updates — only non-null fields
+            if (request.getName() != null) key.setName(request.getName());
+            if (request.getDescription() != null) key.setDescription(request.getDescription());
+            if (request.getPermissions() != null) key.setPermissions(request.getPermissions());
+            if (request.getScopeFilter() != null) key.setScopeFilter(request.getScopeFilter());
+            if (request.getMetadata() != null) key.setMetadata(request.getMetadata());
+            // Write back with Jackson (clean serialization, no cjson issues)
+            jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
+            return key;
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {

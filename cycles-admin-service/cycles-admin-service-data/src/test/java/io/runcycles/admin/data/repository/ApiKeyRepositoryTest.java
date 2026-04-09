@@ -718,12 +718,8 @@ class ApiKeyRepositoryTest {
                 .keyHash("$2a$12$hash").status(ApiKeyStatus.ACTIVE)
                 .permissions(List.of("balances:read"))
                 .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(3600)).build();
-        String updatedJson = objectMapper.writeValueAsString(
-                ApiKey.builder().keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
-                        .keyHash("$2a$12$hash").status(ApiKeyStatus.ACTIVE)
-                        .name("Updated").permissions(List.of("budgets:read", "budgets:write"))
-                        .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(3600)).build());
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
+        String existingJson = objectMapper.writeValueAsString(existing);
+        when(jedis.get("apikey:key_1")).thenReturn(existingJson);
 
         ApiKeyUpdateRequest request = new ApiKeyUpdateRequest();
         request.setName("Updated");
@@ -733,11 +729,12 @@ class ApiKeyRepositoryTest {
 
         assertThat(result.getName()).isEqualTo("Updated");
         assertThat(result.getPermissions()).containsExactly("budgets:read", "budgets:write");
+        verify(jedis).set(eq("apikey:key_1"), anyString());
     }
 
     @Test
     void update_notFound_throws404() {
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("NOT_FOUND"));
+        when(jedis.get("apikey:missing")).thenReturn(null);
 
         ApiKeyUpdateRequest request = new ApiKeyUpdateRequest();
         request.setName("test");
@@ -752,8 +749,13 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
-    void update_revokedKey_throws409() {
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("KEY_REVOKED"));
+    void update_revokedKey_throws409() throws Exception {
+        ApiKey revoked = ApiKey.builder()
+                .keyId("key_rev").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyHash("hash").status(ApiKeyStatus.REVOKED)
+                .createdAt(Instant.now()).build();
+        String revokedJson = objectMapper.writeValueAsString(revoked);
+        when(jedis.get("apikey:key_rev")).thenReturn(revokedJson);
 
         ApiKeyUpdateRequest request = new ApiKeyUpdateRequest();
         request.setName("test");
@@ -767,8 +769,13 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
-    void update_expiredKey_throws409() {
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("KEY_EXPIRED"));
+    void update_expiredKey_throws409() throws Exception {
+        ApiKey expired = ApiKey.builder()
+                .keyId("key_exp").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyHash("hash").status(ApiKeyStatus.EXPIRED)
+                .createdAt(Instant.now()).build();
+        String expiredJson = objectMapper.writeValueAsString(expired);
+        when(jedis.get("apikey:key_exp")).thenReturn(expiredJson);
 
         ApiKeyUpdateRequest request = new ApiKeyUpdateRequest();
         request.setName("test");
@@ -782,25 +789,22 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
-    void update_onlyName_passesEmptyForOtherFields() throws Exception {
-        String updatedJson = objectMapper.writeValueAsString(
-                ApiKey.builder().keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
-                        .keyHash("hash").name("New Name").status(ApiKeyStatus.ACTIVE)
-                        .createdAt(Instant.now()).build());
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
+    void update_onlyName_doesNotModifyOtherFields() throws Exception {
+        ApiKey existing = ApiKey.builder()
+                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyHash("hash").name("Old Name").status(ApiKeyStatus.ACTIVE)
+                .permissions(List.of("balances:read")).scopeFilter(List.of("workspace:eng"))
+                .createdAt(Instant.now()).build();
+        String existingJson = objectMapper.writeValueAsString(existing);
+        when(jedis.get("apikey:key_1")).thenReturn(existingJson);
 
         ApiKeyUpdateRequest request = new ApiKeyUpdateRequest();
         request.setName("New Name");
 
-        repository.update("key_1", request);
+        ApiKey result = repository.update("key_1", request);
 
-        verify(jedis).eval(anyString(), anyList(),
-                argThat((List<String> args) ->
-                        "New Name".equals(args.get(0)) &&
-                        "".equals(args.get(1)) &&  // description empty
-                        "".equals(args.get(2)) &&  // permissions empty
-                        "".equals(args.get(3)) &&  // scope_filter empty
-                        "".equals(args.get(4))      // metadata empty
-                ));
+        assertThat(result.getName()).isEqualTo("New Name");
+        assertThat(result.getPermissions()).containsExactly("balances:read");
+        assertThat(result.getScopeFilter()).containsExactly("workspace:eng");
     }
 }
