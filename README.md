@@ -117,8 +117,7 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 
 | Category | Permissions | Notes |
 |---|---|---|
-| **Runtime (6 defaults)** | `reservations:create/commit/release/extend/list`, `balances:read` | Assigned by default when no permissions specified |
-| **Budgets/Policies (4, v0.1.25.6)** | `budgets:read`, `budgets:write`, `policies:read`, `policies:write` | Tenant budget/policy management; included in defaults |
+| **Runtime (10 defaults)** | `reservations:create/commit/release/extend/list`, `balances:read`, `budgets:read/write`, `policies:read/write` | Assigned by default when no permissions specified |
 | **Webhooks (3, v0.1.25)** | `webhooks:write`, `webhooks:read`, `events:read` | For tenant self-service at `/v1/webhooks` and `/v1/events` |
 | **Admin wildcards (2)** | `admin:read`, `admin:write` | Wildcards: `admin:write` satisfies any `*:write`, `admin:read` satisfies any `*:read` |
 | **Admin granular (12, v0.1.25)** | `admin:tenants:read/write`, `admin:budgets:read/write`, `admin:policies:read/write`, `admin:apikeys:read/write`, `admin:webhooks:read/write`, `admin:events:read`, `admin:audit:read` | Finer-grained alternative to wildcards |
