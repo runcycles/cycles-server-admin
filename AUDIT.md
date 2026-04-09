@@ -4,13 +4,41 @@
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25.7)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
-### 2026-04-09 — v0.1.25.7: admin:read/admin:write wildcard fallback
+### 2026-04-09 — v0.1.25.7: wildcard fallback + spec polish
 
-**Root cause:** v0.1.25.6 changed `PERMISSION_MAP` from `admin:write` → `budgets:write` for budget endpoints. Pre-existing keys with `admin:write` but without explicit `budgets:write` started getting 403. Nightly integration build failed (runcycles/.github#21).
+**Wildcard fallback (code):** v0.1.25.6 broke pre-existing keys with `admin:write` (runcycles/.github#21). `AuthInterceptor.hasPermission()` now treats `admin:write` as a wildcard satisfying any `*:write`, and `admin:read` any `*:read`.
 
-**Fix:** `AuthInterceptor.hasPermission()` now treats `admin:write` as a wildcard satisfying any `*:write` permission, and `admin:read` as a wildcard satisfying any `*:read` permission. `admin:read` does NOT satisfy `*:write`.
+**Spec polish (review feedback):**
 
-**Test count:** 401 → 405 (4 new wildcard permission tests).
+| Change | Details |
+|--------|---------|
+| 401 consistency | Added `401` response to 36 auth-gated endpoints that were missing it (now 45/45) |
+| FROZEN semantics | `BudgetLedger.status` FROZEN description now includes funding block (was missing) |
+| Webhook/event opt-in | Default tenant permissions documented as NOT including webhooks/events; opt-in only |
+| createApiKey clarified | Tenant-scoped keys only; admin key is server-configured, not provisioned |
+| PATCH /v1/admin/api-keys/{key_id} | New endpoint for updating permissions, scope_filter, name, description, metadata. Emits `api_key.permissions_changed`. 409 on revoked/expired. |
+
+**PATCH /v1/admin/api-keys/{key_id} implementation:**
+
+| Component | Details |
+|-----------|---------|
+| `ApiKeyUpdateRequest.java` | New DTO: name, description, permissions, scope_filter, metadata. `@JsonIgnoreProperties(ignoreUnknown = false)` |
+| `ApiKeyRepository.update()` | Lua script for atomic partial update. Validates status (409 on REVOKED/EXPIRED). Only merges non-null fields. |
+| `ApiKeyController.update()` | PATCH endpoint with audit logging, change detection, conditional `api_key.permissions_changed` event emission |
+| Auth routing | Already handled: `/v1/admin/api-keys` requires AdminKeyAuth in AuthInterceptor |
+
+**Spec polish (final pass):**
+
+| Change | Details |
+|--------|---------|
+| Permission enum | Reusable `Permission` schema extracted; `$ref` used in ApiKey, ApiKeyCreateRequest, ApiKeyCreateResponse, ApiKeyValidationResponse, EventDataApiKey, PATCH body |
+| Wildcard semantics normative | `admin:read`/`admin:write` wildcard behavior documented in Permission schema description (not just changelog) |
+| 401 precision | All 45 responses: 27 admin-only, 14 tenant-only, 4 dual-auth. Fixed orphan block, duplicates, introspect |
+| No wildcard prose | Replaced `reservations:*`, `budgets:*` etc. with concrete permission names throughout |
+| AuthIntrospectResponse | permissions field uses plain `string[]` (not Permission ref) because admin returns `["*"]` |
+| PATCH api-keys 400 | Added for invalid permission names |
+
+**Test count:** 401 → 412 (12 new: 7 controller + 5 repository).
 
 ### 2026-04-08 — v0.1.25.6: Budget freeze/unfreeze + admin fund
 

@@ -708,4 +708,99 @@ class ApiKeyRepositoryTest {
         assertThat(response.getValid()).isFalse();
         assertThat(response.getReason()).isEqualTo("KEY_NOT_OWNED_BY_TENANT");
     }
+
+    // ========== update ==========
+
+    @Test
+    void update_success_returnsUpdatedKey() throws Exception {
+        ApiKey existing = ApiKey.builder()
+                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyHash("$2a$12$hash").status(ApiKeyStatus.ACTIVE)
+                .permissions(List.of("balances:read"))
+                .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(3600)).build();
+        String updatedJson = objectMapper.writeValueAsString(
+                ApiKey.builder().keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                        .keyHash("$2a$12$hash").status(ApiKeyStatus.ACTIVE)
+                        .name("Updated").permissions(List.of("budgets:read", "budgets:write"))
+                        .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(3600)).build());
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
+
+        ApiKeyUpdateRequest request = new ApiKeyUpdateRequest();
+        request.setName("Updated");
+        request.setPermissions(List.of("budgets:read", "budgets:write"));
+
+        ApiKey result = repository.update("key_1", request);
+
+        assertThat(result.getName()).isEqualTo("Updated");
+        assertThat(result.getPermissions()).containsExactly("budgets:read", "budgets:write");
+    }
+
+    @Test
+    void update_notFound_throws404() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("NOT_FOUND"));
+
+        ApiKeyUpdateRequest request = new ApiKeyUpdateRequest();
+        request.setName("test");
+
+        assertThatThrownBy(() -> repository.update("missing", request))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.NOT_FOUND);
+                    assertThat(ge.getHttpStatus()).isEqualTo(404);
+                });
+    }
+
+    @Test
+    void update_revokedKey_throws409() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("KEY_REVOKED"));
+
+        ApiKeyUpdateRequest request = new ApiKeyUpdateRequest();
+        request.setName("test");
+
+        assertThatThrownBy(() -> repository.update("key_rev", request))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getHttpStatus()).isEqualTo(409);
+                });
+    }
+
+    @Test
+    void update_expiredKey_throws409() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("KEY_EXPIRED"));
+
+        ApiKeyUpdateRequest request = new ApiKeyUpdateRequest();
+        request.setName("test");
+
+        assertThatThrownBy(() -> repository.update("key_exp", request))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getHttpStatus()).isEqualTo(409);
+                });
+    }
+
+    @Test
+    void update_onlyName_passesEmptyForOtherFields() throws Exception {
+        String updatedJson = objectMapper.writeValueAsString(
+                ApiKey.builder().keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                        .keyHash("hash").name("New Name").status(ApiKeyStatus.ACTIVE)
+                        .createdAt(Instant.now()).build());
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
+
+        ApiKeyUpdateRequest request = new ApiKeyUpdateRequest();
+        request.setName("New Name");
+
+        repository.update("key_1", request);
+
+        verify(jedis).eval(anyString(), anyList(),
+                argThat((List<String> args) ->
+                        "New Name".equals(args.get(0)) &&
+                        "".equals(args.get(1)) &&  // description empty
+                        "".equals(args.get(2)) &&  // permissions empty
+                        "".equals(args.get(3)) &&  // scope_filter empty
+                        "".equals(args.get(4))      // metadata empty
+                ));
+    }
 }
