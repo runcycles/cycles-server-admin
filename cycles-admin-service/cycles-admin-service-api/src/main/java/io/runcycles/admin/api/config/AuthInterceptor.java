@@ -172,7 +172,7 @@ public class AuthInterceptor implements HandlerInterceptor {
         String requiredPermission = resolveRequiredPermission(request.getMethod(), request.getRequestURI());
         if (requiredPermission != null) {
             List<String> permissions = validation.getPermissions();
-            if (permissions == null || !permissions.contains(requiredPermission)) {
+            if (permissions == null || !hasPermission(permissions, requiredPermission)) {
                 writeError(request, response, 403, ErrorCode.INSUFFICIENT_PERMISSIONS,
                     "API key lacks required permission: " + requiredPermission);
                 return false;
@@ -209,6 +209,18 @@ public class AuthInterceptor implements HandlerInterceptor {
             lastSlash = path.lastIndexOf('/');
         }
         return null;
+    }
+
+    /**
+     * Check if the permission list satisfies the required permission.
+     * Supports backward-compatible wildcards: admin:read implies any *:read,
+     * admin:write implies any *:write (spec v0.1.25.6 backward compatibility).
+     */
+    private boolean hasPermission(List<String> permissions, String required) {
+        if (permissions.contains(required)) return true;
+        if (required.endsWith(":read") && permissions.contains("admin:read")) return true;
+        if (required.endsWith(":write") && permissions.contains("admin:write")) return true;
+        return false;
     }
 
     private void writeError(HttpServletRequest request, HttpServletResponse response, int status, ErrorCode code, String message) throws Exception {
