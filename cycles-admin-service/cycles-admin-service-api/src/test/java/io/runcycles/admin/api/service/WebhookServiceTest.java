@@ -591,4 +591,14 @@ class WebhookServiceTest {
                 new NullPointerException()))
                 .isEqualTo("NullPointerException");
     }
+
+    @Test
+    void httpClient_usesHttp1_1() throws Exception {
+        // Webhook receivers are standard HTTP/1.1 endpoints — HTTP/2 upgrade
+        // requests (Upgrade: h2c) break on many receivers.
+        java.lang.reflect.Field field = WebhookService.class.getDeclaredField("HTTP_CLIENT");
+        field.setAccessible(true);
+        java.net.http.HttpClient client = (java.net.http.HttpClient) field.get(null);
+        assertThat(client.version()).isEqualTo(java.net.http.HttpClient.Version.HTTP_1_1);
+    }
 }
