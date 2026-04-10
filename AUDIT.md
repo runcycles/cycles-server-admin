@@ -1,8 +1,25 @@
 # Complete Budget Governance v0.1.25.8 — Admin Server Audit
 
-**Date:** 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Date:** 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25.8)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-10 — CORS hardening + production config
+
+Two real bugs fixed while closing the MEDIUM CORS gap from the post-v0.1.25.8 gap analysis:
+
+1. **`X-Cycles-API-Key` missing from CORS allowedHeaders.** `AuthInterceptor` accepts the header for tenant authentication, but `WebConfig.addCorsMappings()` only allowlisted `X-Admin-API-Key` and `Content-Type`. Any browser-based dashboard using tenant API keys would have been blocked at CORS preflight. Added `X-Cycles-API-Key` to allowlist.
+2. **`X-Request-Id` not in allowedHeaders or exposedHeaders.** `RequestIdFilter` reads the header on input and writes it back on the response, but CORS hid both directions from browsers — breaking correlation-id propagation for dashboard debugging. Added to both `allowedHeaders` and `exposedHeaders`.
+
+**Production config changes:**
+
+- `WebConfig` now parses a comma-separated list from `dashboard.cors.origin`, enabling multi-origin deployments (e.g. `https://dash.example.com,https://staging.example.com`).
+- Startup log now prints the configured origins for operational visibility.
+- `application.properties` now explicitly binds `dashboard.cors.origin=${DASHBOARD_CORS_ORIGIN:http://localhost:5173}` with an inline comment flagging the localhost default as dev-only.
+- `docker-compose.prod.yml` and `docker-compose.full-stack.prod.yml` pass `DASHBOARD_CORS_ORIGIN` through to the admin container with a warning comment.
+- README `Environment Variables` table gained a `DASHBOARD_CORS_ORIGIN` row; new `CORS` subsection in Observability lists all allowlisted methods, headers, exposed headers, and origin format.
+
+**Tests:** 429 → 432 (three new `WebConfigTest` cases verifying header allowlist, exposed headers, and comma-separated origin parsing with whitespace/empty handling).
 
 ### 2026-04-10 — Observability: Prometheus metrics + Kubernetes probes
 

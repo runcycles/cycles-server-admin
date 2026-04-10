@@ -135,6 +135,7 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 | `SWAGGER_ENABLED` | No | `false` | Enable Swagger UI at `/swagger-ui.html` |
 | `EVENT_TTL_DAYS` | No | `90` | Event retention in Redis (days) |
 | `DELIVERY_TTL_DAYS` | No | `14` | Webhook delivery retention in Redis (days) |
+| `DASHBOARD_CORS_ORIGIN` | No | `http://localhost:5173` | Comma-separated list of origins allowed to call `/v1/**` from a browser. **Must be set in production** to your dashboard URL (e.g. `https://dash.example.com`). The default is the Vite dev server and will NOT work for prod dashboard deployments. |
 
 ### Webhook Secret Encryption
 
@@ -546,6 +547,19 @@ Spring Boot auto-publishes `http_server_requests_seconds_*` (latency/count/error
 | `cycles_admin_webhook_dispatched_total` | `result` | Webhook delivery enqueue attempts (`result` = `queued` \| `failure`) |
 
 All metrics are tagged with `application=cycles-admin-service` for multi-service Prometheus/Grafana dashboards.
+
+**CORS:**
+
+Browser clients (the dashboard) call `/v1/**` via CORS. The server allowlists:
+
+| | Values |
+|---|---|
+| Methods | `GET`, `POST`, `PATCH`, `DELETE`, `OPTIONS` |
+| Request headers | `X-Admin-API-Key`, `X-Cycles-API-Key`, `X-Request-Id`, `Content-Type` |
+| Exposed response headers | `X-Request-Id` (for correlation) |
+| Origins | `DASHBOARD_CORS_ORIGIN` env var (comma-separated), default `http://localhost:5173` |
+
+Multiple origins are supported for staging + prod deployments behind the same server: `DASHBOARD_CORS_ORIGIN=https://dash.example.com,https://staging.example.com`.
 
 ## Protocol Specification
 
