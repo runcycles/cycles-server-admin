@@ -37,4 +37,12 @@ public class EventDataReservationDenied {
 
     @JsonProperty("subject")
     private Map<String, Object> subject;
+
+    // v0.1.25.8: which policy caused the denial (optional)
+    @JsonProperty("policy_id")
+    private String policyId;
+
+    // v0.1.25.8: extension-defined structured context (optional, populated by v0.1.26+ servers)
+    @JsonProperty("deny_detail")
+    private Map<String, Object> denyDetail;
 }

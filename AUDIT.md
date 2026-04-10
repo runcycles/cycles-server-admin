@@ -4,6 +4,38 @@
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25.7)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
+### 2026-04-10 — v0.1.25.8 spec alignment
+
+**Spec published 2026-04-10** with dashboard and observability hardening for v0.1.26 readiness. All additions are additive and backward compatible. This commit catches the server up to the spec.
+
+**Java model updates:**
+
+| Model | Change |
+|-------|--------|
+| `EventDataReservationDenied` | Added optional `policy_id` (identifies policy that caused denial) and `deny_detail` (extension-defined structured context). `reason_code` was already a plain String, so the open-enum extensibility change required no code update. |
+| `AdminOverviewResponse` | Added optional top-level fields: `recent_denials_by_reason`, `quota_health`, `access_control_stats`. |
+| `AdminOverviewResponse.TenantCounts` | Added optional `in_observe_mode` field. |
+| `AdminOverviewResponse.QuotaHealth` | New nested class: `counters_above_80pct`, `counters_at_limit`, `top_offenders` (list of QuotaOffender). |
+| `AdminOverviewResponse.QuotaOffender` | New nested class: scope, action_kind, window, used, limit, utilization_pct. |
+| `AdminOverviewResponse.AccessControlStats` | New nested class: `policies_with_allow_list`, `policies_with_deny_list`. |
+
+**Controller updates:**
+
+| Controller | Change |
+|-----------|--------|
+| `TenantController.list()` | Accepts `observe_mode` query param (ignored on v0.1.25.x; v0.1.26+ will wire it up). |
+| `PolicyController.list()` | Accepts `has_action_quotas` and `references_action_kind` query params (ignored on v0.1.25.x). |
+
+**Service updates:**
+
+| Service | Change |
+|---------|--------|
+| `AdminOverviewService.buildOverview()` | Populates `recent_denials_by_reason` by counting `reason_code` values from the recent denials sample. Other new fields (`quota_health`, `access_control_stats`, `tenant_counts.in_observe_mode`) remain null on v0.1.25.x — populated only by v0.1.26+ servers with the corresponding extensions. |
+
+**Backward compatibility:** All new fields use `@JsonInclude(NON_NULL)` — absent from responses when null. Existing v0.1.25.7 clients continue to work unchanged. New query parameters are silently ignored by v0.1.25.7 servers (Spring `@RequestParam(required = false)` default behavior).
+
+**Test count:** 420 → 424 (6+ new tests covering model roundtrips, controller accept-and-ignore, and denials-by-reason aggregation).
+
 ### 2026-04-09 — v0.1.25.7: bug fixes, audit enrichment, spec polish
 
 **Bug fixes:**

@@ -87,6 +87,9 @@ public class PolicyController {
             @RequestParam(required = false) String tenant_id,
             @RequestParam(required = false) String scope_pattern,
             @RequestParam(required = false) PolicyStatus status,
+            // v0.1.25.8: accepted and ignored. v0.1.26+ servers with action quotas extension will wire this up.
+            @RequestParam(required = false) Boolean has_action_quotas,
+            @RequestParam(required = false) String references_action_kind,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit,
             HttpServletRequest httpRequest) {

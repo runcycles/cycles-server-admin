@@ -328,4 +328,21 @@ class PolicyControllerTest {
                         .content("{\"name\":\"New Name\"}"))
                 .andExpect(status().isUnauthorized());
     }
+
+    // v0.1.25.8: has_action_quotas and references_action_kind must be accepted and ignored
+    @Test
+    void listPolicies_withActionQuotaParams_acceptedAndIgnored() throws Exception {
+        setupApiKeyAuth();
+        when(policyRepository.list(eq("t1"), any(), any(), any(), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/policies")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("has_action_quotas", "true")
+                        .param("references_action_kind", "payment.charge"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.policies").isArray());
+
+        // Repository call unchanged — these params are not passed through on v0.1.25.x
+        verify(policyRepository).list(eq("t1"), any(), any(), any(), anyInt());
+    }
 }

@@ -65,6 +65,9 @@ public class AdminOverviewService {
         List<Event> recentDenials = eventRepository.list(null, "reservation.denied", null, null, null, windowStart, now, null, TOP_OFFENDER_CAP);
         List<Event> recentExpiries = eventRepository.list(null, "reservation.expired", null, null, null, windowStart, now, null, TOP_OFFENDER_CAP);
 
+        // v0.1.25.8: denial count breakdown by reason_code (over the displayed sample)
+        Map<String, Integer> denialsByReason = countDenialsByReason(recentDenials);
+
         return AdminOverviewResponse.builder()
                 .asOf(now)
                 .eventWindowSeconds(EVENT_WINDOW_SECONDS)
@@ -77,7 +80,27 @@ public class AdminOverviewService {
                 .eventCounts(eventCounts)
                 .recentDenials(recentDenials)
                 .recentExpiries(recentExpiries)
+                .recentDenialsByReason(denialsByReason.isEmpty() ? null : denialsByReason)
+                // v0.1.25.8 fields that require v0.1.26 extensions — left null in v0.1.25.x:
+                //   tenantCounts.inObserveMode, quotaHealth, accessControlStats
                 .build();
+    }
+
+    /**
+     * Count denials by reason_code from the recent denials sample.
+     * Returns an empty map if no denials have reason_code populated.
+     */
+    private Map<String, Integer> countDenialsByReason(List<Event> denials) {
+        Map<String, Integer> byReason = new LinkedHashMap<>();
+        for (Event e : denials) {
+            Map<String, Object> data = e.getData();
+            if (data == null) continue;
+            Object reasonObj = data.get("reason_code");
+            if (reasonObj instanceof String reason && !reason.isBlank()) {
+                byReason.merge(reason, 1, Integer::sum);
+            }
+        }
+        return byReason;
     }
 
     private List<Tenant> listAllTenants() {

@@ -148,4 +148,48 @@ class AdminOverviewServiceTest {
         assertThat(result.getRecentDenials()).hasSize(1);
         assertThat(result.getRecentExpiries()).isEmpty();
     }
+
+    // v0.1.25.8: recent_denials_by_reason aggregation
+
+    @Test
+    void buildOverview_aggregatesRecentDenialsByReason() {
+        when(tenantRepository.list(isNull(), isNull(), isNull(), eq(100))).thenReturn(List.of());
+        when(webhookRepository.listAll(isNull(), isNull(), isNull(), eq(100))).thenReturn(List.of());
+        when(eventRepository.list(isNull(), isNull(), isNull(), isNull(), isNull(), any(Instant.class), any(Instant.class), isNull(), eq(100))).thenReturn(List.of());
+
+        // Three denials: two BUDGET_EXCEEDED, one ACTION_QUOTA_EXCEEDED (v0.1.26 extension value)
+        Event denial1 = Event.builder().eventId("e1").eventType(EventType.RESERVATION_DENIED).category(EventCategory.RESERVATION).timestamp(Instant.now())
+                .data(java.util.Map.of("reason_code", "BUDGET_EXCEEDED", "scope", "tenant:acme")).build();
+        Event denial2 = Event.builder().eventId("e2").eventType(EventType.RESERVATION_DENIED).category(EventCategory.RESERVATION).timestamp(Instant.now())
+                .data(java.util.Map.of("reason_code", "BUDGET_EXCEEDED", "scope", "tenant:acme")).build();
+        Event denial3 = Event.builder().eventId("e3").eventType(EventType.RESERVATION_DENIED).category(EventCategory.RESERVATION).timestamp(Instant.now())
+                .data(java.util.Map.of("reason_code", "ACTION_QUOTA_EXCEEDED", "scope", "tenant:acme")).build();
+        when(eventRepository.list(isNull(), eq("reservation.denied"), isNull(), isNull(), isNull(), any(Instant.class), any(Instant.class), isNull(), eq(10)))
+                .thenReturn(List.of(denial1, denial2, denial3));
+        when(eventRepository.list(isNull(), eq("reservation.expired"), isNull(), isNull(), isNull(), any(Instant.class), any(Instant.class), isNull(), eq(10))).thenReturn(List.of());
+
+        AdminOverviewResponse result = overviewService.buildOverview();
+
+        assertThat(result.getRecentDenialsByReason()).isNotNull();
+        assertThat(result.getRecentDenialsByReason()).containsEntry("BUDGET_EXCEEDED", 2);
+        assertThat(result.getRecentDenialsByReason()).containsEntry("ACTION_QUOTA_EXCEEDED", 1);
+    }
+
+    @Test
+    void buildOverview_noDenials_leavesRecentDenialsByReasonNull() {
+        when(tenantRepository.list(isNull(), isNull(), isNull(), eq(100))).thenReturn(List.of());
+        when(webhookRepository.listAll(isNull(), isNull(), isNull(), eq(100))).thenReturn(List.of());
+        when(eventRepository.list(isNull(), isNull(), isNull(), isNull(), isNull(), any(Instant.class), any(Instant.class), isNull(), eq(100))).thenReturn(List.of());
+        when(eventRepository.list(isNull(), eq("reservation.denied"), isNull(), isNull(), isNull(), any(Instant.class), any(Instant.class), isNull(), eq(10))).thenReturn(List.of());
+        when(eventRepository.list(isNull(), eq("reservation.expired"), isNull(), isNull(), isNull(), any(Instant.class), any(Instant.class), isNull(), eq(10))).thenReturn(List.of());
+
+        AdminOverviewResponse result = overviewService.buildOverview();
+
+        // Empty denials -> null (kept out of response via @JsonInclude(NON_NULL))
+        assertThat(result.getRecentDenialsByReason()).isNull();
+        // v0.1.26-only fields always null on v0.1.25.x
+        assertThat(result.getQuotaHealth()).isNull();
+        assertThat(result.getAccessControlStats()).isNull();
+        assertThat(result.getTenantCounts().getInObserveMode()).isNull();
+    }
 }
