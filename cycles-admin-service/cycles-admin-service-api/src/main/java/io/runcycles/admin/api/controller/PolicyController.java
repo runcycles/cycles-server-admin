@@ -87,6 +87,12 @@ public class PolicyController {
             @RequestParam(required = false) String tenant_id,
             @RequestParam(required = false) String scope_pattern,
             @RequestParam(required = false) PolicyStatus status,
+            // v0.1.25.8: accepted and ignored. v0.1.26+ servers with action quotas extension
+            // will wire this up. Typed as String (not Boolean) so any value — including
+            // malformed ones from newer clients — is accepted without a 400, per spec
+            // requirement "MUST ignore without error".
+            @SuppressWarnings("unused") @RequestParam(required = false) String has_action_quotas,
+            @SuppressWarnings("unused") @RequestParam(required = false) String references_action_kind,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit,
             HttpServletRequest httpRequest) {

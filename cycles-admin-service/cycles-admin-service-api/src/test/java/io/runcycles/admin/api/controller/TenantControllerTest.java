@@ -540,4 +540,19 @@ class TenantControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.max_reservation_extensions").value(20));
     }
+
+    // v0.1.25.8: observe_mode query param must be accepted and silently ignored
+    @Test
+    void listTenants_withObserveModeParam_acceptedAndIgnored() throws Exception {
+        when(tenantRepository.list(any(), any(), any(), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/tenants")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("observe_mode", "shadow"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.tenants").isArray());
+
+        // Repository call unchanged — observe_mode is not passed through on v0.1.25.x
+        verify(tenantRepository).list(any(), any(), any(), anyInt());
+    }
 }

@@ -256,4 +256,48 @@ class EventModelTest {
     void systemSeverity_unknownValue_throws() {
         assertThrows(Exception.class, () -> SystemSeverity.fromValue("unknown"));
     }
+
+    // ---- v0.1.25.8: EventDataReservationDenied extensibility ----
+
+    @Test
+    void reservationDenied_v0_1_25_8Fields_roundTrip() throws Exception {
+        Map<String, Object> denyDetail = Map.of(
+                "quota_violation", Map.of("action_kind", "payment.charge", "used", 100, "limit", 100),
+                "blocked_by_policy", "strict-quota-policy"
+        );
+        EventDataReservationDenied data = EventDataReservationDenied.builder()
+                .scope("tenant:acme")
+                .unit(UnitEnum.USD_MICROCENTS)
+                .reasonCode("ACTION_QUOTA_EXCEEDED")  // extension value, not in v0.1.25 known set
+                .requestedAmount(1000L)
+                .remaining(0L)
+                .policyId("pol_strict_quota")
+                .denyDetail(denyDetail)
+                .build();
+
+        String json = mapper.writeValueAsString(data);
+        assertTrue(json.contains("\"policy_id\":\"pol_strict_quota\""));
+        assertTrue(json.contains("\"deny_detail\""));
+        assertTrue(json.contains("\"reason_code\":\"ACTION_QUOTA_EXCEEDED\""));
+
+        EventDataReservationDenied roundTrip = mapper.readValue(json, EventDataReservationDenied.class);
+        assertEquals("pol_strict_quota", roundTrip.getPolicyId());
+        assertEquals("ACTION_QUOTA_EXCEEDED", roundTrip.getReasonCode());
+        assertNotNull(roundTrip.getDenyDetail());
+        assertEquals("strict-quota-policy", roundTrip.getDenyDetail().get("blocked_by_policy"));
+    }
+
+    @Test
+    void reservationDenied_v0_1_25_8Fields_optionalWhenNull() throws Exception {
+        EventDataReservationDenied data = EventDataReservationDenied.builder()
+                .scope("tenant:acme")
+                .unit(UnitEnum.USD_MICROCENTS)
+                .reasonCode("BUDGET_EXCEEDED")
+                .build();
+
+        String json = mapper.writeValueAsString(data);
+        // @JsonInclude(NON_NULL) on class: null fields should be absent
+        assertFalse(json.contains("policy_id"));
+        assertFalse(json.contains("deny_detail"));
+    }
 }

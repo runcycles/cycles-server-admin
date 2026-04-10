@@ -4,7 +4,7 @@
 
 # Runcycles Admin Server
 
-Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25.7](complete-budget-governance-v0.1.25.yaml).
+Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25.8](complete-budget-governance-v0.1.25.yaml).
 
 ## Overview
 
@@ -535,6 +535,8 @@ v0.1.25.5 adds admin dashboard support: dual-auth allowlist (AdminKeyAuth on bud
 v0.1.25.6 adds budget freeze/unfreeze action endpoints, dual-auth on fund, and granular tenant permissions (`budgets:read/write`, `policies:read/write`).
 
 v0.1.25.7 adds backward-compatible wildcard fallback (`admin:write` satisfies any `*:write`, `admin:read` any `*:read`), `PATCH /v1/admin/api-keys/{key_id}` for updating key permissions/metadata without secret rotation, reusable `Permission` enum schema, full 401 coverage on all 45 endpoints, centralized FROZEN semantics, detailed webhook test error messages, and rich audit entries with `resource_type`, `resource_id`, and contextual `metadata` on all mutating endpoints.
+
+v0.1.25.8 adds dashboard and observability hardening for v0.1.26 readiness: `EventDataReservationDenied` extensibility (`policy_id`, `deny_detail`, open-string `reason_code`), `AdminOverviewResponse` enrichments (`recent_denials_by_reason` auto-populated on v0.1.25.x, plus `quota_health`, `access_control_stats`, `tenant_counts.in_observe_mode` reserved for v0.1.26 extensions), and accept-and-ignore query params on `listTenants` (`observe_mode`) and `listPolicies` (`has_action_quotas`, `references_action_kind`). All additions are backward compatible — `@JsonInclude(NON_NULL)` keeps responses unchanged when new fields are null.
 
 ## Documentation
 
