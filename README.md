@@ -135,6 +135,7 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 | `SWAGGER_ENABLED` | No | `false` | Enable Swagger UI at `/swagger-ui.html` |
 | `EVENT_TTL_DAYS` | No | `90` | Event retention in Redis (days) |
 | `DELIVERY_TTL_DAYS` | No | `14` | Webhook delivery retention in Redis (days) |
+| `DASHBOARD_CORS_ORIGIN` | No | `http://localhost:5173` | Comma-separated list of origins allowed to call `/v1/**` from a browser. **Must be set in production** to your dashboard URL (e.g. `https://dash.example.com`). The default is the Vite dev server and will NOT work for prod dashboard deployments. |
 
 ### Webhook Secret Encryption
 
@@ -547,6 +548,19 @@ Spring Boot auto-publishes `http_server_requests_seconds_*` (latency/count/error
 
 All metrics are tagged with `application=cycles-admin-service` for multi-service Prometheus/Grafana dashboards.
 
+**CORS:**
+
+Browser clients (the dashboard) call `/v1/**` via CORS. The server allowlists:
+
+| | Values |
+|---|---|
+| Methods | `GET`, `POST`, `PATCH`, `DELETE`, `OPTIONS` |
+| Request headers | `X-Admin-API-Key`, `X-Cycles-API-Key`, `X-Request-Id`, `Content-Type` |
+| Exposed response headers | `X-Request-Id` (for correlation) |
+| Origins | `DASHBOARD_CORS_ORIGIN` env var (comma-separated), default `http://localhost:5173` |
+
+Multiple origins are supported for staging + prod deployments behind the same server: `DASHBOARD_CORS_ORIGIN=https://dash.example.com,https://staging.example.com`.
+
 ## Protocol Specification
 
 The full OpenAPI 3.1.0 specification is in [`complete-budget-governance-v0.1.25.yaml`](complete-budget-governance-v0.1.25.yaml).
@@ -562,6 +576,8 @@ v0.1.25.6 adds budget freeze/unfreeze action endpoints, dual-auth on fund, and g
 v0.1.25.7 adds backward-compatible wildcard fallback (`admin:write` satisfies any `*:write`, `admin:read` any `*:read`), `PATCH /v1/admin/api-keys/{key_id}` for updating key permissions/metadata without secret rotation, reusable `Permission` enum schema, full 401 coverage on all 45 endpoints, centralized FROZEN semantics, detailed webhook test error messages, and rich audit entries with `resource_type`, `resource_id`, and contextual `metadata` on all mutating endpoints.
 
 v0.1.25.8 adds dashboard and observability hardening for v0.1.26 readiness: `EventDataReservationDenied` extensibility (`policy_id`, `deny_detail`, open-string `reason_code`), `AdminOverviewResponse` enrichments (`recent_denials_by_reason` auto-populated on v0.1.25.x, plus `quota_health`, `access_control_stats`, `tenant_counts.in_observe_mode` reserved for v0.1.26 extensions), and accept-and-ignore query params on `listTenants` (`observe_mode`) and `listPolicies` (`has_action_quotas`, `references_action_kind`). All additions are backward compatible — `@JsonInclude(NON_NULL)` keeps responses unchanged when new fields are null.
+
+v0.1.25.9 is a patch release with operational hardening only — **no API surface changes**, spec stays at v0.1.25.8. Adds: Micrometer/Prometheus metrics at `/actuator/prometheus` with custom counters (`cycles_admin_events_emitted_total`, `cycles_admin_webhook_dispatched_total`); Kubernetes liveness/readiness probes at `/actuator/health/liveness` and `/actuator/health/readiness` (docker-compose healthchecks switched to liveness); CORS fixes — `X-Cycles-API-Key` and `X-Request-Id` are now allowlisted (both were previously blocked at preflight, breaking browser dashboards using tenant auth) and `X-Request-Id` is exposed for correlation; multi-origin CORS support via comma-separated `DASHBOARD_CORS_ORIGIN` env var.
 
 ## Documentation
 
