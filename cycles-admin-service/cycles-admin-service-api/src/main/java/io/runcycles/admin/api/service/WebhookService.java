@@ -20,7 +20,10 @@ import java.util.*;
 public class WebhookService {
     private static final Logger LOG = LoggerFactory.getLogger(WebhookService.class);
     private static final SecureRandom RANDOM = new SecureRandom();
+    // Force HTTP/1.1 — webhook receivers are standard HTTP/1.1 endpoints.
+    // Default (HTTP/2) sends Upgrade: h2c header on HTTP URLs which many receivers reject.
     private static final java.net.http.HttpClient HTTP_CLIENT = java.net.http.HttpClient.newBuilder()
+        .version(java.net.http.HttpClient.Version.HTTP_1_1)
         .connectTimeout(java.time.Duration.ofSeconds(5))
         .build();
     private final WebhookRepository webhookRepository;
