@@ -1,8 +1,36 @@
 # Complete Budget Governance v0.1.25.8 — Admin Server Audit
 
-**Date:** 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Date:** 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** `complete-budget-governance-v0.1.25.yaml` (OpenAPI 3.1.0, v0.1.25.8)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-10 — Observability: Prometheus metrics + Kubernetes probes
+
+Operational-hardening follow-up (not a spec change). Closes two HIGH items from the post-v0.1.25.8 gap analysis.
+
+**Metrics:**
+
+- Added `micrometer-registry-prometheus` dependency in `cycles-admin-service-api/pom.xml`.
+- Exposed `/actuator/prometheus` by adding `prometheus` to `management.endpoints.web.exposure.include` and enabling `management.prometheus.metrics.export.enabled=true`.
+- Tagged all metrics with `application=cycles-admin-service` for multi-service dashboards.
+- Spring Boot auto-provides: `http_server_requests_seconds_{count,sum,max}` per URI/method/status, JVM, Logback, process, Jedis pool gauges.
+- **Custom counters (domain events):**
+  - `cycles_admin_events_emitted_total{type, result}` — incremented on every `EventService.emit()` call; `result` is `success` or `failure`.
+  - `cycles_admin_webhook_dispatched_total{result}` — incremented per webhook enqueue attempt in `WebhookDispatchService.dispatch()`; `result` is `queued` or `failure`.
+
+**Kubernetes probes:**
+
+- Enabled Spring Boot's built-in liveness/readiness split with `management.endpoint.health.probes.enabled=true`.
+- New endpoints: `/actuator/health/liveness` and `/actuator/health/readiness`.
+- Updated `docker-compose.prod.yml` and `docker-compose.full-stack.prod.yml` healthchecks to hit `/actuator/health/liveness` (healthchecks should be liveness, not aggregate health).
+
+**Test updates:**
+
+- `EventServiceTest`: new `emit_success_incrementsEmittedCounter` and `emit_failure_incrementsEmittedCounter` tests using `SimpleMeterRegistry` via `@Spy`. Verifies counter labels (`type`, `result`) are correct.
+- `WebhookDispatchServiceTest`: new `dispatch_success_incrementsQueuedCounter` and `dispatch_failure_incrementsFailureCounter` tests.
+- Constructor signature of `EventService` and `WebhookDispatchService` now takes a `MeterRegistry` — test setup updated to pass `SimpleMeterRegistry`.
+
+**Backward compatibility:** None of the changes affect the HTTP API surface. Existing `/actuator/health` still works (returns aggregate). Prometheus endpoint is additive.
 
 ### 2026-04-10 — v0.1.25.8 spec alignment
 

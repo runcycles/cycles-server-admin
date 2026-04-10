@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.service;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.runcycles.admin.data.repository.WebhookDeliveryRepository;
 import io.runcycles.admin.data.repository.WebhookRepository;
 import io.runcycles.admin.model.event.Event;
@@ -25,15 +27,18 @@ public class WebhookDispatchService {
     private final WebhookDeliveryRepository deliveryRepository;
     private final ObjectMapper objectMapper;
     private final JedisPool jedisPool;
+    private final MeterRegistry meterRegistry;
 
     public WebhookDispatchService(WebhookRepository webhookRepository,
                                    WebhookDeliveryRepository deliveryRepository,
                                    ObjectMapper objectMapper,
-                                   JedisPool jedisPool) {
+                                   JedisPool jedisPool,
+                                   MeterRegistry meterRegistry) {
         this.webhookRepository = webhookRepository;
         this.deliveryRepository = deliveryRepository;
         this.objectMapper = objectMapper;
         this.jedisPool = jedisPool;
+        this.meterRegistry = meterRegistry;
     }
 
     /**
@@ -47,14 +52,25 @@ public class WebhookDispatchService {
             for (WebhookSubscription sub : subs) {
                 try {
                     createDelivery(event, sub);
+                    recordDispatch("queued");
                 } catch (Exception e) {
                     LOG.error("Failed to create delivery for subscription {}: {}",
                         sub.getSubscriptionId(), e.getMessage());
+                    recordDispatch("failure");
                 }
             }
         } catch (Exception e) {
             LOG.error("Failed to dispatch event {}: {}", event.getEventId(), e.getMessage());
+            recordDispatch("failure");
         }
+    }
+
+    private void recordDispatch(String result) {
+        Counter.builder("cycles_admin_webhook_dispatched_total")
+            .description("Count of webhook delivery enqueue attempts, labelled by result")
+            .tag("result", result)
+            .register(meterRegistry)
+            .increment();
     }
 
     /**

@@ -1,11 +1,14 @@
 package io.runcycles.admin.api.service;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.runcycles.admin.data.repository.EventRepository;
 import io.runcycles.admin.model.event.*;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Instant;
@@ -21,6 +24,7 @@ class EventServiceTest {
 
     @Mock private EventRepository eventRepository;
     @Mock private WebhookDispatchService webhookDispatchService;
+    @Spy private MeterRegistry meterRegistry = new SimpleMeterRegistry();
     @InjectMocks private EventService eventService;
 
     @Test
@@ -193,5 +197,34 @@ class EventServiceTest {
             "t1".equals(event.getTenantId()) &&
             EventCategory.TENANT == event.getCategory()));
         verify(webhookDispatchService).dispatch(any());
+    }
+
+    @Test
+    void emit_success_incrementsEmittedCounterWithSuccessTag() {
+        Event event = Event.builder()
+            .eventType(EventType.BUDGET_CREATED)
+            .tenantId("t1")
+            .build();
+
+        eventService.emit(event);
+
+        double count = meterRegistry.counter("cycles_admin_events_emitted_total",
+            "type", EventType.BUDGET_CREATED.getValue(), "result", "success").count();
+        assertThat(count).isEqualTo(1.0);
+    }
+
+    @Test
+    void emit_failure_incrementsEmittedCounterWithFailureTag() {
+        Event event = Event.builder()
+            .eventType(EventType.BUDGET_CREATED)
+            .tenantId("t1")
+            .build();
+        doThrow(new RuntimeException("DB down")).when(eventRepository).save(any());
+
+        eventService.emit(event);
+
+        double count = meterRegistry.counter("cycles_admin_events_emitted_total",
+            "type", EventType.BUDGET_CREATED.getValue(), "result", "failure").count();
+        assertThat(count).isEqualTo(1.0);
     }
 }
