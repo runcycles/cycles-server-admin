@@ -26,7 +26,7 @@ services:
       EVENT_TTL_DAYS: ${EVENT_TTL_DAYS:-90}
       DELIVERY_TTL_DAYS: ${DELIVERY_TTL_DAYS:-14}
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7979/actuator/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7979/actuator/health/liveness"]
       interval: 10s
       timeout: 5s
       retries: 3

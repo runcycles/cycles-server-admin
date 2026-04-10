@@ -6,6 +6,8 @@ import io.runcycles.admin.model.audit.AuditLogEntry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.context.annotation.Import;
+import io.runcycles.admin.api.support.MetricsTestConfiguration;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import redis.clients.jedis.JedisPool;
@@ -19,6 +21,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(AuditController.class)
+@Import(MetricsTestConfiguration.class)
 class AuditControllerTest {
 
     @Autowired private MockMvc mockMvc;

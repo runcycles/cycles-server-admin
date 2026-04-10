@@ -522,6 +522,31 @@ All errors return a standard `ErrorResponse`:
 | **Split-plane** | Admin + events separate from runtime enforcement |
 | **Full stack** | Admin (7979) + Runtime (7878) + Events (7980) + Redis |
 
+## Observability
+
+**Health endpoints** (Spring Boot Actuator):
+
+| Endpoint | Use |
+|----------|-----|
+| `GET /actuator/health` | Aggregate health (use for debugging) |
+| `GET /actuator/health/liveness` | K8s liveness probe — is the JVM alive? |
+| `GET /actuator/health/readiness` | K8s readiness probe — is the app ready to serve traffic? |
+| `GET /actuator/info` | Build info (version, git commit) |
+| `GET /actuator/prometheus` | Prometheus scrape endpoint |
+
+Docker healthchecks hit `/actuator/health/liveness` (not the aggregate endpoint) so a degraded readiness state doesn't restart the container.
+
+**Metrics:**
+
+Spring Boot auto-publishes `http_server_requests_seconds_*` (latency/count/errors per URI + method + status), JVM, Jedis pool, and logback counters. The admin service adds two custom counters for domain operations:
+
+| Metric | Tags | Description |
+|--------|------|-------------|
+| `cycles_admin_events_emitted_total` | `type`, `result` | Events emitted (`result` = `success` \| `failure`) |
+| `cycles_admin_webhook_dispatched_total` | `result` | Webhook delivery enqueue attempts (`result` = `queued` \| `failure`) |
+
+All metrics are tagged with `application=cycles-admin-service` for multi-service Prometheus/Grafana dashboards.
+
 ## Protocol Specification
 
 The full OpenAPI 3.1.0 specification is in [`complete-budget-governance-v0.1.25.yaml`](complete-budget-governance-v0.1.25.yaml).

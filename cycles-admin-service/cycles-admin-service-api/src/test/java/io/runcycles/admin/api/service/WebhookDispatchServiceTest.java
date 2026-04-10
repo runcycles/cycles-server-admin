@@ -1,6 +1,8 @@
 package io.runcycles.admin.api.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.runcycles.admin.data.repository.WebhookDeliveryRepository;
 import io.runcycles.admin.data.repository.WebhookRepository;
 import io.runcycles.admin.model.event.Event;
@@ -31,13 +33,15 @@ class WebhookDispatchServiceTest {
     @Mock private ObjectMapper objectMapper;
     @Mock private JedisPool jedisPool;
     @Mock private Jedis jedis;
+    private MeterRegistry meterRegistry;
 
     private WebhookDispatchService webhookDispatchService;
 
     @BeforeEach
     void setUp() {
         lenient().when(jedisPool.getResource()).thenReturn(jedis);
-        webhookDispatchService = new WebhookDispatchService(webhookRepository, deliveryRepository, objectMapper, jedisPool);
+        meterRegistry = new SimpleMeterRegistry();
+        webhookDispatchService = new WebhookDispatchService(webhookRepository, deliveryRepository, objectMapper, jedisPool, meterRegistry);
     }
 
     private Event buildEvent() {
@@ -162,5 +166,30 @@ class WebhookDispatchServiceTest {
             d.getEventId().equals("evt_1") &&
             d.getStatus() == DeliveryStatus.PENDING));
         verify(jedis).lpush(eq("dispatch:pending"), anyString());
+    }
+
+    @Test
+    void dispatch_success_incrementsQueuedCounter() {
+        Event event = buildEvent();
+        WebhookSubscription sub = buildSubscription("whsub_1");
+        when(webhookRepository.findMatchingSubscriptions("t1", EventType.BUDGET_CREATED, "org/team1"))
+            .thenReturn(List.of(sub));
+
+        webhookDispatchService.dispatch(event);
+
+        assertThat(meterRegistry.counter("cycles_admin_webhook_dispatched_total", "result", "queued").count())
+            .isEqualTo(1.0);
+    }
+
+    @Test
+    void dispatch_failure_incrementsFailureCounter() {
+        Event event = buildEvent();
+        when(webhookRepository.findMatchingSubscriptions(any(), any(), any()))
+            .thenThrow(new RuntimeException("DB error"));
+
+        webhookDispatchService.dispatch(event);
+
+        assertThat(meterRegistry.counter("cycles_admin_webhook_dispatched_total", "result", "failure").count())
+            .isEqualTo(1.0);
     }
 }

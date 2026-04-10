@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.service;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.runcycles.admin.data.repository.EventRepository;
 import io.runcycles.admin.model.event.*;
 import org.slf4j.Logger;
@@ -16,10 +18,14 @@ public class EventService {
     private static final Logger LOG = LoggerFactory.getLogger(EventService.class);
     private final EventRepository eventRepository;
     private final WebhookDispatchService webhookDispatchService;
+    private final MeterRegistry meterRegistry;
 
-    public EventService(EventRepository eventRepository, WebhookDispatchService webhookDispatchService) {
+    public EventService(EventRepository eventRepository,
+                        WebhookDispatchService webhookDispatchService,
+                        MeterRegistry meterRegistry) {
         this.eventRepository = eventRepository;
         this.webhookDispatchService = webhookDispatchService;
+        this.meterRegistry = meterRegistry;
     }
 
     /**
@@ -39,9 +45,20 @@ public class EventService {
             }
             eventRepository.save(event);
             webhookDispatchService.dispatch(event);
+            recordEmitted(event.getEventType(), "success");
         } catch (Exception e) {
             LOG.error("Failed to emit event {}: {}", event.getEventType(), e.getMessage(), e);
+            recordEmitted(event.getEventType(), "failure");
         }
+    }
+
+    private void recordEmitted(EventType type, String result) {
+        Counter.builder("cycles_admin_events_emitted_total")
+            .description("Count of domain events emitted, labelled by event type and result")
+            .tag("type", type != null ? type.getValue() : "unknown")
+            .tag("result", result)
+            .register(meterRegistry)
+            .increment();
     }
 
     /**
