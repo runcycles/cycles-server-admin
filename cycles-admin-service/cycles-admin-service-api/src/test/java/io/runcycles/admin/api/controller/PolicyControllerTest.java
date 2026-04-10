@@ -345,4 +345,16 @@ class PolicyControllerTest {
         // Repository call unchanged — these params are not passed through on v0.1.25.x
         verify(policyRepository).list(eq("t1"), any(), any(), any(), anyInt());
     }
+
+    // v0.1.25.8: spec says "MUST ignore without error" — malformed values must not 400
+    @Test
+    void listPolicies_withMalformedHasActionQuotas_stillReturns200() throws Exception {
+        setupApiKeyAuth();
+        when(policyRepository.list(eq("t1"), any(), any(), any(), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/policies")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("has_action_quotas", "not-a-boolean"))
+                .andExpect(status().isOk());
+    }
 }

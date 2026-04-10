@@ -55,7 +55,7 @@ public class TenantController {
             @RequestParam(required = false) TenantStatus status,
             @RequestParam(required = false) String parent_tenant_id,
             // v0.1.25.8: accepted and ignored. v0.1.26+ servers with observe_mode extension will wire this up.
-            @RequestParam(required = false) String observe_mode,
+            @SuppressWarnings("unused") @RequestParam(required = false) String observe_mode,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
