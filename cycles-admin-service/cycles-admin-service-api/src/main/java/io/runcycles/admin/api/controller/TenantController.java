@@ -43,7 +43,7 @@ public class TenantController {
             eventService.emit(EventType.TENANT_CREATED, request.getTenantId(), null, "cycles-admin",
                 Actor.builder().type(ActorType.ADMIN).build(),
                 objectMapper.convertValue(EventDataTenantLifecycle.builder()
-                    .tenantId(request.getTenantId()).newStatus("ACTIVE").changedFields(List.of()).build(), Map.class),
+                    .tenantId(request.getTenantId()).newStatus(io.runcycles.admin.model.tenant.TenantStatus.ACTIVE).changedFields(List.of()).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
             LOG.warn("Failed to emit event: {}", e.getMessage());
@@ -95,7 +95,7 @@ public class TenantController {
                 Actor.builder().type(ActorType.ADMIN).build(),
                 objectMapper.convertValue(EventDataTenantLifecycle.builder()
                     .tenantId(tenantId)
-                    .newStatus(updated.getStatus() != null ? updated.getStatus().name() : null)
+                    .newStatus(updated.getStatus())
                     .changedFields(List.of()).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
