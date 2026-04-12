@@ -4,7 +4,7 @@
 
 # Runcycles Admin Server
 
-Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25.10](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml).
+Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25.11](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml).
 
 ## Overview
 
@@ -580,6 +580,8 @@ v0.1.25.8 adds dashboard and observability hardening for v0.1.26 readiness: `Eve
 v0.1.25.9 is a patch release with operational hardening only — **no API surface changes**, spec stays at v0.1.25.8. Adds: Micrometer/Prometheus metrics at `/actuator/prometheus` with custom counters (`cycles_admin_events_emitted_total`, `cycles_admin_webhook_dispatched_total`); Kubernetes liveness/readiness probes at `/actuator/health/liveness` and `/actuator/health/readiness` (docker-compose healthchecks switched to liveness); CORS fixes — `X-Cycles-API-Key` and `X-Request-Id` are now allowlisted (both were previously blocked at preflight, breaking browser dashboards using tenant auth) and `X-Request-Id` is exposed for correlation; multi-origin CORS support via comma-separated `DASHBOARD_CORS_ORIGIN` env var.
 
 v0.1.25.10 is a patch release hardening spec compliance for `cycles-governance-admin-v0.1.25` (no API surface changes). (1) **`Permission` enum now modeled** — the 27 spec permission values are a typed Java enum with Jackson `@JsonValue`/`@JsonCreator`; inbound `POST /v1/admin/api-keys` and `PATCH /v1/admin/api-keys/{key_id}` now reject unknown permission strings (e.g. typos like `"budgets:wirte"`) at deserialization with a 400 instead of silently storing them. Wire format unchanged. (2) **`AuthIntrospectResponse.capabilities` structurally typed** — replaced the `Map<String, Boolean>` with a dedicated `Capabilities` class exposing the eight required booleans (`view_overview`, `view_budgets`, `view_events`, `view_webhooks`, `view_audit`, `view_tenants`, `view_api_keys`, `view_policies`) per spec's "all fields always present" contract. JSON shape identical.
+
+v0.1.25.11 turns on **fail-hard contract testing by default** — no API surface changes, build-time only. Every 2xx response from the 13 admin controllers is now validated against the authoritative `cycles-governance-admin-v0.1.25.yaml` spec fetched from `cycles-protocol@main` on each build. Any future drift between server and spec — missing required fields, extra fields violating `additionalProperties: false`, type/enum/min-max mismatches — fails the build. Depends on v0.1.25.10 (server-side `Permission`/`Capabilities` fixes), cycles-protocol spec v0.1.25.10 (spec-side `SignedAmount`, `BalanceListResponse`, strict PATCH bodies), and test fixture rename (tenant_id `minLength:3`). All three landed; the flip is a one-line default change. Disable for offline dev with `-Dcontract.validation.enabled=false` or `CONTRACT_VALIDATION_ENABLED=false`. See [docs/contract-testing.md](docs/contract-testing.md) for the runbook.
 
 ## Documentation
 

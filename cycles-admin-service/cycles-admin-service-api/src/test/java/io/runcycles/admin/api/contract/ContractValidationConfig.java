@@ -17,11 +17,10 @@ import org.springframework.test.web.servlet.ResultMatcher;
  * <p>Import from controller tests via {@code @Import(ContractValidationConfig.class)}
  * alongside the existing {@code MetricsTestConfiguration}.
  *
- * <p><b>Enablement gate:</b> OFF by default. Flip on with the system
- * property {@code -Dcontract.validation.enabled=true} (or env var
- * {@code CONTRACT_VALIDATION_ENABLED=true}). The gate lets the
- * infrastructure land as a dormant capability, and PR-E flips it on once
- * cycles-protocol@main + the admin server are confirmed drift-free.
+ * <p><b>Enablement gate:</b> ON by default as of v0.1.25.11. Disable
+ * with {@code -Dcontract.validation.enabled=false} (or env
+ * {@code CONTRACT_VALIDATION_ENABLED=false}) for offline / air-gapped
+ * dev where the cycles-protocol@main fetch would fail.
  *
  * <p>When the gate is OFF the customizer is a no-op — no spec fetch, no
  * matcher attached — so tests are unaffected by network or cache state.
@@ -32,12 +31,16 @@ import org.springframework.test.web.servlet.ResultMatcher;
 @TestConfiguration
 public class ContractValidationConfig {
 
-    /** Flip this on via -Dcontract.validation.enabled=true or env CONTRACT_VALIDATION_ENABLED=true. */
+    /**
+     * Defaults to true. Disable for offline dev with
+     * -Dcontract.validation.enabled=false or env CONTRACT_VALIDATION_ENABLED=false.
+     */
     public static boolean validationEnabled() {
         String prop = System.getProperty("contract.validation.enabled");
         if (prop != null) return Boolean.parseBoolean(prop);
         String env = System.getenv("CONTRACT_VALIDATION_ENABLED");
-        return env != null && Boolean.parseBoolean(env);
+        if (env != null) return Boolean.parseBoolean(env);
+        return true;
     }
 
     @Bean

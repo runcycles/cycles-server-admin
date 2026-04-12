@@ -1,9 +1,30 @@
 # Complete Budget Governance v0.1.25.8 — Admin Server Audit
 
-**Server version:** 0.1.25.10 (2026-04-12 patch release — spec-compliance hardening: `Permission` enum + typed `Capabilities`)
-**Date:** 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Server version:** 0.1.25.11 (2026-04-12 patch release — enable fail-hard contract testing by default)
+**Date:** 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, v0.1.25.9) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-12 — v0.1.25.11 contract-testing default ON
+
+Flip follow-up to v0.1.25.10's contract-testing infrastructure. One-line default change: `ContractValidationConfig.validationEnabled()` now returns `true` when neither system property nor env var is set. Every 2xx response from the 13 admin controllers under `*ControllerTest` is validated against `cycles-governance-admin-v0.1.25.yaml` fetched from `cycles-protocol@main` per build (cached to `target/contract/` with 1-hour TTL).
+
+**Why now.** The pre-existing drift-debt is zero:
+- Server-side: v0.1.25.10 closed the `Permission`/`Capabilities` gaps (runcycles/cycles-server-admin#77).
+- Spec-side: v0.1.25.10 spec added `SignedAmount`, `BalanceListResponse`, strict inline PATCH bodies (runcycles/cycles-protocol#32).
+- Fixtures: tenant_id rename to satisfy spec `minLength:3` (runcycles/cycles-server-admin#78).
+
+With all three merged, the gate-ON run (`mvn test -Dcontract.validation.enabled=true`) against v0.1.25.10 showed 432/432 tests passing. Flipping the default makes that the new baseline — future drift fails the build rather than silently shipping.
+
+**How to disable** (offline/air-gapped dev only):
+- `mvn verify -Dcontract.validation.enabled=false`
+- `CONTRACT_VALIDATION_ENABLED=false mvn verify`
+
+No production code changed. No API surface changed. Build-time only.
+
+**Tests:** 432 passing with gate ON, 432 passing with gate OFF. JaCoCo 95%+ coverage maintained.
+
+**Not yet included (Phase 2 follow-up).** Structural diff — comparing SpringDoc's `/api-docs` output against the pinned spec to catch endpoints that exist in spec but aren't implemented (or vice versa). `openapi-diff-core:2.1.7` is already on the test classpath for when this lands. Per-endpoint runtime validation (this PR) catches shape drift; structural diff catches surface drift. They're complementary.
 
 ### 2026-04-12 — v0.1.25.10 spec-compliance hardening (`Permission` enum + typed `Capabilities`)
 
