@@ -45,7 +45,7 @@ public class ApiKeyController {
                 Actor.builder().type(ActorType.ADMIN).build(),
                 objectMapper.convertValue(EventDataApiKey.builder()
                     .keyId(response.getKeyId()).keyName(request.getName())
-                    .newStatus("ACTIVE").permissions(request.getPermissionsAsStrings()).build(), Map.class),
+                    .newStatus(ApiKeyStatus.ACTIVE).permissions(request.getPermissionsAsStrings()).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
             LOG.warn("Failed to emit event: {}", e.getMessage());
@@ -131,7 +131,7 @@ public class ApiKeyController {
             eventService.emit(EventType.API_KEY_REVOKED, response.getTenantId(), null, "cycles-admin",
                 Actor.builder().type(ActorType.ADMIN).build(),
                 objectMapper.convertValue(EventDataApiKey.builder()
-                    .keyId(keyId).newStatus("REVOKED").failureReason(reason).build(), Map.class),
+                    .keyId(keyId).newStatus(ApiKeyStatus.REVOKED).failureReason(reason).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
             LOG.warn("Failed to emit event: {}", e.getMessage());

@@ -15,7 +15,7 @@ import lombok.NoArgsConstructor;
 public class EventDataRateSpike {
 
     @JsonProperty("metric")
-    private String metric;
+    private RateSpikeMetric metric;
 
     @JsonProperty("current_rate")
     private Double currentRate;

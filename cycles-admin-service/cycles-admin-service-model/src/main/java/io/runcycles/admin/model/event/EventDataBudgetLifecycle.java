@@ -25,7 +25,7 @@ public class EventDataBudgetLifecycle {
     private UnitEnum unit;
 
     @JsonProperty("operation")
-    private String operation;
+    private BudgetOperation operation;
 
     @JsonProperty("previous_state")
     private BudgetState previousState;

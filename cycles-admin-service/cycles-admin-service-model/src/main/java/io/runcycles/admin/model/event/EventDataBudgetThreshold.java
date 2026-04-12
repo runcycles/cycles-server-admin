@@ -40,5 +40,5 @@ public class EventDataBudgetThreshold {
     private Long reserved;
 
     @JsonProperty("direction")
-    private String direction;
+    private ThresholdDirection direction;
 }

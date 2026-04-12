@@ -201,7 +201,7 @@ class EventModelTest {
                 .ledgerId("ledger_1")
                 .scope("org/eng")
                 .unit(UnitEnum.USD_MICROCENTS)
-                .operation("fund")
+                .operation(io.runcycles.admin.model.event.BudgetOperation.CREDIT)
                 .previousState(EventDataBudgetLifecycle.BudgetState.builder()
                         .allocated(1000L).remaining(500L).debt(0L).status("ACTIVE").build())
                 .newState(EventDataBudgetLifecycle.BudgetState.builder()

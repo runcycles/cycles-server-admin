@@ -47,7 +47,7 @@ public class BudgetController {
                     .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
                 objectMapper.convertValue(EventDataBudgetLifecycle.builder()
                     .ledgerId(ledger.getLedgerId()).scope(request.getScope())
-                    .unit(request.getUnit()).operation("create").build(), Map.class),
+                    .unit(request.getUnit()).operation(BudgetOperation.CREATE).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
             LOG.warn("Failed to emit event: {}", e.getMessage());
@@ -120,7 +120,7 @@ public class BudgetController {
                 Actor.builder().type(actorType).keyId(keyId).build(),
                 objectMapper.convertValue(EventDataBudgetLifecycle.builder()
                     .ledgerId(ledger.getLedgerId()).scope(scope)
-                    .unit(unit).operation("update").build(), Map.class),
+                    .unit(unit).operation(BudgetOperation.UPDATE).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
             LOG.warn("Failed to emit event: {}", e.getMessage());
@@ -170,7 +170,7 @@ public class BudgetController {
                 Actor.builder().type(actorType)
                     .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
                 objectMapper.convertValue(EventDataBudgetLifecycle.builder()
-                    .scope(scope).unit(unit).operation(request.getOperation().name().toLowerCase())
+                    .scope(scope).unit(unit).operation(BudgetOperation.valueOf(request.getOperation().name()))
                     .reason(request.getReason()).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
@@ -199,7 +199,7 @@ public class BudgetController {
                 Actor.builder().type(ActorType.ADMIN).build(),
                 objectMapper.convertValue(EventDataBudgetLifecycle.builder()
                     .ledgerId(ledger.getLedgerId()).scope(scope).unit(unit)
-                    .operation("STATUS_CHANGE")
+                    .operation(BudgetOperation.STATUS_CHANGE)
                     .reason(request != null ? request.getReason() : null).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
@@ -228,7 +228,7 @@ public class BudgetController {
                 Actor.builder().type(ActorType.ADMIN).build(),
                 objectMapper.convertValue(EventDataBudgetLifecycle.builder()
                     .ledgerId(ledger.getLedgerId()).scope(scope).unit(unit)
-                    .operation("STATUS_CHANGE")
+                    .operation(BudgetOperation.STATUS_CHANGE)
                     .reason(request != null ? request.getReason() : null).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
