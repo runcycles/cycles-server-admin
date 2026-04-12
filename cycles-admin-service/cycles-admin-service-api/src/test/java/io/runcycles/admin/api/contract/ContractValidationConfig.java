@@ -4,10 +4,17 @@ import com.atlassian.oai.validator.OpenApiInteractionValidator;
 import com.atlassian.oai.validator.mockmvc.OpenApiMatchers;
 import com.atlassian.oai.validator.report.LevelResolver;
 import com.atlassian.oai.validator.report.ValidationReport;
+import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.parser.OpenAPIV3Parser;
+import io.swagger.v3.parser.core.models.ParseOptions;
 import org.springframework.boot.test.autoconfigure.web.servlet.MockMvcBuilderCustomizer;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.test.web.servlet.ResultMatcher;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.regex.Pattern;
 
 /**
  * Test configuration that attaches a Swagger Request Validator matcher to
@@ -78,6 +85,10 @@ public class ContractValidationConfig {
                 .createForInlineApiSpecification(ContractSpecLoader.loadSpec())
                 .withLevelResolver(levels)
                 .build();
+        // Parse the spec once to extract (method, path-template) pairs so we can map
+        // actual request URIs back to their spec template and record coverage.
+        List<SpecOperation> specOperations = loadSpecOperations(ContractSpecLoader.loadSpec());
+
         ResultMatcher full = new OpenApiMatchers().isValid(validator);
         // Validate every JSON response on spec-defined paths:
         //   - 2xx: body must match the operation's success response schema.
@@ -97,6 +108,15 @@ public class ContractValidationConfig {
                     || path.startsWith("/actuator")) {
                 return;
             }
+            // Record coverage for any request that hit a spec-defined path, regardless
+            // of whether the response has a body (204 No Content on DELETE still counts).
+            String method = result.getRequest().getMethod();
+            for (SpecOperation op : specOperations) {
+                if (op.method.equalsIgnoreCase(method) && op.matches(path)) {
+                    SpecCoverageCollector.record(op.method, op.pathTemplate);
+                    break;
+                }
+            }
             // Skip non-JSON responses — validator would misfire on empty/HTML bodies.
             String contentType = result.getResponse().getContentType();
             if (contentType == null || !contentType.contains("json")) return;
@@ -108,5 +128,39 @@ public class ContractValidationConfig {
             full.match(result);
         };
         return builder -> builder.alwaysExpect(onSpecPaths);
+    }
+
+    private static List<SpecOperation> loadSpecOperations(String specYaml) {
+        ParseOptions opts = new ParseOptions();
+        opts.setResolve(false);
+        OpenAPI api = new OpenAPIV3Parser().readContents(specYaml, null, opts).getOpenAPI();
+        List<SpecOperation> ops = new ArrayList<>();
+        if (api == null || api.getPaths() == null) return ops;
+        api.getPaths().forEach((pathTemplate, item) -> {
+            if (item.getGet() != null)    ops.add(new SpecOperation("GET",    pathTemplate));
+            if (item.getPost() != null)   ops.add(new SpecOperation("POST",   pathTemplate));
+            if (item.getPut() != null)    ops.add(new SpecOperation("PUT",    pathTemplate));
+            if (item.getPatch() != null)  ops.add(new SpecOperation("PATCH",  pathTemplate));
+            if (item.getDelete() != null) ops.add(new SpecOperation("DELETE", pathTemplate));
+        });
+        return ops;
+    }
+
+    private static final class SpecOperation {
+        final String method;
+        final String pathTemplate;
+        final Pattern regex;
+
+        SpecOperation(String method, String pathTemplate) {
+            this.method = method;
+            this.pathTemplate = pathTemplate;
+            // Convert /v1/foo/{bar}/baz -> ^/v1/foo/[^/]+/baz$
+            String re = "^" + pathTemplate.replaceAll("\\{[^}]+}", "[^/]+") + "$";
+            this.regex = Pattern.compile(re);
+        }
+
+        boolean matches(String actualPath) {
+            return regex.matcher(actualPath).matches();
+        }
     }
 }
