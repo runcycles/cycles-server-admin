@@ -91,6 +91,25 @@ class BudgetControllerTest {
     }
 
     @Test
+    void lookupBudget_returns200() throws Exception {
+        setupApiKeyAuth();
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1").scope("org/team1").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 800L))
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(budgetRepository.getByExactScope("org/team1", UnitEnum.USD_MICROCENTS)).thenReturn(ledger);
+
+        mockMvc.perform(get("/v1/admin/budgets/lookup")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("scope", "org/team1")
+                        .param("unit", "USD_MICROCENTS"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.ledger_id").value("led-1"))
+                .andExpect(jsonPath("$.scope").value("org/team1"));
+    }
+
+    @Test
     void listBudgets_returns200() throws Exception {
         setupApiKeyAuth();
         BudgetLedger ledger = BudgetLedger.builder()

@@ -95,6 +95,10 @@
                     <excludes>
                         <exclude>**/*IntegrationTest.java</exclude>
                     </excludes>
+                    <!-- Spec coverage report lives in api.zzz subpackage; alphabetical
+                         order ensures it runs LAST so SpecCoverageCollector holds the
+                         full set of hit operations by the time the report runs. -->
+                    <runOrder>alphabetical</runOrder>
                 </configuration>
             </plugin>
         </plugins>
