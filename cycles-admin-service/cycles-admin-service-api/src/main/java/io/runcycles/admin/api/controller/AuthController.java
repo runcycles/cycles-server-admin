@@ -3,6 +3,7 @@ import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.model.auth.ApiKeyValidationRequest;
 import io.runcycles.admin.model.auth.ApiKeyValidationResponse;
 import io.runcycles.admin.model.auth.AuthIntrospectResponse;
+import io.runcycles.admin.model.auth.Capabilities;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -54,17 +55,17 @@ public class AuthController {
                 .build());
     }
 
-    private Map<String, Boolean> deriveCapabilities(List<String> permissions) {
+    private Capabilities deriveCapabilities(List<String> permissions) {
         boolean isAdmin = permissions.contains("*");
-        return Map.of(
-                "view_overview",  isAdmin,
-                "view_budgets",   isAdmin || permissions.contains("admin:read") || permissions.contains("admin:budgets:read"),
-                "view_events",    isAdmin || permissions.contains("events:read") || permissions.contains("admin:events:read"),
-                "view_webhooks",  isAdmin || permissions.contains("webhooks:read") || permissions.contains("admin:webhooks:read"),
-                "view_audit",     isAdmin || permissions.contains("admin:audit:read"),
-                "view_tenants",   isAdmin || permissions.contains("admin:tenants:read"),
-                "view_api_keys",  isAdmin || permissions.contains("admin:apikeys:read"),
-                "view_policies",  isAdmin || permissions.contains("admin:read") || permissions.contains("admin:policies:read")
-        );
+        return Capabilities.builder()
+                .viewOverview(isAdmin)
+                .viewBudgets(isAdmin || permissions.contains("admin:read") || permissions.contains("admin:budgets:read"))
+                .viewEvents(isAdmin || permissions.contains("events:read") || permissions.contains("admin:events:read"))
+                .viewWebhooks(isAdmin || permissions.contains("webhooks:read") || permissions.contains("admin:webhooks:read"))
+                .viewAudit(isAdmin || permissions.contains("admin:audit:read"))
+                .viewTenants(isAdmin || permissions.contains("admin:tenants:read"))
+                .viewApiKeys(isAdmin || permissions.contains("admin:apikeys:read"))
+                .viewPolicies(isAdmin || permissions.contains("admin:read") || permissions.contains("admin:policies:read"))
+                .build();
     }
 }

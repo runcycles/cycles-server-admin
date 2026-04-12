@@ -37,7 +37,7 @@ public class ApiKeyController {
             .operation("createApiKey")
             .status(201)
             .metadata(request.getPermissions() != null
-                ? Map.of("name", request.getName(), "permissions", request.getPermissions())
+                ? Map.of("name", request.getName(), "permissions", request.getPermissionsAsStrings())
                 : Map.of("name", request.getName()))
             .build());
         try {
@@ -45,7 +45,7 @@ public class ApiKeyController {
                 Actor.builder().type(ActorType.ADMIN).build(),
                 objectMapper.convertValue(EventDataApiKey.builder()
                     .keyId(response.getKeyId()).keyName(request.getName())
-                    .newStatus("ACTIVE").permissions(request.getPermissions()).build(), Map.class),
+                    .newStatus("ACTIVE").permissions(request.getPermissionsAsStrings()).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
             LOG.warn("Failed to emit event: {}", e.getMessage());
@@ -83,7 +83,7 @@ public class ApiKeyController {
         ApiKey updated = repository.update(keyId, request);
         ApiKeyResponse response = ApiKeyResponse.from(updated);
         java.util.HashMap<String, Object> auditMeta = new java.util.HashMap<>();
-        if (request.getPermissions() != null) auditMeta.put("permissions", request.getPermissions());
+        if (request.getPermissions() != null) auditMeta.put("permissions", request.getPermissionsAsStrings());
         if (request.getScopeFilter() != null) auditMeta.put("scope_filter", request.getScopeFilter());
         if (request.getName() != null) auditMeta.put("name", request.getName());
         auditRepository.log(buildAuditEntry(httpRequest)
