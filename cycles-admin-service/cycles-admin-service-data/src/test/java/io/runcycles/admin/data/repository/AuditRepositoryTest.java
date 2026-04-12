@@ -45,7 +45,7 @@ class AuditRepositoryTest {
     @Test
     void log_setsLogIdAndTimestamp() {
         AuditLogEntry entry = AuditLogEntry.builder()
-                .tenantId("t1")
+                .tenantId("tenant-1")
                 .operation("createTenant")
                 .status(201)
                 .build();
@@ -60,7 +60,7 @@ class AuditRepositoryTest {
     @Test
     void log_persistsAllFields() throws Exception {
         AuditLogEntry entry = AuditLogEntry.builder()
-                .tenantId("t1")
+                .tenantId("tenant-1")
                 .keyId("key_1")
                 .operation("fundBudget")
                 .status(200)
@@ -85,16 +85,16 @@ class AuditRepositoryTest {
     @Test
     void list_returnsByTenantId() throws Exception {
         List<String> logIds = List.of("log_1", "log_2");
-        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
 
-        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("t1").operation("create").status(200).timestamp(Instant.now()).build();
-        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("t1").operation("update").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1").operation("create").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1").operation("update").status(200).timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
         when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
 
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, null, null, 50);
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(2);
     }
@@ -102,16 +102,16 @@ class AuditRepositoryTest {
     @Test
     void list_filtersByKeyId() throws Exception {
         List<String> logIds = List.of("log_1", "log_2");
-        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
 
-        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("t1").keyId("key_A").operation("create").status(200).timestamp(Instant.now()).build();
-        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("t1").keyId("key_B").operation("update").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1").keyId("key_A").operation("create").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1").keyId("key_B").operation("update").status(200).timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
         when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
 
-        List<AuditLogEntry> result = repository.list("t1", "key_A", null, null, null, null, null, null, null, 50);
+        List<AuditLogEntry> result = repository.list("tenant-1", "key_A", null, null, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getKeyId()).isEqualTo("key_A");
@@ -120,16 +120,16 @@ class AuditRepositoryTest {
     @Test
     void list_filtersByOperation() throws Exception {
         List<String> logIds = List.of("log_1", "log_2");
-        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
 
-        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("t1").operation("create").status(200).timestamp(Instant.now()).build();
-        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("t1").operation("update").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1").operation("create").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1").operation("update").status(200).timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
         when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
 
-        List<AuditLogEntry> result = repository.list("t1", null, "create", null, null, null, null, null, null, 50);
+        List<AuditLogEntry> result = repository.list("tenant-1", null, "create", null, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getOperation()).isEqualTo("create");
@@ -138,16 +138,16 @@ class AuditRepositoryTest {
     @Test
     void list_filtersByStatus() throws Exception {
         List<String> logIds = List.of("log_1", "log_2");
-        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
 
-        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("t1").operation("create").status(201).timestamp(Instant.now()).build();
-        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("t1").operation("create").status(400).timestamp(Instant.now()).build();
+        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1").operation("create").status(201).timestamp(Instant.now()).build();
+        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1").operation("create").status(400).timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
         when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
 
-        List<AuditLogEntry> result = repository.list("t1", null, null, 201, null, null, null, null, null, 50);
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, 201, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getStatus()).isEqualTo(201);
@@ -158,7 +158,7 @@ class AuditRepositoryTest {
         List<String> logIds = List.of("log_1");
         when(jedis.zrevrangeByScore(eq("audit:logs:_all"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
 
-        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("t1").operation("create").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1").operation("create").status(200).timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
 
@@ -171,20 +171,20 @@ class AuditRepositoryTest {
     @Test
     void list_respectsLimit() throws Exception {
         List<String> logIds = List.of("log_1", "log_2");
-        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
 
-        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("t1").operation("create").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1").operation("create").status(200).timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
 
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, null, null, 1);
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 1);
 
         assertThat(result).hasSize(1);
     }
 
     @Test
     void list_withZeroLimit_returnsEmpty() {
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, null, null, 0);
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 0);
         assertThat(result).isEmpty();
     }
 
@@ -192,20 +192,20 @@ class AuditRepositoryTest {
     void list_respectsCursor() throws Exception {
         // The cursor's score is looked up via zscore, then used as maxScore ceiling
         double cursorScore = 1000.0;
-        when(jedis.zscore("audit:logs:t1", "log_1")).thenReturn(cursorScore);
+        when(jedis.zscore("audit:logs:tenant-1", "log_1")).thenReturn(cursorScore);
 
         List<String> logIds = List.of("log_2", "log_3");
         // maxScore = cursorScore - 1 = 999.0
-        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), eq(999.0), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(logIds);
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), eq(999.0), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(logIds);
 
-        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("t1").operation("op").status(200).timestamp(Instant.now()).build();
-        AuditLogEntry e3 = AuditLogEntry.builder().logId("log_3").tenantId("t1").operation("op").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1").operation("op").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry e3 = AuditLogEntry.builder().logId("log_3").tenantId("tenant-1").operation("op").status(200).timestamp(Instant.now()).build();
         String e2Json = objectMapper.writeValueAsString(e2);
         String e3Json = objectMapper.writeValueAsString(e3);
         when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
         when(jedis.get("audit:log:log_3")).thenReturn(e3Json);
 
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, null, "log_1", 50);
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, "log_1", 50);
 
         assertThat(result).hasSize(2);
         assertThat(result.get(0).getLogId()).isEqualTo("log_2");
@@ -213,26 +213,26 @@ class AuditRepositoryTest {
 
     @Test
     void list_convenienceOverload_delegatesToFullMethod() {
-        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
                 .thenReturn(List.of());
 
-        List<AuditLogEntry> result = repository.list("t1", 10);
+        List<AuditLogEntry> result = repository.list("tenant-1", 10);
 
         assertThat(result).isEmpty();
-        verify(jedis).zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), eq(30));
+        verify(jedis).zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), eq(30));
     }
 
     @Test
     void list_missingLogData_skipsGracefully() throws Exception {
         List<String> logIds = List.of("log_1", "log_2");
-        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
 
         when(jedis.get("audit:log:log_1")).thenReturn(null);
-        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("t1").operation("op").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1").operation("op").status(200).timestamp(Instant.now()).build();
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
 
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, null, null, 50);
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getLogId()).isEqualTo("log_2");
@@ -243,7 +243,7 @@ class AuditRepositoryTest {
         when(jedisPool.getResource()).thenThrow(new RuntimeException("Redis down"));
 
         AuditLogEntry entry = AuditLogEntry.builder()
-                .tenantId("t1").operation("op").status(200).build();
+                .tenantId("tenant-1").operation("op").status(200).build();
 
         // Should not throw - audit failures are non-fatal
         repository.log(entry);
@@ -251,17 +251,17 @@ class AuditRepositoryTest {
 
     @Test
     void list_cursorNotFoundInIndex_usesDefaultMaxScore() throws Exception {
-        when(jedis.zscore("audit:logs:t1", "nonexistent")).thenReturn(null);
+        when(jedis.zscore("audit:logs:tenant-1", "nonexistent")).thenReturn(null);
 
         List<String> logIds = List.of("log_1");
-        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), eq(Double.POSITIVE_INFINITY), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt()))
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), eq(Double.POSITIVE_INFINITY), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt()))
                 .thenReturn(logIds);
 
-        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("t1").operation("op").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1").operation("op").status(200).timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
 
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, null, "nonexistent", 50);
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, "nonexistent", 50);
 
         assertThat(result).hasSize(1);
     }
@@ -272,36 +272,36 @@ class AuditRepositoryTest {
         Instant to = Instant.ofEpochMilli(2000);
 
         List<String> logIds = List.of("log_1");
-        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), eq(2000.0), eq(1000.0), eq(0), anyInt()))
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), eq(2000.0), eq(1000.0), eq(0), anyInt()))
                 .thenReturn(logIds);
 
-        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("t1").operation("op").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1").operation("op").status(200).timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
 
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, from, to, null, 50);
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, from, to, null, 50);
 
         assertThat(result).hasSize(1);
-        verify(jedis).zrevrangeByScore(eq("audit:logs:t1"), eq(2000.0), eq(1000.0), eq(0), anyInt());
+        verify(jedis).zrevrangeByScore(eq("audit:logs:tenant-1"), eq(2000.0), eq(1000.0), eq(0), anyInt());
     }
 
     @Test
     void list_negativeLimit_returnsEmptyList() {
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, null, null, -1);
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, -1);
         assertThat(result).isEmpty();
     }
 
     @Test
     void list_deserializationFailure_skipsGracefully() throws Exception {
         List<String> logIds = List.of("log_bad", "log_good");
-        when(jedis.zrevrangeByScore(eq("audit:logs:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(logIds);
 
         when(jedis.get("audit:log:log_bad")).thenReturn("{invalid json}");
-        AuditLogEntry good = AuditLogEntry.builder().logId("log_good").tenantId("t1").operation("op").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry good = AuditLogEntry.builder().logId("log_good").tenantId("tenant-1").operation("op").status(200).timestamp(Instant.now()).build();
         String goodJson = objectMapper.writeValueAsString(good);
         when(jedis.get("audit:log:log_good")).thenReturn(goodJson);
 
-        List<AuditLogEntry> result = repository.list("t1", null, null, null, null, null, null, null, null, 50);
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getLogId()).isEqualTo("log_good");

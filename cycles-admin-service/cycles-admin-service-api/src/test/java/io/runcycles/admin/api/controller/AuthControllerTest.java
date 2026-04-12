@@ -34,7 +34,7 @@ class AuthControllerTest {
     void validate_validKey_returns200WithValid() throws Exception {
         when(apiKeyRepository.validate("gov_valid_key")).thenReturn(
                 ApiKeyValidationResponse.builder()
-                        .valid(true).tenantId("t1").keyId("key_1")
+                        .valid(true).tenantId("tenant-1").keyId("key_1")
                         .permissions(List.of("balances:read"))
                         .build());
 
@@ -44,7 +44,7 @@ class AuthControllerTest {
                         .content("{\"key_secret\":\"gov_valid_key\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.valid").value(true))
-                .andExpect(jsonPath("$.tenant_id").value("t1"))
+                .andExpect(jsonPath("$.tenant_id").value("tenant-1"))
                 .andExpect(jsonPath("$.key_id").value("key_1"));
     }
 
@@ -122,7 +122,7 @@ class AuthControllerTest {
     void validate_expiredKey_returns200WithReasonKeyExpired() throws Exception {
         when(apiKeyRepository.validate("expired_key")).thenReturn(
                 ApiKeyValidationResponse.builder()
-                        .valid(false).tenantId("t1").keyId("key_exp")
+                        .valid(false).tenantId("tenant-1").keyId("key_exp")
                         .reason("KEY_EXPIRED")
                         .build());
 
@@ -140,7 +140,7 @@ class AuthControllerTest {
     void validate_revokedKey_returns200WithReasonKeyRevoked() throws Exception {
         when(apiKeyRepository.validate("revoked_key")).thenReturn(
                 ApiKeyValidationResponse.builder()
-                        .valid(false).tenantId("t1").keyId("key_rev")
+                        .valid(false).tenantId("tenant-1").keyId("key_rev")
                         .reason("KEY_REVOKED")
                         .build());
 

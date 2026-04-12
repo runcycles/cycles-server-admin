@@ -42,9 +42,9 @@ class AdminOverviewServiceTest {
     void buildOverview_aggregatesTenantCounts() {
         when(tenantRepository.list(isNull(), isNull(), isNull(), eq(100)))
                 .thenReturn(List.of(
-                        Tenant.builder().tenantId("t1").status(TenantStatus.ACTIVE).build(),
-                        Tenant.builder().tenantId("t2").status(TenantStatus.SUSPENDED).build(),
-                        Tenant.builder().tenantId("t3").status(TenantStatus.CLOSED).build()
+                        Tenant.builder().tenantId("tenant-1").status(TenantStatus.ACTIVE).build(),
+                        Tenant.builder().tenantId("tenant-2").status(TenantStatus.SUSPENDED).build(),
+                        Tenant.builder().tenantId("tenant-3").status(TenantStatus.CLOSED).build()
                 ));
         when(budgetRepository.list(anyString())).thenReturn(List.of());
         when(webhookRepository.listAll(isNull(), isNull(), isNull(), eq(100))).thenReturn(List.of());
@@ -63,7 +63,7 @@ class AdminOverviewServiceTest {
 
     @Test
     void buildOverview_aggregatesBudgetCountsAndTopOffenders() {
-        Tenant tenant = Tenant.builder().tenantId("t1").status(TenantStatus.ACTIVE).build();
+        Tenant tenant = Tenant.builder().tenantId("tenant-1").status(TenantStatus.ACTIVE).build();
         when(tenantRepository.list(isNull(), isNull(), isNull(), eq(100))).thenReturn(List.of(tenant));
 
         BudgetLedger overLimit = BudgetLedger.builder()
@@ -81,7 +81,7 @@ class AdminOverviewServiceTest {
                 .remaining(new Amount(UnitEnum.TOKENS, 3000L))
                 .debt(new Amount(UnitEnum.TOKENS, 0L))
                 .build();
-        when(budgetRepository.list("t1")).thenReturn(List.of(overLimit, normal));
+        when(budgetRepository.list("tenant-1")).thenReturn(List.of(overLimit, normal));
 
         when(webhookRepository.listAll(isNull(), isNull(), isNull(), eq(100))).thenReturn(List.of());
         when(eventRepository.list(isNull(), isNull(), isNull(), isNull(), isNull(), any(Instant.class), any(Instant.class), isNull(), eq(100))).thenReturn(List.of());

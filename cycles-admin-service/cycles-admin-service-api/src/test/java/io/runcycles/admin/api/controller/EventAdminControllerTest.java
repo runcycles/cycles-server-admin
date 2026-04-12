@@ -52,13 +52,13 @@ class EventAdminControllerTest {
     void listEvents_withFilters_passes() throws Exception {
         EventListResponse response = EventListResponse.builder()
             .events(List.of()).hasMore(false).build();
-        when(eventService.list(eq("t1"), eq("budget.created"), eq("budget"), eq("org/team1"),
+        when(eventService.list(eq("tenant-1"), eq("budget.created"), eq("budget"), eq("org/team1"),
                 eq("corr_1"), any(), any(), any(), anyInt()))
             .thenReturn(response);
 
         mockMvc.perform(get("/v1/admin/events")
                         .header("X-Admin-API-Key", ADMIN_KEY)
-                        .param("tenant_id", "t1")
+                        .param("tenant_id", "tenant-1")
                         .param("event_type", "budget.created")
                         .param("category", "budget")
                         .param("scope", "org/team1")
@@ -76,7 +76,7 @@ class EventAdminControllerTest {
     void getEvent_returns200() throws Exception {
         Event event = Event.builder()
             .eventId("evt_1").eventType(EventType.BUDGET_CREATED)
-            .category(EventCategory.BUDGET).tenantId("t1")
+            .category(EventCategory.BUDGET).tenantId("tenant-1")
             .timestamp(Instant.now()).source("admin").build();
         when(eventService.findById("evt_1")).thenReturn(event);
 

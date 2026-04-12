@@ -31,7 +31,7 @@ class EventServiceTest {
     void emit_savesEventAndDispatches() {
         Event event = Event.builder()
             .eventType(EventType.BUDGET_CREATED)
-            .tenantId("t1")
+            .tenantId("tenant-1")
             .source("test")
             .build();
 
@@ -45,7 +45,7 @@ class EventServiceTest {
     void emit_autoGeneratesEventIdIfNull() {
         Event event = Event.builder()
             .eventType(EventType.BUDGET_CREATED)
-            .tenantId("t1")
+            .tenantId("tenant-1")
             .build();
 
         eventService.emit(event);
@@ -58,7 +58,7 @@ class EventServiceTest {
     void emit_autoSetsTimestampIfNull() {
         Event event = Event.builder()
             .eventType(EventType.BUDGET_CREATED)
-            .tenantId("t1")
+            .tenantId("tenant-1")
             .build();
 
         eventService.emit(event);
@@ -70,7 +70,7 @@ class EventServiceTest {
     void emit_autoSetsCategoryFromEventType() {
         Event event = Event.builder()
             .eventType(EventType.BUDGET_CREATED)
-            .tenantId("t1")
+            .tenantId("tenant-1")
             .build();
 
         eventService.emit(event);
@@ -83,7 +83,7 @@ class EventServiceTest {
         Event event = Event.builder()
             .eventId("evt_existing")
             .eventType(EventType.BUDGET_CREATED)
-            .tenantId("t1")
+            .tenantId("tenant-1")
             .build();
 
         eventService.emit(event);
@@ -95,7 +95,7 @@ class EventServiceTest {
     void emit_doesNotThrowOnRepositoryFailure() {
         Event event = Event.builder()
             .eventType(EventType.BUDGET_CREATED)
-            .tenantId("t1")
+            .tenantId("tenant-1")
             .build();
         doThrow(new RuntimeException("DB down")).when(eventRepository).save(any());
 
@@ -109,7 +109,7 @@ class EventServiceTest {
     void emit_doesNotThrowOnDispatchFailure() {
         Event event = Event.builder()
             .eventType(EventType.BUDGET_CREATED)
-            .tenantId("t1")
+            .tenantId("tenant-1")
             .build();
         doThrow(new RuntimeException("Dispatch failed")).when(webhookDispatchService).dispatch(any());
 
@@ -189,12 +189,12 @@ class EventServiceTest {
 
     @Test
     void emit_convenienceOverload_buildsAndEmitsEvent() {
-        eventService.emit(EventType.TENANT_CREATED, "t1", "scope1", "admin",
+        eventService.emit(EventType.TENANT_CREATED, "tenant-1", "scope1", "admin",
             Actor.builder().build(), Map.of("key", "val"), "corr1", "req1");
 
         verify(eventRepository).save(argThat(event ->
             event.getEventType() == EventType.TENANT_CREATED &&
-            "t1".equals(event.getTenantId()) &&
+            "tenant-1".equals(event.getTenantId()) &&
             EventCategory.TENANT == event.getCategory()));
         verify(webhookDispatchService).dispatch(any());
     }
@@ -203,7 +203,7 @@ class EventServiceTest {
     void emit_success_incrementsEmittedCounterWithSuccessTag() {
         Event event = Event.builder()
             .eventType(EventType.BUDGET_CREATED)
-            .tenantId("t1")
+            .tenantId("tenant-1")
             .build();
 
         eventService.emit(event);
@@ -217,7 +217,7 @@ class EventServiceTest {
     void emit_failure_incrementsEmittedCounterWithFailureTag() {
         Event event = Event.builder()
             .eventType(EventType.BUDGET_CREATED)
-            .tenantId("t1")
+            .tenantId("tenant-1")
             .build();
         doThrow(new RuntimeException("DB down")).when(eventRepository).save(any());
 

@@ -154,7 +154,7 @@ class ApiKeyRepositoryTest {
         when(jedis.get("apikey:lookup:cyc_live_abc12")).thenReturn("key_123");
 
         ApiKey key = ApiKey.builder()
-                .keyId("key_123").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyId("key_123").tenantId("tenant-1").keyPrefix("cyc_live_abc12")
                 .keyHash("$2a$12$hash").status(ApiKeyStatus.ACTIVE)
                 .permissions(List.of("balances:read"))
                 .expiresAt(Instant.now().plusSeconds(3600))
@@ -163,12 +163,12 @@ class ApiKeyRepositoryTest {
         when(jedis.get("apikey:key_123")).thenReturn(keyJson);
 
         when(keyService.verifyKey(keySecret, "$2a$12$hash")).thenReturn(true);
-        when(jedis.get("tenant:t1")).thenReturn("{\"status\":\"ACTIVE\"}");
+        when(jedis.get("tenant:tenant-1")).thenReturn("{\"status\":\"ACTIVE\"}");
 
         ApiKeyValidationResponse response = repository.validate(keySecret);
 
         assertThat(response.getValid()).isTrue();
-        assertThat(response.getTenantId()).isEqualTo("t1");
+        assertThat(response.getTenantId()).isEqualTo("tenant-1");
         assertThat(response.getKeyId()).isEqualTo("key_123");
     }
 
@@ -189,7 +189,7 @@ class ApiKeyRepositoryTest {
         when(jedis.get("apikey:lookup:cyc_live_revok")).thenReturn("key_rev");
 
         ApiKey key = ApiKey.builder()
-                .keyId("key_rev").tenantId("t1").keyHash("hash")
+                .keyId("key_rev").tenantId("tenant-1").keyHash("hash")
                 .status(ApiKeyStatus.REVOKED).createdAt(Instant.now()).build();
         String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_rev")).thenReturn(keyJson);
@@ -206,7 +206,7 @@ class ApiKeyRepositoryTest {
         when(jedis.get("apikey:lookup:cyc_live_expir")).thenReturn("key_exp");
 
         ApiKey key = ApiKey.builder()
-                .keyId("key_exp").tenantId("t1").keyHash("hash")
+                .keyId("key_exp").tenantId("tenant-1").keyHash("hash")
                 .status(ApiKeyStatus.ACTIVE)
                 .expiresAt(Instant.now().minusSeconds(3600))
                 .createdAt(Instant.now()).build();
@@ -225,7 +225,7 @@ class ApiKeyRepositoryTest {
         when(jedis.get("apikey:lookup:cyc_live_wrong")).thenReturn("key_w");
 
         ApiKey key = ApiKey.builder()
-                .keyId("key_w").tenantId("t1").keyHash("$2a$12$real")
+                .keyId("key_w").tenantId("tenant-1").keyHash("$2a$12$real")
                 .status(ApiKeyStatus.ACTIVE)
                 .expiresAt(Instant.now().plusSeconds(3600))
                 .createdAt(Instant.now()).build();
@@ -245,14 +245,14 @@ class ApiKeyRepositoryTest {
         when(jedis.get("apikey:lookup:cyc_live_susp1")).thenReturn("key_s");
 
         ApiKey key = ApiKey.builder()
-                .keyId("key_s").tenantId("t1").keyHash("$2a$12$hash")
+                .keyId("key_s").tenantId("tenant-1").keyHash("$2a$12$hash")
                 .status(ApiKeyStatus.ACTIVE)
                 .expiresAt(Instant.now().plusSeconds(3600))
                 .createdAt(Instant.now()).build();
         String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_s")).thenReturn(keyJson);
         when(keyService.verifyKey("cyc_live_susp", "$2a$12$hash")).thenReturn(true);
-        when(jedis.get("tenant:t1")).thenReturn("{\"status\":\"SUSPENDED\"}");
+        when(jedis.get("tenant:tenant-1")).thenReturn("{\"status\":\"SUSPENDED\"}");
 
         ApiKeyValidationResponse response = repository.validate("cyc_live_susp");
 
@@ -266,14 +266,14 @@ class ApiKeyRepositoryTest {
         when(jedis.get("apikey:lookup:cyc_live_close")).thenReturn("key_c");
 
         ApiKey key = ApiKey.builder()
-                .keyId("key_c").tenantId("t1").keyHash("$2a$12$hash")
+                .keyId("key_c").tenantId("tenant-1").keyHash("$2a$12$hash")
                 .status(ApiKeyStatus.ACTIVE)
                 .expiresAt(Instant.now().plusSeconds(3600))
                 .createdAt(Instant.now()).build();
         String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_c")).thenReturn(keyJson);
         when(keyService.verifyKey("cyc_live_closed", "$2a$12$hash")).thenReturn(true);
-        when(jedis.get("tenant:t1")).thenReturn("{\"status\":\"CLOSED\"}");
+        when(jedis.get("tenant:tenant-1")).thenReturn("{\"status\":\"CLOSED\"}");
 
         ApiKeyValidationResponse response = repository.validate("cyc_live_closed");
 
@@ -284,7 +284,7 @@ class ApiKeyRepositoryTest {
     @Test
     void revoke_existingKey_setsRevokedStatus() throws Exception {
         ApiKey revoked = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyHash("hash")
+                .keyId("key_1").tenantId("tenant-1").keyHash("hash")
                 .status(ApiKeyStatus.REVOKED).revokedReason("No longer needed")
                 .revokedAt(Instant.now()).createdAt(Instant.now()).build();
         String revokedJson = objectMapper.writeValueAsString(revoked);
@@ -312,16 +312,16 @@ class ApiKeyRepositoryTest {
     @Test
     void list_returnsKeysForTenant() throws Exception {
         Set<String> ids = new LinkedHashSet<>(List.of("key_1", "key_2"));
-        when(jedis.smembers("apikeys:t1")).thenReturn(ids);
+        when(jedis.smembers("apikeys:tenant-1")).thenReturn(ids);
 
-        ApiKey k1 = ApiKey.builder().keyId("key_1").tenantId("t1").keyHash("h1").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
-        ApiKey k2 = ApiKey.builder().keyId("key_2").tenantId("t1").keyHash("h2").status(ApiKeyStatus.REVOKED).createdAt(Instant.now()).build();
+        ApiKey k1 = ApiKey.builder().keyId("key_1").tenantId("tenant-1").keyHash("h1").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        ApiKey k2 = ApiKey.builder().keyId("key_2").tenantId("tenant-1").keyHash("h2").status(ApiKeyStatus.REVOKED).createdAt(Instant.now()).build();
         String k1Json = objectMapper.writeValueAsString(k1);
         String k2Json = objectMapper.writeValueAsString(k2);
         when(jedis.get("apikey:key_1")).thenReturn(k1Json);
         when(jedis.get("apikey:key_2")).thenReturn(k2Json);
 
-        List<ApiKey> result = repository.list("t1", null, null, 50);
+        List<ApiKey> result = repository.list("tenant-1", null, null, 50);
 
         assertThat(result).hasSize(2);
     }
@@ -329,16 +329,16 @@ class ApiKeyRepositoryTest {
     @Test
     void list_filtersKeysByStatus() throws Exception {
         Set<String> ids = new LinkedHashSet<>(List.of("key_1", "key_2"));
-        when(jedis.smembers("apikeys:t1")).thenReturn(ids);
+        when(jedis.smembers("apikeys:tenant-1")).thenReturn(ids);
 
-        ApiKey k1 = ApiKey.builder().keyId("key_1").tenantId("t1").keyHash("h1").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
-        ApiKey k2 = ApiKey.builder().keyId("key_2").tenantId("t1").keyHash("h2").status(ApiKeyStatus.REVOKED).createdAt(Instant.now()).build();
+        ApiKey k1 = ApiKey.builder().keyId("key_1").tenantId("tenant-1").keyHash("h1").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        ApiKey k2 = ApiKey.builder().keyId("key_2").tenantId("tenant-1").keyHash("h2").status(ApiKeyStatus.REVOKED).createdAt(Instant.now()).build();
         String k1Json = objectMapper.writeValueAsString(k1);
         String k2Json = objectMapper.writeValueAsString(k2);
         when(jedis.get("apikey:key_1")).thenReturn(k1Json);
         when(jedis.get("apikey:key_2")).thenReturn(k2Json);
 
-        List<ApiKey> result = repository.list("t1", ApiKeyStatus.ACTIVE, null, 50);
+        List<ApiKey> result = repository.list("tenant-1", ApiKeyStatus.ACTIVE, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getKeyId()).isEqualTo("key_1");
@@ -347,16 +347,16 @@ class ApiKeyRepositoryTest {
     @Test
     void list_cursorPagination_skipsEntriesBeforeCursor() throws Exception {
         Set<String> ids = new LinkedHashSet<>(List.of("key_1", "key_2", "key_3"));
-        when(jedis.smembers("apikeys:t1")).thenReturn(ids);
+        when(jedis.smembers("apikeys:tenant-1")).thenReturn(ids);
 
-        ApiKey k2 = ApiKey.builder().keyId("key_2").tenantId("t1").keyHash("h2").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
-        ApiKey k3 = ApiKey.builder().keyId("key_3").tenantId("t1").keyHash("h3").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        ApiKey k2 = ApiKey.builder().keyId("key_2").tenantId("tenant-1").keyHash("h2").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        ApiKey k3 = ApiKey.builder().keyId("key_3").tenantId("tenant-1").keyHash("h3").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
         String k2Json = objectMapper.writeValueAsString(k2);
         String k3Json = objectMapper.writeValueAsString(k3);
         when(jedis.get("apikey:key_2")).thenReturn(k2Json);
         when(jedis.get("apikey:key_3")).thenReturn(k3Json);
 
-        List<ApiKey> result = repository.list("t1", null, "key_1", 50);
+        List<ApiKey> result = repository.list("tenant-1", null, "key_1", 50);
 
         assertThat(result).hasSize(2);
         assertThat(result.get(0).getKeyId()).isEqualTo("key_2");
@@ -365,13 +365,13 @@ class ApiKeyRepositoryTest {
     @Test
     void list_respectsLimit() throws Exception {
         Set<String> ids = new LinkedHashSet<>(List.of("key_1", "key_2", "key_3"));
-        when(jedis.smembers("apikeys:t1")).thenReturn(ids);
+        when(jedis.smembers("apikeys:tenant-1")).thenReturn(ids);
 
-        ApiKey k1 = ApiKey.builder().keyId("key_1").tenantId("t1").keyHash("h1").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        ApiKey k1 = ApiKey.builder().keyId("key_1").tenantId("tenant-1").keyHash("h1").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
         String k1Json = objectMapper.writeValueAsString(k1);
         when(jedis.get("apikey:key_1")).thenReturn(k1Json);
 
-        List<ApiKey> result = repository.list("t1", null, null, 1);
+        List<ApiKey> result = repository.list("tenant-1", null, null, 1);
 
         assertThat(result).hasSize(1);
     }
@@ -379,14 +379,14 @@ class ApiKeyRepositoryTest {
     @Test
     void list_missingKeyData_skipsGracefully() throws Exception {
         Set<String> ids = new LinkedHashSet<>(List.of("key_1", "key_2"));
-        when(jedis.smembers("apikeys:t1")).thenReturn(ids);
+        when(jedis.smembers("apikeys:tenant-1")).thenReturn(ids);
 
         when(jedis.get("apikey:key_1")).thenReturn(null);
-        ApiKey k2 = ApiKey.builder().keyId("key_2").tenantId("t1").keyHash("h2").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        ApiKey k2 = ApiKey.builder().keyId("key_2").tenantId("tenant-1").keyHash("h2").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
         String k2Json = objectMapper.writeValueAsString(k2);
         when(jedis.get("apikey:key_2")).thenReturn(k2Json);
 
-        List<ApiKey> result = repository.list("t1", null, null, 50);
+        List<ApiKey> result = repository.list("tenant-1", null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getKeyId()).isEqualTo("key_2");
@@ -394,27 +394,27 @@ class ApiKeyRepositoryTest {
 
     @Test
     void list_emptyKeySet_returnsEmptyList() {
-        when(jedis.smembers("apikeys:t1")).thenReturn(Collections.emptySet());
+        when(jedis.smembers("apikeys:tenant-1")).thenReturn(Collections.emptySet());
 
-        List<ApiKey> result = repository.list("t1", null, null, 50);
+        List<ApiKey> result = repository.list("tenant-1", null, null, 50);
 
         assertThat(result).isEmpty();
     }
 
     @Test
     void list_convenienceMethod_callsFullListWithDefaults() {
-        when(jedis.smembers("apikeys:t1")).thenReturn(Collections.emptySet());
+        when(jedis.smembers("apikeys:tenant-1")).thenReturn(Collections.emptySet());
 
-        List<ApiKey> result = repository.list("t1");
+        List<ApiKey> result = repository.list("tenant-1");
 
         assertThat(result).isEmpty();
-        verify(jedis).smembers("apikeys:t1");
+        verify(jedis).smembers("apikeys:tenant-1");
     }
 
     @Test
     void revoke_alreadyRevoked_returnsRevokedKey() throws Exception {
         ApiKey revoked = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyHash("hash")
+                .keyId("key_1").tenantId("tenant-1").keyHash("hash")
                 .status(ApiKeyStatus.REVOKED).revokedAt(Instant.now())
                 .createdAt(Instant.now()).build();
         String revokedJson = objectMapper.writeValueAsString(revoked);
@@ -497,14 +497,14 @@ class ApiKeyRepositoryTest {
         when(jedis.get("apikey:lookup:cyc_live_noper")).thenReturn("key_np");
 
         ApiKey key = ApiKey.builder()
-                .keyId("key_np").tenantId("t1").keyHash("$2a$12$hash")
+                .keyId("key_np").tenantId("tenant-1").keyHash("$2a$12$hash")
                 .status(ApiKeyStatus.ACTIVE).permissions(null)
                 .expiresAt(Instant.now().plusSeconds(3600))
                 .createdAt(Instant.now()).build();
         String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_np")).thenReturn(keyJson);
         when(keyService.verifyKey("cyc_live_noperm", "$2a$12$hash")).thenReturn(true);
-        when(jedis.get("tenant:t1")).thenReturn("{\"status\":\"ACTIVE\"}");
+        when(jedis.get("tenant:tenant-1")).thenReturn("{\"status\":\"ACTIVE\"}");
 
         ApiKeyValidationResponse response = repository.validate("cyc_live_noperm");
 
@@ -527,7 +527,7 @@ class ApiKeyRepositoryTest {
         when(keyService.generateKeySecret("cyc_live")).thenThrow(new RuntimeException("Key generation failed"));
 
         ApiKeyCreateRequest request = new ApiKeyCreateRequest();
-        request.setTenantId("t1");
+        request.setTenantId("tenant-1");
         request.setName("Test Key");
 
         assertThatThrownBy(() -> repository.create(request))
@@ -538,14 +538,14 @@ class ApiKeyRepositoryTest {
     @Test
     void list_deserializationFailure_skipsGracefully() throws Exception {
         Set<String> ids = new LinkedHashSet<>(List.of("key_1", "key_2"));
-        when(jedis.smembers("apikeys:t1")).thenReturn(ids);
+        when(jedis.smembers("apikeys:tenant-1")).thenReturn(ids);
 
         when(jedis.get("apikey:key_1")).thenReturn("{invalid json}");
-        ApiKey k2 = ApiKey.builder().keyId("key_2").tenantId("t1").keyHash("h2").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        ApiKey k2 = ApiKey.builder().keyId("key_2").tenantId("tenant-1").keyHash("h2").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
         String k2Json = objectMapper.writeValueAsString(k2);
         when(jedis.get("apikey:key_2")).thenReturn(k2Json);
 
-        List<ApiKey> result = repository.list("t1", null, null, 50);
+        List<ApiKey> result = repository.list("tenant-1", null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getKeyId()).isEqualTo("key_2");
@@ -566,7 +566,7 @@ class ApiKeyRepositoryTest {
         when(jedis.get("apikey:lookup:cyc_live_nodat")).thenReturn("key_nd");
 
         ApiKey key = ApiKey.builder()
-                .keyId("key_nd").tenantId("t1").keyHash("$2a$12$hash")
+                .keyId("key_nd").tenantId("tenant-1").keyHash("$2a$12$hash")
                 .status(ApiKeyStatus.ACTIVE)
                 .permissions(List.of("balances:read"))
                 .expiresAt(Instant.now().plusSeconds(3600))
@@ -574,19 +574,19 @@ class ApiKeyRepositoryTest {
         String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_nd")).thenReturn(keyJson);
         when(keyService.verifyKey("cyc_live_nodata", "$2a$12$hash")).thenReturn(true);
-        when(jedis.get("tenant:t1")).thenReturn(null);
+        when(jedis.get("tenant:tenant-1")).thenReturn(null);
 
         ApiKeyValidationResponse response = repository.validate("cyc_live_nodata");
 
         assertThat(response.getValid()).isFalse();
-        assertThat(response.getTenantId()).isEqualTo("t1");
+        assertThat(response.getTenantId()).isEqualTo("tenant-1");
         assertThat(response.getReason()).isEqualTo("TENANT_NOT_FOUND");
     }
 
     @Test
     void revoke_withNullReason_passesEmptyString() throws Exception {
         ApiKey revoked = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyHash("hash")
+                .keyId("key_1").tenantId("tenant-1").keyHash("hash")
                 .status(ApiKeyStatus.REVOKED)
                 .revokedAt(Instant.now()).createdAt(Instant.now()).build();
         String revokedJson = objectMapper.writeValueAsString(revoked);
@@ -604,19 +604,19 @@ class ApiKeyRepositoryTest {
         when(jedis.get("apikey:lookup:cyc_live_noexp")).thenReturn("key_ne");
 
         ApiKey key = ApiKey.builder()
-                .keyId("key_ne").tenantId("t1").keyHash("$2a$12$hash")
+                .keyId("key_ne").tenantId("tenant-1").keyHash("$2a$12$hash")
                 .status(ApiKeyStatus.ACTIVE).expiresAt(null)
                 .permissions(List.of("balances:read"))
                 .createdAt(Instant.now()).build();
         String keyJson = objectMapper.writeValueAsString(key);
         when(jedis.get("apikey:key_ne")).thenReturn(keyJson);
         when(keyService.verifyKey("cyc_live_noexp", "$2a$12$hash")).thenReturn(true);
-        when(jedis.get("tenant:t1")).thenReturn("{\"status\":\"ACTIVE\"}");
+        when(jedis.get("tenant:tenant-1")).thenReturn("{\"status\":\"ACTIVE\"}");
 
         ApiKeyValidationResponse response = repository.validate("cyc_live_noexp");
 
         assertThat(response.getValid()).isTrue();
-        assertThat(response.getTenantId()).isEqualTo("t1");
+        assertThat(response.getTenantId()).isEqualTo("tenant-1");
     }
 
     @Test
@@ -681,10 +681,10 @@ class ApiKeyRepositoryTest {
     @Test
     void list_cursorNotFound_returnsNoEntriesAfterCursor() throws Exception {
         Set<String> ids = new LinkedHashSet<>(List.of("key_1", "key_2"));
-        when(jedis.smembers("apikeys:t1")).thenReturn(ids);
+        when(jedis.smembers("apikeys:tenant-1")).thenReturn(ids);
 
         // Cursor points to nonexistent key - nothing comes after it
-        List<ApiKey> result = repository.list("t1", null, "nonexistent", 50);
+        List<ApiKey> result = repository.list("tenant-1", null, "nonexistent", 50);
 
         assertThat(result).isEmpty();
     }
@@ -714,7 +714,7 @@ class ApiKeyRepositoryTest {
     @Test
     void update_success_returnsUpdatedKey() throws Exception {
         ApiKey existing = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyId("key_1").tenantId("tenant-1").keyPrefix("cyc_live_abc12")
                 .keyHash("$2a$12$hash").status(ApiKeyStatus.ACTIVE)
                 .permissions(List.of("balances:read"))
                 .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(3600)).build();
@@ -751,7 +751,7 @@ class ApiKeyRepositoryTest {
     @Test
     void update_revokedKey_throws409() throws Exception {
         ApiKey revoked = ApiKey.builder()
-                .keyId("key_rev").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyId("key_rev").tenantId("tenant-1").keyPrefix("cyc_live_abc12")
                 .keyHash("hash").status(ApiKeyStatus.REVOKED)
                 .createdAt(Instant.now()).build();
         String revokedJson = objectMapper.writeValueAsString(revoked);
@@ -771,7 +771,7 @@ class ApiKeyRepositoryTest {
     @Test
     void update_expiredKey_throws409() throws Exception {
         ApiKey expired = ApiKey.builder()
-                .keyId("key_exp").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyId("key_exp").tenantId("tenant-1").keyPrefix("cyc_live_abc12")
                 .keyHash("hash").status(ApiKeyStatus.EXPIRED)
                 .createdAt(Instant.now()).build();
         String expiredJson = objectMapper.writeValueAsString(expired);
@@ -791,7 +791,7 @@ class ApiKeyRepositoryTest {
     @Test
     void update_onlyName_doesNotModifyOtherFields() throws Exception {
         ApiKey existing = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyId("key_1").tenantId("tenant-1").keyPrefix("cyc_live_abc12")
                 .keyHash("hash").name("Old Name").status(ApiKeyStatus.ACTIVE)
                 .permissions(List.of("balances:read")).scopeFilter(List.of("workspace:eng"))
                 .createdAt(Instant.now()).build();

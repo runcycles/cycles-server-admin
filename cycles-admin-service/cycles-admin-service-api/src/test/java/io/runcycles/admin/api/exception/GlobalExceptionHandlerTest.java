@@ -40,13 +40,13 @@ class GlobalExceptionHandlerTest {
 
     @Test
     void handleGovernanceException_returnsCorrectStatusAndBody() {
-        GovernanceException ex = GovernanceException.tenantNotFound("t1");
+        GovernanceException ex = GovernanceException.tenantNotFound("tenant-1");
 
         ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex, mockRequest);
 
         assertThat(response.getStatusCode().value()).isEqualTo(404);
         assertThat(response.getBody().getError()).isEqualTo(ErrorCode.TENANT_NOT_FOUND);
-        assertThat(response.getBody().getMessage()).contains("t1");
+        assertThat(response.getBody().getMessage()).contains("tenant-1");
         assertThat(response.getBody().getRequestId()).isNotNull();
     }
 
@@ -74,7 +74,7 @@ class GlobalExceptionHandlerTest {
 
     @Test
     void handleGovernanceException_duplicateResource_returns409() {
-        GovernanceException ex = GovernanceException.duplicateResource("Tenant", "t1");
+        GovernanceException ex = GovernanceException.duplicateResource("Tenant", "tenant-1");
 
         ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex, mockRequest);
 
@@ -206,7 +206,7 @@ class GlobalExceptionHandlerTest {
 
     @Test
     void resolveRequestId_whenRequestIsNull_returnsUuid() {
-        GovernanceException ex = GovernanceException.tenantNotFound("t1");
+        GovernanceException ex = GovernanceException.tenantNotFound("tenant-1");
 
         ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex, null);
 
@@ -219,7 +219,7 @@ class GlobalExceptionHandlerTest {
     @Test
     void resolveRequestId_whenRequestHasNoRequestIdAttribute_returnsUuid() {
         // mockRequest returns null for getAttribute by default (no REQUEST_ID_ATTRIBUTE set)
-        GovernanceException ex = GovernanceException.tenantNotFound("t1");
+        GovernanceException ex = GovernanceException.tenantNotFound("tenant-1");
 
         ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex, mockRequest);
 
@@ -232,7 +232,7 @@ class GlobalExceptionHandlerTest {
     void resolveRequestId_whenRequestHasRequestIdAttribute_returnsAttribute() {
         when(mockRequest.getAttribute("requestId")).thenReturn("custom-req-id-123");
 
-        GovernanceException ex = GovernanceException.tenantNotFound("t1");
+        GovernanceException ex = GovernanceException.tenantNotFound("tenant-1");
 
         ResponseEntity<ErrorResponse> response = handler.handleGovernanceException(ex, mockRequest);
 

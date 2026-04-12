@@ -34,7 +34,7 @@ class AuditControllerTest {
     @Test
     void listAuditLogs_returns200() throws Exception {
         AuditLogEntry entry = AuditLogEntry.builder()
-                .logId("log_1").tenantId("t1").operation("createTenant")
+                .logId("log_1").tenantId("tenant-1").operation("createTenant")
                 .status(201).timestamp(Instant.now()).build();
         when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
                 .thenReturn(List.of(entry));
@@ -48,12 +48,12 @@ class AuditControllerTest {
 
     @Test
     void listAuditLogs_withFilters() throws Exception {
-        when(auditRepository.list(eq("t1"), eq("key_1"), eq("createTenant"), eq(201), any(), any(), any(), any(), any(), anyInt()))
+        when(auditRepository.list(eq("tenant-1"), eq("key_1"), eq("createTenant"), eq(201), any(), any(), any(), any(), any(), anyInt()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
                         .header("X-Admin-API-Key", ADMIN_KEY)
-                        .param("tenant_id", "t1")
+                        .param("tenant_id", "tenant-1")
                         .param("key_id", "key_1")
                         .param("operation", "createTenant")
                         .param("status", "201"))
@@ -119,10 +119,10 @@ class AuditControllerTest {
     @Test
     void listAuditLogs_resultCountEqualsLimit_hasMoreTrueWithCursor() throws Exception {
         AuditLogEntry e1 = AuditLogEntry.builder()
-                .logId("log_1").tenantId("t1").operation("createTenant")
+                .logId("log_1").tenantId("tenant-1").operation("createTenant")
                 .status(201).timestamp(Instant.now()).build();
         AuditLogEntry e2 = AuditLogEntry.builder()
-                .logId("log_2").tenantId("t1").operation("updateTenant")
+                .logId("log_2").tenantId("tenant-1").operation("updateTenant")
                 .status(200).timestamp(Instant.now()).build();
         when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(2)))
                 .thenReturn(List.of(e1, e2));

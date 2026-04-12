@@ -100,14 +100,14 @@ class TenantRepositoryTest {
     @Test
     void get_existingTenant_returnsTenant() throws Exception {
         Tenant tenant = Tenant.builder()
-                .tenantId("t1").name("Tenant 1").status(TenantStatus.ACTIVE)
+                .tenantId("tenant-1").name("Tenant 1").status(TenantStatus.ACTIVE)
                 .createdAt(Instant.now()).build();
         String tenantJson = objectMapper.writeValueAsString(tenant);
-        when(jedis.get("tenant:t1")).thenReturn(tenantJson);
+        when(jedis.get("tenant:tenant-1")).thenReturn(tenantJson);
 
-        Tenant result = repository.get("t1");
+        Tenant result = repository.get("tenant-1");
 
-        assertThat(result.getTenantId()).isEqualTo("t1");
+        assertThat(result.getTenantId()).isEqualTo("tenant-1");
         assertThat(result.getName()).isEqualTo("Tenant 1");
     }
 
@@ -126,48 +126,48 @@ class TenantRepositoryTest {
 
     @Test
     void list_returnsFilteredByStatus() throws Exception {
-        Set<String> ids = new LinkedHashSet<>(List.of("t1", "t2"));
+        Set<String> ids = new LinkedHashSet<>(List.of("tenant-1", "tenant-2"));
         when(jedis.smembers("tenants")).thenReturn(ids);
 
-        Tenant t1 = Tenant.builder().tenantId("t1").name("A").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
-        Tenant t2 = Tenant.builder().tenantId("t2").name("B").status(TenantStatus.SUSPENDED).createdAt(Instant.now()).build();
+        Tenant t1 = Tenant.builder().tenantId("tenant-1").name("A").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        Tenant t2 = Tenant.builder().tenantId("tenant-2").name("B").status(TenantStatus.SUSPENDED).createdAt(Instant.now()).build();
         String t1Json = objectMapper.writeValueAsString(t1);
         String t2Json = objectMapper.writeValueAsString(t2);
-        when(jedis.get("tenant:t1")).thenReturn(t1Json);
-        when(jedis.get("tenant:t2")).thenReturn(t2Json);
+        when(jedis.get("tenant:tenant-1")).thenReturn(t1Json);
+        when(jedis.get("tenant:tenant-2")).thenReturn(t2Json);
 
         List<Tenant> result = repository.list(TenantStatus.ACTIVE, null, null, 50);
 
         assertThat(result).hasSize(1);
-        assertThat(result.get(0).getTenantId()).isEqualTo("t1");
+        assertThat(result.get(0).getTenantId()).isEqualTo("tenant-1");
     }
 
     @Test
     void list_respectsCursorPagination() throws Exception {
-        Set<String> ids = new LinkedHashSet<>(List.of("t1", "t2", "t3"));
+        Set<String> ids = new LinkedHashSet<>(List.of("tenant-1", "tenant-2", "tenant-3"));
         when(jedis.smembers("tenants")).thenReturn(ids);
 
-        Tenant t2 = Tenant.builder().tenantId("t2").name("B").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
-        Tenant t3 = Tenant.builder().tenantId("t3").name("C").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        Tenant t2 = Tenant.builder().tenantId("tenant-2").name("B").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        Tenant t3 = Tenant.builder().tenantId("tenant-3").name("C").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
         String t2Json = objectMapper.writeValueAsString(t2);
         String t3Json = objectMapper.writeValueAsString(t3);
-        when(jedis.get("tenant:t2")).thenReturn(t2Json);
-        when(jedis.get("tenant:t3")).thenReturn(t3Json);
+        when(jedis.get("tenant:tenant-2")).thenReturn(t2Json);
+        when(jedis.get("tenant:tenant-3")).thenReturn(t3Json);
 
-        List<Tenant> result = repository.list(null, null, "t1", 50);
+        List<Tenant> result = repository.list(null, null, "tenant-1", 50);
 
         assertThat(result).hasSize(2);
-        assertThat(result.get(0).getTenantId()).isEqualTo("t2");
+        assertThat(result.get(0).getTenantId()).isEqualTo("tenant-2");
     }
 
     @Test
     void list_respectsLimit() throws Exception {
-        Set<String> ids = new LinkedHashSet<>(List.of("t1", "t2", "t3"));
+        Set<String> ids = new LinkedHashSet<>(List.of("tenant-1", "tenant-2", "tenant-3"));
         when(jedis.smembers("tenants")).thenReturn(ids);
 
-        Tenant t1 = Tenant.builder().tenantId("t1").name("A").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        Tenant t1 = Tenant.builder().tenantId("tenant-1").name("A").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
         String t1Json = objectMapper.writeValueAsString(t1);
-        when(jedis.get("tenant:t1")).thenReturn(t1Json);
+        when(jedis.get("tenant:tenant-1")).thenReturn(t1Json);
 
         List<Tenant> result = repository.list(null, null, null, 1);
 
@@ -176,39 +176,39 @@ class TenantRepositoryTest {
 
     @Test
     void list_filtersByParentTenantId() throws Exception {
-        Set<String> ids = new LinkedHashSet<>(List.of("t1", "t2"));
+        Set<String> ids = new LinkedHashSet<>(List.of("tenant-1", "tenant-2"));
         when(jedis.smembers("tenants")).thenReturn(ids);
 
-        Tenant t1 = Tenant.builder().tenantId("t1").name("A").status(TenantStatus.ACTIVE).parentTenantId("parent1").createdAt(Instant.now()).build();
-        Tenant t2 = Tenant.builder().tenantId("t2").name("B").status(TenantStatus.ACTIVE).parentTenantId("parent2").createdAt(Instant.now()).build();
+        Tenant t1 = Tenant.builder().tenantId("tenant-1").name("A").status(TenantStatus.ACTIVE).parentTenantId("parent1").createdAt(Instant.now()).build();
+        Tenant t2 = Tenant.builder().tenantId("tenant-2").name("B").status(TenantStatus.ACTIVE).parentTenantId("parent2").createdAt(Instant.now()).build();
         String t1Json = objectMapper.writeValueAsString(t1);
         String t2Json = objectMapper.writeValueAsString(t2);
-        when(jedis.get("tenant:t1")).thenReturn(t1Json);
-        when(jedis.get("tenant:t2")).thenReturn(t2Json);
+        when(jedis.get("tenant:tenant-1")).thenReturn(t1Json);
+        when(jedis.get("tenant:tenant-2")).thenReturn(t2Json);
 
         List<Tenant> result = repository.list(null, "parent1", null, 50);
 
         assertThat(result).hasSize(1);
-        assertThat(result.get(0).getTenantId()).isEqualTo("t1");
+        assertThat(result.get(0).getTenantId()).isEqualTo("tenant-1");
     }
 
     @Test
     void update_name_updatesSuccessfully() throws Exception {
-        Tenant updated = Tenant.builder().tenantId("t1").name("New Name").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        Tenant updated = Tenant.builder().tenantId("tenant-1").name("New Name").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
         String updatedJson = objectMapper.writeValueAsString(updated);
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
 
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setName("New Name");
 
-        Tenant result = repository.update("t1", req);
+        Tenant result = repository.update("tenant-1", req);
 
         assertThat(result.getName()).isEqualTo("New Name");
     }
 
     @Test
     void update_statusActiveToSuspended_succeeds() throws Exception {
-        Tenant updated = Tenant.builder().tenantId("t1").name("T").status(TenantStatus.SUSPENDED)
+        Tenant updated = Tenant.builder().tenantId("tenant-1").name("T").status(TenantStatus.SUSPENDED)
                 .suspendedAt(Instant.now()).createdAt(Instant.now()).build();
         String updatedJson = objectMapper.writeValueAsString(updated);
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
@@ -216,7 +216,7 @@ class TenantRepositoryTest {
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setStatus(TenantStatus.SUSPENDED);
 
-        Tenant result = repository.update("t1", req);
+        Tenant result = repository.update("tenant-1", req);
 
         assertThat(result.getStatus()).isEqualTo(TenantStatus.SUSPENDED);
         assertThat(result.getSuspendedAt()).isNotNull();
@@ -224,7 +224,7 @@ class TenantRepositoryTest {
 
     @Test
     void update_statusActiveToClosed_succeeds() throws Exception {
-        Tenant updated = Tenant.builder().tenantId("t1").name("T").status(TenantStatus.CLOSED)
+        Tenant updated = Tenant.builder().tenantId("tenant-1").name("T").status(TenantStatus.CLOSED)
                 .closedAt(Instant.now()).createdAt(Instant.now()).build();
         String updatedJson = objectMapper.writeValueAsString(updated);
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
@@ -232,7 +232,7 @@ class TenantRepositoryTest {
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setStatus(TenantStatus.CLOSED);
 
-        Tenant result = repository.update("t1", req);
+        Tenant result = repository.update("tenant-1", req);
 
         assertThat(result.getStatus()).isEqualTo(TenantStatus.CLOSED);
         assertThat(result.getClosedAt()).isNotNull();
@@ -240,14 +240,14 @@ class TenantRepositoryTest {
 
     @Test
     void update_statusSuspendedToActive_succeeds() throws Exception {
-        Tenant updated = Tenant.builder().tenantId("t1").name("T").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        Tenant updated = Tenant.builder().tenantId("tenant-1").name("T").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
         String updatedJson = objectMapper.writeValueAsString(updated);
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
 
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setStatus(TenantStatus.ACTIVE);
 
-        Tenant result = repository.update("t1", req);
+        Tenant result = repository.update("tenant-1", req);
 
         assertThat(result.getStatus()).isEqualTo(TenantStatus.ACTIVE);
     }
@@ -260,7 +260,7 @@ class TenantRepositoryTest {
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setStatus(TenantStatus.ACTIVE);
 
-        assertThatThrownBy(() -> repository.update("t1", req))
+        assertThatThrownBy(() -> repository.update("tenant-1", req))
                 .isInstanceOf(GovernanceException.class)
                 .satisfies(e -> {
                     GovernanceException ge = (GovernanceException) e;
@@ -277,7 +277,7 @@ class TenantRepositoryTest {
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setStatus(TenantStatus.SUSPENDED);
 
-        assertThatThrownBy(() -> repository.update("t1", req))
+        assertThatThrownBy(() -> repository.update("tenant-1", req))
                 .isInstanceOf(GovernanceException.class)
                 .satisfies(e -> {
                     GovernanceException ge = (GovernanceException) e;
@@ -288,7 +288,7 @@ class TenantRepositoryTest {
 
     @Test
     void update_metadata_updatesSuccessfully() throws Exception {
-        Tenant updated = Tenant.builder().tenantId("t1").name("T").status(TenantStatus.ACTIVE)
+        Tenant updated = Tenant.builder().tenantId("tenant-1").name("T").status(TenantStatus.ACTIVE)
                 .metadata(Map.of("env", "prod")).createdAt(Instant.now()).build();
         String updatedJson = objectMapper.writeValueAsString(updated);
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
@@ -296,7 +296,7 @@ class TenantRepositoryTest {
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setMetadata(Map.of("env", "prod"));
 
-        Tenant result = repository.update("t1", req);
+        Tenant result = repository.update("tenant-1", req);
 
         assertThat(result.getMetadata()).containsEntry("env", "prod");
     }
@@ -325,7 +325,7 @@ class TenantRepositoryTest {
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setStatus(TenantStatus.ACTIVE);
 
-        assertThatThrownBy(() -> repository.update("t1", req))
+        assertThatThrownBy(() -> repository.update("tenant-1", req))
                 .isInstanceOf(GovernanceException.class)
                 .satisfies(e -> {
                     GovernanceException ge = (GovernanceException) e;
@@ -337,18 +337,18 @@ class TenantRepositoryTest {
 
     @Test
     void list_missingTenantData_skipsGracefully() throws Exception {
-        Set<String> ids = new LinkedHashSet<>(List.of("t1", "t2"));
+        Set<String> ids = new LinkedHashSet<>(List.of("tenant-1", "tenant-2"));
         when(jedis.smembers("tenants")).thenReturn(ids);
 
-        when(jedis.get("tenant:t1")).thenReturn(null);
-        Tenant t2 = Tenant.builder().tenantId("t2").name("B").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(jedis.get("tenant:tenant-1")).thenReturn(null);
+        Tenant t2 = Tenant.builder().tenantId("tenant-2").name("B").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
         String t2Json = objectMapper.writeValueAsString(t2);
-        when(jedis.get("tenant:t2")).thenReturn(t2Json);
+        when(jedis.get("tenant:tenant-2")).thenReturn(t2Json);
 
         List<Tenant> result = repository.list(null, null, null, 50);
 
         assertThat(result).hasSize(1);
-        assertThat(result.get(0).getTenantId()).isEqualTo("t2");
+        assertThat(result.get(0).getTenantId()).isEqualTo("tenant-2");
     }
 
     @Test
@@ -362,28 +362,28 @@ class TenantRepositoryTest {
 
     @Test
     void list_combinedStatusAndParentFilter() throws Exception {
-        Set<String> ids = new LinkedHashSet<>(List.of("t1", "t2", "t3"));
+        Set<String> ids = new LinkedHashSet<>(List.of("tenant-1", "tenant-2", "tenant-3"));
         when(jedis.smembers("tenants")).thenReturn(ids);
 
-        Tenant t1 = Tenant.builder().tenantId("t1").name("A").status(TenantStatus.ACTIVE).parentTenantId("parent1").createdAt(Instant.now()).build();
-        Tenant t2 = Tenant.builder().tenantId("t2").name("B").status(TenantStatus.SUSPENDED).parentTenantId("parent1").createdAt(Instant.now()).build();
-        Tenant t3 = Tenant.builder().tenantId("t3").name("C").status(TenantStatus.ACTIVE).parentTenantId("parent2").createdAt(Instant.now()).build();
+        Tenant t1 = Tenant.builder().tenantId("tenant-1").name("A").status(TenantStatus.ACTIVE).parentTenantId("parent1").createdAt(Instant.now()).build();
+        Tenant t2 = Tenant.builder().tenantId("tenant-2").name("B").status(TenantStatus.SUSPENDED).parentTenantId("parent1").createdAt(Instant.now()).build();
+        Tenant t3 = Tenant.builder().tenantId("tenant-3").name("C").status(TenantStatus.ACTIVE).parentTenantId("parent2").createdAt(Instant.now()).build();
         String t1Json = objectMapper.writeValueAsString(t1);
         String t2Json = objectMapper.writeValueAsString(t2);
         String t3Json = objectMapper.writeValueAsString(t3);
-        when(jedis.get("tenant:t1")).thenReturn(t1Json);
-        when(jedis.get("tenant:t2")).thenReturn(t2Json);
-        when(jedis.get("tenant:t3")).thenReturn(t3Json);
+        when(jedis.get("tenant:tenant-1")).thenReturn(t1Json);
+        when(jedis.get("tenant:tenant-2")).thenReturn(t2Json);
+        when(jedis.get("tenant:tenant-3")).thenReturn(t3Json);
 
         List<Tenant> result = repository.list(TenantStatus.ACTIVE, "parent1", null, 50);
 
         assertThat(result).hasSize(1);
-        assertThat(result.get(0).getTenantId()).isEqualTo("t1");
+        assertThat(result.get(0).getTenantId()).isEqualTo("tenant-1");
     }
 
     @Test
     void update_nameAndStatusTogether_succeeds() throws Exception {
-        Tenant updated = Tenant.builder().tenantId("t1").name("New Name").status(TenantStatus.SUSPENDED)
+        Tenant updated = Tenant.builder().tenantId("tenant-1").name("New Name").status(TenantStatus.SUSPENDED)
                 .suspendedAt(Instant.now()).createdAt(Instant.now()).build();
         String updatedJson = objectMapper.writeValueAsString(updated);
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
@@ -392,7 +392,7 @@ class TenantRepositoryTest {
         req.setName("New Name");
         req.setStatus(TenantStatus.SUSPENDED);
 
-        Tenant result = repository.update("t1", req);
+        Tenant result = repository.update("tenant-1", req);
 
         assertThat(result.getName()).isEqualTo("New Name");
         assertThat(result.getStatus()).isEqualTo(TenantStatus.SUSPENDED);
@@ -403,7 +403,7 @@ class TenantRepositoryTest {
         when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
 
         TenantCreateRequest request = new TenantCreateRequest();
-        request.setTenantId("t1");
+        request.setTenantId("tenant-1");
         request.setName("Test");
 
         assertThatThrownBy(() -> repository.create(request))
@@ -415,25 +415,25 @@ class TenantRepositoryTest {
     void get_genericException_wrappedInRuntimeException() {
         when(jedis.get(anyString())).thenThrow(new RuntimeException("Redis down"));
 
-        assertThatThrownBy(() -> repository.get("t1"))
+        assertThatThrownBy(() -> repository.get("tenant-1"))
                 .isInstanceOf(RuntimeException.class)
                 .hasCauseInstanceOf(RuntimeException.class);
     }
 
     @Test
     void list_deserializationFailure_skipsGracefully() throws Exception {
-        Set<String> ids = new LinkedHashSet<>(List.of("t1", "t2"));
+        Set<String> ids = new LinkedHashSet<>(List.of("tenant-1", "tenant-2"));
         when(jedis.smembers("tenants")).thenReturn(ids);
 
-        when(jedis.get("tenant:t1")).thenReturn("{invalid json}");
-        Tenant t2 = Tenant.builder().tenantId("t2").name("B").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(jedis.get("tenant:tenant-1")).thenReturn("{invalid json}");
+        Tenant t2 = Tenant.builder().tenantId("tenant-2").name("B").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
         String t2Json = objectMapper.writeValueAsString(t2);
-        when(jedis.get("tenant:t2")).thenReturn(t2Json);
+        when(jedis.get("tenant:tenant-2")).thenReturn(t2Json);
 
         List<Tenant> result = repository.list(null, null, null, 50);
 
         assertThat(result).hasSize(1);
-        assertThat(result.get(0).getTenantId()).isEqualTo("t2");
+        assertThat(result.get(0).getTenantId()).isEqualTo("tenant-2");
     }
 
     @Test
@@ -443,7 +443,7 @@ class TenantRepositoryTest {
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setName("New Name");
 
-        assertThatThrownBy(() -> repository.update("t1", req))
+        assertThatThrownBy(() -> repository.update("tenant-1", req))
                 .isInstanceOf(RuntimeException.class)
                 .hasCauseInstanceOf(RuntimeException.class);
     }
