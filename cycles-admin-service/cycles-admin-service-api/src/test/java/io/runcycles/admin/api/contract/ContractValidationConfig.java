@@ -65,16 +65,21 @@ public class ContractValidationConfig {
                 .withLevelResolver(levels)
                 .build();
         ResultMatcher full = new OpenApiMatchers().isValid(validator);
-        // Only validate 2xx responses. 4xx/5xx are error paths — the server correctly
-        // rejected a bad request, and re-validating the deliberately-broken request is
-        // noise. What we DO catch: 2xx responses whose body shape drifts from the spec,
-        // and 2xx requests whose body violates spec constraints.
-        ResultMatcher onlyOnSuccess = result -> {
+        // Only validate 2xx responses to spec-defined paths. Skip:
+        //   - 4xx/5xx: error paths, server correctly rejected something deliberately broken.
+        //   - /api-docs, /v3/api-docs, /swagger-ui, /actuator: infra endpoints, not in admin spec by design.
+        ResultMatcher onlyOnSpecPaths = result -> {
             int status = result.getResponse().getStatus();
-            if (status >= 200 && status < 300) {
-                full.match(result);
+            if (status < 200 || status >= 300) return;
+            String path = result.getRequest().getRequestURI();
+            if (path.startsWith("/api-docs")
+                    || path.startsWith("/v3/api-docs")
+                    || path.startsWith("/swagger-ui")
+                    || path.startsWith("/actuator")) {
+                return;
             }
+            full.match(result);
         };
-        return builder -> builder.alwaysExpect(onlyOnSuccess);
+        return builder -> builder.alwaysExpect(onlyOnSpecPaths);
     }
 }
