@@ -1,5 +1,6 @@
 package io.runcycles.admin.model.event;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.runcycles.admin.model.shared.UnitEnum;
@@ -15,6 +16,7 @@ import java.util.Map;
 @NoArgsConstructor
 @AllArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
+@JsonIgnoreProperties(ignoreUnknown = false)
 public class EventDataReservationDenied {
 
     @JsonProperty("scope")
