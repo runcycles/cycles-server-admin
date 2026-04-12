@@ -75,12 +75,17 @@ Example:
 }
 ```
 
-## Why two distinct validation layers are planned
+## Two complementary layers
 
-1. **Runtime validation (this doc).** Wraps MockMvc. Catches "the server returned the wrong shape for this endpoint." Requires a test that exercises the endpoint.
-2. **Structural diff (Phase 2, not yet built).** Compares SpringDoc's `/api-docs` output against the pinned spec at build time. Catches "the server doesn't declare endpoint X at all." Doesn't need a test to exist.
+1. **Runtime validation** (`ContractValidationConfig` + `@Import` in each controller test). Wraps MockMvc. Catches "the server returned the wrong shape for this endpoint." Requires a test that exercises the endpoint. Skips infra paths (`/api-docs`, `/v3/api-docs`, `/swagger-ui`, `/actuator`) since they're not in the admin spec.
+2. **Structural diff** (`OpenApiContractDiffTest`). Compares SpringDoc's `/v3/api-docs` output against the pinned spec at build time. Catches:
+   - **Missing endpoints** — in spec but server doesn't implement.
+   - **Extra endpoints** — server has but spec doesn't document.
+   - **Breaking operation divergence** — endpoint in both, but signature (parameters, request body, response codes, security) incompatibly diverges.
 
-Together they cover both "wrong shape" and "wrong surface". Individually each has meaningful blind spots.
+Only `INCOMPATIBLE`-level operation differences fail the build. `COMPATIBLE` (non-breaking) and `METADATA` (description / summary text) diffs are ignored — SpringDoc's auto-generated OpenAPI doesn't match the hand-written spec at deep `$ref` / styling level, and forcing exact match would be noise. Deep response-body shape is the runtime validator's job anyway.
+
+Together they cover both "wrong shape" (runtime) and "wrong surface" (structural). Individually each has meaningful blind spots.
 
 ## Dependencies
 
@@ -93,3 +98,4 @@ Both are test-scope in `cycles-admin-service-api/pom.xml`.
 
 - v0.1.25.10 — infrastructure landed (ContractSpecLoader + ContractValidationConfig), gate default OFF.
 - v0.1.25.11 — gate default flipped ON after confirming zero drift against `cycles-protocol@main` across all 432 tests.
+- v0.1.25.11.x follow-up — `OpenApiContractDiffTest` adds Phase 2 structural diff. Respects the same gate (skipped when OFF).
