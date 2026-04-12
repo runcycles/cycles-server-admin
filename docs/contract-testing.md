@@ -14,17 +14,19 @@ Any 2xx response whose body drifts from `cycles-governance-admin-v0.1.25.yaml` o
 
 ## Enablement gate
 
-Disabled by default. Enable via one of:
+**Enabled by default as of v0.1.25.11.** Every controller test that imports `ContractValidationConfig` runs under contract validation unless explicitly disabled.
+
+Disable for offline / air-gapped dev (where the `cycles-protocol@main` fetch would fail):
 
 ```bash
-# System property (preferred in Maven commands)
-mvn verify -Dcontract.validation.enabled=true
+# System property
+mvn verify -Dcontract.validation.enabled=false
 
-# Environment variable (preferred in CI)
-CONTRACT_VALIDATION_ENABLED=true mvn verify
+# Environment variable
+CONTRACT_VALIDATION_ENABLED=false mvn verify
 ```
 
-When the gate is off, `ContractValidationConfig` becomes a no-op: no spec fetch, no matcher attached. Tests run exactly as they did before the infrastructure landed.
+When the gate is off, `ContractValidationConfig` becomes a no-op: no spec fetch, no matcher attached.
 
 ## How to opt a controller test in
 
@@ -87,12 +89,7 @@ Together they cover both "wrong shape" and "wrong surface". Individually each ha
 
 Both are test-scope in `cycles-admin-service-api/pom.xml`.
 
-## Turning it on permanently
+## History
 
-When `cycles-protocol@main` and the admin server are both confirmed drift-free:
-
-1. In `ContractValidationConfig.validationEnabled()`, swap the default from `false` to `true`.
-2. Add a `-Dcontract.validation.enabled=false` escape hatch documentation for anyone needing to bypass locally (e.g. offline).
-3. Bump the server patch version, record in AUDIT.md.
-
-That's PR-E.
+- v0.1.25.10 — infrastructure landed (ContractSpecLoader + ContractValidationConfig), gate default OFF.
+- v0.1.25.11 — gate default flipped ON after confirming zero drift against `cycles-protocol@main` across all 432 tests.
