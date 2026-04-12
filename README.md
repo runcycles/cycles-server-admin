@@ -4,7 +4,7 @@
 
 # Runcycles Admin Server
 
-Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25.9](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml).
+Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25.10](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml).
 
 ## Overview
 
@@ -578,6 +578,8 @@ v0.1.25.7 adds backward-compatible wildcard fallback (`admin:write` satisfies an
 v0.1.25.8 adds dashboard and observability hardening for v0.1.26 readiness: `EventDataReservationDenied` extensibility (`policy_id`, `deny_detail`, open-string `reason_code`), `AdminOverviewResponse` enrichments (`recent_denials_by_reason` auto-populated on v0.1.25.x, plus `quota_health`, `access_control_stats`, `tenant_counts.in_observe_mode` reserved for v0.1.26 extensions), and accept-and-ignore query params on `listTenants` (`observe_mode`) and `listPolicies` (`has_action_quotas`, `references_action_kind`). All additions are backward compatible — `@JsonInclude(NON_NULL)` keeps responses unchanged when new fields are null.
 
 v0.1.25.9 is a patch release with operational hardening only — **no API surface changes**, spec stays at v0.1.25.8. Adds: Micrometer/Prometheus metrics at `/actuator/prometheus` with custom counters (`cycles_admin_events_emitted_total`, `cycles_admin_webhook_dispatched_total`); Kubernetes liveness/readiness probes at `/actuator/health/liveness` and `/actuator/health/readiness` (docker-compose healthchecks switched to liveness); CORS fixes — `X-Cycles-API-Key` and `X-Request-Id` are now allowlisted (both were previously blocked at preflight, breaking browser dashboards using tenant auth) and `X-Request-Id` is exposed for correlation; multi-origin CORS support via comma-separated `DASHBOARD_CORS_ORIGIN` env var.
+
+v0.1.25.10 is a patch release hardening spec compliance for `cycles-governance-admin-v0.1.25` (no API surface changes). (1) **`Permission` enum now modeled** — the 27 spec permission values are a typed Java enum with Jackson `@JsonValue`/`@JsonCreator`; inbound `POST /v1/admin/api-keys` and `PATCH /v1/admin/api-keys/{key_id}` now reject unknown permission strings (e.g. typos like `"budgets:wirte"`) at deserialization with a 400 instead of silently storing them. Wire format unchanged. (2) **`AuthIntrospectResponse.capabilities` structurally typed** — replaced the `Map<String, Boolean>` with a dedicated `Capabilities` class exposing the eight required booleans (`view_overview`, `view_budgets`, `view_events`, `view_webhooks`, `view_audit`, `view_tenants`, `view_api_keys`, `view_policies`) per spec's "all fields always present" contract. JSON shape identical.
 
 ## Documentation
 

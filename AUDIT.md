@@ -1,9 +1,33 @@
 # Complete Budget Governance v0.1.25.8 — Admin Server Audit
 
-**Server version:** 0.1.25.9 (2026-04-10 patch release — CORS hardening + observability hardening)
-**Date:** 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Server version:** 0.1.25.10 (2026-04-12 patch release — spec-compliance hardening: `Permission` enum + typed `Capabilities`)
+**Date:** 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, v0.1.25.9) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-12 — v0.1.25.10 spec-compliance hardening (`Permission` enum + typed `Capabilities`)
+
+Full line-by-line audit of all 56 schemas in `cycles-governance-admin-v0.1.25.yaml` against every Java DTO. Endpoint surface (43/43 operations) and all other schemas verified compliant. Two real gaps fixed here; one low-impact gap (EventData `String` fields where spec defines enums — outbound-only, producer-disciplined) deferred.
+
+**Gap 1 — `Permission` schema not modeled.** Spec defines `Permission` as a 27-value enum (`reservations:create`, `budgets:write`, `admin:audit:read`, …). Every place the spec says `array of $ref Permission`, the impl used `List<String>`, so `POST /v1/admin/api-keys` and `PATCH /v1/admin/api-keys/{key_id}` accepted arbitrary strings — a typo like `"budgets:wirte"` would silently persist an unusable key.
+
+- **New:** `cycles-admin-service-model/.../auth/Permission.java` — enum with `@JsonValue` (wire-string) and `@JsonCreator` (rejects unknown values with `IllegalArgumentException`, surfaced by Spring as a 400).
+- **Changed:** `ApiKeyCreateRequest.permissions` and `ApiKeyUpdateRequest.permissions` from `List<String>` to `List<Permission>`. Added `getPermissionsAsStrings()` helper so the controller/repository path that writes to Redis (`ApiKey` entity) and emits events (`EventDataApiKey`) keeps using wire-strings — no Redis migration, no `AuthInterceptor` rewrite.
+- **Boundary touch-ups:** `ApiKeyController` (create audit meta, create event payload, update audit meta) and `ApiKeyRepository` (default permissions, update setter) converted via `getPermissionsAsStrings()`.
+- **Storage, outbound DTOs, `AuthInterceptor`, `EventDataApiKey`, `ApiKeyValidationResponse`, `ApiKey`/`ApiKeyResponse`** intentionally remain `List<String>` — once validated at the inbound boundary, strings in internal propagation are safe. `AuthIntrospectResponse.permissions` stays `List<String>` per spec line 2597 (the `"*"` admin wildcard is not a defined `Permission` enum value).
+
+**Gap 2 — `AuthIntrospectResponse.capabilities` weakly typed.** Spec (lines 2599–2611) requires an object with exactly eight named boolean properties, all required and "always present (explicit false, never omitted)". Impl was `Map<String, Boolean>` — a future bug could silently drop any of the eight keys and the dashboard would break in a hard-to-diagnose way.
+
+- **New:** `cycles-admin-service-model/.../auth/Capabilities.java` — eight `@JsonProperty` primitive booleans (`view_overview`, `view_budgets`, `view_events`, `view_webhooks`, `view_audit`, `view_tenants`, `view_api_keys`, `view_policies`), `@JsonInclude(ALWAYS)`.
+- **Changed:** `AuthIntrospectResponse.capabilities: Map<String, Boolean>` → `Capabilities`. `AuthController.deriveCapabilities(...)` now returns a `Capabilities.builder()` instead of `Map.of(...)`. **JSON wire shape is identical.**
+
+**Wire compatibility:** both changes are non-breaking for conformant clients. Inbound API-key callers that were previously sending typo'd permission strings will now see 400 instead of 200 — that is the point.
+
+**Tests:** 432 passing (+2 new `AuthModelTest` cases, offset by 2 existing test rewrites — `AuthModelTest.apiKeyCreateRequestValidation` and `ApiKeyRepositoryTest` permission setters — that now use `Permission` enum constants instead of raw strings): `apiKeyCreateRequest_unknownPermission_rejected` verifies an invalid permission in a create payload raises `JsonMappingException`; `apiKeyCreateRequest_validPermissions_deserialize` verifies happy-path round-trip `string → Permission → string`. Updated two existing tests in `AuthModelTest` and `ApiKeyRepositoryTest` to use enum constants instead of raw strings (one previously used invalid values `"read"`/`"write"` — now uses `Permission.BALANCES_READ`/`BUDGETS_WRITE`).
+
+**Deferred — EventData enum typing.** `EventDataBudgetLifecycle.operation`, `EventDataBudgetThreshold.direction`, `EventDataRateSpike.metric`, `EventDataTenantLifecycle.previous_status`/`new_status`, `EventDataApiKey.previous_status`/`new_status` are typed `String` where the spec constrains them with enums. These are outbound-only, producer-disciplined fields (events are emitted by the service, never received). No current user impact; revisit during broader event-model cleanup.
+
+**Follow-up — contract test.** No automated OpenAPI contract test is wired in today. Recommend pinning `cycles-governance-admin-v0.1.25.yaml` and running `openapi-generator validate` or Atlassian Swagger Request Validator against the live SpringDoc `/api-docs` in CI so future drift is caught without manual audits.
 
 ### 2026-04-10 — CORS hardening + production config
 

@@ -435,7 +435,7 @@ class ApiKeyRepositoryTest {
         ApiKeyCreateRequest request = new ApiKeyCreateRequest();
         request.setTenantId("test-tenant");
         request.setName("Test Key");
-        request.setPermissions(List.of("reservations:create"));
+        request.setPermissions(List.of(io.runcycles.admin.model.auth.Permission.RESERVATIONS_CREATE));
 
         ApiKeyCreateResponse response = repository.create(request);
 
@@ -723,7 +723,7 @@ class ApiKeyRepositoryTest {
 
         ApiKeyUpdateRequest request = new ApiKeyUpdateRequest();
         request.setName("Updated");
-        request.setPermissions(List.of("budgets:read", "budgets:write"));
+        request.setPermissions(List.of(io.runcycles.admin.model.auth.Permission.BUDGETS_READ, io.runcycles.admin.model.auth.Permission.BUDGETS_WRITE));
 
         ApiKey result = repository.update("key_1", request);
 

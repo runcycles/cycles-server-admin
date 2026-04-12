@@ -7,6 +7,7 @@ import io.runcycles.admin.model.auth.ApiKey;
 import io.runcycles.admin.model.auth.ApiKeyCreateRequest;
 import io.runcycles.admin.model.auth.ApiKeyResponse;
 import io.runcycles.admin.model.auth.ApiKeyStatus;
+import io.runcycles.admin.model.auth.Permission;
 import jakarta.validation.*;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -35,7 +36,7 @@ class AuthModelTest {
         ApiKeyCreateRequest request = new ApiKeyCreateRequest();
         request.setTenantId("tenant-1");
         request.setName("my-key");
-        request.setPermissions(List.of("read", "write"));
+        request.setPermissions(List.of(Permission.BALANCES_READ, Permission.BUDGETS_WRITE));
         request.setExpiresAt(Instant.parse("2027-01-01T00:00:00Z"));
 
         Set<ConstraintViolation<ApiKeyCreateRequest>> violations = validator.validate(request);
@@ -96,6 +97,28 @@ class AuthModelTest {
         request.setName("x".repeat(257));
         Set<ConstraintViolation<ApiKeyCreateRequest>> violations = validator.validate(request);
         assertFalse(violations.isEmpty());
+    }
+
+    @Test
+    void apiKeyCreateRequest_unknownPermission_rejected() {
+        String json = """
+            {"tenant_id":"t1","name":"k","permissions":["budgets:wirte"]}
+            """;
+        com.fasterxml.jackson.databind.JsonMappingException ex = assertThrows(
+                com.fasterxml.jackson.databind.JsonMappingException.class,
+                () -> mapper.readValue(json, ApiKeyCreateRequest.class));
+        assertTrue(ex.getMessage().contains("budgets:wirte"),
+                "Expected rejection message to mention bad permission, got: " + ex.getMessage());
+    }
+
+    @Test
+    void apiKeyCreateRequest_validPermissions_deserialize() throws Exception {
+        String json = """
+            {"tenant_id":"t1","name":"k","permissions":["budgets:read","admin:audit:read"]}
+            """;
+        ApiKeyCreateRequest req = mapper.readValue(json, ApiKeyCreateRequest.class);
+        assertEquals(List.of(Permission.BUDGETS_READ, Permission.ADMIN_AUDIT_READ), req.getPermissions());
+        assertEquals(List.of("budgets:read", "admin:audit:read"), req.getPermissionsAsStrings());
     }
 
     @Test

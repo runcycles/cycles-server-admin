@@ -66,7 +66,7 @@ public class ApiKeyRepository {
                 .keyHash(keyHash)
                 .name(request.getName())
                 .description(request.getDescription())
-                .permissions(request.getPermissions() != null ? request.getPermissions() : DEFAULT_PERMISSIONS)
+                .permissions(request.getPermissions() != null ? request.getPermissionsAsStrings() : DEFAULT_PERMISSIONS)
                 .scopeFilter(request.getScopeFilter())
                 .status(ApiKeyStatus.ACTIVE)
                 .createdAt(Instant.now())
@@ -161,7 +161,7 @@ public class ApiKeyRepository {
             // Apply partial updates — only non-null fields
             if (request.getName() != null) key.setName(request.getName());
             if (request.getDescription() != null) key.setDescription(request.getDescription());
-            if (request.getPermissions() != null) key.setPermissions(request.getPermissions());
+            if (request.getPermissions() != null) key.setPermissions(request.getPermissionsAsStrings());
             if (request.getScopeFilter() != null) key.setScopeFilter(request.getScopeFilter());
             if (request.getMetadata() != null) key.setMetadata(request.getMetadata());
             // Write back with Jackson (clean serialization, no cjson issues)
