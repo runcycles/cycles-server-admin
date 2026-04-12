@@ -195,13 +195,13 @@ class AuthInterceptorTest {
 
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
-                        .valid(true).tenantId("t1").keyId("key_1")
+                        .valid(true).tenantId("tenant-1").keyId("key_1")
                         .permissions(List.of("budgets:write", "balances:read"))
                         .scopeFilter(List.of("org/*"))
                         .build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
-        assertThat(request.getAttribute("authenticated_tenant_id")).isEqualTo("t1");
+        assertThat(request.getAttribute("authenticated_tenant_id")).isEqualTo("tenant-1");
         assertThat(request.getAttribute("authenticated_key_id")).isEqualTo("key_1");
         assertThat(request.getAttribute("authenticated_permissions")).isEqualTo(List.of("budgets:write", "balances:read"));
         assertThat(request.getAttribute("authenticated_scope_filter")).isEqualTo(List.of("org/*"));
@@ -215,7 +215,7 @@ class AuthInterceptorTest {
 
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
-                        .valid(true).tenantId("t1").keyId("key_1")
+                        .valid(true).tenantId("tenant-1").keyId("key_1")
                         .permissions(List.of("balances:read"))
                         .build());
 
@@ -231,7 +231,7 @@ class AuthInterceptorTest {
 
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
-                        .valid(true).tenantId("t1").keyId("key_1")
+                        .valid(true).tenantId("tenant-1").keyId("key_1")
                         .permissions(List.of("balances:read"))
                         .build());
 
@@ -246,7 +246,7 @@ class AuthInterceptorTest {
 
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
-                        .valid(true).tenantId("t1").keyId("key_1")
+                        .valid(true).tenantId("tenant-1").keyId("key_1")
                         .permissions(List.of("budgets:read"))
                         .build());
 
@@ -261,7 +261,7 @@ class AuthInterceptorTest {
 
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
-                        .valid(true).tenantId("t1").keyId("key_1")
+                        .valid(true).tenantId("tenant-1").keyId("key_1")
                         .permissions(List.of("policies:read"))
                         .build());
 
@@ -279,7 +279,7 @@ class AuthInterceptorTest {
 
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
-                        .valid(true).tenantId("t1").keyId("key_1")
+                        .valid(true).tenantId("tenant-1").keyId("key_1")
                         .permissions(List.of("admin:write"))
                         .build());
 
@@ -294,7 +294,7 @@ class AuthInterceptorTest {
 
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
-                        .valid(true).tenantId("t1").keyId("key_1")
+                        .valid(true).tenantId("tenant-1").keyId("key_1")
                         .permissions(List.of("admin:read"))
                         .build());
 
@@ -309,7 +309,7 @@ class AuthInterceptorTest {
 
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
-                        .valid(true).tenantId("t1").keyId("key_1")
+                        .valid(true).tenantId("tenant-1").keyId("key_1")
                         .permissions(List.of("admin:write"))
                         .build());
 
@@ -324,7 +324,7 @@ class AuthInterceptorTest {
 
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
-                        .valid(true).tenantId("t1").keyId("key_1")
+                        .valid(true).tenantId("tenant-1").keyId("key_1")
                         .permissions(List.of("admin:read"))
                         .build());
 
@@ -340,7 +340,7 @@ class AuthInterceptorTest {
 
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
-                        .valid(true).tenantId("t1").keyId("key_1")
+                        .valid(true).tenantId("tenant-1").keyId("key_1")
                         .permissions(null)
                         .build());
 
@@ -401,12 +401,12 @@ class AuthInterceptorTest {
 
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
-                        .valid(true).tenantId("t1").keyId("key_1")
+                        .valid(true).tenantId("tenant-1").keyId("key_1")
                         .permissions(List.of("reservations:write"))
                         .build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
-        assertThat(request.getAttribute("authenticated_tenant_id")).isEqualTo("t1");
+        assertThat(request.getAttribute("authenticated_tenant_id")).isEqualTo("tenant-1");
     }
 
     // --- API key validation edge cases ---
@@ -629,12 +629,12 @@ class AuthInterceptorTest {
 
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
-                        .valid(true).tenantId("t1").keyId("key_1")
+                        .valid(true).tenantId("tenant-1").keyId("key_1")
                         .permissions(List.of("budgets:read"))
                         .build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
-        assertThat(request.getAttribute("authenticated_tenant_id")).isEqualTo("t1");
+        assertThat(request.getAttribute("authenticated_tenant_id")).isEqualTo("tenant-1");
     }
 
     @Test
@@ -645,12 +645,12 @@ class AuthInterceptorTest {
 
         when(apiKeyRepository.validate("valid-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
-                        .valid(true).tenantId("t1").keyId("key_1")
+                        .valid(true).tenantId("tenant-1").keyId("key_1")
                         .permissions(List.of("policies:read"))
                         .build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
-        assertThat(request.getAttribute("authenticated_tenant_id")).isEqualTo("t1");
+        assertThat(request.getAttribute("authenticated_tenant_id")).isEqualTo("tenant-1");
     }
 
     // --- Dual-auth: scope filter no-op for admin key ---

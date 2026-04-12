@@ -41,16 +41,16 @@ class WebhookAdminControllerTest {
     @Test
     void createWebhook_returns201() throws Exception {
         WebhookSubscription sub = WebhookSubscription.builder()
-            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh")
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .eventTypes(List.of(EventType.BUDGET_CREATED)).status(WebhookStatus.ACTIVE)
             .createdAt(Instant.now()).build();
         WebhookCreateResponse response = WebhookCreateResponse.builder()
             .subscription(sub).signingSecret("whsec_abc").build();
-        when(webhookService.create(eq("t1"), any())).thenReturn(response);
+        when(webhookService.create(eq("tenant-1"), any())).thenReturn(response);
 
         mockMvc.perform(post("/v1/admin/webhooks")
                         .header("X-Admin-API-Key", ADMIN_KEY)
-                        .param("tenant_id", "t1")
+                        .param("tenant_id", "tenant-1")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"url\":\"https://example.com/wh\",\"event_types\":[\"budget.created\"]}"))
                 .andExpect(status().isCreated())
@@ -85,7 +85,7 @@ class WebhookAdminControllerTest {
     @Test
     void getWebhook_returns200() throws Exception {
         WebhookSubscription sub = WebhookSubscription.builder()
-            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh")
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
         when(webhookService.get("whsub_1")).thenReturn(sub);
 
@@ -109,7 +109,7 @@ class WebhookAdminControllerTest {
     @Test
     void updateWebhook_returns200() throws Exception {
         WebhookSubscription updated = WebhookSubscription.builder()
-            .subscriptionId("whsub_1").tenantId("t1").name("Updated")
+            .subscriptionId("whsub_1").tenantId("tenant-1").name("Updated")
             .url("https://example.com/wh").status(WebhookStatus.ACTIVE)
             .createdAt(Instant.now()).build();
         when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
@@ -123,14 +123,14 @@ class WebhookAdminControllerTest {
 
         verify(auditRepository).log(argThat(entry ->
                 "updateWebhookSubscription".equals(entry.getOperation()) &&
-                "t1".equals(entry.getTenantId()) &&
+                "tenant-1".equals(entry.getTenantId()) &&
                 entry.getStatus() == 200));
     }
 
     @Test
     void deleteWebhook_returns204() throws Exception {
         WebhookSubscription sub = WebhookSubscription.builder()
-            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh")
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
         when(webhookService.get("whsub_1")).thenReturn(sub);
 
@@ -141,7 +141,7 @@ class WebhookAdminControllerTest {
         verify(webhookService).delete("whsub_1");
         verify(auditRepository).log(argThat(entry ->
                 "deleteWebhookSubscription".equals(entry.getOperation()) &&
-                "t1".equals(entry.getTenantId()) &&
+                "tenant-1".equals(entry.getTenantId()) &&
                 entry.getStatus() == 204));
     }
 

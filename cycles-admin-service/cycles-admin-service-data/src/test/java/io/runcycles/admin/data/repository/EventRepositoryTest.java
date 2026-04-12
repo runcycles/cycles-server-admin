@@ -51,7 +51,7 @@ class EventRepositoryTest {
     @Test
     void save_setsEventIdAndTimestamp() {
         Event event = Event.builder()
-                .tenantId("t1")
+                .tenantId("tenant-1")
                 .eventType(EventType.TENANT_CREATED)
                 .category(EventCategory.TENANT)
                 .source("cycles-admin")
@@ -67,7 +67,7 @@ class EventRepositoryTest {
     @Test
     void save_callsLuaWithCorrectKeysAndArgs() throws Exception {
         Event event = Event.builder()
-                .tenantId("t1")
+                .tenantId("tenant-1")
                 .eventType(EventType.BUDGET_CREATED)
                 .category(EventCategory.BUDGET)
                 .source("cycles-admin")
@@ -78,13 +78,13 @@ class EventRepositoryTest {
         verify(jedis).eval(anyString(), argThat((List<String> keys) -> {
             return keys.size() == 3
                 && keys.get(0).startsWith("event:evt_")
-                && keys.get(1).equals("events:t1")
+                && keys.get(1).equals("events:tenant-1")
                 && keys.get(2).equals("events:_all");
         }), argThat((List<String> args) -> {
             try {
                 // ARGV[0] is JSON, ARGV[1] is score, ARGV[2] is eventId
                 Event stored = objectMapper.readValue(args.get(0), Event.class);
-                return "t1".equals(stored.getTenantId())
+                return "tenant-1".equals(stored.getTenantId())
                     && stored.getEventType() == EventType.BUDGET_CREATED;
             } catch (Exception e) {
                 return false;
@@ -95,7 +95,7 @@ class EventRepositoryTest {
     @Test
     void save_withCorrelationId_addsCorrelationKey() {
         Event event = Event.builder()
-                .tenantId("t1")
+                .tenantId("tenant-1")
                 .eventType(EventType.BUDGET_FUNDED)
                 .category(EventCategory.BUDGET)
                 .source("cycles-admin")
@@ -113,7 +113,7 @@ class EventRepositoryTest {
     void save_preservesExistingTimestamp() {
         Instant fixedTime = Instant.parse("2025-06-15T10:00:00Z");
         Event event = Event.builder()
-                .tenantId("t1")
+                .tenantId("tenant-1")
                 .eventType(EventType.TENANT_CREATED)
                 .category(EventCategory.TENANT)
                 .source("cycles-admin")
@@ -133,7 +133,7 @@ class EventRepositoryTest {
                 .eventId("evt_abc123")
                 .eventType(EventType.TENANT_CREATED)
                 .category(EventCategory.TENANT)
-                .tenantId("t1")
+                .tenantId("tenant-1")
                 .source("cycles-admin")
                 .timestamp(Instant.now())
                 .build();
@@ -144,7 +144,7 @@ class EventRepositoryTest {
 
         assertThat(result.getEventId()).isEqualTo("evt_abc123");
         assertThat(result.getEventType()).isEqualTo(EventType.TENANT_CREATED);
-        assertThat(result.getTenantId()).isEqualTo("t1");
+        assertThat(result.getTenantId()).isEqualTo("tenant-1");
     }
 
     @Test
@@ -166,19 +166,19 @@ class EventRepositoryTest {
     @Test
     void list_withTenantFilter_usesCorrectIndex() throws Exception {
         List<String> ids = List.of("evt_1", "evt_2");
-        when(jedis.zrevrangeByScore(eq("events:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
 
-        Event e1 = Event.builder().eventId("evt_1").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
-        Event e2 = Event.builder().eventId("evt_2").tenantId("t1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").timestamp(Instant.now()).build();
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
+        Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("event:evt_1")).thenReturn(e1Json);
         when(jedis.get("event:evt_2")).thenReturn(e2Json);
 
-        List<Event> result = repository.list("t1", null, null, null, null, null, null, null, 50);
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(2);
-        verify(jedis).zrevrangeByScore(eq("events:t1"), anyDouble(), anyDouble(), eq(0), anyInt());
+        verify(jedis).zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt());
     }
 
     @Test
@@ -186,7 +186,7 @@ class EventRepositoryTest {
         List<String> ids = List.of("evt_1");
         when(jedis.zrevrangeByScore(eq("events:_all"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
 
-        Event e1 = Event.builder().eventId("evt_1").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         when(jedis.get("event:evt_1")).thenReturn(e1Json);
 
@@ -198,16 +198,16 @@ class EventRepositoryTest {
 
     @Test
     void list_withCursorPagination_adjustsMaxScore() throws Exception {
-        when(jedis.zscore("events:t1", "evt_cursor")).thenReturn(5000.0);
+        when(jedis.zscore("events:tenant-1", "evt_cursor")).thenReturn(5000.0);
 
         List<String> ids = List.of("evt_2");
-        when(jedis.zrevrangeByScore(eq("events:t1"), eq(4999.0), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), eq(4999.0), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
 
-        Event e2 = Event.builder().eventId("evt_2").tenantId("t1").eventType(EventType.TENANT_UPDATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
+        Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1").eventType(EventType.TENANT_UPDATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("event:evt_2")).thenReturn(e2Json);
 
-        List<Event> result = repository.list("t1", null, null, null, null, null, null, "evt_cursor", 50);
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, "evt_cursor", 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getEventId()).isEqualTo("evt_2");
@@ -216,16 +216,16 @@ class EventRepositoryTest {
     @Test
     void list_filtersByEventType() throws Exception {
         List<String> ids = List.of("evt_1", "evt_2");
-        when(jedis.zrevrangeByScore(eq("events:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
 
-        Event e1 = Event.builder().eventId("evt_1").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
-        Event e2 = Event.builder().eventId("evt_2").tenantId("t1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").timestamp(Instant.now()).build();
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
+        Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("event:evt_1")).thenReturn(e1Json);
         when(jedis.get("event:evt_2")).thenReturn(e2Json);
 
-        List<Event> result = repository.list("t1", "tenant.created", null, null, null, null, null, null, 50);
+        List<Event> result = repository.list("tenant-1", "tenant.created", null, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getEventType()).isEqualTo(EventType.TENANT_CREATED);
@@ -234,16 +234,16 @@ class EventRepositoryTest {
     @Test
     void list_filtersByCategory() throws Exception {
         List<String> ids = List.of("evt_1", "evt_2");
-        when(jedis.zrevrangeByScore(eq("events:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
 
-        Event e1 = Event.builder().eventId("evt_1").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
-        Event e2 = Event.builder().eventId("evt_2").tenantId("t1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").timestamp(Instant.now()).build();
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
+        Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("event:evt_1")).thenReturn(e1Json);
         when(jedis.get("event:evt_2")).thenReturn(e2Json);
 
-        List<Event> result = repository.list("t1", null, "budget", null, null, null, null, null, 50);
+        List<Event> result = repository.list("tenant-1", null, "budget", null, null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getCategory()).isEqualTo(EventCategory.BUDGET);
@@ -252,16 +252,16 @@ class EventRepositoryTest {
     @Test
     void list_filtersByScopePrefix() throws Exception {
         List<String> ids = List.of("evt_1", "evt_2");
-        when(jedis.zrevrangeByScore(eq("events:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
 
-        Event e1 = Event.builder().eventId("evt_1").tenantId("t1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").scope("org/eng/team1").timestamp(Instant.now()).build();
-        Event e2 = Event.builder().eventId("evt_2").tenantId("t1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").scope("org/sales").timestamp(Instant.now()).build();
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").scope("org/eng/team1").timestamp(Instant.now()).build();
+        Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").scope("org/sales").timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("event:evt_1")).thenReturn(e1Json);
         when(jedis.get("event:evt_2")).thenReturn(e2Json);
 
-        List<Event> result = repository.list("t1", null, null, "org/eng", null, null, null, null, 50);
+        List<Event> result = repository.list("tenant-1", null, null, "org/eng", null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getScope()).startsWith("org/eng");
@@ -269,16 +269,16 @@ class EventRepositoryTest {
 
     @Test
     void list_emptyResults_returnsEmptyList() {
-        when(jedis.zrevrangeByScore(eq("events:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(List.of());
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(List.of());
 
-        List<Event> result = repository.list("t1", null, null, null, null, null, null, null, 50);
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, null, 50);
 
         assertThat(result).isEmpty();
     }
 
     @Test
     void list_zeroLimit_returnsEmpty() {
-        List<Event> result = repository.list("t1", null, null, null, null, null, null, null, 0);
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, null, 0);
         assertThat(result).isEmpty();
     }
 
@@ -288,30 +288,30 @@ class EventRepositoryTest {
         Instant to = Instant.ofEpochMilli(2000);
 
         List<String> ids = List.of("evt_1");
-        when(jedis.zrevrangeByScore(eq("events:t1"), eq(2000.0), eq(1000.0), eq(0), anyInt())).thenReturn(ids);
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), eq(2000.0), eq(1000.0), eq(0), anyInt())).thenReturn(ids);
 
-        Event e1 = Event.builder().eventId("evt_1").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         when(jedis.get("event:evt_1")).thenReturn(e1Json);
 
-        List<Event> result = repository.list("t1", null, null, null, null, from, to, null, 50);
+        List<Event> result = repository.list("tenant-1", null, null, null, null, from, to, null, 50);
 
         assertThat(result).hasSize(1);
-        verify(jedis).zrevrangeByScore(eq("events:t1"), eq(2000.0), eq(1000.0), eq(0), anyInt());
+        verify(jedis).zrevrangeByScore(eq("events:tenant-1"), eq(2000.0), eq(1000.0), eq(0), anyInt());
     }
 
     @Test
     void list_withCursorNotInIndex_ignoresCursor() throws Exception {
-        when(jedis.zscore("events:t1", "evt_unknown")).thenReturn(null);
+        when(jedis.zscore("events:tenant-1", "evt_unknown")).thenReturn(null);
 
         List<String> ids = List.of("evt_1");
-        when(jedis.zrevrangeByScore(eq("events:t1"), eq(Double.POSITIVE_INFINITY), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), eq(Double.POSITIVE_INFINITY), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
 
-        Event e1 = Event.builder().eventId("evt_1").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         when(jedis.get("event:evt_1")).thenReturn(e1Json);
 
-        List<Event> result = repository.list("t1", null, null, null, null, null, null, "evt_unknown", 50);
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, "evt_unknown", 50);
 
         assertThat(result).hasSize(1);
     }
@@ -319,17 +319,17 @@ class EventRepositoryTest {
     @Test
     void list_cursorWithTimeRange_usesMinOfCursorAndTo() throws Exception {
         Instant to = Instant.ofEpochMilli(8000);
-        when(jedis.zscore("events:t1", "evt_cursor")).thenReturn(5000.0);
+        when(jedis.zscore("events:tenant-1", "evt_cursor")).thenReturn(5000.0);
 
         List<String> ids = List.of("evt_2");
         // cursorScore - 1 = 4999, to = 8000, min(4999, 8000) = 4999
-        when(jedis.zrevrangeByScore(eq("events:t1"), eq(4999.0), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), eq(4999.0), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
 
-        Event e2 = Event.builder().eventId("evt_2").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
+        Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("event:evt_2")).thenReturn(e2Json);
 
-        List<Event> result = repository.list("t1", null, null, null, null, null, to, "evt_cursor", 50);
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, to, "evt_cursor", 50);
 
         assertThat(result).hasSize(1);
     }
@@ -339,17 +339,17 @@ class EventRepositoryTest {
         Set<String> ids = new LinkedHashSet<>(List.of("evt_1", "evt_2"));
         when(jedis.smembers("events:correlation:corr_abc")).thenReturn(ids);
 
-        Event e1 = Event.builder().eventId("evt_1").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").scope("org/eng").timestamp(Instant.now()).build();
-        Event e2 = Event.builder().eventId("evt_2").tenantId("t2").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").scope("org/sales").timestamp(Instant.now()).build();
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").scope("org/eng").timestamp(Instant.now()).build();
+        Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-2").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").scope("org/sales").timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("event:evt_1")).thenReturn(e1Json);
         when(jedis.get("event:evt_2")).thenReturn(e2Json);
 
-        List<Event> result = repository.list("t1", null, null, null, "corr_abc", null, null, null, 50);
+        List<Event> result = repository.list("tenant-1", null, null, null, "corr_abc", null, null, null, 50);
 
         assertThat(result).hasSize(1);
-        assertThat(result.get(0).getTenantId()).isEqualTo("t1");
+        assertThat(result.get(0).getTenantId()).isEqualTo("tenant-1");
     }
 
     @Test
@@ -357,8 +357,8 @@ class EventRepositoryTest {
         Set<String> ids = new LinkedHashSet<>(List.of("evt_1", "evt_2"));
         when(jedis.smembers("events:correlation:corr_abc")).thenReturn(ids);
 
-        Event e1 = Event.builder().eventId("evt_1").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
-        Event e2 = Event.builder().eventId("evt_2").tenantId("t1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").timestamp(Instant.now()).build();
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
+        Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("event:evt_1")).thenReturn(e1Json);
@@ -375,8 +375,8 @@ class EventRepositoryTest {
         Set<String> ids = new LinkedHashSet<>(List.of("evt_1", "evt_2"));
         when(jedis.smembers("events:correlation:corr_abc")).thenReturn(ids);
 
-        Event e1 = Event.builder().eventId("evt_1").tenantId("t1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").scope("org/eng").timestamp(Instant.now()).build();
-        Event e2 = Event.builder().eventId("evt_2").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").scope("org/sales").timestamp(Instant.now()).build();
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").scope("org/eng").timestamp(Instant.now()).build();
+        Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").scope("org/sales").timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("event:evt_1")).thenReturn(e1Json);
@@ -394,7 +394,7 @@ class EventRepositoryTest {
         when(jedis.smembers("events:correlation:corr_abc")).thenReturn(ids);
 
         when(jedis.get("event:evt_1")).thenReturn(null);
-        Event e2 = Event.builder().eventId("evt_2").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
+        Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("event:evt_2")).thenReturn(e2Json);
 
@@ -408,8 +408,8 @@ class EventRepositoryTest {
         Set<String> ids = new LinkedHashSet<>(List.of("evt_1", "evt_2"));
         when(jedis.smembers("events:correlation:corr_abc")).thenReturn(ids);
 
-        Event e1 = Event.builder().eventId("evt_1").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
-        Event e2 = Event.builder().eventId("evt_2").tenantId("t1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").timestamp(Instant.now()).build();
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
+        Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("event:evt_1")).thenReturn(e1Json);
@@ -425,7 +425,7 @@ class EventRepositoryTest {
         Set<String> ids = new LinkedHashSet<>(List.of("evt_1"));
         when(jedis.smembers("events:correlation:corr_abc")).thenReturn(ids);
 
-        Event e1 = Event.builder().eventId("evt_1").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
         // scope is null
         String e1Json = objectMapper.writeValueAsString(e1);
         when(jedis.get("event:evt_1")).thenReturn(e1Json);
@@ -438,14 +438,14 @@ class EventRepositoryTest {
     @Test
     void list_scopeFilterWithNullScopeOnEvent_filtersOut() throws Exception {
         List<String> ids = List.of("evt_1");
-        when(jedis.zrevrangeByScore(eq("events:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
 
-        Event e1 = Event.builder().eventId("evt_1").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
         // scope is null
         String e1Json = objectMapper.writeValueAsString(e1);
         when(jedis.get("event:evt_1")).thenReturn(e1Json);
 
-        List<Event> result = repository.list("t1", null, null, "org/eng", null, null, null, null, 50);
+        List<Event> result = repository.list("tenant-1", null, null, "org/eng", null, null, null, null, 50);
 
         assertThat(result).isEmpty();
     }
@@ -453,11 +453,11 @@ class EventRepositoryTest {
     @Test
     void list_respectsLimitDuringIteration() throws Exception {
         List<String> ids = List.of("evt_1", "evt_2", "evt_3");
-        when(jedis.zrevrangeByScore(eq("events:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
 
-        Event e1 = Event.builder().eventId("evt_1").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
-        Event e2 = Event.builder().eventId("evt_2").tenantId("t1").eventType(EventType.TENANT_UPDATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
-        Event e3 = Event.builder().eventId("evt_3").tenantId("t1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").timestamp(Instant.now()).build();
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
+        Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1").eventType(EventType.TENANT_UPDATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
+        Event e3 = Event.builder().eventId("evt_3").tenantId("tenant-1").eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET).source("s").timestamp(Instant.now()).build();
         String e1Json = objectMapper.writeValueAsString(e1);
         String e2Json = objectMapper.writeValueAsString(e2);
         String e3Json = objectMapper.writeValueAsString(e3);
@@ -465,7 +465,7 @@ class EventRepositoryTest {
         when(jedis.get("event:evt_2")).thenReturn(e2Json);
         lenient().when(jedis.get("event:evt_3")).thenReturn(e3Json);
 
-        List<Event> result = repository.list("t1", null, null, null, null, null, null, null, 2);
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, null, 2);
 
         assertThat(result).hasSize(2);
     }
@@ -473,14 +473,14 @@ class EventRepositoryTest {
     @Test
     void list_parseFailure_skipsGracefully() throws Exception {
         List<String> ids = List.of("evt_bad", "evt_good");
-        when(jedis.zrevrangeByScore(eq("events:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
 
-        Event good = Event.builder().eventId("evt_good").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
+        Event good = Event.builder().eventId("evt_good").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
         String goodJson = objectMapper.writeValueAsString(good);
         when(jedis.get("event:evt_bad")).thenReturn("{invalid json}");
         when(jedis.get("event:evt_good")).thenReturn(goodJson);
 
-        List<Event> result = repository.list("t1", null, null, null, null, null, null, null, 50);
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getEventId()).isEqualTo("evt_good");
@@ -489,7 +489,7 @@ class EventRepositoryTest {
     @Test
     void save_withBlankCorrelationId_noCorrelationKey() {
         Event event = Event.builder()
-                .tenantId("t1")
+                .tenantId("tenant-1")
                 .eventType(EventType.BUDGET_FUNDED)
                 .category(EventCategory.BUDGET)
                 .source("cycles-admin")
@@ -508,7 +508,7 @@ class EventRepositoryTest {
         when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
 
         Event event = Event.builder()
-                .tenantId("t1")
+                .tenantId("tenant-1")
                 .eventType(EventType.TENANT_CREATED)
                 .category(EventCategory.TENANT)
                 .source("cycles-admin")
@@ -531,14 +531,14 @@ class EventRepositoryTest {
     @Test
     void list_missingEventData_skipsGracefully() throws Exception {
         List<String> ids = List.of("evt_1", "evt_2");
-        when(jedis.zrevrangeByScore(eq("events:t1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
 
         when(jedis.get("event:evt_1")).thenReturn(null);
-        Event e2 = Event.builder().eventId("evt_2").tenantId("t1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
+        Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
         String e2Json = objectMapper.writeValueAsString(e2);
         when(jedis.get("event:evt_2")).thenReturn(e2Json);
 
-        List<Event> result = repository.list("t1", null, null, null, null, null, null, null, 50);
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getEventId()).isEqualTo("evt_2");

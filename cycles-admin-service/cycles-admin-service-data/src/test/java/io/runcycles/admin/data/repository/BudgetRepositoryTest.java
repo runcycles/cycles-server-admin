@@ -103,7 +103,7 @@ class BudgetRepositoryTest {
         request.setOperation(FundingOperation.CREDIT);
         request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
 
-        BudgetFundingResponse response = repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request);
+        BudgetFundingResponse response = repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request);
 
         assertThat(response.getOperation()).isEqualTo(FundingOperation.CREDIT);
         assertThat(response.getPreviousAllocated().getAmount()).isEqualTo(1000L);
@@ -121,7 +121,7 @@ class BudgetRepositoryTest {
         request.setOperation(FundingOperation.DEBIT);
         request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 500L));
 
-        BudgetFundingResponse response = repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request);
+        BudgetFundingResponse response = repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request);
 
         assertThat(response.getNewAllocated().getAmount()).isEqualTo(1500L);
         assertThat(response.getNewRemaining().getAmount()).isEqualTo(1500L);
@@ -136,7 +136,7 @@ class BudgetRepositoryTest {
         request.setOperation(FundingOperation.CREDIT);
         request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
 
-        assertThatThrownBy(() -> repository.fund("t1", "missing", UnitEnum.USD_MICROCENTS, request))
+        assertThatThrownBy(() -> repository.fund("tenant-1", "missing", UnitEnum.USD_MICROCENTS, request))
                 .isInstanceOf(GovernanceException.class)
                 .satisfies(e -> assertThat(((GovernanceException) e).getErrorCode()).isEqualTo(ErrorCode.BUDGET_NOT_FOUND));
     }
@@ -150,7 +150,7 @@ class BudgetRepositoryTest {
         request.setOperation(FundingOperation.DEBIT);
         request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 99999L));
 
-        assertThatThrownBy(() -> repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request))
+        assertThatThrownBy(() -> repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request))
                 .isInstanceOf(GovernanceException.class)
                 .satisfies(e -> assertThat(((GovernanceException) e).getErrorCode()).isEqualTo(ErrorCode.BUDGET_EXCEEDED));
     }
@@ -164,7 +164,7 @@ class BudgetRepositoryTest {
         request.setOperation(FundingOperation.CREDIT);
         request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
 
-        assertThatThrownBy(() -> repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request))
+        assertThatThrownBy(() -> repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request))
                 .isInstanceOf(GovernanceException.class)
                 .satisfies(e -> assertThat(((GovernanceException) e).getErrorCode()).isEqualTo(ErrorCode.BUDGET_FROZEN));
     }
@@ -178,7 +178,7 @@ class BudgetRepositoryTest {
         request.setOperation(FundingOperation.CREDIT);
         request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
 
-        assertThatThrownBy(() -> repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request))
+        assertThatThrownBy(() -> repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request))
                 .isInstanceOf(GovernanceException.class)
                 .satisfies(e -> assertThat(((GovernanceException) e).getErrorCode()).isEqualTo(ErrorCode.BUDGET_CLOSED));
     }
@@ -192,7 +192,7 @@ class BudgetRepositoryTest {
         request.setOperation(FundingOperation.CREDIT);
         request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
 
-        assertThatThrownBy(() -> repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request))
+        assertThatThrownBy(() -> repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request))
                 .isInstanceOf(GovernanceException.class)
                 .satisfies(e -> assertThat(((GovernanceException) e).getErrorCode()).isEqualTo(ErrorCode.FORBIDDEN));
     }
@@ -208,7 +208,7 @@ class BudgetRepositoryTest {
         request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
         request.setIdempotencyKey("idem-1");
 
-        BudgetFundingResponse response = repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request);
+        BudgetFundingResponse response = repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request);
 
         assertThat(response.getNewAllocated().getAmount()).isEqualTo(1000L);
         verify(jedis).eval(anyString(), anyList(), anyList());
@@ -225,7 +225,7 @@ class BudgetRepositoryTest {
         request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
         request.setIdempotencyKey("idem-1");
 
-        BudgetFundingResponse response = repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request);
+        BudgetFundingResponse response = repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request);
 
         assertThat(response.getNewAllocated().getAmount()).isEqualTo(1000L);
         assertThat(response.getPreviousAllocated().getAmount()).isEqualTo(0L);
@@ -240,7 +240,7 @@ class BudgetRepositoryTest {
         request.setOperation(FundingOperation.REPAY_DEBT);
         request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
 
-        BudgetFundingResponse response = repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request);
+        BudgetFundingResponse response = repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request);
 
         assertThat(response.getPreviousDebt().getAmount()).isEqualTo(1000L);
         assertThat(response.getNewDebt().getAmount()).isEqualTo(500L);
@@ -250,11 +250,11 @@ class BudgetRepositoryTest {
     @Test
     void list_returnsBudgetsForTenant() {
         Set<String> keys = new LinkedHashSet<>(List.of("budget:org/team1:USD_MICROCENTS"));
-        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(keys);
 
         Map<String, String> hash = new LinkedHashMap<>();
         hash.put("ledger_id", "led-1");
-        hash.put("tenant_id", "t1");
+        hash.put("tenant_id", "tenant-1");
         hash.put("scope", "org/team1");
         hash.put("unit", "USD_MICROCENTS");
         hash.put("allocated", "1000");
@@ -268,7 +268,7 @@ class BudgetRepositoryTest {
         hash.put("created_at", String.valueOf(System.currentTimeMillis()));
         when(jedis.hgetAll("budget:org/team1:USD_MICROCENTS")).thenReturn(hash);
 
-        List<BudgetLedger> result = repository.list("t1", null, null, null, null, 50);
+        List<BudgetLedger> result = repository.list("tenant-1", null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getScope()).isEqualTo("org/team1");
@@ -278,14 +278,14 @@ class BudgetRepositoryTest {
     @Test
     void list_filtersByScopePrefix() {
         Set<String> keys = new LinkedHashSet<>(List.of("budget:org/team1:USD_MICROCENTS", "budget:other/team2:USD_MICROCENTS"));
-        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(keys);
 
         Map<String, String> hash1 = createBudgetHash("led-1", "org/team1", "USD_MICROCENTS");
         Map<String, String> hash2 = createBudgetHash("led-2", "other/team2", "USD_MICROCENTS");
         when(jedis.hgetAll("budget:org/team1:USD_MICROCENTS")).thenReturn(hash1);
         when(jedis.hgetAll("budget:other/team2:USD_MICROCENTS")).thenReturn(hash2);
 
-        List<BudgetLedger> result = repository.list("t1", "org/", null, null, null, 50);
+        List<BudgetLedger> result = repository.list("tenant-1", "org/", null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getScope()).isEqualTo("org/team1");
@@ -294,14 +294,14 @@ class BudgetRepositoryTest {
     @Test
     void list_filtersByUnit() {
         Set<String> keys = new LinkedHashSet<>(List.of("budget:scope:USD_MICROCENTS", "budget:scope:TOKENS"));
-        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(keys);
 
         Map<String, String> hash1 = createBudgetHash("led-1", "scope", "USD_MICROCENTS");
         Map<String, String> hash2 = createBudgetHash("led-2", "scope", "TOKENS");
         when(jedis.hgetAll("budget:scope:USD_MICROCENTS")).thenReturn(hash1);
         when(jedis.hgetAll("budget:scope:TOKENS")).thenReturn(hash2);
 
-        List<BudgetLedger> result = repository.list("t1", null, UnitEnum.TOKENS, null, null, 50);
+        List<BudgetLedger> result = repository.list("tenant-1", null, UnitEnum.TOKENS, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getUnit()).isEqualTo(UnitEnum.TOKENS);
@@ -310,7 +310,7 @@ class BudgetRepositoryTest {
     @Test
     void list_filtersByStatus() {
         Set<String> keys = new LinkedHashSet<>(List.of("budget:a:USD_MICROCENTS", "budget:b:USD_MICROCENTS"));
-        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(keys);
 
         Map<String, String> hash1 = createBudgetHash("led-1", "a", "USD_MICROCENTS");
         Map<String, String> hash2 = createBudgetHash("led-2", "b", "USD_MICROCENTS");
@@ -318,7 +318,7 @@ class BudgetRepositoryTest {
         when(jedis.hgetAll("budget:a:USD_MICROCENTS")).thenReturn(hash1);
         when(jedis.hgetAll("budget:b:USD_MICROCENTS")).thenReturn(hash2);
 
-        List<BudgetLedger> result = repository.list("t1", null, null, BudgetStatus.ACTIVE, null, 50);
+        List<BudgetLedger> result = repository.list("tenant-1", null, null, BudgetStatus.ACTIVE, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getScope()).isEqualTo("a");
@@ -334,7 +334,7 @@ class BudgetRepositoryTest {
         request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
         request.setIdempotencyKey("idem-1");
 
-        assertThatThrownBy(() -> repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request))
+        assertThatThrownBy(() -> repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request))
                 .isInstanceOf(GovernanceException.class)
                 .satisfies(e -> assertThat(((GovernanceException) e).getErrorCode()).isEqualTo(ErrorCode.IDEMPOTENCY_MISMATCH));
     }
@@ -348,7 +348,7 @@ class BudgetRepositoryTest {
         request.setOperation(FundingOperation.RESET);
         request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 5000L));
 
-        BudgetFundingResponse response = repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request);
+        BudgetFundingResponse response = repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request);
 
         assertThat(response.getOperation()).isEqualTo(FundingOperation.RESET);
         assertThat(response.getPreviousAllocated().getAmount()).isEqualTo(1000L);
@@ -359,7 +359,7 @@ class BudgetRepositoryTest {
     @Test
     void list_cursorPagination_skipsEntriesBeforeCursor() {
         Set<String> keys = new LinkedHashSet<>(List.of("budget:a:USD_MICROCENTS", "budget:b:USD_MICROCENTS", "budget:c:USD_MICROCENTS"));
-        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(keys);
 
         Map<String, String> hashA = createBudgetHash("led-a", "a", "USD_MICROCENTS");
         Map<String, String> hashB = createBudgetHash("led-b", "b", "USD_MICROCENTS");
@@ -368,7 +368,7 @@ class BudgetRepositoryTest {
         when(jedis.hgetAll("budget:b:USD_MICROCENTS")).thenReturn(hashB);
         when(jedis.hgetAll("budget:c:USD_MICROCENTS")).thenReturn(hashC);
 
-        List<BudgetLedger> result = repository.list("t1", null, null, null, "led-a", 50);
+        List<BudgetLedger> result = repository.list("tenant-1", null, null, null, "led-a", 50);
 
         assertThat(result).hasSize(2);
         assertThat(result.get(0).getLedgerId()).isEqualTo("led-b");
@@ -378,37 +378,37 @@ class BudgetRepositoryTest {
     @Test
     void list_emptyHashData_cleansIndexAndSkips() {
         Set<String> keys = new LinkedHashSet<>(List.of("budget:stale:USD_MICROCENTS", "budget:valid:USD_MICROCENTS"));
-        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(keys);
 
         when(jedis.hgetAll("budget:stale:USD_MICROCENTS")).thenReturn(Collections.emptyMap());
         Map<String, String> validHash = createBudgetHash("led-1", "valid", "USD_MICROCENTS");
         when(jedis.hgetAll("budget:valid:USD_MICROCENTS")).thenReturn(validHash);
 
-        List<BudgetLedger> result = repository.list("t1", null, null, null, null, 50);
+        List<BudgetLedger> result = repository.list("tenant-1", null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getScope()).isEqualTo("valid");
-        verify(jedis).srem("budgets:t1", "budget:stale:USD_MICROCENTS");
+        verify(jedis).srem("budgets:tenant-1", "budget:stale:USD_MICROCENTS");
     }
 
     @Test
     void list_respectsLimit() {
         Set<String> keys = new LinkedHashSet<>(List.of("budget:a:USD_MICROCENTS", "budget:b:USD_MICROCENTS", "budget:c:USD_MICROCENTS"));
-        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(keys);
 
         when(jedis.hgetAll("budget:a:USD_MICROCENTS")).thenReturn(createBudgetHash("led-a", "a", "USD_MICROCENTS"));
         when(jedis.hgetAll("budget:b:USD_MICROCENTS")).thenReturn(createBudgetHash("led-b", "b", "USD_MICROCENTS"));
 
-        List<BudgetLedger> result = repository.list("t1", null, null, null, null, 2);
+        List<BudgetLedger> result = repository.list("tenant-1", null, null, null, null, 2);
 
         assertThat(result).hasSize(2);
     }
 
     @Test
     void list_noKeys_returnsEmptyList() {
-        when(jedis.smembers("budgets:t1")).thenReturn(Collections.emptySet());
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(Collections.emptySet());
 
-        List<BudgetLedger> result = repository.list("t1", null, null, null, null, 50);
+        List<BudgetLedger> result = repository.list("tenant-1", null, null, null, null, 50);
 
         assertThat(result).isEmpty();
     }
@@ -432,18 +432,18 @@ class BudgetRepositoryTest {
 
     @Test
     void list_convenienceMethod_callsFullListWithDefaults() {
-        when(jedis.smembers("budgets:t1")).thenReturn(Collections.emptySet());
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(Collections.emptySet());
 
-        List<BudgetLedger> result = repository.list("t1");
+        List<BudgetLedger> result = repository.list("tenant-1");
 
         assertThat(result).isEmpty();
-        verify(jedis).smembers("budgets:t1");
+        verify(jedis).smembers("budgets:tenant-1");
     }
 
     @Test
     void list_corruptHashMissingScopeOrUnit_skipsGracefully() {
         Set<String> keys = new LinkedHashSet<>(List.of("budget:corrupt:USD_MICROCENTS", "budget:valid:USD_MICROCENTS"));
-        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(keys);
 
         // Corrupt hash missing 'scope' and 'unit' fields
         Map<String, String> corruptHash = new LinkedHashMap<>();
@@ -454,7 +454,7 @@ class BudgetRepositoryTest {
         Map<String, String> validHash = createBudgetHash("led-1", "valid", "USD_MICROCENTS");
         when(jedis.hgetAll("budget:valid:USD_MICROCENTS")).thenReturn(validHash);
 
-        List<BudgetLedger> result = repository.list("t1", null, null, null, null, 50);
+        List<BudgetLedger> result = repository.list("tenant-1", null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getScope()).isEqualTo("valid");
@@ -469,7 +469,7 @@ class BudgetRepositoryTest {
         request.setUnit(UnitEnum.USD_MICROCENTS);
         request.setAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
 
-        assertThatThrownBy(() -> repository.create("t1", request))
+        assertThatThrownBy(() -> repository.create("tenant-1", request))
                 .isInstanceOf(RuntimeException.class)
                 .hasCauseInstanceOf(RuntimeException.class);
     }
@@ -477,7 +477,7 @@ class BudgetRepositoryTest {
     @Test
     void list_deserializationFailure_skipsGracefully() {
         Set<String> keys = new LinkedHashSet<>(List.of("budget:bad:USD_MICROCENTS", "budget:valid:USD_MICROCENTS"));
-        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(keys);
 
         // Return a hash that will cause an exception in hashToBudgetLedger (bad unit value)
         Map<String, String> badHash = new LinkedHashMap<>();
@@ -489,7 +489,7 @@ class BudgetRepositoryTest {
         Map<String, String> validHash = createBudgetHash("led-1", "valid", "USD_MICROCENTS");
         when(jedis.hgetAll("budget:valid:USD_MICROCENTS")).thenReturn(validHash);
 
-        List<BudgetLedger> result = repository.list("t1", null, null, null, null, 50);
+        List<BudgetLedger> result = repository.list("tenant-1", null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getScope()).isEqualTo("valid");
@@ -503,7 +503,7 @@ class BudgetRepositoryTest {
         request.setOperation(FundingOperation.CREDIT);
         request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
 
-        assertThatThrownBy(() -> repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request))
+        assertThatThrownBy(() -> repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request))
                 .isInstanceOf(RuntimeException.class)
                 .hasCauseInstanceOf(RuntimeException.class);
     }
@@ -530,7 +530,7 @@ class BudgetRepositoryTest {
     @Test
     void list_hashWithAllOptionalFields_parsesCorrectly() {
         Set<String> keys = new LinkedHashSet<>(List.of("budget:org/full:USD_MICROCENTS"));
-        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(keys);
 
         Map<String, String> hash = createBudgetHash("led-full", "org/full", "USD_MICROCENTS");
         hash.put("commit_overage_policy", "ALLOW_WITH_OVERDRAFT");
@@ -540,7 +540,7 @@ class BudgetRepositoryTest {
         hash.put("updated_at", String.valueOf(System.currentTimeMillis()));
         when(jedis.hgetAll("budget:org/full:USD_MICROCENTS")).thenReturn(hash);
 
-        List<BudgetLedger> result = repository.list("t1", null, null, null, null, 50);
+        List<BudgetLedger> result = repository.list("tenant-1", null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         BudgetLedger ledger = result.get(0);
@@ -576,7 +576,7 @@ class BudgetRepositoryTest {
         request.setOperation(FundingOperation.CREDIT);
         request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
 
-        assertThatThrownBy(() -> repository.fund("t1", "test", UnitEnum.USD_MICROCENTS, request))
+        assertThatThrownBy(() -> repository.fund("tenant-1", "test", UnitEnum.USD_MICROCENTS, request))
                 .isSameAs(expected);
     }
 
@@ -590,7 +590,7 @@ class BudgetRepositoryTest {
         request.setUnit(UnitEnum.USD_MICROCENTS);
         request.setAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
 
-        assertThatThrownBy(() -> repository.create("t1", request))
+        assertThatThrownBy(() -> repository.create("tenant-1", request))
                 .isSameAs(expected);
     }
 
@@ -604,7 +604,7 @@ class BudgetRepositoryTest {
         request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
         request.setIdempotencyKey("   ");
 
-        BudgetFundingResponse response = repository.fund("t1", "scope", UnitEnum.USD_MICROCENTS, request);
+        BudgetFundingResponse response = repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request);
 
         assertThat(response.getNewAllocated().getAmount()).isEqualTo(1000L);
     }
@@ -612,13 +612,13 @@ class BudgetRepositoryTest {
     @Test
     void list_cursorNotFound_includesAllEntries() {
         Set<String> keys = new LinkedHashSet<>(List.of("budget:a:USD_MICROCENTS", "budget:b:USD_MICROCENTS"));
-        when(jedis.smembers("budgets:t1")).thenReturn(keys);
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(keys);
 
         when(jedis.hgetAll("budget:a:USD_MICROCENTS")).thenReturn(createBudgetHash("led-a", "a", "USD_MICROCENTS"));
         when(jedis.hgetAll("budget:b:USD_MICROCENTS")).thenReturn(createBudgetHash("led-b", "b", "USD_MICROCENTS"));
 
         // Cursor "nonexistent" won't match any ledger_id, so nothing is returned after the cursor
-        List<BudgetLedger> result = repository.list("t1", null, null, null, "nonexistent", 50);
+        List<BudgetLedger> result = repository.list("tenant-1", null, null, null, "nonexistent", 50);
 
         assertThat(result).isEmpty();
     }
@@ -626,7 +626,7 @@ class BudgetRepositoryTest {
     private Map<String, String> createBudgetHash(String ledgerId, String scope, String unit) {
         Map<String, String> hash = new LinkedHashMap<>();
         hash.put("ledger_id", ledgerId);
-        hash.put("tenant_id", "t1");
+        hash.put("tenant_id", "tenant-1");
         hash.put("scope", scope);
         hash.put("unit", unit);
         hash.put("allocated", "1000");

@@ -60,7 +60,7 @@ class WebhookServiceTest {
     void create_generatesSubscriptionIdAndSigningSecret() {
         WebhookCreateRequest request = createRequest();
 
-        WebhookCreateResponse response = webhookService.create("t1", request);
+        WebhookCreateResponse response = webhookService.create("tenant-1", request);
 
         assertThat(response.getSubscription().getSubscriptionId()).startsWith("whsub_");
         assertThat(response.getSigningSecret()).startsWith("whsec_");
@@ -73,7 +73,7 @@ class WebhookServiceTest {
         WebhookCreateRequest request = createRequest();
         request.setSigningSecret("whsec_custom");
 
-        WebhookCreateResponse response = webhookService.create("t1", request);
+        WebhookCreateResponse response = webhookService.create("tenant-1", request);
 
         assertThat(response.getSigningSecret()).isEqualTo("whsec_custom");
     }
@@ -82,7 +82,7 @@ class WebhookServiceTest {
     void create_returnsResponseWithSecret() {
         WebhookCreateRequest request = createRequest();
 
-        WebhookCreateResponse response = webhookService.create("t1", request);
+        WebhookCreateResponse response = webhookService.create("tenant-1", request);
 
         assertThat(response.getSubscription()).isNotNull();
         assertThat(response.getSigningSecret()).isNotNull();
@@ -90,7 +90,7 @@ class WebhookServiceTest {
 
     @Test
     void get_masksSigningSecretAndHeaders() {
-        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
 
         WebhookSubscription result = webhookService.get("whsub_1");
@@ -101,7 +101,7 @@ class WebhookServiceTest {
 
     @Test
     void get_noHeaders_masksOnlySecret() {
-        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         sub.setHeaders(null);
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
 
@@ -113,7 +113,7 @@ class WebhookServiceTest {
 
     @Test
     void update_partialUpdate_onlyModifiesProvidedFields() {
-        WebhookSubscription existing = buildSubscription("whsub_1", "t1");
+        WebhookSubscription existing = buildSubscription("whsub_1", "tenant-1");
         existing.setName("Original");
         when(webhookRepository.findById("whsub_1")).thenReturn(existing);
 
@@ -130,7 +130,7 @@ class WebhookServiceTest {
 
     @Test
     void update_resetsConsecutiveFailuresOnActiveStatus() {
-        WebhookSubscription existing = buildSubscription("whsub_1", "t1");
+        WebhookSubscription existing = buildSubscription("whsub_1", "tenant-1");
         existing.setConsecutiveFailures(5);
         existing.setStatus(WebhookStatus.DISABLED);
         when(webhookRepository.findById("whsub_1")).thenReturn(existing);
@@ -146,7 +146,7 @@ class WebhookServiceTest {
 
     @Test
     void update_rejectsDisabledStatus() {
-        WebhookSubscription existing = buildSubscription("whsub_1", "t1");
+        WebhookSubscription existing = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(existing);
 
         WebhookUpdateRequest request = WebhookUpdateRequest.builder()
@@ -160,7 +160,7 @@ class WebhookServiceTest {
 
     @Test
     void update_validatesUrlIfProvided() {
-        WebhookSubscription existing = buildSubscription("whsub_1", "t1");
+        WebhookSubscription existing = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(existing);
 
         WebhookUpdateRequest request = WebhookUpdateRequest.builder()
@@ -183,7 +183,7 @@ class WebhookServiceTest {
 
     @Test
     void delete_deletesIfFound() {
-        WebhookSubscription existing = buildSubscription("whsub_1", "t1");
+        WebhookSubscription existing = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(existing);
 
         webhookService.delete("whsub_1");
@@ -193,7 +193,7 @@ class WebhookServiceTest {
 
     @Test
     void test_returnsWebhookTestResponse() throws Exception {
-        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         when(webhookRepository.getSigningSecret("whsub_1")).thenReturn("test-secret");
         when(objectMapper.writeValueAsString(any())).thenReturn("{\"test\":true}");
@@ -211,11 +211,11 @@ class WebhookServiceTest {
 
     @Test
     void listByTenant_delegatesAndMasksSecrets() {
-        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
-        when(webhookRepository.listByTenant("t1", null, null, null, 50))
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
+        when(webhookRepository.listByTenant("tenant-1", null, null, null, 50))
             .thenReturn(List.of(sub));
 
-        WebhookListResponse response = webhookService.listByTenant("t1", null, null, null, 50);
+        WebhookListResponse response = webhookService.listByTenant("tenant-1", null, null, null, 50);
 
         assertThat(response.getSubscriptions()).hasSize(1);
         assertThat(response.getSubscriptions().get(0).getSigningSecret()).isNull();
@@ -223,22 +223,22 @@ class WebhookServiceTest {
 
     @Test
     void listAll_withTenantId_delegatesToListByTenant() {
-        WebhookSubscription sub1 = buildSubscription("whsub_1", "t1");
-        when(webhookRepository.listByTenant("t1", null, null, null, 50))
+        WebhookSubscription sub1 = buildSubscription("whsub_1", "tenant-1");
+        when(webhookRepository.listByTenant("tenant-1", null, null, null, 50))
             .thenReturn(List.of(sub1));
 
-        WebhookListResponse response = webhookService.listAll("t1", null, null, null, 50);
+        WebhookListResponse response = webhookService.listAll("tenant-1", null, null, null, 50);
 
         assertThat(response.getSubscriptions()).hasSize(1);
-        assertThat(response.getSubscriptions().get(0).getTenantId()).isEqualTo("t1");
-        verify(webhookRepository).listByTenant("t1", null, null, null, 50);
+        assertThat(response.getSubscriptions().get(0).getTenantId()).isEqualTo("tenant-1");
+        verify(webhookRepository).listByTenant("tenant-1", null, null, null, 50);
         verify(webhookRepository, never()).listAll(any(), any(), any(), anyInt());
     }
 
     @Test
     void listAll_noTenantFilter_returnsAll() {
-        WebhookSubscription sub1 = buildSubscription("whsub_1", "t1");
-        WebhookSubscription sub2 = buildSubscription("whsub_2", "t2");
+        WebhookSubscription sub1 = buildSubscription("whsub_1", "tenant-1");
+        WebhookSubscription sub2 = buildSubscription("whsub_2", "tenant-2");
         when(webhookRepository.listAll(null, null, null, 50))
             .thenReturn(List.of(sub1, sub2));
 
@@ -258,7 +258,7 @@ class WebhookServiceTest {
 
     @Test
     void listDeliveries_returnsDeliveries() {
-        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         WebhookDelivery delivery = WebhookDelivery.builder()
             .deliveryId("del_1").subscriptionId("whsub_1").eventId("evt_1")
@@ -273,10 +273,10 @@ class WebhookServiceTest {
 
     @Test
     void replay_noEvents_returnsZeroQueued() {
-        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
-        when(eventRepository.list(eq("t1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
             .thenReturn(List.of());
 
         ReplayRequest request = ReplayRequest.builder()
@@ -292,14 +292,14 @@ class WebhookServiceTest {
 
     @Test
     void replay_withEvents_queuesDeliveries() {
-        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
         io.runcycles.admin.model.event.Event event = io.runcycles.admin.model.event.Event.builder()
             .eventId("evt_1").eventType(io.runcycles.admin.model.event.EventType.BUDGET_CREATED)
             .category(io.runcycles.admin.model.event.EventCategory.BUDGET)
-            .tenantId("t1").source("admin").timestamp(Instant.now()).build();
-        when(eventRepository.list(eq("t1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+            .tenantId("tenant-1").source("admin").timestamp(Instant.now()).build();
+        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
             .thenReturn(List.of(event));
 
         ReplayRequest request = ReplayRequest.builder()
@@ -316,18 +316,18 @@ class WebhookServiceTest {
 
     @Test
     void replay_withEventTypeFilter_filtersEvents() {
-        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
         io.runcycles.admin.model.event.Event budgetEvt = io.runcycles.admin.model.event.Event.builder()
             .eventId("evt_1").eventType(io.runcycles.admin.model.event.EventType.BUDGET_CREATED)
             .category(io.runcycles.admin.model.event.EventCategory.BUDGET)
-            .tenantId("t1").source("admin").timestamp(Instant.now()).build();
+            .tenantId("tenant-1").source("admin").timestamp(Instant.now()).build();
         io.runcycles.admin.model.event.Event tenantEvt = io.runcycles.admin.model.event.Event.builder()
             .eventId("evt_2").eventType(io.runcycles.admin.model.event.EventType.TENANT_CREATED)
             .category(io.runcycles.admin.model.event.EventCategory.TENANT)
-            .tenantId("t1").source("admin").timestamp(Instant.now()).build();
-        when(eventRepository.list(eq("t1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+            .tenantId("tenant-1").source("admin").timestamp(Instant.now()).build();
+        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
             .thenReturn(List.of(budgetEvt, tenantEvt));
 
         ReplayRequest request = ReplayRequest.builder()
@@ -368,7 +368,7 @@ class WebhookServiceTest {
 
     @Test
     void test_withNoSigningSecret_stillWorks() throws Exception {
-        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         when(webhookRepository.getSigningSecret("whsub_1")).thenReturn(null);
         when(objectMapper.writeValueAsString(any())).thenReturn("{\"test\":true}");
@@ -381,7 +381,7 @@ class WebhookServiceTest {
 
     @Test
     void test_serializationError_returnsFailure() throws Exception {
-        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         when(webhookRepository.getSigningSecret("whsub_1")).thenReturn("secret");
         when(objectMapper.writeValueAsString(any()))
@@ -396,15 +396,15 @@ class WebhookServiceTest {
 
     @Test
     void replay_withEventTypeFilter_filtersCorrectly() {
-        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
 
         io.runcycles.admin.model.event.Event evt1 = io.runcycles.admin.model.event.Event.builder()
-            .eventId("evt_1").eventType(EventType.BUDGET_CREATED).tenantId("t1")
+            .eventId("evt_1").eventType(EventType.BUDGET_CREATED).tenantId("tenant-1")
             .timestamp(Instant.now()).build();
         io.runcycles.admin.model.event.Event evt2 = io.runcycles.admin.model.event.Event.builder()
-            .eventId("evt_2").eventType(EventType.TENANT_CREATED).tenantId("t1")
+            .eventId("evt_2").eventType(EventType.TENANT_CREATED).tenantId("tenant-1")
             .timestamp(Instant.now()).build();
 
         when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
@@ -425,15 +425,15 @@ class WebhookServiceTest {
 
     @Test
     void replay_dispatchFailure_continuesAndCounts() {
-        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
 
         io.runcycles.admin.model.event.Event evt1 = io.runcycles.admin.model.event.Event.builder()
-            .eventId("evt_1").eventType(EventType.BUDGET_CREATED).tenantId("t1")
+            .eventId("evt_1").eventType(EventType.BUDGET_CREATED).tenantId("tenant-1")
             .timestamp(Instant.now()).build();
         io.runcycles.admin.model.event.Event evt2 = io.runcycles.admin.model.event.Event.builder()
-            .eventId("evt_2").eventType(EventType.BUDGET_FUNDED).tenantId("t1")
+            .eventId("evt_2").eventType(EventType.BUDGET_FUNDED).tenantId("tenant-1")
             .timestamp(Instant.now()).build();
 
         when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
@@ -455,7 +455,7 @@ class WebhookServiceTest {
 
     @Test
     void replay_lockAlreadyHeld_throws409() {
-        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(false);
 
@@ -472,10 +472,10 @@ class WebhookServiceTest {
 
     @Test
     void replay_releasesLockAfterCompletion() {
-        WebhookSubscription sub = buildSubscription("whsub_1", "t1");
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
-        when(eventRepository.list(eq("t1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
             .thenReturn(List.of());
 
         ReplayRequest request = ReplayRequest.builder()
@@ -490,7 +490,7 @@ class WebhookServiceTest {
 
     @Test
     void update_statusDisabled_throws() {
-        WebhookSubscription existing = buildSubscription("whsub_1", "t1");
+        WebhookSubscription existing = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(existing);
 
         WebhookUpdateRequest request = WebhookUpdateRequest.builder()
@@ -504,7 +504,7 @@ class WebhookServiceTest {
 
     @Test
     void update_statusActive_resetsConsecutiveFailures() {
-        WebhookSubscription existing = buildSubscription("whsub_1", "t1");
+        WebhookSubscription existing = buildSubscription("whsub_1", "tenant-1");
         existing.setConsecutiveFailures(5);
         existing.setStatus(WebhookStatus.PAUSED);
         when(webhookRepository.findById("whsub_1")).thenReturn(existing);
@@ -526,12 +526,12 @@ class WebhookServiceTest {
     void listAll_withTenantFilter_paginatesCorrectly() {
         // Verifies fix for #57: tenant filter now uses tenant-specific Redis set
         // so hasMore and nextCursor reflect tenant-scoped pagination
-        WebhookSubscription sub1 = buildSubscription("whsub_1", "t1");
-        WebhookSubscription sub2 = buildSubscription("whsub_2", "t1");
-        when(webhookRepository.listByTenant("t1", null, null, null, 2))
+        WebhookSubscription sub1 = buildSubscription("whsub_1", "tenant-1");
+        WebhookSubscription sub2 = buildSubscription("whsub_2", "tenant-1");
+        when(webhookRepository.listByTenant("tenant-1", null, null, null, 2))
             .thenReturn(List.of(sub1, sub2));
 
-        WebhookListResponse response = webhookService.listAll("t1", null, null, null, 2);
+        WebhookListResponse response = webhookService.listAll("tenant-1", null, null, null, 2);
 
         assertThat(response.getSubscriptions()).hasSize(2);
         assertThat(response.isHasMore()).isTrue();

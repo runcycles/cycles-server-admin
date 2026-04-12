@@ -40,7 +40,7 @@ class WebhookTenantControllerTest {
     private void setupApiKeyAuth() {
         when(apiKeyRepository.validate("valid-api-key")).thenReturn(
                 ApiKeyValidationResponse.builder()
-                        .valid(true).tenantId("t1").keyId("key_1")
+                        .valid(true).tenantId("tenant-1").keyId("key_1")
                         .permissions(List.of("webhooks:read", "webhooks:write", "events:read")).build());
     }
 
@@ -48,12 +48,12 @@ class WebhookTenantControllerTest {
     void createWebhook_withValidTenantEventTypes_returns201() throws Exception {
         setupApiKeyAuth();
         WebhookSubscription sub = WebhookSubscription.builder()
-            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh")
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .eventTypes(List.of(EventType.BUDGET_CREATED)).status(WebhookStatus.ACTIVE)
             .createdAt(Instant.now()).build();
         WebhookCreateResponse response = WebhookCreateResponse.builder()
             .subscription(sub).signingSecret("whsec_abc").build();
-        when(webhookService.create(eq("t1"), any())).thenReturn(response);
+        when(webhookService.create(eq("tenant-1"), any())).thenReturn(response);
 
         mockMvc.perform(post("/v1/webhooks")
                         .header("X-Cycles-API-Key", "valid-api-key")
@@ -64,7 +64,7 @@ class WebhookTenantControllerTest {
 
         verify(auditRepository).log(argThat(entry ->
                 "createTenantWebhook".equals(entry.getOperation()) &&
-                "t1".equals(entry.getTenantId()) &&
+                "tenant-1".equals(entry.getTenantId()) &&
                 "key_1".equals(entry.getKeyId()) &&
                 entry.getStatus() == 201));
     }
@@ -85,7 +85,7 @@ class WebhookTenantControllerTest {
     void getWebhook_ownWebhook_returns200() throws Exception {
         setupApiKeyAuth();
         WebhookSubscription sub = WebhookSubscription.builder()
-            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh")
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
         when(webhookService.get("whsub_1")).thenReturn(sub);
 
@@ -99,7 +99,7 @@ class WebhookTenantControllerTest {
     void getWebhook_otherTenantWebhook_returns404() throws Exception {
         setupApiKeyAuth();
         WebhookSubscription sub = WebhookSubscription.builder()
-            .subscriptionId("whsub_other").tenantId("t2").url("https://example.com/wh")
+            .subscriptionId("whsub_other").tenantId("tenant-2").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
         when(webhookService.get("whsub_other")).thenReturn(sub);
 
@@ -113,7 +113,7 @@ class WebhookTenantControllerTest {
     void deleteWebhook_ownWebhook_returns204() throws Exception {
         setupApiKeyAuth();
         WebhookSubscription sub = WebhookSubscription.builder()
-            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh")
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
         when(webhookService.get("whsub_1")).thenReturn(sub);
 
@@ -124,7 +124,7 @@ class WebhookTenantControllerTest {
         verify(webhookService).delete("whsub_1");
         verify(auditRepository).log(argThat(entry ->
                 "deleteTenantWebhook".equals(entry.getOperation()) &&
-                "t1".equals(entry.getTenantId()) &&
+                "tenant-1".equals(entry.getTenantId()) &&
                 "key_1".equals(entry.getKeyId()) &&
                 entry.getStatus() == 204));
     }
@@ -141,11 +141,11 @@ class WebhookTenantControllerTest {
     void updateWebhook_ownWebhook_returns200() throws Exception {
         setupApiKeyAuth();
         WebhookSubscription sub = WebhookSubscription.builder()
-            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh")
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
         when(webhookService.get("whsub_1")).thenReturn(sub);
         WebhookSubscription updated = WebhookSubscription.builder()
-            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh2")
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh2")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
         when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
 
@@ -158,7 +158,7 @@ class WebhookTenantControllerTest {
 
         verify(auditRepository).log(argThat(entry ->
                 "updateTenantWebhook".equals(entry.getOperation()) &&
-                "t1".equals(entry.getTenantId()) &&
+                "tenant-1".equals(entry.getTenantId()) &&
                 "key_1".equals(entry.getKeyId()) &&
                 entry.getStatus() == 200));
     }
@@ -167,7 +167,7 @@ class WebhookTenantControllerTest {
     void updateWebhook_withAdminOnlyEventType_returns400() throws Exception {
         setupApiKeyAuth();
         WebhookSubscription sub = WebhookSubscription.builder()
-            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh")
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
         when(webhookService.get("whsub_1")).thenReturn(sub);
 
@@ -183,7 +183,7 @@ class WebhookTenantControllerTest {
     void updateWebhook_otherTenantWebhook_returns404() throws Exception {
         setupApiKeyAuth();
         WebhookSubscription sub = WebhookSubscription.builder()
-            .subscriptionId("whsub_other").tenantId("t2").url("https://example.com/wh")
+            .subscriptionId("whsub_other").tenantId("tenant-2").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
         when(webhookService.get("whsub_other")).thenReturn(sub);
 
@@ -198,7 +198,7 @@ class WebhookTenantControllerTest {
     void testWebhook_ownWebhook_returns200() throws Exception {
         setupApiKeyAuth();
         WebhookSubscription sub = WebhookSubscription.builder()
-            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh")
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
         when(webhookService.get("whsub_1")).thenReturn(sub);
         WebhookTestResponse testResponse = WebhookTestResponse.builder()
@@ -212,7 +212,7 @@ class WebhookTenantControllerTest {
 
         verify(auditRepository).log(argThat(entry ->
                 "testTenantWebhook".equals(entry.getOperation()) &&
-                "t1".equals(entry.getTenantId()) &&
+                "tenant-1".equals(entry.getTenantId()) &&
                 "key_1".equals(entry.getKeyId()) &&
                 entry.getStatus() == 200));
     }
@@ -221,7 +221,7 @@ class WebhookTenantControllerTest {
     void testWebhook_otherTenantWebhook_returns404() throws Exception {
         setupApiKeyAuth();
         WebhookSubscription sub = WebhookSubscription.builder()
-            .subscriptionId("whsub_other").tenantId("t2").url("https://example.com/wh")
+            .subscriptionId("whsub_other").tenantId("tenant-2").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
         when(webhookService.get("whsub_other")).thenReturn(sub);
 
@@ -234,7 +234,7 @@ class WebhookTenantControllerTest {
     void listDeliveries_ownWebhook_returns200() throws Exception {
         setupApiKeyAuth();
         WebhookSubscription sub = WebhookSubscription.builder()
-            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh")
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
         when(webhookService.get("whsub_1")).thenReturn(sub);
         WebhookDeliveryListResponse deliveries = WebhookDeliveryListResponse.builder()
@@ -252,7 +252,7 @@ class WebhookTenantControllerTest {
     void listDeliveries_otherTenantWebhook_returns404() throws Exception {
         setupApiKeyAuth();
         WebhookSubscription sub = WebhookSubscription.builder()
-            .subscriptionId("whsub_other").tenantId("t2").url("https://example.com/wh")
+            .subscriptionId("whsub_other").tenantId("tenant-2").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
         when(webhookService.get("whsub_other")).thenReturn(sub);
 
@@ -266,21 +266,21 @@ class WebhookTenantControllerTest {
         setupApiKeyAuth();
         WebhookListResponse response = WebhookListResponse.builder()
             .subscriptions(List.of()).hasMore(false).build();
-        when(webhookService.listByTenant(eq("t1"), any(), any(), any(), eq(100))).thenReturn(response);
+        when(webhookService.listByTenant(eq("tenant-1"), any(), any(), any(), eq(100))).thenReturn(response);
 
         mockMvc.perform(get("/v1/webhooks")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .param("limit", "999"))
                 .andExpect(status().isOk());
 
-        verify(webhookService).listByTenant(eq("t1"), any(), any(), any(), eq(100));
+        verify(webhookService).listByTenant(eq("tenant-1"), any(), any(), any(), eq(100));
     }
 
     @Test
     void listDeliveries_clampsLimitTo100() throws Exception {
         setupApiKeyAuth();
         WebhookSubscription sub = WebhookSubscription.builder()
-            .subscriptionId("whsub_1").tenantId("t1").url("https://example.com/wh")
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
         when(webhookService.get("whsub_1")).thenReturn(sub);
         WebhookDeliveryListResponse response = WebhookDeliveryListResponse.builder()
@@ -301,7 +301,7 @@ class WebhookTenantControllerTest {
         setupApiKeyAuth();
         WebhookListResponse response = WebhookListResponse.builder()
             .subscriptions(List.of()).hasMore(false).build();
-        when(webhookService.listByTenant(eq("t1"), any(), any(), any(), anyInt())).thenReturn(response);
+        when(webhookService.listByTenant(eq("tenant-1"), any(), any(), any(), anyInt())).thenReturn(response);
 
         mockMvc.perform(get("/v1/webhooks")
                         .header("X-Cycles-API-Key", "valid-api-key"))

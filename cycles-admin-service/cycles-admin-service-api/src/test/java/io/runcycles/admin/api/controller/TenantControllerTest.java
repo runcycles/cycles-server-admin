@@ -115,14 +115,14 @@ class TenantControllerTest {
     @Test
     void listTenants_returns200() throws Exception {
         List<Tenant> tenants = List.of(
-                Tenant.builder().tenantId("t1").name("A").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build());
+                Tenant.builder().tenantId("tenant-1").name("A").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build());
         when(tenantRepository.list(any(), any(), any(), anyInt())).thenReturn(tenants);
 
         mockMvc.perform(get("/v1/admin/tenants")
                         .header("X-Admin-API-Key", ADMIN_KEY))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.tenants").isArray())
-                .andExpect(jsonPath("$.tenants[0].tenant_id").value("t1"));
+                .andExpect(jsonPath("$.tenants[0].tenant_id").value("tenant-1"));
     }
 
     @Test
@@ -139,13 +139,13 @@ class TenantControllerTest {
     @Test
     void getTenant_returns200() throws Exception {
         Tenant tenant = Tenant.builder()
-                .tenantId("t1").name("A").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(tenantRepository.get("t1")).thenReturn(tenant);
+                .tenantId("tenant-1").name("A").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(tenantRepository.get("tenant-1")).thenReturn(tenant);
 
-        mockMvc.perform(get("/v1/admin/tenants/t1")
+        mockMvc.perform(get("/v1/admin/tenants/tenant-1")
                         .header("X-Admin-API-Key", ADMIN_KEY))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.tenant_id").value("t1"));
+                .andExpect(jsonPath("$.tenant_id").value("tenant-1"));
     }
 
     @Test
@@ -161,10 +161,10 @@ class TenantControllerTest {
     @Test
     void updateTenant_returns200() throws Exception {
         Tenant updated = Tenant.builder()
-                .tenantId("t1").name("Updated").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(tenantRepository.update(eq("t1"), any())).thenReturn(updated);
+                .tenantId("tenant-1").name("Updated").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(updated);
 
-        mockMvc.perform(patch("/v1/admin/tenants/t1")
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"Updated\"}"))
@@ -174,10 +174,10 @@ class TenantControllerTest {
 
     @Test
     void updateTenant_invalidTransition_returns400() throws Exception {
-        when(tenantRepository.update(eq("t1"), any()))
+        when(tenantRepository.update(eq("tenant-1"), any()))
                 .thenThrow(new GovernanceException(ErrorCode.INVALID_REQUEST, "Cannot transition from CLOSED", 400));
 
-        mockMvc.perform(patch("/v1/admin/tenants/t1")
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"status\":\"ACTIVE\"}"))
@@ -223,10 +223,10 @@ class TenantControllerTest {
     @Test
     void updateTenant_logsAuditEntry() throws Exception {
         Tenant updated = Tenant.builder()
-                .tenantId("t1").name("Updated").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(tenantRepository.update(eq("t1"), any())).thenReturn(updated);
+                .tenantId("tenant-1").name("Updated").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(updated);
 
-        mockMvc.perform(patch("/v1/admin/tenants/t1")
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"Updated\"}"))
@@ -234,7 +234,7 @@ class TenantControllerTest {
 
         verify(auditRepository).log(argThat(entry ->
                 "updateTenant".equals(entry.getOperation()) &&
-                "t1".equals(entry.getTenantId()) &&
+                "tenant-1".equals(entry.getTenantId()) &&
                 entry.getStatus() == 200));
     }
 
@@ -325,10 +325,10 @@ class TenantControllerTest {
     @Test
     void updateTenant_auditEntry_requestIdIsFallbackUuidWhenAttributeMissing() throws Exception {
         Tenant updated = Tenant.builder()
-                .tenantId("t1").name("Updated").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(tenantRepository.update(eq("t1"), any())).thenReturn(updated);
+                .tenantId("tenant-1").name("Updated").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(updated);
 
-        mockMvc.perform(patch("/v1/admin/tenants/t1")
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"Updated\"}"))
@@ -343,10 +343,10 @@ class TenantControllerTest {
     @Test
     void updateTenant_auditEntry_capturesSourceIp() throws Exception {
         Tenant updated = Tenant.builder()
-                .tenantId("t1").name("Updated").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(tenantRepository.update(eq("t1"), any())).thenReturn(updated);
+                .tenantId("tenant-1").name("Updated").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(updated);
 
-        mockMvc.perform(patch("/v1/admin/tenants/t1")
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"Updated\"}"))
@@ -360,12 +360,12 @@ class TenantControllerTest {
     @Test
     void updateTenant_defaultCommitOveragePolicy_returns200() throws Exception {
         Tenant updated = Tenant.builder()
-                .tenantId("t1").name("Test").status(TenantStatus.ACTIVE)
+                .tenantId("tenant-1").name("Test").status(TenantStatus.ACTIVE)
                 .defaultCommitOveragePolicy(CommitOveragePolicy.ALLOW_WITH_OVERDRAFT)
                 .createdAt(Instant.now()).build();
-        when(tenantRepository.update(eq("t1"), any())).thenReturn(updated);
+        when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(updated);
 
-        mockMvc.perform(patch("/v1/admin/tenants/t1")
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"default_commit_overage_policy\":\"ALLOW_WITH_OVERDRAFT\"}"))
@@ -375,7 +375,7 @@ class TenantControllerTest {
 
     @Test
     void updateTenant_invalidCommitOveragePolicy_returns400() throws Exception {
-        mockMvc.perform(patch("/v1/admin/tenants/t1")
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"default_commit_overage_policy\":\"INVALID_VALUE\"}"))
@@ -398,8 +398,8 @@ class TenantControllerTest {
     void listTenants_resultCountEqualsLimit_hasMoreTrueWithCursor() throws Exception {
         // Return exactly 2 tenants with limit=2 to trigger has_more=true branch
         List<Tenant> tenants = List.of(
-                Tenant.builder().tenantId("t1").name("A").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build(),
-                Tenant.builder().tenantId("t2").name("B").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build());
+                Tenant.builder().tenantId("tenant-1").name("A").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build(),
+                Tenant.builder().tenantId("tenant-2").name("B").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build());
         when(tenantRepository.list(any(), any(), any(), eq(2))).thenReturn(tenants);
 
         mockMvc.perform(get("/v1/admin/tenants")
@@ -407,7 +407,7 @@ class TenantControllerTest {
                         .param("limit", "2"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.has_more").value(true))
-                .andExpect(jsonPath("$.next_cursor").value("t2"));
+                .andExpect(jsonPath("$.next_cursor").value("tenant-2"));
     }
 
     @Test
@@ -440,61 +440,61 @@ class TenantControllerTest {
     @Test
     void updateTenant_emitsEvent() throws Exception {
         Tenant updated = Tenant.builder()
-                .tenantId("t1").name("Updated").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(tenantRepository.update(eq("t1"), any())).thenReturn(updated);
+                .tenantId("tenant-1").name("Updated").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(updated);
 
-        mockMvc.perform(patch("/v1/admin/tenants/t1")
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"Updated\"}"))
                 .andExpect(status().isOk());
 
-        verify(eventService).emit(eq(EventType.TENANT_UPDATED), eq("t1"), any(), any(), any(), any(), any(), any());
+        verify(eventService).emit(eq(EventType.TENANT_UPDATED), eq("tenant-1"), any(), any(), any(), any(), any(), any());
     }
 
     @Test
     void updateTenant_withSuspendedStatus_emitsSuspendedEvent() throws Exception {
         Tenant updated = Tenant.builder()
-                .tenantId("t1").name("Test").status(TenantStatus.SUSPENDED).createdAt(Instant.now()).build();
-        when(tenantRepository.update(eq("t1"), any())).thenReturn(updated);
+                .tenantId("tenant-1").name("Test").status(TenantStatus.SUSPENDED).createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(updated);
 
-        mockMvc.perform(patch("/v1/admin/tenants/t1")
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"status\":\"SUSPENDED\"}"))
                 .andExpect(status().isOk());
 
-        verify(eventService).emit(eq(EventType.TENANT_SUSPENDED), eq("t1"), any(), any(), any(), any(), any(), any());
+        verify(eventService).emit(eq(EventType.TENANT_SUSPENDED), eq("tenant-1"), any(), any(), any(), any(), any(), any());
     }
 
     @Test
     void updateTenant_withClosedStatus_emitsClosedEvent() throws Exception {
         Tenant updated = Tenant.builder()
-                .tenantId("t1").name("Test").status(TenantStatus.CLOSED).createdAt(Instant.now()).build();
-        when(tenantRepository.update(eq("t1"), any())).thenReturn(updated);
+                .tenantId("tenant-1").name("Test").status(TenantStatus.CLOSED).createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(updated);
 
-        mockMvc.perform(patch("/v1/admin/tenants/t1")
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"status\":\"CLOSED\"}"))
                 .andExpect(status().isOk());
 
-        verify(eventService).emit(eq(EventType.TENANT_CLOSED), eq("t1"), any(), any(), any(), any(), any(), any());
+        verify(eventService).emit(eq(EventType.TENANT_CLOSED), eq("tenant-1"), any(), any(), any(), any(), any(), any());
     }
 
     @Test
     void updateTenant_withActiveStatus_emitsReactivatedEvent() throws Exception {
         Tenant updated = Tenant.builder()
-                .tenantId("t1").name("Test").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(tenantRepository.update(eq("t1"), any())).thenReturn(updated);
+                .tenantId("tenant-1").name("Test").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(updated);
 
-        mockMvc.perform(patch("/v1/admin/tenants/t1")
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"status\":\"ACTIVE\"}"))
                 .andExpect(status().isOk());
 
-        verify(eventService).emit(eq(EventType.TENANT_REACTIVATED), eq("t1"), any(), any(), any(), any(), any(), any());
+        verify(eventService).emit(eq(EventType.TENANT_REACTIVATED), eq("tenant-1"), any(), any(), any(), any(), any(), any());
     }
 
     // ========== Tenant TTL update fields ==========
@@ -502,11 +502,11 @@ class TenantControllerTest {
     @Test
     void updateTenant_defaultReservationTtlMs_returns200() throws Exception {
         Tenant tenant = Tenant.builder()
-                .tenantId("t1").name("T1").status(TenantStatus.ACTIVE)
+                .tenantId("tenant-1").name("T1").status(TenantStatus.ACTIVE)
                 .defaultReservationTtlMs(30000L).createdAt(Instant.now()).build();
-        when(tenantRepository.update(eq("t1"), any())).thenReturn(tenant);
+        when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(tenant);
 
-        mockMvc.perform(patch("/v1/admin/tenants/t1")
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"default_reservation_ttl_ms\":30000}"))
@@ -517,11 +517,11 @@ class TenantControllerTest {
     @Test
     void updateTenant_maxReservationTtlMs_returns200() throws Exception {
         Tenant tenant = Tenant.builder()
-                .tenantId("t1").name("T1").status(TenantStatus.ACTIVE)
+                .tenantId("tenant-1").name("T1").status(TenantStatus.ACTIVE)
                 .maxReservationTtlMs(1800000L).createdAt(Instant.now()).build();
-        when(tenantRepository.update(eq("t1"), any())).thenReturn(tenant);
+        when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(tenant);
 
-        mockMvc.perform(patch("/v1/admin/tenants/t1")
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"max_reservation_ttl_ms\":1800000}"))
@@ -532,11 +532,11 @@ class TenantControllerTest {
     @Test
     void updateTenant_maxReservationExtensions_returns200() throws Exception {
         Tenant tenant = Tenant.builder()
-                .tenantId("t1").name("T1").status(TenantStatus.ACTIVE)
+                .tenantId("tenant-1").name("T1").status(TenantStatus.ACTIVE)
                 .maxReservationExtensions(20).createdAt(Instant.now()).build();
-        when(tenantRepository.update(eq("t1"), any())).thenReturn(tenant);
+        when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(tenant);
 
-        mockMvc.perform(patch("/v1/admin/tenants/t1")
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"max_reservation_extensions\":20}"))

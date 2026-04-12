@@ -41,7 +41,7 @@ class ApiKeyControllerTest {
     void createApiKey_returns201() throws Exception {
         ApiKeyCreateResponse response = ApiKeyCreateResponse.builder()
                 .keyId("key_123").keySecret("gov_secret").keyPrefix("gov_secret1234")
-                .tenantId("t1").permissions(List.of("balances:read"))
+                .tenantId("tenant-1").permissions(List.of("balances:read"))
                 .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(86400))
                 .build();
         when(apiKeyRepository.create(any())).thenReturn(response);
@@ -49,7 +49,7 @@ class ApiKeyControllerTest {
         mockMvc.perform(post("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"tenant_id\":\"t1\",\"name\":\"My Key\"}"))
+                        .content("{\"tenant_id\":\"tenant-1\",\"name\":\"My Key\"}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.key_id").value("key_123"))
                 .andExpect(jsonPath("$.key_secret").value("gov_secret"));
@@ -67,14 +67,14 @@ class ApiKeyControllerTest {
     @Test
     void listApiKeys_returns200() throws Exception {
         ApiKey key = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyPrefix("gov_pre")
+                .keyId("key_1").tenantId("tenant-1").keyPrefix("gov_pre")
                 .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(86400)).build();
-        when(apiKeyRepository.list(eq("t1"), any(), any(), anyInt())).thenReturn(List.of(key));
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), anyInt())).thenReturn(List.of(key));
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
-                        .param("tenant_id", "t1"))
+                        .param("tenant_id", "tenant-1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.keys").isArray())
                 .andExpect(jsonPath("$.keys[0].key_id").value("key_1"));
@@ -83,7 +83,7 @@ class ApiKeyControllerTest {
     @Test
     void revokeApiKey_returns200() throws Exception {
         ApiKey revoked = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyPrefix("gov_pre")
+                .keyId("key_1").tenantId("tenant-1").keyPrefix("gov_pre")
                 .status(ApiKeyStatus.REVOKED).revokedAt(Instant.now())
                 .revokedReason("test").createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(86400)).build();
@@ -111,7 +111,7 @@ class ApiKeyControllerTest {
     void createApiKey_logsAuditEntry() throws Exception {
         ApiKeyCreateResponse response = ApiKeyCreateResponse.builder()
                 .keyId("key_123").keySecret("gov_secret").keyPrefix("gov_secret1234")
-                .tenantId("t1").permissions(List.of("balances:read"))
+                .tenantId("tenant-1").permissions(List.of("balances:read"))
                 .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(86400))
                 .build();
         when(apiKeyRepository.create(any())).thenReturn(response);
@@ -119,12 +119,12 @@ class ApiKeyControllerTest {
         mockMvc.perform(post("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"tenant_id\":\"t1\",\"name\":\"My Key\"}"))
+                        .content("{\"tenant_id\":\"tenant-1\",\"name\":\"My Key\"}"))
                 .andExpect(status().isCreated());
 
         verify(auditRepository).log(argThat(entry ->
                 "createApiKey".equals(entry.getOperation()) &&
-                "t1".equals(entry.getTenantId()) &&
+                "tenant-1".equals(entry.getTenantId()) &&
                 "key_123".equals(entry.getKeyId()) &&
                 entry.getStatus() == 201));
     }
@@ -132,7 +132,7 @@ class ApiKeyControllerTest {
     @Test
     void revokeApiKey_logsAuditEntry() throws Exception {
         ApiKey revoked = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyPrefix("gov_pre")
+                .keyId("key_1").tenantId("tenant-1").keyPrefix("gov_pre")
                 .status(ApiKeyStatus.REVOKED).revokedAt(Instant.now())
                 .revokedReason("test").createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(86400)).build();
@@ -145,18 +145,18 @@ class ApiKeyControllerTest {
 
         verify(auditRepository).log(argThat(entry ->
                 "revokeApiKey".equals(entry.getOperation()) &&
-                "t1".equals(entry.getTenantId()) &&
+                "tenant-1".equals(entry.getTenantId()) &&
                 "key_1".equals(entry.getKeyId()) &&
                 entry.getStatus() == 200));
     }
 
     @Test
     void listApiKeys_emptyResult_hasMoreFalseAndNoCursor() throws Exception {
-        when(apiKeyRepository.list(eq("t1"), any(), any(), anyInt())).thenReturn(List.of());
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), anyInt())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
-                        .param("tenant_id", "t1"))
+                        .param("tenant_id", "tenant-1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.keys").isEmpty())
                 .andExpect(jsonPath("$.has_more").value(false))
@@ -165,35 +165,35 @@ class ApiKeyControllerTest {
 
     @Test
     void listApiKeys_limitClampedToMax100() throws Exception {
-        when(apiKeyRepository.list(eq("t1"), any(), any(), eq(100))).thenReturn(List.of());
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(100))).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
-                        .param("tenant_id", "t1")
+                        .param("tenant_id", "tenant-1")
                         .param("limit", "500"))
                 .andExpect(status().isOk());
 
-        verify(apiKeyRepository).list(eq("t1"), any(), any(), eq(100));
+        verify(apiKeyRepository).list(eq("tenant-1"), any(), any(), eq(100));
     }
 
     @Test
     void listApiKeys_limitClampedToMin1() throws Exception {
-        when(apiKeyRepository.list(eq("t1"), any(), any(), eq(1))).thenReturn(List.of());
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(1))).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
-                        .param("tenant_id", "t1")
+                        .param("tenant_id", "tenant-1")
                         .param("limit", "0"))
                 .andExpect(status().isOk());
 
-        verify(apiKeyRepository).list(eq("t1"), any(), any(), eq(1));
+        verify(apiKeyRepository).list(eq("tenant-1"), any(), any(), eq(1));
     }
 
     @Test
     void createApiKey_auditEntry_requestIdIsFallbackUuidWhenAttributeMissing() throws Exception {
         ApiKeyCreateResponse response = ApiKeyCreateResponse.builder()
                 .keyId("key_123").keySecret("gov_secret").keyPrefix("gov_secret1234")
-                .tenantId("t1").permissions(List.of("balances:read"))
+                .tenantId("tenant-1").permissions(List.of("balances:read"))
                 .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(86400))
                 .build();
         when(apiKeyRepository.create(any())).thenReturn(response);
@@ -202,7 +202,7 @@ class ApiKeyControllerTest {
         mockMvc.perform(post("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"tenant_id\":\"t1\",\"name\":\"My Key\"}"))
+                        .content("{\"tenant_id\":\"tenant-1\",\"name\":\"My Key\"}"))
                 .andExpect(status().isCreated());
 
         verify(auditRepository).log(argThat(entry ->
@@ -215,7 +215,7 @@ class ApiKeyControllerTest {
     void createApiKey_auditEntry_userAgentIsNullWhenHeaderMissing() throws Exception {
         ApiKeyCreateResponse response = ApiKeyCreateResponse.builder()
                 .keyId("key_123").keySecret("gov_secret").keyPrefix("gov_secret1234")
-                .tenantId("t1").permissions(List.of("balances:read"))
+                .tenantId("tenant-1").permissions(List.of("balances:read"))
                 .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(86400))
                 .build();
         when(apiKeyRepository.create(any())).thenReturn(response);
@@ -224,7 +224,7 @@ class ApiKeyControllerTest {
         mockMvc.perform(post("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"tenant_id\":\"t1\",\"name\":\"My Key\"}"))
+                        .content("{\"tenant_id\":\"tenant-1\",\"name\":\"My Key\"}"))
                 .andExpect(status().isCreated());
 
         verify(auditRepository).log(argThat(entry ->
@@ -235,7 +235,7 @@ class ApiKeyControllerTest {
     @Test
     void revokeApiKey_auditEntry_requestIdIsFallbackUuidWhenAttributeMissing() throws Exception {
         ApiKey revoked = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyPrefix("gov_pre")
+                .keyId("key_1").tenantId("tenant-1").keyPrefix("gov_pre")
                 .status(ApiKeyStatus.REVOKED).revokedAt(Instant.now())
                 .revokedReason("test").createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(86400)).build();
@@ -254,45 +254,45 @@ class ApiKeyControllerTest {
 
     @Test
     void listApiKeys_withStatusFilter_passesToRepository() throws Exception {
-        when(apiKeyRepository.list(eq("t1"), eq(ApiKeyStatus.REVOKED), any(), anyInt())).thenReturn(List.of());
+        when(apiKeyRepository.list(eq("tenant-1"), eq(ApiKeyStatus.REVOKED), any(), anyInt())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
-                        .param("tenant_id", "t1")
+                        .param("tenant_id", "tenant-1")
                         .param("status", "REVOKED"))
                 .andExpect(status().isOk());
 
-        verify(apiKeyRepository).list(eq("t1"), eq(ApiKeyStatus.REVOKED), any(), anyInt());
+        verify(apiKeyRepository).list(eq("tenant-1"), eq(ApiKeyStatus.REVOKED), any(), anyInt());
     }
 
     @Test
     void listApiKeys_withCursorParam_passesToRepository() throws Exception {
-        when(apiKeyRepository.list(eq("t1"), any(), eq("key_abc"), anyInt())).thenReturn(List.of());
+        when(apiKeyRepository.list(eq("tenant-1"), any(), eq("key_abc"), anyInt())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
-                        .param("tenant_id", "t1")
+                        .param("tenant_id", "tenant-1")
                         .param("cursor", "key_abc"))
                 .andExpect(status().isOk());
 
-        verify(apiKeyRepository).list(eq("t1"), any(), eq("key_abc"), anyInt());
+        verify(apiKeyRepository).list(eq("tenant-1"), any(), eq("key_abc"), anyInt());
     }
 
     @Test
     void listApiKeys_resultCountEqualsLimit_hasMoreTrueWithCursor() throws Exception {
         ApiKey k1 = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyPrefix("gov_pre1")
+                .keyId("key_1").tenantId("tenant-1").keyPrefix("gov_pre1")
                 .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(86400)).build();
         ApiKey k2 = ApiKey.builder()
-                .keyId("key_2").tenantId("t1").keyPrefix("gov_pre2")
+                .keyId("key_2").tenantId("tenant-1").keyPrefix("gov_pre2")
                 .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(86400)).build();
-        when(apiKeyRepository.list(eq("t1"), any(), any(), eq(2))).thenReturn(List.of(k1, k2));
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(2))).thenReturn(List.of(k1, k2));
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
-                        .param("tenant_id", "t1")
+                        .param("tenant_id", "tenant-1")
                         .param("limit", "2"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.has_more").value(true))
@@ -302,7 +302,7 @@ class ApiKeyControllerTest {
     @Test
     void revokeApiKey_withoutReason_passesNullReason() throws Exception {
         ApiKey revoked = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyPrefix("gov_pre")
+                .keyId("key_1").tenantId("tenant-1").keyPrefix("gov_pre")
                 .status(ApiKeyStatus.REVOKED).revokedAt(Instant.now())
                 .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(86400)).build();
         when(apiKeyRepository.revoke("key_1", null)).thenReturn(revoked);
@@ -318,7 +318,7 @@ class ApiKeyControllerTest {
     @Test
     void updateApiKey_returns200() throws Exception {
         ApiKey updated = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyId("key_1").tenantId("tenant-1").keyPrefix("cyc_live_abc12")
                 .name("Updated Key").description("new desc")
                 .permissions(List.of("budgets:read", "budgets:write"))
                 .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
@@ -371,7 +371,7 @@ class ApiKeyControllerTest {
     @Test
     void updateApiKey_logsAuditEntry() throws Exception {
         ApiKey updated = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyId("key_1").tenantId("tenant-1").keyPrefix("cyc_live_abc12")
                 .name("Updated").status(ApiKeyStatus.ACTIVE)
                 .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(86400)).build();
         when(apiKeyRepository.update(eq("key_1"), any())).thenReturn(updated);
@@ -384,7 +384,7 @@ class ApiKeyControllerTest {
 
         verify(auditRepository).log(argThat(entry ->
                 "updateApiKey".equals(entry.getOperation()) &&
-                "t1".equals(entry.getTenantId()) &&
+                "tenant-1".equals(entry.getTenantId()) &&
                 "key_1".equals(entry.getKeyId()) &&
                 entry.getStatus() == 200));
     }
@@ -393,7 +393,7 @@ class ApiKeyControllerTest {
     void updateApiKey_permissionsChanged_emitsEvent() throws Exception {
         // Mock old key with different permissions
         ApiKey oldKey = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyId("key_1").tenantId("tenant-1").keyPrefix("cyc_live_abc12")
                 .permissions(List.of("balances:read"))
                 .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(86400)).build();
@@ -402,7 +402,7 @@ class ApiKeyControllerTest {
         when(jedisMock.get("apikey:key_1")).thenReturn(objectMapper.writeValueAsString(oldKey));
 
         ApiKey updated = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyId("key_1").tenantId("tenant-1").keyPrefix("cyc_live_abc12")
                 .permissions(List.of("budgets:read", "budgets:write"))
                 .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(86400)).build();
@@ -415,13 +415,13 @@ class ApiKeyControllerTest {
                 .andExpect(status().isOk());
 
         verify(eventService).emit(eq(io.runcycles.admin.model.event.EventType.API_KEY_PERMISSIONS_CHANGED),
-                eq("t1"), any(), any(), any(), any(), any(), any());
+                eq("tenant-1"), any(), any(), any(), any(), any(), any());
     }
 
     @Test
     void updateApiKey_nameOnlyChange_doesNotEmitPermissionsEvent() throws Exception {
         ApiKey updated = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyId("key_1").tenantId("tenant-1").keyPrefix("cyc_live_abc12")
                 .name("New Name").status(ApiKeyStatus.ACTIVE)
                 .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(86400)).build();
         when(apiKeyRepository.update(eq("key_1"), any())).thenReturn(updated);

@@ -134,7 +134,7 @@ class EventModelTest {
                 .eventType(EventType.TENANT_CREATED)
                 .category(EventCategory.TENANT)
                 .timestamp(now)
-                .tenantId("t1")
+                .tenantId("tenant-1")
                 .source("cycles-admin")
                 .scope("org/eng")
                 .correlationId("corr_1")
@@ -163,7 +163,7 @@ class EventModelTest {
                 .eventType(EventType.BUDGET_FUNDED)
                 .category(EventCategory.BUDGET)
                 .timestamp(Instant.now())
-                .tenantId("t1")
+                .tenantId("tenant-1")
                 .source("test")
                 .build();
 
@@ -182,7 +182,7 @@ class EventModelTest {
                 .eventType(EventType.TENANT_CREATED)
                 .category(EventCategory.TENANT)
                 .timestamp(Instant.now())
-                .tenantId("t1")
+                .tenantId("tenant-1")
                 .source("test")
                 .build();
 

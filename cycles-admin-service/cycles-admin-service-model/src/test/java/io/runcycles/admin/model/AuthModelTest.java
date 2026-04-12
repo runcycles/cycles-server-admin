@@ -85,7 +85,7 @@ class AuthModelTest {
     @Test
     void apiKeyCreateRequest_rejectsUnknownFields() {
         String json = """
-            {"tenant_id":"t1","name":"k","unknown":true}
+            {"tenant_id":"tenant-1","name":"k","unknown":true}
             """;
         assertThrows(UnrecognizedPropertyException.class, () -> mapper.readValue(json, ApiKeyCreateRequest.class));
     }
@@ -93,7 +93,7 @@ class AuthModelTest {
     @Test
     void apiKeyCreateRequest_nameTooLong_fails() {
         ApiKeyCreateRequest request = new ApiKeyCreateRequest();
-        request.setTenantId("t1");
+        request.setTenantId("tenant-1");
         request.setName("x".repeat(257));
         Set<ConstraintViolation<ApiKeyCreateRequest>> violations = validator.validate(request);
         assertFalse(violations.isEmpty());
@@ -102,7 +102,7 @@ class AuthModelTest {
     @Test
     void apiKeyCreateRequest_unknownPermission_rejected() {
         String json = """
-            {"tenant_id":"t1","name":"k","permissions":["budgets:wirte"]}
+            {"tenant_id":"tenant-1","name":"k","permissions":["budgets:wirte"]}
             """;
         com.fasterxml.jackson.databind.JsonMappingException ex = assertThrows(
                 com.fasterxml.jackson.databind.JsonMappingException.class,
@@ -114,7 +114,7 @@ class AuthModelTest {
     @Test
     void apiKeyCreateRequest_validPermissions_deserialize() throws Exception {
         String json = """
-            {"tenant_id":"t1","name":"k","permissions":["budgets:read","admin:audit:read"]}
+            {"tenant_id":"tenant-1","name":"k","permissions":["budgets:read","admin:audit:read"]}
             """;
         ApiKeyCreateRequest req = mapper.readValue(json, ApiKeyCreateRequest.class);
         assertEquals(List.of(Permission.BUDGETS_READ, Permission.ADMIN_AUDIT_READ), req.getPermissions());
@@ -124,7 +124,7 @@ class AuthModelTest {
     @Test
     void apiKeyCreateRequest_descriptionTooLong_fails() {
         ApiKeyCreateRequest request = new ApiKeyCreateRequest();
-        request.setTenantId("t1");
+        request.setTenantId("tenant-1");
         request.setName("valid");
         request.setDescription("x".repeat(1025));
         Set<ConstraintViolation<ApiKeyCreateRequest>> violations = validator.validate(request);
@@ -136,7 +136,7 @@ class AuthModelTest {
     @Test
     void apiKeyResponse_doesNotContainKeyHash() throws Exception {
         ApiKey key = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyId("key_1").tenantId("tenant-1").keyPrefix("cyc_live_abc12")
                 .keyHash("$2a$12$secret_hash_value")
                 .name("test").status(ApiKeyStatus.ACTIVE)
                 .permissions(List.of("balances:read"))
@@ -155,7 +155,7 @@ class AuthModelTest {
     void apiKey_internalModel_containsKeyHashForRedis() throws Exception {
         // ApiKey is the internal model used for Redis serialization — key_hash MUST be present
         ApiKey key = ApiKey.builder()
-                .keyId("key_1").tenantId("t1").keyPrefix("cyc_live_abc12")
+                .keyId("key_1").tenantId("tenant-1").keyPrefix("cyc_live_abc12")
                 .keyHash("$2a$12$secret_hash")
                 .status(ApiKeyStatus.ACTIVE)
                 .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(3600))

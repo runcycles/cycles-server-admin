@@ -48,7 +48,7 @@ class WebhookDispatchServiceTest {
         return Event.builder()
             .eventId("evt_1")
             .eventType(EventType.BUDGET_CREATED)
-            .tenantId("t1")
+            .tenantId("tenant-1")
             .scope("org/team1")
             .timestamp(Instant.now())
             .build();
@@ -57,7 +57,7 @@ class WebhookDispatchServiceTest {
     private WebhookSubscription buildSubscription(String subId) {
         return WebhookSubscription.builder()
             .subscriptionId(subId)
-            .tenantId("t1")
+            .tenantId("tenant-1")
             .url("https://example.com/webhook")
             .eventTypes(List.of(EventType.BUDGET_CREATED))
             .signingSecret("whsec_test")
@@ -70,7 +70,7 @@ class WebhookDispatchServiceTest {
     void dispatch_findsMatchingSubscriptionsAndCreatesDelivery() {
         Event event = buildEvent();
         WebhookSubscription sub = buildSubscription("whsub_1");
-        when(webhookRepository.findMatchingSubscriptions("t1", EventType.BUDGET_CREATED, "org/team1"))
+        when(webhookRepository.findMatchingSubscriptions("tenant-1", EventType.BUDGET_CREATED, "org/team1"))
             .thenReturn(List.of(sub));
 
         webhookDispatchService.dispatch(event);
@@ -85,7 +85,7 @@ class WebhookDispatchServiceTest {
         Event event = buildEvent();
         WebhookSubscription sub1 = buildSubscription("whsub_1");
         WebhookSubscription sub2 = buildSubscription("whsub_2");
-        when(webhookRepository.findMatchingSubscriptions("t1", EventType.BUDGET_CREATED, "org/team1"))
+        when(webhookRepository.findMatchingSubscriptions("tenant-1", EventType.BUDGET_CREATED, "org/team1"))
             .thenReturn(List.of(sub1, sub2));
 
         webhookDispatchService.dispatch(event);
@@ -106,7 +106,7 @@ class WebhookDispatchServiceTest {
     @Test
     void dispatch_handlesEmptySubscriptionList() {
         Event event = buildEvent();
-        when(webhookRepository.findMatchingSubscriptions("t1", EventType.BUDGET_CREATED, "org/team1"))
+        when(webhookRepository.findMatchingSubscriptions("tenant-1", EventType.BUDGET_CREATED, "org/team1"))
             .thenReturn(List.of());
 
         webhookDispatchService.dispatch(event);
@@ -119,7 +119,7 @@ class WebhookDispatchServiceTest {
         Event event = buildEvent();
         WebhookSubscription sub1 = buildSubscription("whsub_1");
         WebhookSubscription sub2 = buildSubscription("whsub_2");
-        when(webhookRepository.findMatchingSubscriptions("t1", EventType.BUDGET_CREATED, "org/team1"))
+        when(webhookRepository.findMatchingSubscriptions("tenant-1", EventType.BUDGET_CREATED, "org/team1"))
             .thenReturn(List.of(sub1, sub2));
         doThrow(new RuntimeException("Delivery failed")).when(deliveryRepository).save(argThat(d ->
             "whsub_1".equals(d.getSubscriptionId())));
@@ -172,7 +172,7 @@ class WebhookDispatchServiceTest {
     void dispatch_success_incrementsQueuedCounter() {
         Event event = buildEvent();
         WebhookSubscription sub = buildSubscription("whsub_1");
-        when(webhookRepository.findMatchingSubscriptions("t1", EventType.BUDGET_CREATED, "org/team1"))
+        when(webhookRepository.findMatchingSubscriptions("tenant-1", EventType.BUDGET_CREATED, "org/team1"))
             .thenReturn(List.of(sub));
 
         webhookDispatchService.dispatch(event);

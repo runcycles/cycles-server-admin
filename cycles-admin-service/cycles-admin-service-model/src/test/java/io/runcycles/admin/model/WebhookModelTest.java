@@ -43,7 +43,7 @@ class WebhookModelTest {
         Instant now = Instant.now();
         WebhookSubscription sub = WebhookSubscription.builder()
                 .subscriptionId("whsub_abc123")
-                .tenantId("t1")
+                .tenantId("tenant-1")
                 .name("My Webhook")
                 .description("Test webhook")
                 .url("https://example.com/hook")
@@ -77,7 +77,7 @@ class WebhookModelTest {
     void webhookSubscription_signingSecretIgnoredInJson() throws Exception {
         WebhookSubscription sub = WebhookSubscription.builder()
                 .subscriptionId("whsub_1")
-                .tenantId("t1")
+                .tenantId("tenant-1")
                 .url("https://example.com/hook")
                 .status(WebhookStatus.ACTIVE)
                 .signingSecret("super_secret")
