@@ -227,4 +227,107 @@ class EventServiceTest {
             "type", EventType.BUDGET_CREATED.getValue(), "result", "failure").count();
         assertThat(count).isEqualTo(1.0);
     }
+
+    // ---- Runtime payload-shape validation (PR-J) ----
+
+    @Test
+    void emit_validPayload_doesNotIncrementInvalidCounter() {
+        // Well-formed BUDGET_CREATED payload — matches EventPayloadTypeMapping entry
+        // EventDataBudgetLifecycle.
+        Map<String, Object> goodPayload = Map.of(
+            "ledger_id", "lg_1",
+            "scope", "tenant:tenant-1",
+            "unit", "USD_MICROCENTS",
+            "operation", "CREATE");
+        Event event = Event.builder()
+            .eventType(EventType.BUDGET_CREATED)
+            .tenantId("tenant-1")
+            .source("test")
+            .data(goodPayload)
+            .build();
+
+        eventService.emit(event);
+
+        double invalidCount = meterRegistry.counter("cycles_admin_events_payload_invalid_total",
+            "type", EventType.BUDGET_CREATED.getValue(),
+            "expected_class", "EventDataBudgetLifecycle").count();
+        assertThat(invalidCount).isEqualTo(0.0);
+        verify(eventRepository).save(event);
+        verify(webhookDispatchService).dispatch(event);
+    }
+
+    @Test
+    void emit_malformedPayload_incrementsInvalidCounter_butStillDelivers() {
+        // Extra field 'bogus_field' that EventDataBudgetLifecycle doesn't declare.
+        // With @JsonIgnoreProperties(ignoreUnknown=false) the round-trip fails.
+        Map<String, Object> badPayload = Map.of(
+            "ledger_id", "lg_1",
+            "scope", "tenant:tenant-1",
+            "unit", "USD_MICROCENTS",
+            "operation", "CREATE",
+            "bogus_field", "should-not-be-here");
+        Event event = Event.builder()
+            .eventType(EventType.BUDGET_CREATED)
+            .tenantId("tenant-1")
+            .source("test")
+            .data(badPayload)
+            .build();
+
+        eventService.emit(event);
+
+        // Validation failure logged + metric incremented
+        double invalidCount = meterRegistry.counter("cycles_admin_events_payload_invalid_total",
+            "type", EventType.BUDGET_CREATED.getValue(),
+            "expected_class", "EventDataBudgetLifecycle").count();
+        assertThat(invalidCount).isEqualTo(1.0);
+
+        // Event still delivered — observability, not enforcement
+        verify(eventRepository).save(event);
+        verify(webhookDispatchService).dispatch(event);
+        double emittedCount = meterRegistry.counter("cycles_admin_events_emitted_total",
+            "type", EventType.BUDGET_CREATED.getValue(), "result", "success").count();
+        assertThat(emittedCount).isEqualTo(1.0);
+    }
+
+    @Test
+    void emit_nullData_skipsPayloadValidation() {
+        // Some event types don't carry a data payload, or the producer didn't build one.
+        // Validation should be a no-op, not a warning.
+        Event event = Event.builder()
+            .eventType(EventType.BUDGET_CREATED)
+            .tenantId("tenant-1")
+            .source("test")
+            .data(null)
+            .build();
+
+        eventService.emit(event);
+
+        double invalidCount = meterRegistry.counter("cycles_admin_events_payload_invalid_total",
+            "type", EventType.BUDGET_CREATED.getValue(),
+            "expected_class", "EventDataBudgetLifecycle").count();
+        assertThat(invalidCount).isEqualTo(0.0);
+    }
+
+    @Test
+    void emit_wrongEnumValue_incrementsInvalidCounter() {
+        // "operation" not in spec enum — EventDataBudgetLifecycle.operation is BudgetOperation.
+        Map<String, Object> badPayload = Map.of(
+            "ledger_id", "lg_1",
+            "scope", "tenant:tenant-1",
+            "unit", "USD_MICROCENTS",
+            "operation", "WOMBAT"); // not a valid BudgetOperation
+        Event event = Event.builder()
+            .eventType(EventType.BUDGET_CREATED)
+            .tenantId("tenant-1")
+            .source("test")
+            .data(badPayload)
+            .build();
+
+        eventService.emit(event);
+
+        double invalidCount = meterRegistry.counter("cycles_admin_events_payload_invalid_total",
+            "type", EventType.BUDGET_CREATED.getValue(),
+            "expected_class", "EventDataBudgetLifecycle").count();
+        assertThat(invalidCount).isEqualTo(1.0);
+    }
 }
