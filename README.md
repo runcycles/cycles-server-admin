@@ -4,7 +4,7 @@
 
 # Runcycles Admin Server
 
-Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25.8](complete-budget-governance-v0.1.25.yaml).
+Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25.9](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml).
 
 ## Overview
 
@@ -563,7 +563,7 @@ Multiple origins are supported for staging + prod deployments behind the same se
 
 ## Protocol Specification
 
-The full OpenAPI 3.1.0 specification is in [`complete-budget-governance-v0.1.25.yaml`](complete-budget-governance-v0.1.25.yaml).
+The full OpenAPI 3.1.0 specification is [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) in the [cycles-protocol](https://github.com/runcycles/cycles-protocol) repository.
 
 v0.1.25 adds Pillar 4 (Events & Webhooks): 40 event types, 20 webhook endpoints, HMAC-SHA256 signing, at-least-once delivery, and webhook secret encryption at rest.
 
