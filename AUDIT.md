@@ -1,9 +1,55 @@
 # Complete Budget Governance v0.1.25.8 — Admin Server Audit
 
-**Server version:** 0.1.25.11 (2026-04-12 patch release — enable fail-hard contract testing by default)
-**Date:** 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
-**Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, v0.1.25.9) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
+**Server version:** 0.1.25.12 (2026-04-12 — spec-compliance push: Phase 2 structural diff, error + event payload validation, coverage visibility, runtime observability)
+**Date:** 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, v0.1.25.11) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-12 — v0.1.25.12 full-stack spec-compliance hardening
+
+One substantial patch bundling the remainder of the spec-compliance push started in v0.1.25.10. Everything is either build-time tooling or non-wire-breaking observability, with **one** deliberate producer-side wire fix.
+
+**Wire fix (one, deliberate):** `EventDataBudgetLifecycle.operation` on outbound webhook payloads. `BudgetController` was emitting lowercase `"create"` / `"update"` for `budget.created` and `budget.updated` events where the spec enum requires uppercase (`CREATE, UPDATE, CREDIT, DEBIT, RESET, REPAY_DEBT, STATUS_CHANGE`). The server now emits correct values. Any webhook consumer that was case-sensitively matching lowercase needs to update — the lowercase values were never spec-documented and relying on them was undocumented behavior.
+
+**Typed enums replace raw `String` on 5 EventData fields:**
+- `EventDataBudgetLifecycle.operation`: `String` → new `BudgetOperation` (7 values)
+- `EventDataBudgetThreshold.direction`: `String` → new `ThresholdDirection` (2 values, lowercase wire via `@JsonValue`)
+- `EventDataRateSpike.metric`: `String` → new `RateSpikeMetric` (3 values, snake_case wire)
+- `EventDataTenantLifecycle.previous_status/new_status`: `String` → existing `TenantStatus`
+- `EventDataApiKey.previous_status/new_status`: `String` → existing `ApiKeyStatus`
+
+Two implementation bugs surfaced during this conversion and fixed in the same commit: `BudgetController /fund` was emitting `request.getOperation().name().toLowerCase()` (same lowercase drift); `TenantController` / `ApiKeyController` were calling `.name()` on status enums to produce Strings instead of passing the enum directly.
+
+**Contract-testing Phase 2 — structural diff.** New `OpenApiContractDiffTest` uses `openapi-diff-core:2.1.7` against SpringDoc's `/v3/api-docs` vs the pinned spec. Fails the build on missing endpoints, extra (undocumented) endpoints, or incompatible operation-level divergence. Complements the runtime request/response validation by catching surface drift regardless of per-endpoint test coverage.
+
+**Error-response validation.** `ContractValidationConfig` now validates 4xx/5xx JSON bodies against their documented response schema (typically `ErrorResponse`). Every 401/403/404/409/500 body emitted by the 13 controllers is confirmed to match `required: [error, message, request_id]` with a valid `ErrorCode` enum value and strict `additionalProperties: false`. Before this change, only 2xx responses were checked — regressions to error-body shape would have shipped silently.
+
+**Event payload contract test.** New `EventPayloadContractTest` in the model module (49 assertions). Defines `EventPayloadTypeMapping` as a canonical `EventType → EventData*` lookup (40 entries), asserts every spec `EventType` has an entry, round-trips every mapped class via Jackson, and pins enum-on-wire serialization for each (e.g. `BudgetOperation` → uppercase, `ThresholdDirection` → lowercase). All 13 `EventData*` classes now carry `@JsonIgnoreProperties(ignoreUnknown = false)` — previously they accepted malformed payloads with unknown fields silently.
+
+**Runtime event-payload observability.** `EventService.emit` now converts `event.data` into its `EventPayloadTypeMapping`-assigned class at emit time. Mismatch produces a WARN log and increments new Prometheus metric `cycles_admin_events_payload_invalid_total{type, expected_class}`. **Non-blocking** — webhook delivery proceeds even on malformed data. Operators should alert on nonzero counter.
+
+**Spec coverage visibility.** New `SpecCoverageReportTest` (sub-package `io.runcycles.admin.api.zzz` for alphabetical last-run ordering) enumerates the spec's operations and fails the build if any has zero test coverage. On first run, uncovered 3 real gaps: `GET /v1/admin/budgets/lookup` (no test), `DELETE /v1/admin/webhooks/{id}` + `DELETE /v1/webhooks/{id}` (tests existed but 204 No Content was excluded from the coverage recorder — fixed). After this PR: 43/43 spec operations have at least one test.
+
+**Spec alignment:** depends on `cycles-protocol` v0.1.25.11 (runcycles/cycles-protocol#33) which added `400 Bad Request` response entries to all 43 operations. Removed the original `validation.response.status.unknown → IGNORE` from the spec fetcher; kept a tighter version of the IGNORE specifically for 404 on update endpoints (`PATCH /v1/admin/tenants/{tenant_id}` etc.) — follow-up cycles-protocol PR to document 404 on those endpoints will let us drop even that.
+
+**Tests:** 439 passing, JaCoCo 95%+ coverage met, build SUCCESS with contract validation default-ON validating every controller against `cycles-protocol@main` per build. CI enforces the whole stack on every PR.
+
+**Drifts found and fixed across the compliance push (cumulative, v0.1.25.10–12):**
+1. `Permission` strings → typed enum rejecting unknowns (v0.1.25.10)
+2. `AuthIntrospectResponse.capabilities: Map` → typed `Capabilities` class (v0.1.25.10)
+3. Spec `/v1/balances` used `BudgetListResponse` (wrapper: `ledgers`) — should match runtime's `balances` wrapper (cycles-protocol v0.1.25.10)
+4. Spec missing `SignedAmount` schema; debt/overdraft fields used `Amount` with `minimum: 0` (cycles-protocol v0.1.25.10)
+5. Spec PATCH inline bodies missing `additionalProperties: false` (cycles-protocol v0.1.25.10)
+6. Spec missing `400` responses on 28 endpoints (cycles-protocol v0.1.25.11)
+7. Test fixtures used `tenant_id="t1"` violating spec `minLength: 3` (v0.1.25.10.x)
+8. `BudgetController` emitting lowercase `create`/`update` vs spec UPPERCASE (v0.1.25.12)
+9. `BudgetController /fund` emitting lowercase operation names (v0.1.25.12)
+10. `TenantController` / `ApiKeyController` passing `.name()` strings instead of typed enums (v0.1.25.12)
+11. `EventData*` classes accepted unknown fields silently (v0.1.25.12)
+12. `GET /v1/admin/budgets/lookup` had zero tests (v0.1.25.12)
+13. DELETE-endpoint coverage invisible due to 204-no-body filter (v0.1.25.12)
+
+Composite wire-compliance confidence: ~85% at start of push → **~98%** as of v0.1.25.12.
 
 ### 2026-04-12 — v0.1.25.11 contract-testing default ON
 

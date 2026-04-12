@@ -75,10 +75,12 @@ public class ContractValidationConfig {
                 .withLevel("validation.request.body.schema.enum", ValidationReport.Level.IGNORE)
                 .withLevel("validation.request.body.schema.pattern", ValidationReport.Level.IGNORE)
                 .withLevel("validation.request.body.schema.additionalProperties", ValidationReport.Level.IGNORE)
-                // Spec doesn't document 400 on most paths, but server correctly returns 400
-                // on malformed input. Ignoring means un-documented-status responses pass
-                // through unvalidated, but documented-status error responses still validate
-                // against ErrorResponse. Spec-side follow-up to add 400 entries to cycles-protocol.
+                // Response-status coverage in cycles-protocol@main is incomplete: 400
+                // was added in v0.1.25.11 (cycles-protocol#33) but 404 is still
+                // undocumented on several PATCH/GET-by-id endpoints that correctly
+                // emit it for missing resources. Keep the IGNORE until a cycles-protocol
+                // follow-up adds 404 entries; the error BODIES are still validated on
+                // documented status codes.
                 .withLevel("validation.response.status.unknown", ValidationReport.Level.IGNORE)
                 .build();
         OpenApiInteractionValidator validator = OpenApiInteractionValidator
