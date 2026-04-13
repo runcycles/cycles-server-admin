@@ -1,9 +1,44 @@
 # Complete Budget Governance v0.1.25.8 — Admin Server Audit
 
-**Server version:** 0.1.25.13 (2026-04-13 — CORS allowedMethods now includes PUT; was silently breaking dashboard webhook-security save with a 403 + zero app logs)
-**Date:** 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Server version:** 0.1.25.14 (2026-04-13 — admin-on-behalf-of dual-auth on createBudget, createPolicy, updatePolicy per spec v0.1.25.13; closes "no Create Budget UI" dashboard gap)
+**Date:** 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, v0.1.25.11) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-13 — v0.1.25.14 admin-on-behalf-of dual-auth on createBudget / createPolicy / updatePolicy
+
+Implements server side of [cycles-protocol PR #36](https://github.com/runcycles/cycles-protocol/pull/36) (spec v0.1.25.13). Closes a long-standing dashboard gap: admin operators previously could not create budgets or policies because those endpoints accepted **only** `ApiKeyAuth` (X-Cycles-API-Key), and the dashboard authenticates exclusively with `X-Admin-API-Key`. Tenant management worked end-to-end; budget/policy management was list/freeze/fund-only.
+
+**Auth changes** (`AuthInterceptor.java`):
+- Three new entries in `ADMIN_ALLOWED_ENDPOINTS` exact-match allowlist:
+  - `POST:/v1/admin/budgets` (createBudget)
+  - `POST:/v1/admin/policies` (createPolicy)
+- New `ADMIN_ALLOWED_PREFIXES` set with `PATCH:/v1/admin/policies/` to handle PATCH `/v1/admin/policies/{policy_id}` — exact match doesn't help when the path contains a resource id. The prefix matcher requires a non-empty resource id after the prefix to avoid accidentally matching the bare path.
+
+**Controller changes** (`BudgetController.create`, `PolicyController.create`, `PolicyController.update`):
+- Branch on auth context. ApiKeyAuth → `tenantId` from `authenticated_tenant_id` request attribute (existing). AdminKeyAuth → `tenantId` from request body's new `tenant_id` field (createBudget / createPolicy) or from the policy's stored owner (updatePolicy — `policy_id` already pins it).
+- Strict bidirectional validation: admin caller MUST send `tenant_id`; tenant caller MUST NOT send `tenant_id`. Either violation returns 400 INVALID_REQUEST with a clear message. Prevents tenants from spoofing creates as another tenant.
+- Audit log records `actor_type=admin_on_behalf_of` (new metadata key) for admin-driven calls; `api_key` for tenant self-service. Lets security review filter without joining to the keys table.
+- Event emission tags `Actor.type` with the new `ADMIN_ON_BEHALF_OF` enum value (was always `API_KEY`).
+
+**Schema changes**:
+- `BudgetCreateRequest` and `PolicyCreateRequest` gain optional `tenant_id` field. Required-when-admin / forbidden-when-tenant validation lives in the controller; bean validation can't express the conditional contract without a custom validator.
+
+**Model changes**:
+- `ActorType` enum gains `ADMIN_ON_BEHALF_OF` value (Jackson `@JsonValue` = `"admin_on_behalf_of"`).
+
+**Tests** (+13):
+- `AuthInterceptorTest`: 3 new dual-auth admit tests (POST budgets, POST policies, PATCH policy by id), 1 prefix-bare-rejection test, 1 trailing-slash normalization test. Existing `preHandle_postBudgets_withAdminKey_rejected` test inverted to `_accepted` (intentional behavior change).
+- `BudgetControllerTest`: admin-with-tenant-id-201, admin-missing-tenant-id-400, api-key-with-tenant-id-400, api-key-with-blank-tenant-id-400.
+- `PolicyControllerTest`: same 3 createPolicy cases + 2 updatePolicy cases (admin returns 200 with subject tenant from policy, api-key returns 200 with self-tenant). Both update tests verify audit `actor_type` discriminator.
+
+**Spec compliance.** Aligned with cycles-protocol v0.1.25.13. No wire-format changes for existing tenant-key callers (purely additive `tenant_id` schema field).
+
+**Backward compatibility.** Pre-existing test `preHandle_postBudgets_withAdminKey_rejected` was changed to `_accepted` — that's an intentional behavior change matching the spec, not a regression.
+
+**Tests.** **454/454 pass** (was 441; +13). Coverage check (JaCoCo) passes — all new branches covered.
+
+---
 
 ### 2026-04-13 — v0.1.25.13 CORS allowedMethods missing PUT
 

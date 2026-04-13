@@ -578,17 +578,68 @@ class AuthInterceptorTest {
         assertThat(request.getAttribute("authenticated_tenant_id")).isNull();
     }
 
-    // --- Dual-auth: write escalation prevention ---
+    // --- Dual-auth: admin-on-behalf-of writes (v0.1.25.14, spec v0.1.25.13) ---
 
     @Test
-    void preHandle_postBudgets_withAdminKey_rejected() throws Exception {
+    void preHandle_postBudgets_withAdminKey_accepted() throws Exception {
+        // POST /v1/admin/budgets is now in the dual-auth allowlist
+        // (v0.1.25.14, spec v0.1.25.13). Admin operators can create
+        // budgets on behalf of tenants — controller enforces tenant_id
+        // in body separately.
         request.setMethod("POST");
         request.setRequestURI("/v1/admin/budgets");
         request.addHeader("X-Admin-API-Key", "admin-secret-key");
-        // POST /v1/admin/budgets is NOT in the allowlist — should require ApiKeyAuth
 
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_postPolicies_withAdminKey_accepted() throws Exception {
+        // POST /v1/admin/policies dual-auth (v0.1.25.14).
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/policies");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_patchPolicyById_withAdminKey_accepted() throws Exception {
+        // PATCH /v1/admin/policies/{policy_id} dual-auth via prefix matching
+        // (v0.1.25.14). Exact match doesn't help here because every request
+        // has a different concrete policy id.
+        request.setMethod("PATCH");
+        request.setRequestURI("/v1/admin/policies/pol_abc123");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_patchPoliciesBarePrefix_withAdminKey_rejected() throws Exception {
+        // The prefix matcher requires a non-empty resource id after the prefix.
+        // PATCH /v1/admin/policies (no id) should NOT be accepted via the
+        // prefix entry — would be a malformed request anyway, but the guard
+        // matters for correctness.
+        request.setMethod("PATCH");
+        request.setRequestURI("/v1/admin/policies");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        // Falls through to validateApiKey since not in exact allowlist and
+        // doesn't match the prefix-with-suffix rule. With admin-only header
+        // and no api key header, rejected with 401.
         assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
         assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    void preHandle_patchPolicyById_withAdminKey_trailingSlashNormalized() throws Exception {
+        // Trailing slash on the request path is normalized; should still match.
+        request.setMethod("PATCH");
+        request.setRequestURI("/v1/admin/policies/pol_xyz/");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
     }
 
     @Test

@@ -30,7 +30,24 @@ public class BudgetController {
     public ResponseEntity<BudgetLedger> create(@Valid @RequestBody BudgetCreateRequest request, HttpServletRequest httpRequest) {
         validateCreateUnits(request);
         ScopeFilterUtil.enforceScopeFilter(httpRequest, request.getScope());
-        String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
+        // v0.1.25.14 dual-auth (spec v0.1.25.13). For ApiKeyAuth the tenant
+        // is implicit from the authenticated key; for AdminKeyAuth it must
+        // come from the request body. Enforce the conditional contract:
+        // tenant_id present iff admin-auth.
+        String authTenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
+        boolean isAdminAuth = authTenantId == null;
+        if (isAdminAuth) {
+            if (request.getTenantId() == null || request.getTenantId().isBlank()) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                    "tenant_id is required in the request body when using admin key authentication", 400);
+            }
+        } else if (request.getTenantId() != null) {
+            throw new GovernanceException(
+                io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                "tenant_id MUST NOT be set when using API key authentication (tenant is inferred from the key)", 400);
+        }
+        String tenantId = isAdminAuth ? request.getTenantId() : authTenantId;
         BudgetLedger ledger = repository.create(tenantId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
@@ -39,11 +56,15 @@ public class BudgetController {
             .operation("createBudget")
             .status(201)
             .metadata(Map.of("scope", request.getScope(), "unit", request.getUnit().name(),
-                "allocated", request.getAllocated().getAmount()))
+                "allocated", request.getAllocated().getAmount(),
+                // Surfaces the auth path used so audit reviewers can
+                // distinguish admin-on-behalf-of from tenant self-service.
+                "actor_type", isAdminAuth ? "admin_on_behalf_of" : "api_key"))
             .build());
         try {
+            ActorType actorType = isAdminAuth ? ActorType.ADMIN_ON_BEHALF_OF : ActorType.API_KEY;
             eventService.emit(EventType.BUDGET_CREATED, tenantId, request.getScope(), "cycles-admin",
-                Actor.builder().type(ActorType.API_KEY)
+                Actor.builder().type(actorType)
                     .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
                 objectMapper.convertValue(EventDataBudgetLifecycle.builder()
                     .ledgerId(ledger.getLedgerId()).scope(request.getScope())

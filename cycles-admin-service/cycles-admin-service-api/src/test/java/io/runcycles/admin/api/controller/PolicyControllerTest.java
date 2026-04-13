@@ -36,6 +36,7 @@ class PolicyControllerTest {
     @MockitoBean private AuditRepository auditRepository;
     @MockitoBean private ApiKeyRepository apiKeyRepository;
     @MockitoBean private JedisPool jedisPool;
+    @MockitoBean private io.runcycles.admin.api.service.EventService eventService;
 
     private void setupApiKeyAuth() {
         when(apiKeyRepository.validate("valid-api-key")).thenReturn(
@@ -360,5 +361,99 @@ class PolicyControllerTest {
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .param("has_action_quotas", "not-a-boolean"))
                 .andExpect(status().isOk());
+    }
+
+    // ========== Admin-on-behalf-of createPolicy / updatePolicy (v0.1.25.14, spec v0.1.25.13) ==========
+
+    @Test
+    void createPolicy_withAdminKey_andTenantIdInBody_returns201() throws Exception {
+        Policy policy = Policy.builder()
+                .policyId("pol_admin").scopePattern("tenant:acme/*").name("Admin Policy")
+                .tenantId("tenant-acme")
+                .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(policyRepository.create(eq("tenant-acme"), any())).thenReturn(policy);
+
+        mockMvc.perform(post("/v1/admin/policies")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tenant_id\":\"tenant-acme\",\"name\":\"Admin Policy\",\"scope_pattern\":\"tenant:acme/*\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.policy_id").value("pol_admin"));
+
+        verify(auditRepository).log(argThat(entry ->
+                "createPolicy".equals(entry.getOperation()) &&
+                "tenant-acme".equals(entry.getTenantId()) &&
+                entry.getMetadata() != null &&
+                "admin_on_behalf_of".equals(entry.getMetadata().get("actor_type"))));
+    }
+
+    @Test
+    void createPolicy_withAdminKey_missingTenantIdInBody_returns400() throws Exception {
+        mockMvc.perform(post("/v1/admin/policies")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Admin Policy\",\"scope_pattern\":\"tenant:acme/*\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void createPolicy_withApiKey_andTenantIdInBody_returns400() throws Exception {
+        // Tenant-key callers MUST NOT send tenant_id (spec v0.1.25.13).
+        setupApiKeyAuth();
+
+        mockMvc.perform(post("/v1/admin/policies")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tenant_id\":\"some-other\",\"name\":\"Sneaky\",\"scope_pattern\":\"tenant:other/*\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void updatePolicy_withAdminKey_returns200_andLogsAdminOnBehalfOf() throws Exception {
+        // Admin update: repository.update receives null tenantId (Lua skips
+        // ownership). Audit subject is the policy's stored tenant_id, not
+        // null — verifies the controller substitutes correctly.
+        when(policyRepository.getScopePattern("pol_xyz")).thenReturn("tenant:acme/*");
+        Policy updated = Policy.builder()
+                .policyId("pol_xyz").scopePattern("tenant:acme/*").name("Updated")
+                .tenantId("tenant-acme")
+                .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(policyRepository.update(isNull(), eq("pol_xyz"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/policies/pol_xyz")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Updated\"}"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry ->
+                "updatePolicy".equals(entry.getOperation()) &&
+                "tenant-acme".equals(entry.getTenantId()) && // subject from policy, not null caller
+                entry.getMetadata() != null &&
+                "admin_on_behalf_of".equals(entry.getMetadata().get("actor_type"))));
+    }
+
+    @Test
+    void updatePolicy_withApiKey_returns200_andLogsApiKey() throws Exception {
+        setupApiKeyAuth();
+        when(policyRepository.getScopePattern("pol_self")).thenReturn("tenant:tenant-1/*");
+        Policy updated = Policy.builder()
+                .policyId("pol_self").scopePattern("tenant:tenant-1/*").name("Self-update")
+                .tenantId("tenant-1")
+                .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(policyRepository.update(eq("tenant-1"), eq("pol_self"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/policies/pol_self")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Self-update\"}"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry ->
+                "updatePolicy".equals(entry.getOperation()) &&
+                "tenant-1".equals(entry.getTenantId()) &&
+                entry.getMetadata() != null &&
+                "api_key".equals(entry.getMetadata().get("actor_type"))));
     }
 }

@@ -1,4 +1,5 @@
 package io.runcycles.admin.api.controller;
+import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.PolicyRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
@@ -33,7 +34,23 @@ public class PolicyController {
     @PostMapping @Operation(operationId = "createPolicy")
     public ResponseEntity<Policy> create(@Valid @RequestBody PolicyCreateRequest request, HttpServletRequest httpRequest) {
         ScopeFilterUtil.enforceScopeFilter(httpRequest, request.getScopePattern());
-        String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
+        // v0.1.25.14 dual-auth (spec v0.1.25.13). Same shape as
+        // BudgetController.create — admin caller MUST send tenant_id in body,
+        // tenant caller MUST NOT.
+        String authTenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
+        boolean isAdminAuth = authTenantId == null;
+        if (isAdminAuth) {
+            if (request.getTenantId() == null || request.getTenantId().isBlank()) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                    "tenant_id is required in the request body when using admin key authentication", 400);
+            }
+        } else if (request.getTenantId() != null) {
+            throw new GovernanceException(
+                io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                "tenant_id MUST NOT be set when using API key authentication (tenant is inferred from the key)", 400);
+        }
+        String tenantId = isAdminAuth ? request.getTenantId() : authTenantId;
         Policy policy = repository.create(tenantId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
@@ -41,11 +58,13 @@ public class PolicyController {
             .resourceType("policy").resourceId(policy.getPolicyId())
             .operation("createPolicy")
             .status(201)
-            .metadata(Map.of("name", request.getName(), "scope_pattern", request.getScopePattern()))
+            .metadata(Map.of("name", request.getName(), "scope_pattern", request.getScopePattern(),
+                "actor_type", isAdminAuth ? "admin_on_behalf_of" : "api_key"))
             .build());
         try {
+            ActorType actorType = isAdminAuth ? ActorType.ADMIN_ON_BEHALF_OF : ActorType.API_KEY;
             eventService.emit(EventType.POLICY_CREATED, tenantId, request.getScopePattern(), "cycles-admin",
-                Actor.builder().type(ActorType.API_KEY)
+                Actor.builder().type(actorType)
                     .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
                 objectMapper.convertValue(EventDataPolicy.builder()
                     .policyId(policy.getPolicyId()).name(request.getName())
@@ -60,19 +79,30 @@ public class PolicyController {
     public ResponseEntity<Policy> update(@PathVariable("policy_id") String policyId, @Valid @RequestBody PolicyUpdateRequest request, HttpServletRequest httpRequest) {
         String scopePattern = repository.getScopePattern(policyId);
         ScopeFilterUtil.enforceScopeFilter(httpRequest, scopePattern);
-        String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
-        Policy policy = repository.update(tenantId, policyId, request);
+        // v0.1.25.14 dual-auth: admin caller passes null tenantId to the
+        // repository (the Lua script skips ownership check); tenant caller
+        // passes their authenticated tenant id (Lua enforces ownership).
+        // No body change needed because policy_id pins the owning tenant —
+        // the persisted record's tenant_id is trusted as the audit subject.
+        String authTenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
+        boolean isAdminAuth = authTenantId == null;
+        Policy policy = repository.update(authTenantId, policyId, request);
+        // For audit / event the subject tenant is the policy's stored owner,
+        // not the (possibly null) caller — keeps history attributable to the
+        // tenant whose policy was modified.
+        String subjectTenantId = isAdminAuth ? policy.getTenantId() : authTenantId;
         auditRepository.log(buildAuditEntry(httpRequest)
-            .tenantId(tenantId)
+            .tenantId(subjectTenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
             .resourceType("policy").resourceId(policyId)
             .operation("updatePolicy")
             .status(200)
-            .metadata(buildUpdatePolicyMeta(scopePattern, request))
+            .metadata(buildUpdatePolicyMetaWithActor(scopePattern, request, isAdminAuth))
             .build());
         try {
-            eventService.emit(EventType.POLICY_UPDATED, tenantId, scopePattern, "cycles-admin",
-                Actor.builder().type(ActorType.API_KEY)
+            ActorType actorType = isAdminAuth ? ActorType.ADMIN_ON_BEHALF_OF : ActorType.API_KEY;
+            eventService.emit(EventType.POLICY_UPDATED, subjectTenantId, scopePattern, "cycles-admin",
+                Actor.builder().type(actorType)
                     .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
                 objectMapper.convertValue(EventDataPolicy.builder()
                     .policyId(policyId).scopePattern(scopePattern).build(), Map.class),
@@ -127,6 +157,17 @@ public class PolicyController {
         if (request.getCaps() != null) meta.put("caps_updated", true);
         if (request.getCommitOveragePolicy() != null) meta.put("commit_overage_policy", request.getCommitOveragePolicy().name());
         return meta.isEmpty() ? null : meta;
+    }
+
+    // v0.1.25.14: same fields as buildUpdatePolicyMeta but always emits the
+    // actor_type discriminator so audit reviewers can filter
+    // admin-on-behalf-of vs tenant self-service updates without joining to
+    // the keys table.
+    private Map<String, Object> buildUpdatePolicyMetaWithActor(String scopePattern, PolicyUpdateRequest request, boolean isAdminAuth) {
+        Map<String, Object> meta = buildUpdatePolicyMeta(scopePattern, request);
+        if (meta == null) meta = new java.util.LinkedHashMap<>();
+        meta.put("actor_type", isAdminAuth ? "admin_on_behalf_of" : "api_key");
+        return meta;
     }
 
     private AuditLogEntry.AuditLogEntryBuilder buildAuditEntry(HttpServletRequest request) {

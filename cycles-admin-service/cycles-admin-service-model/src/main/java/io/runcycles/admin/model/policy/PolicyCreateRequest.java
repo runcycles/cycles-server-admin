@@ -10,6 +10,9 @@ import java.time.Instant;
 @Data @NoArgsConstructor @AllArgsConstructor
 @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = false)
 public class PolicyCreateRequest {
+    // Spec v0.1.25.13: tenant_id is REQUIRED when calling with AdminKeyAuth,
+    // MUST NOT be set when calling with ApiKeyAuth. Controller validates.
+    @JsonProperty("tenant_id") private String tenantId;
     @NotBlank @Size(max = 256) @JsonProperty("name") private String name;
     @Size(max = 1024) @JsonProperty("description") private String description;
     @NotBlank @JsonProperty("scope_pattern") private String scopePattern;
