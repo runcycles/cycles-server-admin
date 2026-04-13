@@ -764,4 +764,87 @@ class AuthInterceptorTest {
         // ScopeFilterUtil.enforceScopeFilter() no-ops when authenticated_scope_filter is null
         assertThat(request.getAttribute("authenticated_scope_filter")).isNull();
     }
+
+    // --- v0.1.25.16: tenant-scoped webhook dual-auth (spec v0.1.25.14) ---
+    // Locks the allowlist contract at the interceptor layer in addition to
+    // the controller-level MockMvc tests. If someone ever refactors the
+    // allowlist strings, these tests catch regressions before they reach
+    // the controller.
+
+    @Test
+    void preHandle_getWebhooks_withAdminKey_accepted() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/webhooks");
+        request.setServletPath("/v1/webhooks");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_getWebhookById_withAdminKey_accepted() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/webhooks/whsub_1");
+        request.setServletPath("/v1/webhooks/whsub_1");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_patchWebhookById_withAdminKey_accepted() throws Exception {
+        request.setMethod("PATCH");
+        request.setRequestURI("/v1/webhooks/whsub_1");
+        request.setServletPath("/v1/webhooks/whsub_1");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_deleteWebhookById_withAdminKey_accepted() throws Exception {
+        request.setMethod("DELETE");
+        request.setRequestURI("/v1/webhooks/whsub_1");
+        request.setServletPath("/v1/webhooks/whsub_1");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_postWebhookTest_withAdminKey_accepted() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/webhooks/whsub_1/test");
+        request.setServletPath("/v1/webhooks/whsub_1/test");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_getWebhookDeliveries_withAdminKey_accepted() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/webhooks/whsub_1/deliveries");
+        request.setServletPath("/v1/webhooks/whsub_1/deliveries");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    @Test
+    void preHandle_postWebhooksCreate_withAdminKey_rejected() throws Exception {
+        // createTenantWebhook is NOT dual-auth (provenance footgun). The
+        // prefix "POST:/v1/webhooks/" requires a non-empty suffix, so the
+        // bare create path "POST:/v1/webhooks" correctly does not match.
+        // Falls through to validateApiKey with no api key header → 401.
+        // This is the critical "by construction" guard for the spec's
+        // deliberate exclusion.
+        request.setMethod("POST");
+        request.setRequestURI("/v1/webhooks");
+        request.setServletPath("/v1/webhooks");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(401);
+    }
 }
