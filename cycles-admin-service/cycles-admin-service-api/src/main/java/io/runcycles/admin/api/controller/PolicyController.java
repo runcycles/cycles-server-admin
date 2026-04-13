@@ -1,4 +1,5 @@
 package io.runcycles.admin.api.controller;
+import io.runcycles.admin.api.config.ScopeValidator;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.PolicyRepository;
@@ -33,6 +34,9 @@ public class PolicyController {
     @Autowired private ObjectMapper objectMapper;
     @PostMapping @Operation(operationId = "createPolicy")
     public ResponseEntity<Policy> create(@Valid @RequestBody PolicyCreateRequest request, HttpServletRequest httpRequest) {
+        // v0.1.25.15: enforce canonical scope-pattern grammar. Wildcards
+        // allowed in the id slot and only on the final segment.
+        ScopeValidator.validatePolicyScopePattern(request.getScopePattern());
         ScopeFilterUtil.enforceScopeFilter(httpRequest, request.getScopePattern());
         // v0.1.25.14 dual-auth (spec v0.1.25.13). Same shape as
         // BudgetController.create — admin caller MUST send tenant_id in body,
@@ -51,6 +55,7 @@ public class PolicyController {
                 "tenant_id MUST NOT be set when using API key authentication (tenant is inferred from the key)", 400);
         }
         String tenantId = isAdminAuth ? request.getTenantId() : authTenantId;
+        ScopeValidator.validateScopeMatchesTenant(request.getScopePattern(), tenantId);
         Policy policy = repository.create(tenantId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
@@ -77,6 +82,12 @@ public class PolicyController {
         }
         return ResponseEntity.status(201).body(policy);
     }
+    // scope_pattern is intentionally NOT in PolicyUpdateRequest — patterns
+    // are immutable per spec (a new pattern = a new policy). If a future
+    // change adds scope_pattern to PolicyUpdateRequest, also add a
+    // ScopeValidator.validatePolicyScopePattern call below; without it
+    // the same class of non-canonical-kind bugs that motivated v0.1.25.15
+    // would sneak in via PATCH instead of POST.
     @PatchMapping("/{policy_id}") @Operation(operationId = "updatePolicy")
     public ResponseEntity<Policy> update(@PathVariable("policy_id") String policyId, @Valid @RequestBody PolicyUpdateRequest request, HttpServletRequest httpRequest) {
         String scopePattern = repository.getScopePattern(policyId);

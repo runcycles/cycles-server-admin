@@ -49,17 +49,17 @@ class PolicyControllerTest {
     void createPolicy_returns201() throws Exception {
         setupApiKeyAuth();
         Policy policy = Policy.builder()
-                .policyId("pol_123").scopePattern("org/*").name("Rate Limit")
+                .policyId("pol_123").scopePattern("tenant:tenant-1/*").name("Rate Limit")
                 .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
         when(policyRepository.create(eq("tenant-1"), any())).thenReturn(policy);
 
         mockMvc.perform(post("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"Rate Limit\",\"scope_pattern\":\"org/*\"}"))
+                        .content("{\"name\":\"Rate Limit\",\"scope_pattern\":\"tenant:tenant-1/*\"}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.policy_id").value("pol_123"))
-                .andExpect(jsonPath("$.scope_pattern").value("org/*"));
+                .andExpect(jsonPath("$.scope_pattern").value("tenant:tenant-1/*"));
     }
 
     @Test
@@ -69,7 +69,7 @@ class PolicyControllerTest {
         mockMvc.perform(post("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"scope_pattern\":\"org/*\"}"))
+                        .content("{\"scope_pattern\":\"tenant:tenant-1/*\"}"))
                 .andExpect(status().isBadRequest());
     }
 
@@ -85,7 +85,7 @@ class PolicyControllerTest {
     void listPolicies_returns200() throws Exception {
         setupApiKeyAuth();
         Policy policy = Policy.builder()
-                .policyId("pol_1").scopePattern("org/*").name("P1")
+                .policyId("pol_1").scopePattern("tenant:tenant-1/*").name("P1")
                 .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
         when(policyRepository.list(eq("tenant-1"), any(), any(), any(), anyInt())).thenReturn(List.of(policy));
 
@@ -99,12 +99,12 @@ class PolicyControllerTest {
     @Test
     void listPolicies_withFilters() throws Exception {
         setupApiKeyAuth();
-        when(policyRepository.list(eq("tenant-1"), eq("org/*"), eq(PolicyStatus.ACTIVE), any(), anyInt()))
+        when(policyRepository.list(eq("tenant-1"), eq("tenant:tenant-1/*"), eq(PolicyStatus.ACTIVE), any(), anyInt()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key")
-                        .param("scope_pattern", "org/*")
+                        .param("scope_pattern", "tenant:tenant-1/*")
                         .param("status", "ACTIVE"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.policies").isEmpty());
@@ -114,14 +114,14 @@ class PolicyControllerTest {
     void createPolicy_logsAuditEntry() throws Exception {
         setupApiKeyAuth();
         Policy policy = Policy.builder()
-                .policyId("pol_123").scopePattern("org/*").name("Rate Limit")
+                .policyId("pol_123").scopePattern("tenant:tenant-1/*").name("Rate Limit")
                 .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
         when(policyRepository.create(eq("tenant-1"), any())).thenReturn(policy);
 
         mockMvc.perform(post("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"Rate Limit\",\"scope_pattern\":\"org/*\"}"))
+                        .content("{\"name\":\"Rate Limit\",\"scope_pattern\":\"tenant:tenant-1/*\"}"))
                 .andExpect(status().isCreated());
 
         verify(auditRepository).log(argThat(entry ->
@@ -186,14 +186,14 @@ class PolicyControllerTest {
     void createPolicy_auditEntry_requestIdIsFallbackUuidWhenAttributeMissing() throws Exception {
         setupApiKeyAuth();
         Policy policy = Policy.builder()
-                .policyId("pol_123").scopePattern("org/*").name("Rate Limit")
+                .policyId("pol_123").scopePattern("tenant:tenant-1/*").name("Rate Limit")
                 .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
         when(policyRepository.create(eq("tenant-1"), any())).thenReturn(policy);
 
         mockMvc.perform(post("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"Rate Limit\",\"scope_pattern\":\"org/*\"}"))
+                        .content("{\"name\":\"Rate Limit\",\"scope_pattern\":\"tenant:tenant-1/*\"}"))
                 .andExpect(status().isCreated());
 
         verify(auditRepository).log(argThat(entry ->
@@ -206,14 +206,14 @@ class PolicyControllerTest {
     void createPolicy_auditEntry_userAgentIsNullWhenHeaderMissing() throws Exception {
         setupApiKeyAuth();
         Policy policy = Policy.builder()
-                .policyId("pol_123").scopePattern("org/*").name("Rate Limit")
+                .policyId("pol_123").scopePattern("tenant:tenant-1/*").name("Rate Limit")
                 .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
         when(policyRepository.create(eq("tenant-1"), any())).thenReturn(policy);
 
         mockMvc.perform(post("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"Rate Limit\",\"scope_pattern\":\"org/*\"}"))
+                        .content("{\"name\":\"Rate Limit\",\"scope_pattern\":\"tenant:tenant-1/*\"}"))
                 .andExpect(status().isCreated());
 
         verify(auditRepository).log(argThat(entry ->
@@ -225,14 +225,14 @@ class PolicyControllerTest {
     void createPolicy_auditEntry_capturesSourceIp() throws Exception {
         setupApiKeyAuth();
         Policy policy = Policy.builder()
-                .policyId("pol_123").scopePattern("org/*").name("Rate Limit")
+                .policyId("pol_123").scopePattern("tenant:tenant-1/*").name("Rate Limit")
                 .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
         when(policyRepository.create(eq("tenant-1"), any())).thenReturn(policy);
 
         mockMvc.perform(post("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"Rate Limit\",\"scope_pattern\":\"org/*\"}"))
+                        .content("{\"name\":\"Rate Limit\",\"scope_pattern\":\"tenant:tenant-1/*\"}"))
                 .andExpect(status().isCreated());
 
         verify(auditRepository).log(argThat(entry ->
@@ -244,10 +244,10 @@ class PolicyControllerTest {
     void listPolicies_resultCountEqualsLimit_hasMoreTrueWithCursor() throws Exception {
         setupApiKeyAuth();
         Policy p1 = Policy.builder()
-                .policyId("pol_1").scopePattern("org/*").name("P1")
+                .policyId("pol_1").scopePattern("tenant:tenant-1/*").name("P1")
                 .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
         Policy p2 = Policy.builder()
-                .policyId("pol_2").scopePattern("team/*").name("P2")
+                .policyId("pol_2").scopePattern("tenant:tenant-1/agent:*").name("P2")
                 .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
         when(policyRepository.list(eq("tenant-1"), any(), any(), any(), eq(2))).thenReturn(List.of(p1, p2));
 
@@ -278,7 +278,7 @@ class PolicyControllerTest {
     void updatePolicy_returns200() throws Exception {
         setupApiKeyAuth();
         Policy policy = Policy.builder()
-                .policyId("pol_123").scopePattern("org/*").name("Updated Name")
+                .policyId("pol_123").scopePattern("tenant:tenant-1/*").name("Updated Name")
                 .priority(10).status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
         when(policyRepository.update(eq("tenant-1"), eq("pol_123"), any())).thenReturn(policy);
 
@@ -310,7 +310,7 @@ class PolicyControllerTest {
     void updatePolicy_logsAuditEntry() throws Exception {
         setupApiKeyAuth();
         Policy policy = Policy.builder()
-                .policyId("pol_123").scopePattern("org/*").name("P")
+                .policyId("pol_123").scopePattern("tenant:tenant-1/*").name("P")
                 .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
         when(policyRepository.update(eq("tenant-1"), eq("pol_123"), any())).thenReturn(policy);
 
@@ -368,7 +368,7 @@ class PolicyControllerTest {
     @Test
     void createPolicy_withAdminKey_andTenantIdInBody_returns201() throws Exception {
         Policy policy = Policy.builder()
-                .policyId("pol_admin").scopePattern("tenant:acme/*").name("Admin Policy")
+                .policyId("pol_admin").scopePattern("tenant:tenant-acme/*").name("Admin Policy")
                 .tenantId("tenant-acme")
                 .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
         when(policyRepository.create(eq("tenant-acme"), any())).thenReturn(policy);
@@ -376,7 +376,7 @@ class PolicyControllerTest {
         mockMvc.perform(post("/v1/admin/policies")
                         .header("X-Admin-API-Key", "test-admin-key")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"tenant_id\":\"tenant-acme\",\"name\":\"Admin Policy\",\"scope_pattern\":\"tenant:acme/*\"}"))
+                        .content("{\"tenant_id\":\"tenant-acme\",\"name\":\"Admin Policy\",\"scope_pattern\":\"tenant:tenant-acme/*\"}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.policy_id").value("pol_admin"));
 
@@ -392,7 +392,7 @@ class PolicyControllerTest {
         mockMvc.perform(post("/v1/admin/policies")
                         .header("X-Admin-API-Key", "test-admin-key")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"Admin Policy\",\"scope_pattern\":\"tenant:acme/*\"}"))
+                        .content("{\"name\":\"Admin Policy\",\"scope_pattern\":\"tenant:tenant-acme/*\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
     }
@@ -403,7 +403,7 @@ class PolicyControllerTest {
         mockMvc.perform(post("/v1/admin/policies")
                         .header("X-Admin-API-Key", "test-admin-key")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"tenant_id\":null,\"name\":\"P\",\"scope_pattern\":\"tenant:acme/*\"}"))
+                        .content("{\"tenant_id\":null,\"name\":\"P\",\"scope_pattern\":\"tenant:tenant-acme/*\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
     }
@@ -425,9 +425,9 @@ class PolicyControllerTest {
         // Admin update: repository.update receives null tenantId (Lua skips
         // ownership). Audit subject is the policy's stored tenant_id, not
         // null — verifies the controller substitutes correctly.
-        when(policyRepository.getScopePattern("pol_xyz")).thenReturn("tenant:acme/*");
+        when(policyRepository.getScopePattern("pol_xyz")).thenReturn("tenant:tenant-acme/*");
         Policy updated = Policy.builder()
-                .policyId("pol_xyz").scopePattern("tenant:acme/*").name("Updated")
+                .policyId("pol_xyz").scopePattern("tenant:tenant-acme/*").name("Updated")
                 .tenantId("tenant-acme")
                 .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
         when(policyRepository.update(isNull(), eq("pol_xyz"), any())).thenReturn(updated);

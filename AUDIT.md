@@ -1,9 +1,48 @@
 # Complete Budget Governance v0.1.25.8 — Admin Server Audit
 
-**Server version:** 0.1.25.14 (2026-04-13 — admin-on-behalf-of dual-auth on createBudget, createPolicy, updatePolicy per spec v0.1.25.13; closes "no Create Budget UI" dashboard gap)
-**Date:** 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Server version:** 0.1.25.15 (2026-04-13 — canonical scope validation; rejects non-canonical kinds, missing tenant prefix, reversed ordering)
+**Date:** 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, v0.1.25.11) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-13 — v0.1.25.15 canonical scope validation
+
+Reported during v0.1.25.14 end-to-end testing: user accidentally created a budget with scope `tenant:acme/agentic:codex` — "agentic" is a typo for the canonical kind "agent", but the server happily persisted it with 201 Created. Probing revealed the server was doing essentially no scope validation: `workspace:eng` (no tenant prefix) also worked, as did reverse-ordered kinds. Per `cycles-protocol-v0.yaml` SCOPE DERIVATION (NORMATIVE): *"Canonical ordering is: tenant → workspace → app → workflow → agent → toolset."* Non-canonical scopes silently break downstream enforcement (reservations can't match them) and pollute audit trails with identifiers that break tooling built on the canonical taxonomy.
+
+**New `ScopeValidator` utility** in `cycles-admin-service-api/config/`. Called from `BudgetController.create` and `PolicyController.create`/`.update`. Enforces:
+
+| Rule | Reject | Accept |
+|---|---|---|
+| First segment must be `tenant:<id>` | `workspace:eng` | `tenant:acme` |
+| Canonical kind set only | `tenant:acme/florb:blerp`, `tenant:acme/agentic:codex` | `tenant:acme/agent:codex` |
+| Kinds appear in canonical order, no duplicates | `tenant:x/agent:a/workspace:w`, `tenant:x/agent:a/agent:b` | `tenant:x/workspace:w/agent:a` |
+| Each id non-empty, ≤128 chars, matches `[A-Za-z0-9._-]+` | `tenant:acme/agent:` , `tenant:acme/agent:bad id` | `tenant:acme-corp.v2/agent:rev_01` |
+| Cross-field: scope tenant must match request `tenant_id` | body `tenant_id=acme` + scope `tenant:corp/...` | matching |
+
+**Wildcards in policy `scope_pattern`** — bare `*` as terminal segment (`tenant:acme/*` = all descendants) and id-wildcard (`tenant:acme/agent:*`) both allowed, per spec examples. Mid-chain wildcards rejected (unreachable after match). Budget scopes remain concrete — no wildcards.
+
+**Error shape.** All rejections return 400 INVALID_REQUEST via GovernanceException, with a specific message identifying which rule failed on which segment — easier to self-correct than a generic "invalid scope".
+
+**Tests** (+29):
+- `ScopeValidatorTest` — 27 cases covering every rule: bare-tenant accepted, full chain accepted, skipped levels allowed, the exact `agentic:codex` bug the user reported, missing-tenant-prefix, garbage kind, reverse order, duplicate kinds, empty id, disallowed chars, bare-wildcard terminal accepted in patterns, wildcard rejected in budgets, wildcard mid-chain rejected, tenant-cross-check happy + mismatch, `extractTenantId` helper.
+- `BudgetControllerTest` — existing test fixtures updated from non-canonical `org/team1` to canonical `tenant:tenant-1/workspace:team1`. Pre-existing scope-filter-allowed test now uses a coherent tenant (filter aligned with authenticated tenant).
+- `PolicyControllerTest` — existing `org/*` test fixtures updated to `tenant:tenant-1/*`.
+- Admin-on-behalf-of tests updated to use coherent `tenant_id` and scope (the previous placeholder `tenant-acme` / `tenant:acme/...` didn't satisfy cross-field check).
+
+**Spec compliance.** The server now ENFORCES what the spec describes as canonical. No spec change required — this is tightening an existing implicit contract.
+
+**Backward compatibility.** Pre-existing budgets or policies in Redis with non-canonical scopes keep working (read paths don't re-validate). New creates must use canonical scopes; clients sending non-canonical now get 400 with a clear error message instead of silent success.
+
+**Pre-merge review hardening** (post code review of this PR):
+- **Tightened id regex** from `[A-Za-z0-9._-]+` to `[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?` — rejects ids with leading/trailing punctuation (`.acme`, `acme.`, `-foo`) which are surprising in audit output and never intentional. Single-char alphanumeric ids and mid-string punctuation (`a.b_c-d.v2`) still accepted.
+- **Regression lock** in `ScopeValidatorTest` for the claim "`tenant:*/agent:foo` passes validation". It doesn't — the terminal-id-wildcard rule correctly rejects it. Test documents that lock-in.
+- **Documented** via test + comment that `tenant:*` alone is a legal policy pattern at the grammar layer (matches all tenant-rooted scopes), but is blocked by the tenant-cross-check for admin-on-behalf-of creates — preventing system-wide wildcard policies from being attributed to a specific tenant accidentally.
+- **Equality branch** of the duplicate-kind check (`kindIdx <= lastKindIdx`) now has a dedicated mid-list test (`workspace/workspace` at kindIdx=1) in addition to the pre-existing boundary test (`agent/agent` at kindIdx=4).
+- **Forward-guard comment** in `PolicyController.update`: `scope_pattern` is intentionally absent from `PolicyUpdateRequest` (patterns are immutable per spec); if a future change adds it, the comment directs the engineer to add `ScopeValidator.validatePolicyScopePattern` to prevent PATCH from becoming a non-canonical-scope bypass.
+
+**Tests.** **497/497 pass** (was 459; +38). Coverage check passes.
+
+---
 
 ### 2026-04-13 — v0.1.25.14 admin-on-behalf-of dual-auth on createBudget / createPolicy / updatePolicy
 
