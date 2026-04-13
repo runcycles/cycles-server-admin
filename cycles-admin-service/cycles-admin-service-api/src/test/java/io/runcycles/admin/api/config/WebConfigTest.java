@@ -62,8 +62,32 @@ class WebConfigTest {
         verify(corsReg).exposedHeaders(exposed.capture());
         assertThat(exposed.getValue()).containsExactly("X-Request-Id");
 
-        verify(corsReg).allowedMethods("GET", "POST", "PATCH", "DELETE", "OPTIONS");
+        // PUT must be present — PUT /v1/admin/config/webhook-security is the
+        // spec-defined method for updating webhook security config. The
+        // previous list omitted PUT and the dashboard's CORS preflight
+        // failed silently in Spring's CorsFilter (dashboard issue #30).
+        verify(corsReg).allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS");
         verify(corsReg).maxAge(3600L);
+    }
+
+    @Test
+    void addCorsMappings_includesPutForWebhookSecurityConfigEndpoint() {
+        // Regression guard for dashboard issue #30: a future refactor that
+        // re-omits PUT would silently break the webhook-security PUT
+        // endpoint with a 403 and no app-level logs. Spec authoritative
+        // method for /v1/admin/config/webhook-security is PUT.
+        WebConfig config = new WebConfig(authInterceptor);
+        ReflectionTestUtils.setField(config, "dashboardOrigin", "https://dash.example.com");
+
+        CorsRegistry corsRegistry = mock(CorsRegistry.class);
+        CorsRegistration corsReg = mock(CorsRegistration.class, RETURNS_SELF);
+        when(corsRegistry.addMapping("/v1/**")).thenReturn(corsReg);
+
+        config.addCorsMappings(corsRegistry);
+
+        ArgumentCaptor<String[]> methods = ArgumentCaptor.forClass(String[].class);
+        verify(corsReg).allowedMethods(methods.capture());
+        assertThat(methods.getValue()).contains("PUT");
     }
 
     @Test
