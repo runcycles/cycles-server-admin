@@ -309,4 +309,155 @@ class WebhookTenantControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.subscriptions").isArray());
     }
+
+    // ========== Admin-on-behalf-of dual-auth (v0.1.25.16, spec v0.1.25.14) ==========
+
+    @Test
+    void listWebhooks_withAdminKey_andTenantQuery_returns200() throws Exception {
+        WebhookListResponse response = WebhookListResponse.builder()
+            .subscriptions(List.of()).hasMore(false).build();
+        when(webhookService.listByTenant(eq("tenant-acme"), any(), any(), any(), anyInt())).thenReturn(response);
+
+        mockMvc.perform(get("/v1/webhooks")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .param("tenant", "tenant-acme"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subscriptions").isArray());
+
+        verify(webhookService).listByTenant(eq("tenant-acme"), any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void listWebhooks_withAdminKey_missingTenantQuery_returns400() throws Exception {
+        mockMvc.perform(get("/v1/webhooks")
+                        .header("X-Admin-API-Key", "test-admin-key"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("tenant query parameter is required")));
+    }
+
+    @Test
+    void listWebhooks_withApiKey_andTenantQuery_returns400() throws Exception {
+        // Tenant-key callers MUST NOT set the tenant query param (would let
+        // a tenant list a peer's subscriptions by tenant_id guessing).
+        setupApiKeyAuth();
+
+        mockMvc.perform(get("/v1/webhooks")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("tenant", "tenant-other"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("MUST NOT be set")));
+    }
+
+    @Test
+    void getWebhook_withAdminKey_crossTenant_returns200() throws Exception {
+        // Admin has no effective tenant — can read any subscription.
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_other").tenantId("tenant-other").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_other")).thenReturn(sub);
+
+        mockMvc.perform(get("/v1/webhooks/whsub_other")
+                        .header("X-Admin-API-Key", "test-admin-key"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subscription_id").value("whsub_other"));
+    }
+
+    @Test
+    void updateWebhook_withAdminKey_crossTenant_returns200_andAuditTaggedAdminOnBehalfOf() throws Exception {
+        WebhookSubscription existing = WebhookSubscription.builder()
+            .subscriptionId("whsub_x").tenantId("tenant-x").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_x")).thenReturn(existing);
+        WebhookSubscription updated = WebhookSubscription.builder()
+            .subscriptionId("whsub_x").tenantId("tenant-x").url("https://example.com/wh")
+            .status(WebhookStatus.PAUSED).createdAt(Instant.now()).build();
+        when(webhookService.update(eq("whsub_x"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/webhooks/whsub_x")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"PAUSED\"}"))
+                .andExpect(status().isOk());
+
+        // Audit subject is the owning tenant (resolved from the subscription),
+        // NOT the admin caller (admin has no tenant). actor_type=admin_on_behalf_of
+        // so security review can tell admin-driven pauses from tenant self-service.
+        verify(auditRepository).log(argThat(entry ->
+                "updateTenantWebhook".equals(entry.getOperation()) &&
+                "tenant-x".equals(entry.getTenantId()) &&
+                entry.getMetadata() != null &&
+                "admin_on_behalf_of".equals(entry.getMetadata().get("actor_type"))));
+    }
+
+    @Test
+    void deleteWebhook_withAdminKey_crossTenant_returns204_andAuditTaggedAdminOnBehalfOf() throws Exception {
+        WebhookSubscription existing = WebhookSubscription.builder()
+            .subscriptionId("whsub_x").tenantId("tenant-x").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_x")).thenReturn(existing);
+
+        mockMvc.perform(delete("/v1/webhooks/whsub_x")
+                        .header("X-Admin-API-Key", "test-admin-key"))
+                .andExpect(status().isNoContent());
+
+        verify(webhookService).delete("whsub_x");
+        verify(auditRepository).log(argThat(entry ->
+                "deleteTenantWebhook".equals(entry.getOperation()) &&
+                "tenant-x".equals(entry.getTenantId()) &&
+                entry.getMetadata() != null &&
+                "admin_on_behalf_of".equals(entry.getMetadata().get("actor_type"))));
+    }
+
+    @Test
+    void testWebhook_withAdminKey_crossTenant_returns200() throws Exception {
+        WebhookSubscription existing = WebhookSubscription.builder()
+            .subscriptionId("whsub_x").tenantId("tenant-x").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_x")).thenReturn(existing);
+        when(webhookService.test("whsub_x")).thenReturn(
+            WebhookTestResponse.builder().success(true).responseStatus(200).build());
+
+        mockMvc.perform(post("/v1/webhooks/whsub_x/test")
+                        .header("X-Admin-API-Key", "test-admin-key"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
+
+        verify(auditRepository).log(argThat(entry ->
+                "testTenantWebhook".equals(entry.getOperation()) &&
+                "tenant-x".equals(entry.getTenantId()) &&
+                entry.getMetadata() != null &&
+                "admin_on_behalf_of".equals(entry.getMetadata().get("actor_type"))));
+    }
+
+    @Test
+    void listDeliveries_withAdminKey_crossTenant_returns200() throws Exception {
+        WebhookSubscription existing = WebhookSubscription.builder()
+            .subscriptionId("whsub_x").tenantId("tenant-x").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_x")).thenReturn(existing);
+        WebhookDeliveryListResponse deliveries = WebhookDeliveryListResponse.builder()
+            .deliveries(List.of()).hasMore(false).build();
+        when(webhookService.listDeliveries(eq("whsub_x"), any(), any(), any(), any(), anyInt()))
+            .thenReturn(deliveries);
+
+        mockMvc.perform(get("/v1/webhooks/whsub_x/deliveries")
+                        .header("X-Admin-API-Key", "test-admin-key"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.deliveries").isArray());
+    }
+
+    @Test
+    void createWebhook_withAdminKey_returns401() throws Exception {
+        // createTenantWebhook is NOT in the dual-auth allowlist — admin
+        // cannot mint subscriptions on a tenant's behalf. The interceptor
+        // falls through to ApiKey validation (no tenant key present) and
+        // returns 401. Provenance footgun guard.
+        mockMvc.perform(post("/v1/webhooks")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://example.com/wh\",\"event_types\":[\"budget.created\"]}"))
+                .andExpect(status().isUnauthorized());
+    }
 }

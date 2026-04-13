@@ -43,7 +43,13 @@ public class AuthInterceptor implements HandlerInterceptor {
         // controllers enforce + audit-log records actor_type=
         // ADMIN_ON_BEHALF_OF for these calls.
         "POST:/v1/admin/budgets",
-        "POST:/v1/admin/policies"
+        "POST:/v1/admin/policies",
+        // v0.1.25.16: dual-auth on tenant-scoped webhook LIST per spec
+        // v0.1.25.14. Admin operators need to inspect a tenant's webhook
+        // subscriptions during incident response without holding the
+        // tenant's API key. Per-subscription paths (id in URL) use the
+        // prefix matcher below.
+        "GET:/v1/webhooks"
     );
 
     // Method:path-prefix entries for dual-auth where the path includes a
@@ -53,7 +59,24 @@ public class AuthInterceptor implements HandlerInterceptor {
     // tenant in the persistence layer, so no tenant_id body field is
     // needed for admin-on-behalf-of updates. (v0.1.25.14, spec v0.1.25.13.)
     private static final Set<String> ADMIN_ALLOWED_PREFIXES = Set.of(
-        "PATCH:/v1/admin/policies/"
+        "PATCH:/v1/admin/policies/",
+        // v0.1.25.16: dual-auth on tenant-scoped per-subscription webhook
+        // endpoints per spec v0.1.25.14. Subscription id pins the owning
+        // tenant in the persistence layer (controller resolves from the
+        // subscription record under admin auth), so no tenant query/body
+        // field is needed on these. Covers:
+        //   GET    /v1/webhooks/{id}
+        //   GET    /v1/webhooks/{id}/deliveries
+        //   PATCH  /v1/webhooks/{id}
+        //   DELETE /v1/webhooks/{id}
+        //   POST   /v1/webhooks/{id}/test
+        // POST /v1/webhooks (create) is NOT dual-auth — prefix requires
+        // a non-empty suffix after the trailing slash, so a bare
+        // "POST:/v1/webhooks" (no id) correctly does not match.
+        "GET:/v1/webhooks/",
+        "PATCH:/v1/webhooks/",
+        "DELETE:/v1/webhooks/",
+        "POST:/v1/webhooks/"
     );
 
     // Endpoint path+method → required permission per admin governance spec
