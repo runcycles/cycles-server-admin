@@ -4,6 +4,7 @@ import io.runcycles.admin.api.service.WebhookService;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
+import io.runcycles.admin.model.event.ActorType;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.webhook.*;
@@ -22,6 +23,12 @@ public class WebhookTenantController {
     @Autowired private WebhookService webhookService;
     @Autowired private AuditRepository auditRepository;
 
+    // createTenantWebhook is intentionally NOT dual-auth (spec v0.1.25.14):
+    // URL / signing secret / event choice are tenant policy; admin creating
+    // on a tenant's behalf obscures provenance. If admin needs to manage
+    // a subscription, /v1/admin/webhooks/* already serves admin-provisioned
+    // ones — dual-auth on the tenant-scoped read/update/delete paths covers
+    // the incident-response use case without letting admin mint subs.
     @PostMapping @Operation(operationId = "createTenantWebhook")
     public ResponseEntity<WebhookCreateResponse> create(
             @Valid @RequestBody WebhookCreateRequest request, HttpServletRequest httpRequest) {
@@ -38,13 +45,33 @@ public class WebhookTenantController {
         return ResponseEntity.status(201).body(response);
     }
 
+    // v0.1.25.16 dual-auth: admin caller passes `tenant` query param
+    // (REQUIRED under admin, MUST NOT be set under ApiKeyAuth). Same
+    // single-param dual-semantic shape as listBudgets / listPolicies /
+    // listReservations.
     @GetMapping @Operation(operationId = "listTenantWebhooks")
     public ResponseEntity<WebhookListResponse> list(
+            @RequestParam(required = false) String tenant,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit,
             HttpServletRequest httpRequest) {
-        String tenantId = getAuthenticatedTenantId(httpRequest);
+        String authTenantId = getAuthenticatedTenantId(httpRequest);
+        boolean isAdminAuth = authTenantId == null;
+        String tenantId;
+        if (isAdminAuth) {
+            if (tenant == null || tenant.isBlank()) {
+                throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                    "tenant query parameter is required when using admin key authentication", 400);
+            }
+            tenantId = tenant;
+        } else {
+            if (tenant != null) {
+                throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                    "tenant query parameter MUST NOT be set when using API key authentication", 400);
+            }
+            tenantId = authTenantId;
+        }
         limit = Math.max(1, Math.min(limit, 100));
         return ResponseEntity.ok(webhookService.listByTenant(tenantId, status, null, cursor, limit));
     }
@@ -52,9 +79,8 @@ public class WebhookTenantController {
     @GetMapping("/{subscription_id}") @Operation(operationId = "getTenantWebhook")
     public ResponseEntity<WebhookSubscription> get(
             @PathVariable("subscription_id") String subscriptionId, HttpServletRequest httpRequest) {
-        String tenantId = getAuthenticatedTenantId(httpRequest);
         WebhookSubscription sub = webhookService.get(subscriptionId);
-        enforceTenantOwnership(sub, tenantId);
+        enforceTenantOwnership(httpRequest, sub);
         return ResponseEntity.ok(sub);
     }
 
@@ -62,9 +88,9 @@ public class WebhookTenantController {
     public ResponseEntity<WebhookSubscription> update(
             @PathVariable("subscription_id") String subscriptionId,
             @Valid @RequestBody WebhookUpdateRequest request, HttpServletRequest httpRequest) {
-        String tenantId = getAuthenticatedTenantId(httpRequest);
         WebhookSubscription existing = webhookService.get(subscriptionId);
-        enforceTenantOwnership(existing, tenantId);
+        boolean isAdminAuth = isAdminAuth(httpRequest);
+        enforceTenantOwnership(httpRequest, existing);
         if (request.getEventTypes() != null) {
             validateTenantEventTypes(request.getEventTypes());
         }
@@ -75,8 +101,9 @@ public class WebhookTenantController {
         if (request.getUrl() != null) updateMeta.put("new_url", request.getUrl());
         if (request.getEventTypes() != null) updateMeta.put("event_types", request.getEventTypes().stream().map(Object::toString).toList());
         if (request.getStatus() != null) updateMeta.put("new_status", request.getStatus().name());
+        updateMeta.put("actor_type", (isAdminAuth ? ActorType.ADMIN_ON_BEHALF_OF : ActorType.API_KEY).getValue());
         auditRepository.log(buildAuditEntry(httpRequest)
-            .tenantId(tenantId)
+            .tenantId(existing.getTenantId())
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
             .resourceType("webhook").resourceId(subscriptionId)
             .operation("updateTenantWebhook").status(200)
@@ -88,16 +115,19 @@ public class WebhookTenantController {
     @DeleteMapping("/{subscription_id}") @Operation(operationId = "deleteTenantWebhook")
     public ResponseEntity<Void> delete(
             @PathVariable("subscription_id") String subscriptionId, HttpServletRequest httpRequest) {
-        String tenantId = getAuthenticatedTenantId(httpRequest);
         WebhookSubscription existing = webhookService.get(subscriptionId);
-        enforceTenantOwnership(existing, tenantId);
+        boolean isAdminAuth = isAdminAuth(httpRequest);
+        enforceTenantOwnership(httpRequest, existing);
         webhookService.delete(subscriptionId);
+        java.util.Map<String, Object> delMeta = new java.util.LinkedHashMap<>();
+        delMeta.put("url", existing.getUrl());
+        delMeta.put("actor_type", (isAdminAuth ? ActorType.ADMIN_ON_BEHALF_OF : ActorType.API_KEY).getValue());
         auditRepository.log(buildAuditEntry(httpRequest)
-            .tenantId(tenantId)
+            .tenantId(existing.getTenantId())
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
             .resourceType("webhook").resourceId(subscriptionId)
             .operation("deleteTenantWebhook").status(204)
-            .metadata(java.util.Map.of("url", existing.getUrl()))
+            .metadata(delMeta)
             .build());
         return ResponseEntity.noContent().build();
     }
@@ -105,17 +135,18 @@ public class WebhookTenantController {
     @PostMapping("/{subscription_id}/test") @Operation(operationId = "testTenantWebhook")
     public ResponseEntity<WebhookTestResponse> test(
             @PathVariable("subscription_id") String subscriptionId, HttpServletRequest httpRequest) {
-        String tenantId = getAuthenticatedTenantId(httpRequest);
         WebhookSubscription existing = webhookService.get(subscriptionId);
-        enforceTenantOwnership(existing, tenantId);
+        boolean isAdminAuth = isAdminAuth(httpRequest);
+        enforceTenantOwnership(httpRequest, existing);
         WebhookTestResponse response = webhookService.test(subscriptionId);
         java.util.Map<String, Object> testMeta = new java.util.LinkedHashMap<>();
         testMeta.put("success", response.isSuccess());
         if (response.getResponseStatus() != null) testMeta.put("response_status", response.getResponseStatus());
         if (response.getErrorMessage() != null) testMeta.put("error_message", response.getErrorMessage());
         if (response.getResponseTimeMs() != null) testMeta.put("response_time_ms", response.getResponseTimeMs());
+        testMeta.put("actor_type", (isAdminAuth ? ActorType.ADMIN_ON_BEHALF_OF : ActorType.API_KEY).getValue());
         auditRepository.log(buildAuditEntry(httpRequest)
-            .tenantId(tenantId)
+            .tenantId(existing.getTenantId())
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
             .resourceType("webhook").resourceId(subscriptionId)
             .operation("testTenantWebhook").status(200)
@@ -133,9 +164,8 @@ public class WebhookTenantController {
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit,
             HttpServletRequest httpRequest) {
-        String tenantId = getAuthenticatedTenantId(httpRequest);
         WebhookSubscription existing = webhookService.get(subscriptionId);
-        enforceTenantOwnership(existing, tenantId);
+        enforceTenantOwnership(httpRequest, existing);
         limit = Math.max(1, Math.min(limit, 100));
         return ResponseEntity.ok(webhookService.listDeliveries(subscriptionId, status, from, to, cursor, limit));
     }
@@ -144,9 +174,19 @@ public class WebhookTenantController {
         return (String) request.getAttribute("authenticated_tenant_id");
     }
 
-    private void enforceTenantOwnership(WebhookSubscription sub, String tenantId) {
+    private boolean isAdminAuth(HttpServletRequest request) {
+        return getAuthenticatedTenantId(request) == null;
+    }
+
+    // v0.1.25.16: ApiKeyAuth enforces that the subscription belongs to
+    // the caller's tenant (404 on mismatch, not 403 — avoids leaking
+    // existence). AdminKeyAuth has no effective tenant and may read any
+    // subscription; the owning tenant is resolved from the subscription
+    // record and used as the audit subject downstream.
+    private void enforceTenantOwnership(HttpServletRequest request, WebhookSubscription sub) {
+        if (isAdminAuth(request)) return;
+        String tenantId = getAuthenticatedTenantId(request);
         if (!tenantId.equals(sub.getTenantId())) {
-            // Return 404 (not 403) to avoid leaking existence
             throw GovernanceException.webhookNotFound(sub.getSubscriptionId());
         }
     }

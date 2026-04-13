@@ -1,9 +1,55 @@
 # Complete Budget Governance v0.1.25.8 — Admin Server Audit
 
-**Server version:** 0.1.25.15 (2026-04-13 — canonical scope validation; rejects non-canonical kinds, missing tenant prefix, reversed ordering)
-**Date:** 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Server version:** 0.1.25.16 (2026-04-13 — admin-on-behalf-of dual-auth on 6 tenant-scoped webhook endpoints)
+**Date:** 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, v0.1.25.11) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-13 — v0.1.25.16 Stage 3 dual-auth: tenant-scoped webhook endpoints
+
+Third and final stage of the admin-on-behalf-of rollout (v0.1.25.13 covered budgets/policies, v0.1.25.14 in cycles-server covered reservations). Closes the webhook ops gap: admin operators can now pause / force-delete / inspect tenant-provisioned webhooks during incident response without holding the tenant's API key.
+
+Implements [cycles-protocol#40 (spec v0.1.25.14)](https://github.com/runcycles/cycles-protocol/pull/40).
+
+**Dual-auth added to 6 endpoints** at `WebhookTenantController`:
+
+| Endpoint | Treatment |
+|---|---|
+| `GET /v1/webhooks` | + `AdminKeyAuth`. New `tenant` query param: REQUIRED under admin (filter), MUST NOT be set under ApiKey. 400 on either violation. |
+| `GET /v1/webhooks/{id}` | + `AdminKeyAuth`. Admin reads any subscription; owning tenant resolved from record. |
+| `PATCH /v1/webhooks/{id}` | + `AdminKeyAuth`. Primary use case: pause flapping webhook. Audit metadata tagged `actor_type=admin_on_behalf_of`. |
+| `DELETE /v1/webhooks/{id}` | + `AdminKeyAuth`. Force-remove. Audit tagged. |
+| `POST /v1/webhooks/{id}/test` | + `AdminKeyAuth`. Diagnose reachability. Audit tagged. |
+| `GET /v1/webhooks/{id}/deliveries` | + `AdminKeyAuth`. Inspect failure log. |
+
+**Intentionally NOT dual-auth** (provenance footgun):
+- `POST /v1/webhooks` (create) — URL, signing secret, event choices are tenant policy.
+- `POST /v1/webhooks/{id}/replay` — already admin-only at `/v1/admin/webhooks/{id}/replay`.
+
+**Changes:**
+
+| File | Change |
+|---|---|
+| `AuthInterceptor.java` | `GET:/v1/webhooks` added to `ADMIN_ALLOWED_ENDPOINTS`. 4 prefix entries added to `ADMIN_ALLOWED_PREFIXES` covering `GET`/`PATCH`/`DELETE`/`POST` on `/v1/webhooks/`. Existing prefix matcher (`reqKey.length() > entry.length()`) correctly excludes bare `POST:/v1/webhooks` (no id) — create stays ApiKey-only by construction. |
+| `WebhookTenantController.java` | `list` gains `tenant` query param + bidirectional validation. Per-subscription endpoints route through a new `enforceTenantOwnership(request, sub)` that skips under admin auth. Audit entries for `patch` / `delete` / `test` tag `actor_type=admin_on_behalf_of` vs `api_key`; audit subject is the subscription's owning tenant (not the admin caller). |
+| `pom.xml` | `revision` 0.1.25.15 → 0.1.25.16. |
+
+**Design choices:**
+- **404 (not 403) preserved across auth types.** Under ApiKey, cross-tenant reads look like not-found — retained. Under admin there's no cross-tenant case, so 404 only fires when the sub genuinely doesn't exist.
+- **Audit subject = subscription owner.** Under admin auth the caller has no `tenantId`; the subscription record's `tenant_id` is trusted as the history subject. Matches PolicyController.updatePolicy pattern from v0.1.25.13.
+- **Prefix match guards POST create.** `POST:/v1/webhooks/` requires a non-empty suffix, so `POST:/v1/webhooks` (bare create path) correctly doesn't match.
+
+**Tests** (+8 in `WebhookTenantControllerTest`, 25/25 total — was 17):
+- list with admin + tenant → 200
+- list with admin missing tenant → 400
+- list with ApiKey + tenant → 400 (prevents peer-tenant guessing)
+- get/update/delete/test/deliveries under admin on cross-tenant subs → 200/204 happy path
+- patch/delete/test audit metadata → `actor_type=admin_on_behalf_of`
+- create with admin key → 401 (footgun guard)
+
+**Gates.** `mvn test` → **506/506 pass** (was 498; +8). Build clean.
+
+---
 
 ### 2026-04-13 — v0.1.25.15 canonical scope validation
 
