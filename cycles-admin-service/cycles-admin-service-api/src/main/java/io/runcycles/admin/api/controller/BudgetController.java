@@ -6,6 +6,7 @@ import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.budget.*;
 import io.runcycles.admin.model.shared.UnitEnum;
 import io.runcycles.admin.api.config.ScopeFilterUtil;
+import io.runcycles.admin.api.config.ScopeValidator;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -29,6 +30,12 @@ public class BudgetController {
     @PostMapping @Operation(operationId = "createBudget")
     public ResponseEntity<BudgetLedger> create(@Valid @RequestBody BudgetCreateRequest request, HttpServletRequest httpRequest) {
         validateCreateUnits(request);
+        // v0.1.25.15: enforce canonical scope grammar (tenant:<id>[/<kind>:<id>]*
+        // with kinds drawn from tenant/workspace/app/workflow/agent/toolset in
+        // order). Prior to this, garbage like "workspace:eng" (no tenant prefix)
+        // or "tenant:acme/florb:blerp" (nonsense kind) was accepted, creating
+        // ledgers that silently fail to match during enforcement.
+        ScopeValidator.validateBudgetScope(request.getScope());
         ScopeFilterUtil.enforceScopeFilter(httpRequest, request.getScope());
         // v0.1.25.14 dual-auth (spec v0.1.25.13). For ApiKeyAuth the tenant
         // is implicit from the authenticated key; for AdminKeyAuth it must
@@ -48,6 +55,10 @@ public class BudgetController {
                 "tenant_id MUST NOT be set when using API key authentication (tenant is inferred from the key)", 400);
         }
         String tenantId = isAdminAuth ? request.getTenantId() : authTenantId;
+        // Cross-check: scope's tenant prefix must match the routing tenant.
+        // Prevents "body says tenant=acme, scope says tenant:corp" from
+        // silently creating a ledger under the wrong tenant.
+        ScopeValidator.validateScopeMatchesTenant(request.getScope(), tenantId);
         BudgetLedger ledger = repository.create(tenantId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
