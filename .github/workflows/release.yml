@@ -11,6 +11,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Checkout
@@ -45,3 +47,108 @@ jobs:
             APP_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Smoke-test the *published* image, not a rebuild. Catches failure
+  # modes that unit/integration tests can't see — wrong entry point,
+  # missing files in the image, startup script typos, multi-arch
+  # manifest issues. If this fails the release is suspect.
+  smoke-test-published:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    timeout-minutes: 8
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create network and start redis
+        run: |
+          docker network create smoke-net
+          docker run -d --name smoke-redis --network smoke-net --network-alias redis redis:7-alpine
+          for i in $(seq 1 10); do
+            if docker exec smoke-redis redis-cli ping >/dev/null 2>&1; then
+              echo "redis ready"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run the published server-admin image
+        env:
+          VERSION: ${{ needs.build-and-push.outputs.version }}
+        run: >
+          docker run -d
+          --name smoke-server-admin
+          --network smoke-net
+          -p 7979:7979
+          -e REDIS_HOST=redis
+          -e REDIS_PORT=6379
+          -e REDIS_PASSWORD=
+          -e ADMIN_API_KEY=smoke-test-admin-key
+          ghcr.io/runcycles/cycles-server-admin:${VERSION}
+
+      - name: Wait for /actuator/health
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:7979/actuator/health || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "server-admin healthy after $((i*2))s"
+              curl -s http://localhost:7979/actuator/health
+              echo
+              exit 0
+            fi
+            echo "waiting ($i/30) — status=$code"
+            sleep 2
+          done
+          echo "ERROR: server-admin did not become healthy in 60s"
+          docker logs smoke-server-admin | tail -50
+          exit 1
+
+      - name: Smoke probe — version matches tag
+        env:
+          VERSION: ${{ needs.build-and-push.outputs.version }}
+        run: |
+          served=$(curl -s http://localhost:7979/actuator/info | python -c "import sys,json; print(json.load(sys.stdin).get('build',{}).get('version','?'))")
+          if [ "$served" != "$VERSION" ]; then
+            echo "ERROR: image reports version=$served but tag is $VERSION"
+            exit 1
+          fi
+          echo "OK: image reports version=$served matching tag"
+
+      - name: Smoke probe — admin auth works, returns ErrorResponse shape on 401
+        run: |
+          # With no admin key header, every admin endpoint should 401 with
+          # a structured ErrorResponse. If we get HTML or "No static
+          # resource", the container's dispatch is broken.
+          body=$(curl -s http://localhost:7979/v1/admin/tenants)
+          echo "Body: $body"
+          echo "$body" | python -c "
+          import sys, json
+          d = json.loads(sys.stdin.read())
+          assert 'error' in d, f'missing error field: {d}'
+          assert d['error'] == 'UNAUTHORIZED', f'unexpected error: {d}'
+          "
+
+      - name: Capture logs on failure
+        if: failure()
+        run: docker logs smoke-server-admin > smoke-server-admin.log 2>&1 || true
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: smoke-test-logs
+          path: smoke-server-admin.log
+          retention-days: 14
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker rm -f smoke-server-admin smoke-redis || true
+          docker network rm smoke-net || true
