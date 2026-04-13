@@ -9,6 +9,12 @@ import java.util.Map;
 @Data @NoArgsConstructor @AllArgsConstructor
 @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = false)
 public class BudgetCreateRequest {
+    // Spec v0.1.25.13: tenant_id is REQUIRED when calling with AdminKeyAuth
+    // (admin operator creating a budget on behalf of a tenant) and MUST NOT
+    // be set when calling with ApiKeyAuth (tenant inferred from the key).
+    // Controller validates the conditional requirement at request time —
+    // bean validation can't express it without a custom validator.
+    @JsonProperty("tenant_id") private String tenantId;
     @NotBlank @JsonProperty("scope") private String scope;
     @NotNull @JsonProperty("unit") private UnitEnum unit;
     @NotNull @Valid @JsonProperty("allocated") private Amount allocated;

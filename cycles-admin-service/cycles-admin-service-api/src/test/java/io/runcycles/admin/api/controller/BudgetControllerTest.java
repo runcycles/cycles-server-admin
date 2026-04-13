@@ -1126,4 +1126,88 @@ class BudgetControllerTest {
                 "tenant-1".equals(entry.getTenantId()) &&
                 entry.getStatus() == 200));
     }
+
+    // ========== Admin-on-behalf-of createBudget (v0.1.25.14, spec v0.1.25.13) ==========
+
+    @Test
+    void createBudget_withAdminKey_andTenantIdInBody_returns201() throws Exception {
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-admin").scope("tenant:acme/workspace:prod").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 5000000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 5000000L))
+                .tenantId("tenant-acme")
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        // Admin path: controller forwards body's tenant_id to repository.create
+        when(budgetRepository.create(eq("tenant-acme"), any())).thenReturn(ledger);
+
+        mockMvc.perform(post("/v1/admin/budgets")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tenant_id\":\"tenant-acme\",\"scope\":\"tenant:acme/workspace:prod\",\"unit\":\"USD_MICROCENTS\",\"allocated\":{\"unit\":\"USD_MICROCENTS\",\"amount\":5000000}}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.ledger_id").value("led-admin"));
+
+        // Audit entry MUST be tagged actor_type=admin_on_behalf_of so security
+        // review can tell admin-driven creates apart from tenant self-service.
+        verify(auditRepository).log(argThat(entry ->
+                "createBudget".equals(entry.getOperation()) &&
+                "tenant-acme".equals(entry.getTenantId()) &&
+                entry.getMetadata() != null &&
+                "admin_on_behalf_of".equals(entry.getMetadata().get("actor_type"))));
+    }
+
+    @Test
+    void createBudget_withAdminKey_missingTenantIdInBody_returns400() throws Exception {
+        mockMvc.perform(post("/v1/admin/budgets")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"scope\":\"tenant:acme/workspace:prod\",\"unit\":\"USD_MICROCENTS\",\"allocated\":{\"unit\":\"USD_MICROCENTS\",\"amount\":5000000}}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("tenant_id is required")));
+    }
+
+    @Test
+    void createBudget_withApiKey_andTenantIdInBody_returns400() throws Exception {
+        // Tenant-key callers MUST NOT send tenant_id (would let a tenant
+        // claim they're someone else). Server rejects.
+        setupApiKeyAuth();
+
+        mockMvc.perform(post("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tenant_id\":\"some-other-tenant\",\"scope\":\"tenant:acme/workspace:prod\",\"unit\":\"USD_MICROCENTS\",\"allocated\":{\"unit\":\"USD_MICROCENTS\",\"amount\":5000000}}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("MUST NOT be set")));
+    }
+
+    @Test
+    void createBudget_withAdminKey_andJsonNullTenantId_returns400() throws Exception {
+        // Explicit coverage for {"tenant_id": null} — Jackson deserializes
+        // to Java null which the !=null guard correctly catches as "missing".
+        // Verifies the bidirectional contract handles JSON null distinctly
+        // from JSON-missing (both should fail; both should fail with the
+        // same "tenant_id is required" error).
+        mockMvc.perform(post("/v1/admin/budgets")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tenant_id\":null,\"scope\":\"tenant:acme/workspace:prod\",\"unit\":\"USD_MICROCENTS\",\"allocated\":{\"unit\":\"USD_MICROCENTS\",\"amount\":5000000}}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("tenant_id is required")));
+    }
+
+    @Test
+    void createBudget_withApiKey_andBlankTenantIdInBody_returns400() throws Exception {
+        // Defensive: a blank tenant_id from a tenant caller is still wrong
+        // (signals intent to override, even if empty).
+        setupApiKeyAuth();
+
+        mockMvc.perform(post("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tenant_id\":\"\",\"scope\":\"tenant:acme/workspace:prod\",\"unit\":\"USD_MICROCENTS\",\"allocated\":{\"unit\":\"USD_MICROCENTS\",\"amount\":5000000}}"))
+                .andExpect(status().isBadRequest());
+    }
 }

@@ -36,7 +36,24 @@ public class AuthInterceptor implements HandlerInterceptor {
         "GET:/v1/admin/budgets",
         "GET:/v1/admin/budgets/lookup",
         "GET:/v1/admin/policies",
-        "POST:/v1/admin/budgets/fund"
+        "POST:/v1/admin/budgets/fund",
+        // v0.1.25.14: dual-auth on create writes added per spec v0.1.25.13.
+        // Admin operators can now provision budgets and policies on behalf
+        // of tenants. Body MUST include tenant_id when admin-key —
+        // controllers enforce + audit-log records actor_type=
+        // ADMIN_ON_BEHALF_OF for these calls.
+        "POST:/v1/admin/budgets",
+        "POST:/v1/admin/policies"
+    );
+
+    // Method:path-prefix entries for dual-auth where the path includes a
+    // resource id (e.g. PATCH /v1/admin/policies/{policy_id}). Exact-match
+    // lookup in ADMIN_ALLOWED_ENDPOINTS doesn't help here because every
+    // request has a different concrete id. policy_id pins the owning
+    // tenant in the persistence layer, so no tenant_id body field is
+    // needed for admin-on-behalf-of updates. (v0.1.25.14, spec v0.1.25.13.)
+    private static final Set<String> ADMIN_ALLOWED_PREFIXES = Set.of(
+        "PATCH:/v1/admin/policies/"
     );
 
     // Endpoint path+method → required permission per admin governance spec
@@ -82,10 +99,36 @@ public class AuthInterceptor implements HandlerInterceptor {
         if (requiresAdminKey(method, path)) {
             return validateAdminKey(request, response);
         } else if (requiresApiKey(path)) {
-            // Check dual-auth allowlist: some ApiKeyAuth endpoints also accept AdminKeyAuth for reads
-            String normalizedPath = path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
+            // Check dual-auth allowlist: some ApiKeyAuth endpoints also accept AdminKeyAuth.
+            // Two layers — exact match for fixed paths (e.g. POST /v1/admin/budgets/fund),
+            // and prefix match for paths with a resource id (e.g. PATCH /v1/admin/policies/{id}).
+            //
+            // Defense in depth: reject any request whose path contains traversal
+            // segments before the dual-auth match. Tomcat's connector already
+            // rejects "../" requests by default (RFC 3986 strict mode), but if
+            // a future deployment relaxes that or sits behind a proxy that
+            // forwards the raw URI, we don't want a request like
+            // "PATCH /v1/admin/policies/../api-keys/k_1" to pass the interceptor's
+            // prefix matcher and then get re-routed by Spring's dispatcher to a
+            // different endpoint (auth-context confusion). Spring uses the
+            // servlet path for dispatch; we now match against that same value
+            // and additionally short-circuit on any traversal segment.
+            String dispatchPath = request.getServletPath();
+            if (dispatchPath != null && (dispatchPath.contains("/../") ||
+                    dispatchPath.contains("/./") || dispatchPath.endsWith("/.."))) {
+                writeError(request, response, 400,
+                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                    "Path traversal segments not allowed");
+                return false;
+            }
+            // Use the dispatch path (Spring-normalized) for matching so the
+            // interceptor and the dispatcher always see the same URL.
+            String matchPath = (dispatchPath != null && !dispatchPath.isEmpty()) ? dispatchPath : path;
+            String normalizedPath = matchPath.endsWith("/") ? matchPath.substring(0, matchPath.length() - 1) : matchPath;
             String lookupKey = method + ":" + normalizedPath;
-            if (ADMIN_ALLOWED_ENDPOINTS.contains(lookupKey) && hasAdminKeyHeader(request)) {
+            if (hasAdminKeyHeader(request) && (
+                    ADMIN_ALLOWED_ENDPOINTS.contains(lookupKey) ||
+                    matchesAdminPrefix(method, normalizedPath))) {
                 return validateAdminKey(request, response);
             }
             return validateApiKey(request, response);
@@ -120,6 +163,21 @@ public class AuthInterceptor implements HandlerInterceptor {
         if ("POST".equals(method) && (path.startsWith("/v1/admin/budgets/freeze") ||
                                        path.startsWith("/v1/admin/budgets/unfreeze"))) {
             return true;
+        }
+        return false;
+    }
+
+    private boolean matchesAdminPrefix(String method, String normalizedPath) {
+        // Entry format: "PATCH:/v1/admin/policies/" (trailing slash).
+        // Request must start with the entry AND have a non-empty suffix
+        // after it — that suffix is the resource id. Bare-prefix requests
+        // (no id) wouldn't be valid REST anyway, but the length check
+        // guards against accidentally matching them.
+        String reqKey = method + ":" + normalizedPath;
+        for (String entry : ADMIN_ALLOWED_PREFIXES) {
+            if (reqKey.startsWith(entry) && reqKey.length() > entry.length()) {
+                return true;
+            }
         }
         return false;
     }
