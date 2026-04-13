@@ -1,9 +1,29 @@
 # Complete Budget Governance v0.1.25.8 — Admin Server Audit
 
-**Server version:** 0.1.25.12 (2026-04-12 — spec-compliance push: Phase 2 structural diff, error + event payload validation, coverage visibility, runtime observability)
-**Date:** 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Server version:** 0.1.25.13 (2026-04-13 — CORS allowedMethods now includes PUT; was silently breaking dashboard webhook-security save with a 403 + zero app logs)
+**Date:** 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, v0.1.25.11) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-13 — v0.1.25.13 CORS allowedMethods missing PUT
+
+**Reported by dashboard issue [runcycles/cycles-dashboard#30](https://github.com/runcycles/cycles-dashboard/issues/30).** When the dashboard called `PUT /v1/admin/config/webhook-security` to save the webhook security config, browsers running the dashboard at a different origin (Vite dev server on `:5173`, or any non-proxied deployment) saw a `403 Forbidden` and the admin server produced **zero application logs**.
+
+**Root cause.** `WebConfig.addCorsMappings` listed `allowedMethods("GET", "POST", "PATCH", "DELETE", "OPTIONS")` — `PUT` was missing. The browser CORS preflight (`OPTIONS` with `Access-Control-Request-Method: PUT`) was rejected by Spring's `CorsFilter` *before* `AuthInterceptor` ran, so:
+
+- Spring returned 403 from the filter, not the controller.
+- `AuthInterceptor.preHandle` was never invoked → no INFO/WARN logs.
+- The `WebhookSecurityConfigController.update` method (which uses `@PutMapping("/webhook-security")`) was never reached.
+
+This is the only spec-defined endpoint using `PUT` in the admin API; every other write op uses POST / PATCH / DELETE, which is why no other operation regressed.
+
+**Fix.** Added `PUT` to `allowedMethods` in `WebConfig.java`. Updated the existing exact-match assertion in `WebConfigTest.addCorsMappings_allowlistsApiKeyAndRequestIdHeaders` to expect the new list, and added `addCorsMappings_includesPutForWebhookSecurityConfigEndpoint` as a regression guard so any future refactor that drops PUT fails the build.
+
+**Spec compliance.** Unchanged. Spec at v0.1.25.12; this is a server-only CORS fix.
+
+**Same-origin deployments are not affected.** The standard production stack proxies `/v1/*` from the dashboard's nginx → admin server, which is same-origin from the browser POV; CORS doesn't apply there. Affected deployments: dashboard dev server (Vite on 5173) hitting admin server directly, or any non-proxied cross-origin layout.
+
+---
 
 ### 2026-04-12 — v0.1.25.12 full-stack spec-compliance hardening
 

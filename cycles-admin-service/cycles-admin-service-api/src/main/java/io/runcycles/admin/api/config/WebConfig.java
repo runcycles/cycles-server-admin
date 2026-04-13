@@ -44,7 +44,13 @@ public class WebConfig implements WebMvcConfigurer {
         LOG.info("CORS configured for origins: {}", String.join(", ", origins));
         registry.addMapping("/v1/**")
             .allowedOrigins(origins)
-            .allowedMethods("GET", "POST", "PATCH", "DELETE", "OPTIONS")
+            // PUT must be in this list because PUT /v1/admin/config/webhook-security
+            // is the spec-defined method for updating the webhook security config.
+            // Without PUT here, the browser CORS preflight rejects the request
+            // before it reaches the AuthInterceptor — the user sees a 403 with
+            // zero admin-server logs (the rejection happens in Spring's CorsFilter,
+            // not the application). See dashboard issue #30.
+            .allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
             // Both auth headers must be allowlisted or browser preflight rejects them.
             // X-Request-Id lets clients propagate a correlation id through the filter chain.
             .allowedHeaders("X-Admin-API-Key", "X-Cycles-API-Key", "X-Request-Id", "Content-Type")
