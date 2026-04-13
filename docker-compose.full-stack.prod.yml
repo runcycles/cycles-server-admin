@@ -40,7 +40,7 @@ services:
         condition: service_healthy
 
   cycles-server:
-    image: ghcr.io/runcycles/cycles-server:0.1.25.1
+    image: ghcr.io/runcycles/cycles-server:0.1.25.8
     restart: unless-stopped
     ports:
       - "7878:7878"
@@ -60,7 +60,7 @@ services:
         condition: service_healthy
 
   cycles-events:
-    image: ghcr.io/runcycles/cycles-server-events:0.1.25.1
+    image: ghcr.io/runcycles/cycles-server-events:0.1.25.5
     restart: unless-stopped
     ports:
       - "7980:7980"
