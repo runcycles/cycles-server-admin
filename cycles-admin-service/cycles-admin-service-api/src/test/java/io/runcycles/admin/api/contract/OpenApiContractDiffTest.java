@@ -86,6 +86,22 @@ class OpenApiContractDiffTest {
         List<ChangedOperation> breakingOps = diff.getChangedOperations().stream()
                 .filter(op -> op.isCoreChanged() == DiffResult.INCOMPATIBLE)
                 .collect(Collectors.toList());
+        List<ChangedOperation> compatibleOps = diff.getChangedOperations().stream()
+                .filter(op -> op.isCoreChanged() == DiffResult.COMPATIBLE)
+                .collect(Collectors.toList());
+
+        // Observability-only: log COMPATIBLE-level drift (non-breaking). These are
+        // additions the server made that the spec hasn't absorbed yet — usually new
+        // optional fields, new response codes, or SpringDoc rendering differences.
+        // We don't fail the build on them; the runtime validator catches any actual
+        // shape issues. Printing them gives reviewers visibility without noise.
+        if (!compatibleOps.isEmpty()) {
+            System.out.printf("%n[structural diff] %d non-breaking (COMPATIBLE) drift items — " +
+                            "spec trailing server. No action required unless they indicate " +
+                            "missing spec updates:%n", compatibleOps.size());
+            compatibleOps.forEach(op ->
+                    System.out.println("  [compat] " + op.getHttpMethod() + " " + op.getPathUrl()));
+        }
 
         assertAll("structural diff between spec (cycles-protocol@main) and server /api-docs",
                 () -> assertTrue(missing.isEmpty(),
