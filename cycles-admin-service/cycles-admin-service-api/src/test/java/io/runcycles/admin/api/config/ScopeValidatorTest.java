@@ -192,4 +192,74 @@ class ScopeValidatorTest {
         assertThat(ScopeValidator.extractTenantId(null)).isNull();
         assertThat(ScopeValidator.extractTenantId("")).isNull();
     }
+
+    // ─── Post-review hardening (v0.1.25.15 pre-merge) ─────────────
+
+    // Regression lock for the reviewer's CRITICAL claim that
+    // "tenant:*/agent:foo would pass validation" — it should NOT.
+    // The terminal-id-wildcard rule rejects id=="*" when it's not
+    // the final segment.
+    @Test void policyPatternTenantIdWildcardWithMoreSegmentsRejected() {
+        assertThatThrownBy(() ->
+            ScopeValidator.validatePolicyScopePattern("tenant:*/agent:foo"))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("must be the final segment");
+    }
+
+    // Bare "tenant:*" as a complete policy pattern IS accepted today
+    // (semantically: match all tenant-rooted scopes). Lock in behavior:
+    // the grammar validator accepts it, but the admin-on-behalf-of
+    // tenant-cross-check rejects it at the controller layer because
+    // extractTenantId returns "*" and no tenant_id matches "*". This
+    // prevents admin operators from creating system-wide policies via
+    // /v1/admin/policies (they'd need a future system-policy endpoint).
+    @Test void policyPatternBareTenantWildcardAcceptedByGrammar() {
+        ScopeValidator.validatePolicyScopePattern("tenant:*");
+    }
+    @Test void policyPatternBareTenantWildcardRejectedByTenantCrossCheck() {
+        assertThatThrownBy(() ->
+            ScopeValidator.validateScopeMatchesTenant("tenant:*", "acme"))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("does not match request tenant_id");
+    }
+
+    // The `kindIdx <= lastKindIdx` check must catch equality, not just
+    // strict-less-than. Original duplicate test used agent:a/agent:b
+    // (both at kindIdx 4) — this adds a mid-list kind to verify the
+    // branch isn't accidentally strict-less-than somewhere.
+    @Test void duplicateWorkspaceKindRejected() {
+        assertThatThrownBy(() ->
+            ScopeValidator.validateBudgetScope("tenant:acme/workspace:a/workspace:b"))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("out of canonical order");
+    }
+
+    // Tightened regex: ids must start and end with alphanumeric.
+    // Prevents leading-dot, trailing-dot, leading-dash, etc. — these
+    // are syntactically noisy and never intentional in practice.
+    @Test void leadingDotInIdRejected() {
+        assertThatThrownBy(() ->
+            ScopeValidator.validateBudgetScope("tenant:.acme"))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("disallowed characters");
+    }
+    @Test void trailingDotInIdRejected() {
+        assertThatThrownBy(() ->
+            ScopeValidator.validateBudgetScope("tenant:acme."))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("disallowed characters");
+    }
+    @Test void leadingDashInIdRejected() {
+        assertThatThrownBy(() ->
+            ScopeValidator.validateBudgetScope("tenant:-acme"))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("disallowed characters");
+    }
+    @Test void singleAlphanumericIdAccepted() {
+        // Regression: the tightened regex must still accept single-char ids.
+        ScopeValidator.validateBudgetScope("tenant:a");
+    }
+    @Test void mixedPunctuationMidIdAccepted() {
+        ScopeValidator.validateBudgetScope("tenant:a.b_c-d.v2");
+    }
 }

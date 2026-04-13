@@ -82,6 +82,12 @@ public class PolicyController {
         }
         return ResponseEntity.status(201).body(policy);
     }
+    // scope_pattern is intentionally NOT in PolicyUpdateRequest — patterns
+    // are immutable per spec (a new pattern = a new policy). If a future
+    // change adds scope_pattern to PolicyUpdateRequest, also add a
+    // ScopeValidator.validatePolicyScopePattern call below; without it
+    // the same class of non-canonical-kind bugs that motivated v0.1.25.15
+    // would sneak in via PATCH instead of POST.
     @PatchMapping("/{policy_id}") @Operation(operationId = "updatePolicy")
     public ResponseEntity<Policy> update(@PathVariable("policy_id") String policyId, @Valid @RequestBody PolicyUpdateRequest request, HttpServletRequest httpRequest) {
         String scopePattern = repository.getScopePattern(policyId);

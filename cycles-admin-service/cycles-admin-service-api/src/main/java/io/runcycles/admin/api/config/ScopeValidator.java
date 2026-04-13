@@ -51,7 +51,12 @@ public final class ScopeValidator {
         "tenant", "workspace", "app", "workflow", "agent", "toolset"
     );
 
-    private static final Pattern ID_PATTERN = Pattern.compile("[A-Za-z0-9._-]+");
+    // Ids must start AND end with an alphanumeric. Middle can contain
+    // `.`, `_`, or `-`. Prevents leading/trailing punctuation like
+    // `.acme`, `acme.`, `-foo`, `foo_` which are surprising in audit
+    // output and rarely intentional. Single-char ids like `a` are fine
+    // (the optional middle group handles that).
+    private static final Pattern ID_PATTERN = Pattern.compile("[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?");
     private static final int MAX_ID_LEN = 128;
 
     /**

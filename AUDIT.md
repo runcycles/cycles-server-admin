@@ -33,7 +33,14 @@ Reported during v0.1.25.14 end-to-end testing: user accidentally created a budge
 
 **Backward compatibility.** Pre-existing budgets or policies in Redis with non-canonical scopes keep working (read paths don't re-validate). New creates must use canonical scopes; clients sending non-canonical now get 400 with a clear error message instead of silent success.
 
-**Tests.** **488/488 pass** (was 459; +29). Coverage check passes.
+**Pre-merge review hardening** (post code review of this PR):
+- **Tightened id regex** from `[A-Za-z0-9._-]+` to `[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?` — rejects ids with leading/trailing punctuation (`.acme`, `acme.`, `-foo`) which are surprising in audit output and never intentional. Single-char alphanumeric ids and mid-string punctuation (`a.b_c-d.v2`) still accepted.
+- **Regression lock** in `ScopeValidatorTest` for the claim "`tenant:*/agent:foo` passes validation". It doesn't — the terminal-id-wildcard rule correctly rejects it. Test documents that lock-in.
+- **Documented** via test + comment that `tenant:*` alone is a legal policy pattern at the grammar layer (matches all tenant-rooted scopes), but is blocked by the tenant-cross-check for admin-on-behalf-of creates — preventing system-wide wildcard policies from being attributed to a specific tenant accidentally.
+- **Equality branch** of the duplicate-kind check (`kindIdx <= lastKindIdx`) now has a dedicated mid-list test (`workspace/workspace` at kindIdx=1) in addition to the pre-existing boundary test (`agent/agent` at kindIdx=4).
+- **Forward-guard comment** in `PolicyController.update`: `scope_pattern` is intentionally absent from `PolicyUpdateRequest` (patterns are immutable per spec); if a future change adds it, the comment directs the engineer to add `ScopeValidator.validatePolicyScopePattern` to prevent PATCH from becoming a non-canonical-scope bypass.
+
+**Tests.** **497/497 pass** (was 459; +38). Coverage check passes.
 
 ---
 
