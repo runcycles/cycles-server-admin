@@ -1183,6 +1183,22 @@ class BudgetControllerTest {
     }
 
     @Test
+    void createBudget_withAdminKey_andJsonNullTenantId_returns400() throws Exception {
+        // Explicit coverage for {"tenant_id": null} — Jackson deserializes
+        // to Java null which the !=null guard correctly catches as "missing".
+        // Verifies the bidirectional contract handles JSON null distinctly
+        // from JSON-missing (both should fail; both should fail with the
+        // same "tenant_id is required" error).
+        mockMvc.perform(post("/v1/admin/budgets")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tenant_id\":null,\"scope\":\"tenant:acme/workspace:prod\",\"unit\":\"USD_MICROCENTS\",\"allocated\":{\"unit\":\"USD_MICROCENTS\",\"amount\":5000000}}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("tenant_id is required")));
+    }
+
+    @Test
     void createBudget_withApiKey_andBlankTenantIdInBody_returns400() throws Exception {
         // Defensive: a blank tenant_id from a tenant caller is still wrong
         // (signals intent to override, even if empty).

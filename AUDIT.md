@@ -27,7 +27,12 @@ Implements server side of [cycles-protocol PR #36](https://github.com/runcycles/
 **Model changes**:
 - `ActorType` enum gains `ADMIN_ON_BEHALF_OF` value (Jackson `@JsonValue` = `"admin_on_behalf_of"`).
 
-**Tests** (+13):
+**Pre-merge review hardening** (post code review):
+- Defense-in-depth path-traversal guard in `AuthInterceptor.preHandle`. Tomcat's connector already rejects `..` segments by default, but if a future deployment relaxes that or the server sits behind a proxy that forwards the raw URI, the new prefix matcher could in principle let `PATCH /v1/admin/policies/../tenants/t_1` past the dual-auth allowlist and let Spring's dispatcher route it to a different endpoint with admin auth already approved. Now: short-circuit any request whose servlet path contains `/../`, `/./`, or ends in `/..` with 400 INVALID_REQUEST. Also switched the dual-auth match input from `getRequestURI()` to `getServletPath()` so the interceptor sees the same normalized path Spring's dispatcher uses for routing.
+- Replaced hardcoded `"admin_on_behalf_of"` / `"api_key"` strings in audit metadata with `ActorType.ADMIN_ON_BEHALF_OF.getValue()` / `ActorType.API_KEY.getValue()` — an enum rename can no longer silently drift the wire format.
+- Explicit JSON-null `tenant_id` test on both `BudgetController` and `PolicyController` (separate from JSON-missing and JSON-empty-string).
+
+**Tests** (+18):
 - `AuthInterceptorTest`: 3 new dual-auth admit tests (POST budgets, POST policies, PATCH policy by id), 1 prefix-bare-rejection test, 1 trailing-slash normalization test. Existing `preHandle_postBudgets_withAdminKey_rejected` test inverted to `_accepted` (intentional behavior change).
 - `BudgetControllerTest`: admin-with-tenant-id-201, admin-missing-tenant-id-400, api-key-with-tenant-id-400, api-key-with-blank-tenant-id-400.
 - `PolicyControllerTest`: same 3 createPolicy cases + 2 updatePolicy cases (admin returns 200 with subject tenant from policy, api-key returns 200 with self-tenant). Both update tests verify audit `actor_type` discriminator.
@@ -36,7 +41,7 @@ Implements server side of [cycles-protocol PR #36](https://github.com/runcycles/
 
 **Backward compatibility.** Pre-existing test `preHandle_postBudgets_withAdminKey_rejected` was changed to `_accepted` — that's an intentional behavior change matching the spec, not a regression.
 
-**Tests.** **454/454 pass** (was 441; +13). Coverage check (JaCoCo) passes — all new branches covered.
+**Tests.** **459/459 pass** (was 441; +18). Coverage check (JaCoCo) passes — all new branches covered.
 
 ---
 

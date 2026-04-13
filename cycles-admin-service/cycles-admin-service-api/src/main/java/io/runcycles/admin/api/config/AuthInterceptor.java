@@ -102,7 +102,29 @@ public class AuthInterceptor implements HandlerInterceptor {
             // Check dual-auth allowlist: some ApiKeyAuth endpoints also accept AdminKeyAuth.
             // Two layers — exact match for fixed paths (e.g. POST /v1/admin/budgets/fund),
             // and prefix match for paths with a resource id (e.g. PATCH /v1/admin/policies/{id}).
-            String normalizedPath = path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
+            //
+            // Defense in depth: reject any request whose path contains traversal
+            // segments before the dual-auth match. Tomcat's connector already
+            // rejects "../" requests by default (RFC 3986 strict mode), but if
+            // a future deployment relaxes that or sits behind a proxy that
+            // forwards the raw URI, we don't want a request like
+            // "PATCH /v1/admin/policies/../api-keys/k_1" to pass the interceptor's
+            // prefix matcher and then get re-routed by Spring's dispatcher to a
+            // different endpoint (auth-context confusion). Spring uses the
+            // servlet path for dispatch; we now match against that same value
+            // and additionally short-circuit on any traversal segment.
+            String dispatchPath = request.getServletPath();
+            if (dispatchPath != null && (dispatchPath.contains("/../") ||
+                    dispatchPath.contains("/./") || dispatchPath.endsWith("/.."))) {
+                writeError(request, response, 400,
+                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                    "Path traversal segments not allowed");
+                return false;
+            }
+            // Use the dispatch path (Spring-normalized) for matching so the
+            // interceptor and the dispatcher always see the same URL.
+            String matchPath = (dispatchPath != null && !dispatchPath.isEmpty()) ? dispatchPath : path;
+            String normalizedPath = matchPath.endsWith("/") ? matchPath.substring(0, matchPath.length() - 1) : matchPath;
             String lookupKey = method + ":" + normalizedPath;
             if (hasAdminKeyHeader(request) && (
                     ADMIN_ALLOWED_ENDPOINTS.contains(lookupKey) ||

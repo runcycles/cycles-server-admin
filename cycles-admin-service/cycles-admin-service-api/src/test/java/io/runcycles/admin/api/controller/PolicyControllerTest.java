@@ -398,6 +398,17 @@ class PolicyControllerTest {
     }
 
     @Test
+    void createPolicy_withAdminKey_andJsonNullTenantId_returns400() throws Exception {
+        // {"tenant_id": null} — Jackson → Java null → caught by !=null guard.
+        mockMvc.perform(post("/v1/admin/policies")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tenant_id\":null,\"name\":\"P\",\"scope_pattern\":\"tenant:acme/*\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
     void createPolicy_withApiKey_andTenantIdInBody_returns400() throws Exception {
         // Tenant-key callers MUST NOT send tenant_id (spec v0.1.25.13).
         setupApiKeyAuth();

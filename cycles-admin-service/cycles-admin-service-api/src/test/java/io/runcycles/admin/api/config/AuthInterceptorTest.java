@@ -588,6 +588,7 @@ class AuthInterceptorTest {
         // in body separately.
         request.setMethod("POST");
         request.setRequestURI("/v1/admin/budgets");
+        request.setServletPath("/v1/admin/budgets");
         request.addHeader("X-Admin-API-Key", "admin-secret-key");
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
@@ -598,6 +599,7 @@ class AuthInterceptorTest {
         // POST /v1/admin/policies dual-auth (v0.1.25.14).
         request.setMethod("POST");
         request.setRequestURI("/v1/admin/policies");
+        request.setServletPath("/v1/admin/policies");
         request.addHeader("X-Admin-API-Key", "admin-secret-key");
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
@@ -610,6 +612,7 @@ class AuthInterceptorTest {
         // has a different concrete policy id.
         request.setMethod("PATCH");
         request.setRequestURI("/v1/admin/policies/pol_abc123");
+        request.setServletPath("/v1/admin/policies/pol_abc123");
         request.addHeader("X-Admin-API-Key", "admin-secret-key");
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
@@ -623,6 +626,7 @@ class AuthInterceptorTest {
         // matters for correctness.
         request.setMethod("PATCH");
         request.setRequestURI("/v1/admin/policies");
+        request.setServletPath("/v1/admin/policies");
         request.addHeader("X-Admin-API-Key", "admin-secret-key");
 
         // Falls through to validateApiKey since not in exact allowlist and
@@ -637,9 +641,53 @@ class AuthInterceptorTest {
         // Trailing slash on the request path is normalized; should still match.
         request.setMethod("PATCH");
         request.setRequestURI("/v1/admin/policies/pol_xyz/");
+        request.setServletPath("/v1/admin/policies/pol_xyz/");
         request.addHeader("X-Admin-API-Key", "admin-secret-key");
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+    }
+
+    // Defense-in-depth: even though Tomcat's connector rejects "../" by
+    // default, the interceptor short-circuits any request whose path
+    // contains a traversal segment before applying the dual-auth allowlist.
+    // Without this guard, a request like
+    //   PATCH /v1/admin/policies/../tenants/t_1
+    // could (in a hypothetical relaxed-Tomcat or behind-a-rewriting-proxy
+    // deployment) pass the prefix matcher and then be re-routed by Spring's
+    // dispatcher to a different endpoint with admin auth already approved
+    // (auth-context confusion).
+    @Test
+    void preHandle_pathContainsDotDot_returns400() throws Exception {
+        request.setMethod("PATCH");
+        request.setRequestURI("/v1/admin/policies/..%2Ftenants/t_1");
+        request.setServletPath("/v1/admin/policies/../tenants/t_1");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(400);
+    }
+
+    @Test
+    void preHandle_pathEndsInDotDot_returns400() throws Exception {
+        request.setMethod("PATCH");
+        request.setRequestURI("/v1/admin/policies/foo/..");
+        request.setServletPath("/v1/admin/policies/foo/..");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(400);
+    }
+
+    @Test
+    void preHandle_pathContainsDotSegment_returns400() throws Exception {
+        // /./ is also a normalization-ambiguous segment.
+        request.setMethod("PATCH");
+        request.setRequestURI("/v1/admin/policies/./pol_x");
+        request.setServletPath("/v1/admin/policies/./pol_x");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(400);
     }
 
     @Test

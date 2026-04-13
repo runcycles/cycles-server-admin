@@ -59,7 +59,11 @@ public class BudgetController {
                 "allocated", request.getAllocated().getAmount(),
                 // Surfaces the auth path used so audit reviewers can
                 // distinguish admin-on-behalf-of from tenant self-service.
-                "actor_type", isAdminAuth ? "admin_on_behalf_of" : "api_key"))
+                // Source the wire format from the enum's @JsonValue rather
+                // than a hardcoded string so an enum rename doesn't drift the
+                // audit-log format silently. The wire string is "admin_on_behalf_of"
+                // / "api_key" — same as ActorType.getValue().
+                "actor_type", (isAdminAuth ? ActorType.ADMIN_ON_BEHALF_OF : ActorType.API_KEY).getValue()))
             .build());
         try {
             ActorType actorType = isAdminAuth ? ActorType.ADMIN_ON_BEHALF_OF : ActorType.API_KEY;

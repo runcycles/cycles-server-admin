@@ -59,7 +59,9 @@ public class PolicyController {
             .operation("createPolicy")
             .status(201)
             .metadata(Map.of("name", request.getName(), "scope_pattern", request.getScopePattern(),
-                "actor_type", isAdminAuth ? "admin_on_behalf_of" : "api_key"))
+                // Sourced from ActorType.@JsonValue so an enum rename can't
+                // silently drift the audit-log format.
+                "actor_type", (isAdminAuth ? ActorType.ADMIN_ON_BEHALF_OF : ActorType.API_KEY).getValue()))
             .build());
         try {
             ActorType actorType = isAdminAuth ? ActorType.ADMIN_ON_BEHALF_OF : ActorType.API_KEY;
@@ -166,7 +168,7 @@ public class PolicyController {
     private Map<String, Object> buildUpdatePolicyMetaWithActor(String scopePattern, PolicyUpdateRequest request, boolean isAdminAuth) {
         Map<String, Object> meta = buildUpdatePolicyMeta(scopePattern, request);
         if (meta == null) meta = new java.util.LinkedHashMap<>();
-        meta.put("actor_type", isAdminAuth ? "admin_on_behalf_of" : "api_key");
+        meta.put("actor_type", (isAdminAuth ? ActorType.ADMIN_ON_BEHALF_OF : ActorType.API_KEY).getValue());
         return meta;
     }
 
