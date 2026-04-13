@@ -75,14 +75,13 @@ public class ContractValidationConfig {
                 .withLevel("validation.request.body.schema.enum", ValidationReport.Level.IGNORE)
                 .withLevel("validation.request.body.schema.pattern", ValidationReport.Level.IGNORE)
                 .withLevel("validation.request.body.schema.additionalProperties", ValidationReport.Level.IGNORE)
-                // Response-status coverage in cycles-protocol@main is incomplete: 400
-                // was added in v0.1.25.11 (cycles-protocol#33) but 404 is still
-                // undocumented on several PATCH/GET-by-id endpoints that correctly
-                // emit it for missing resources. Keep the IGNORE until a cycles-protocol
-                // follow-up adds 404 entries; the error BODIES are still validated on
-                // documented status codes.
-                .withLevel("validation.response.status.unknown", ValidationReport.Level.IGNORE)
                 .build();
+        // Response-status coverage is now complete on the admin surface as of
+        // cycles-protocol v0.1.25.12 (PR #35): 400 on all 43 operations (#33),
+        // plus 404 on PATCH tenants/{id}, and 409 on POST policies + DELETE
+        // api-keys/{id}. Every status the server can emit is documented, so the
+        // validator rejects any undocumented status with full strictness —
+        // no escape hatch.
         OpenApiInteractionValidator validator = OpenApiInteractionValidator
                 .createForInlineApiSpecification(ContractSpecLoader.loadSpec())
                 .withLevelResolver(levels)
