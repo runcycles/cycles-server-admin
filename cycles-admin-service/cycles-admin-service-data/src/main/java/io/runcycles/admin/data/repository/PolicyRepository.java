@@ -72,59 +72,49 @@ public class PolicyRepository {
             throw new RuntimeException(e);
         }
     }
-    // Lua script for atomic policy update: read-modify-write in one step.
-    // KEYS[1] = policy key
-    // ARGV[1] = tenant_id (ownership check)
-    // ARGV[2] = updated fields JSON (merged into existing policy)
-    // ARGV[3] = now_iso
-    private static final String UPDATE_POLICY_LUA =
-        "local json = redis.call('GET', KEYS[1])\n" +
-        "if not json then return {'NOT_FOUND'} end\n" +
-        "local policy = cjson.decode(json)\n" +
-        "if ARGV[1] ~= '' and policy['tenant_id'] ~= ARGV[1] then return {'FORBIDDEN'} end\n" +
-        "local updates = cjson.decode(ARGV[2])\n" +
-        "for k, v in pairs(updates) do policy[k] = v end\n" +
-        "policy['updated_at'] = ARGV[3]\n" +
-        "redis.call('SET', KEYS[1], cjson.encode(policy))\n" +
-        "return {'OK', cjson.encode(policy)}\n";
+    // NOTE: policy update was previously an atomic Lua script that round-tripped
+    // the full Policy JSON through cjson.decode/encode. That tripped the same
+    // Redis cjson empty-array bug fixed for ApiKey.revoke() — Caps.toolAllowlist
+    // and Caps.toolDenylist (both List<String>) were rewritten as {} whenever
+    // they were empty at write time, after which Jackson could not deserialize
+    // the policy back, and PolicyRepository.list() would silently drop it via
+    // the catch-all WARN. See the matching hazard note in ApiKeyRepository.
+    //
+    // The update() path now follows the same Jackson-in-Java pattern as
+    // ApiKeyRepository.update() / revoke(). Last-writer-wins race semantics are
+    // preserved — the previous Lua "atomicity" was already a nominal guarantee
+    // because every other admin write path is Jackson-in-Java with no CAS.
 
     public Policy update(String tenantId, String policyId, PolicyUpdateRequest request) {
         LOG.info("Updating policy: {}", policyId);
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "policy:" + policyId;
-
-            // Build a map of only non-null fields to merge
-            Map<String, Object> updates = new LinkedHashMap<>();
-            if (request.getName() != null) updates.put("name", request.getName());
-            if (request.getDescription() != null) updates.put("description", request.getDescription());
-            if (request.getPriority() != null) updates.put("priority", request.getPriority());
-            if (request.getCaps() != null) updates.put("caps", request.getCaps());
-            if (request.getCommitOveragePolicy() != null) updates.put("commit_overage_policy", request.getCommitOveragePolicy().name());
-            if (request.getReservationTtlOverride() != null) updates.put("reservation_ttl_override", request.getReservationTtlOverride());
-            if (request.getRateLimits() != null) updates.put("rate_limits", request.getRateLimits());
-            if (request.getEffectiveFrom() != null) updates.put("effective_from", request.getEffectiveFrom().toString());
-            if (request.getEffectiveUntil() != null) updates.put("effective_until", request.getEffectiveUntil().toString());
-            if (request.getStatus() != null) updates.put("status", request.getStatus().name());
-
-            String updatesJson = objectMapper.writeValueAsString(updates);
-            String nowIso = Instant.now().toString();
-
-            @SuppressWarnings("unchecked")
-            List<String> result = (List<String>) jedis.eval(UPDATE_POLICY_LUA,
-                List.of(key),
-                List.of(tenantId != null ? tenantId : "", updatesJson, nowIso));
-
-            String resultStatus = result.get(0);
-            if ("NOT_FOUND".equals(resultStatus)) {
+            String json = jedis.get(key);
+            if (json == null) {
                 throw GovernanceException.policyNotFound(policyId);
             }
-            if ("FORBIDDEN".equals(resultStatus)) {
+            Policy policy = objectMapper.readValue(json, Policy.class);
+            if (tenantId != null && !tenantId.isEmpty()
+                    && !tenantId.equals(policy.getTenantId())) {
                 throw new GovernanceException(
                     io.runcycles.admin.model.shared.ErrorCode.FORBIDDEN,
                     "Policy does not belong to tenant", 403);
             }
-
-            return objectMapper.readValue(result.get(1), Policy.class);
+            // Apply partial updates — only non-null fields.
+            if (request.getName() != null) policy.setName(request.getName());
+            if (request.getDescription() != null) policy.setDescription(request.getDescription());
+            if (request.getPriority() != null) policy.setPriority(request.getPriority());
+            if (request.getCaps() != null) policy.setCaps(request.getCaps());
+            if (request.getCommitOveragePolicy() != null) policy.setCommitOveragePolicy(request.getCommitOveragePolicy());
+            if (request.getReservationTtlOverride() != null) policy.setReservationTtlOverride(request.getReservationTtlOverride());
+            if (request.getRateLimits() != null) policy.setRateLimits(request.getRateLimits());
+            if (request.getEffectiveFrom() != null) policy.setEffectiveFrom(request.getEffectiveFrom());
+            if (request.getEffectiveUntil() != null) policy.setEffectiveUntil(request.getEffectiveUntil());
+            if (request.getStatus() != null) policy.setStatus(request.getStatus());
+            policy.setUpdatedAt(Instant.now());
+            // Write back with Jackson — clean serialization, no cjson issues.
+            jedis.set(key, objectMapper.writeValueAsString(policy));
+            return policy;
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {

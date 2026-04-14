@@ -290,30 +290,33 @@ class PolicyRepositoryTest {
 
     @Test
     void update_success_returnsUpdatedPolicy() throws Exception {
-        when(jedisPool.getResource()).thenReturn(jedis);
-        doNothing().when(jedis).close();
-
-        String updatedJson = objectMapper.writeValueAsString(Policy.builder()
-                .policyId("pol_123").tenantId("tenant1").name("Updated").scopePattern("org/*")
-                .priority(10).status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build());
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
+        // tenantId = null simulates the admin-auth path (v0.1.25.14 dual-auth),
+        // which is the only path that doesn't short-circuit on the ownership
+        // check — Policy.tenantId is @JsonIgnore so the persisted JSON never
+        // carries it, matching the prior Lua behavior where tenant-auth always
+        // tripped FORBIDDEN against a nil stored tenant_id.
+        Policy stored = Policy.builder()
+                .policyId("pol_123").tenantId("tenant1").name("Old").scopePattern("org/*")
+                .priority(1).status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String storedJson = objectMapper.writeValueAsString(stored);
+        when(jedis.get("policy:pol_123")).thenReturn(storedJson);
 
         PolicyUpdateRequest request = new PolicyUpdateRequest();
         request.setName("Updated");
         request.setPriority(10);
 
-        Policy result = repository.update("tenant1", "pol_123", request);
+        Policy result = repository.update(null, "pol_123", request);
 
         assertThat(result).isNotNull();
         assertThat(result.getName()).isEqualTo("Updated");
         assertThat(result.getPriority()).isEqualTo(10);
+        assertThat(result.getUpdatedAt()).isNotNull();
+        verify(jedis).set(eq("policy:pol_123"), anyString());
     }
 
     @Test
     void update_notFound_throws404() {
-        when(jedisPool.getResource()).thenReturn(jedis);
-        doNothing().when(jedis).close();
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("NOT_FOUND"));
+        when(jedis.get("policy:pol_missing")).thenReturn(null);
 
         PolicyUpdateRequest request = new PolicyUpdateRequest();
         request.setName("New Name");
@@ -321,51 +324,50 @@ class PolicyRepositoryTest {
         assertThatThrownBy(() -> repository.update("tenant1", "pol_missing", request))
                 .isInstanceOf(GovernanceException.class)
                 .hasFieldOrPropertyWithValue("httpStatus", 404);
+        verify(jedis, never()).set(anyString(), anyString());
     }
 
     @Test
-    void update_forbidden_throws403() {
-        when(jedisPool.getResource()).thenReturn(jedis);
-        doNothing().when(jedis).close();
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("FORBIDDEN"));
+    void update_forbidden_throws403() throws Exception {
+        Policy stored = Policy.builder()
+                .policyId("pol_123").tenantId("tenant1").scopePattern("org/*")
+                .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String storedJson = objectMapper.writeValueAsString(stored);
+        when(jedis.get("policy:pol_123")).thenReturn(storedJson);
 
         PolicyUpdateRequest request = new PolicyUpdateRequest();
 
         assertThatThrownBy(() -> repository.update("wrong-tenant", "pol_123", request))
                 .isInstanceOf(GovernanceException.class)
                 .hasFieldOrPropertyWithValue("httpStatus", 403);
+        verify(jedis, never()).set(anyString(), anyString());
     }
 
     @Test
-    void update_withNullTenantId_passesEmptyString() throws Exception {
-        when(jedisPool.getResource()).thenReturn(jedis);
-        doNothing().when(jedis).close();
-
-        String updatedJson = objectMapper.writeValueAsString(Policy.builder()
-                .policyId("pol_123").name("P").scopePattern("org/*")
-                .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build());
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
+    void update_withNullTenantId_skipsOwnershipCheck() throws Exception {
+        Policy stored = Policy.builder()
+                .policyId("pol_123").tenantId("tenant1").name("Old").scopePattern("org/*")
+                .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String storedJson = objectMapper.writeValueAsString(stored);
+        when(jedis.get("policy:pol_123")).thenReturn(storedJson);
 
         PolicyUpdateRequest request = new PolicyUpdateRequest();
         request.setName("P");
 
         Policy result = repository.update(null, "pol_123", request);
 
-        verify(jedis).eval(anyString(), anyList(), argThat((List<String> args) ->
-            args.get(0).equals("")
-        ));
         assertThat(result).isNotNull();
+        assertThat(result.getName()).isEqualTo("P");
+        verify(jedis).set(eq("policy:pol_123"), anyString());
     }
 
     @Test
-    void update_withAllFields_sendsAllUpdates() throws Exception {
-        when(jedisPool.getResource()).thenReturn(jedis);
-        doNothing().when(jedis).close();
-
-        String updatedJson = objectMapper.writeValueAsString(Policy.builder()
-                .policyId("pol_123").tenantId("tenant1").name("New Name").description("New desc")
-                .scopePattern("org/*").priority(5).status(PolicyStatus.DISABLED).createdAt(Instant.now()).build());
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
+    void update_withAllFields_appliesAllUpdates() throws Exception {
+        Policy stored = Policy.builder()
+                .policyId("pol_123").tenantId("tenant1").name("Old").scopePattern("org/*")
+                .priority(1).status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String storedJson = objectMapper.writeValueAsString(stored);
+        when(jedis.get("policy:pol_123")).thenReturn(storedJson);
 
         PolicyUpdateRequest request = new PolicyUpdateRequest();
         request.setName("New Name");
@@ -379,23 +381,79 @@ class PolicyRepositoryTest {
         request.setEffectiveUntil(Instant.parse("2026-01-01T00:00:00Z"));
         request.setStatus(PolicyStatus.DISABLED);
 
-        Policy result = repository.update("tenant1", "pol_123", request);
+        Policy result = repository.update(null, "pol_123", request);
 
-        assertThat(result).isNotNull();
-        verify(jedis).eval(anyString(), anyList(), argThat((List<String> args) -> {
-            String updatesJson = args.get(1);
-            return updatesJson.contains("New Name")
-                && updatesJson.contains("New desc")
-                && updatesJson.contains("ALLOW_WITH_OVERDRAFT")
-                && updatesJson.contains("DISABLED");
-        }));
+        assertThat(result.getName()).isEqualTo("New Name");
+        assertThat(result.getDescription()).isEqualTo("New desc");
+        assertThat(result.getPriority()).isEqualTo(5);
+        assertThat(result.getCaps().getMaxTokens()).isEqualTo(500);
+        assertThat(result.getCommitOveragePolicy()).isEqualTo(CommitOveragePolicy.ALLOW_WITH_OVERDRAFT);
+        assertThat(result.getStatus()).isEqualTo(PolicyStatus.DISABLED);
+        verify(jedis).set(eq("policy:pol_123"), argThat((String s) ->
+            s.contains("New Name") && s.contains("DISABLED")));
+    }
+
+    @Test
+    void update_emptyToolAllowlistRoundtripsAsArray_notObject() throws Exception {
+        // Regression guard for runcycles/cycles-dashboard#43 on PolicyRepository:
+        // empty Caps.toolAllowlist must persist as [] (not {}). The old Lua
+        // cjson round-trip corrupted this to {} and broke subsequent reads.
+        Policy stored = Policy.builder()
+                .policyId("pol_123").tenantId("tenant1").scopePattern("org/*")
+                .status(PolicyStatus.ACTIVE)
+                .caps(Caps.builder()
+                        .maxTokens(500)
+                        .toolAllowlist(java.util.Collections.emptyList())
+                        .toolDenylist(java.util.Collections.emptyList())
+                        .build())
+                .createdAt(Instant.now()).build();
+        String storedJson = objectMapper.writeValueAsString(stored);
+        when(jedis.get("policy:pol_123")).thenReturn(storedJson);
+
+        PolicyUpdateRequest request = new PolicyUpdateRequest();
+        request.setPriority(7);
+
+        repository.update(null, "pol_123", request);
+
+        verify(jedis).set(eq("policy:pol_123"), argThat((String s) ->
+            s.contains("\"tool_allowlist\":[]")
+                && s.contains("\"tool_denylist\":[]")
+                && !s.contains("\"tool_allowlist\":{}")
+                && !s.contains("\"tool_denylist\":{}")));
+    }
+
+    @Test
+    void list_legacyCorruptedCapsArrays_stillReadable() throws Exception {
+        // Pre-v0.1.25.17 records updated via the old Lua path had Caps
+        // tool_allowlist / tool_denylist rewritten as {} instead of [].
+        // Lenient deserializer on Caps must accept those so list() doesn't
+        // drop the policy silently.
+        Set<String> ids = new LinkedHashSet<>(List.of("pol_corrupt"));
+        when(jedis.smembers("policies:tenant1")).thenReturn(ids);
+        String corruptedJson = "{"
+                + "\"policy_id\":\"pol_corrupt\","
+                + "\"scope_pattern\":\"org/*\","
+                + "\"status\":\"ACTIVE\","
+                + "\"created_at\":\"2026-01-01T00:00:00Z\","
+                + "\"caps\":{"
+                + "  \"max_tokens\":100,"
+                + "  \"tool_allowlist\":{},"
+                + "  \"tool_denylist\":{}"
+                + "}"
+                + "}";
+        when(jedis.get("policy:pol_corrupt")).thenReturn(corruptedJson);
+
+        List<Policy> result = repository.list("tenant1", null, null, null, 1000);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getPolicyId()).isEqualTo("pol_corrupt");
+        assertThat(result.get(0).getCaps().getToolAllowlist()).isEmpty();
+        assertThat(result.get(0).getCaps().getToolDenylist()).isEmpty();
     }
 
     @Test
     void update_genericException_wrappedInRuntimeException() {
-        when(jedisPool.getResource()).thenReturn(jedis);
-        doNothing().when(jedis).close();
-        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
+        when(jedis.get("policy:pol_123")).thenThrow(new RuntimeException("Redis down"));
 
         PolicyUpdateRequest request = new PolicyUpdateRequest();
 
@@ -460,18 +518,16 @@ class PolicyRepositoryTest {
 
     @Test
     void update_withStatus_passesStatusField() throws Exception {
-        when(jedisPool.getResource()).thenReturn(jedis);
-        doNothing().when(jedis).close();
-
-        String updatedJson = objectMapper.writeValueAsString(Policy.builder()
+        Policy stored = Policy.builder()
                 .policyId("pol_123").tenantId("tenant1").name("P").scopePattern("org/*")
-                .status(PolicyStatus.DISABLED).createdAt(Instant.now()).build());
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", updatedJson));
+                .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String storedJson = objectMapper.writeValueAsString(stored);
+        when(jedis.get("policy:pol_123")).thenReturn(storedJson);
 
         PolicyUpdateRequest request = new PolicyUpdateRequest();
         request.setStatus(PolicyStatus.DISABLED);
 
-        Policy result = repository.update("tenant1", "pol_123", request);
+        Policy result = repository.update(null, "pol_123", request);
         assertThat(result.getStatus()).isEqualTo(PolicyStatus.DISABLED);
     }
 }
