@@ -35,21 +35,16 @@ public class ApiKeyRepository {
         "redis.call('SET', KEYS[3], ARGV[2])\n" +
         "return {'CREATED'}\n";
 
-    // Lua script for atomic API key revocation: reads, checks state, sets revoked fields in one call.
-    // KEYS[1] = apikey:<keyId>
-    // ARGV[1] = reason, ARGV[2] = now_iso (ISO-8601 timestamp, must match Jackson serialization format)
-    // Returns: {'OK', updated_json} or {'NOT_FOUND'} or {'ALREADY_REVOKED', existing_json}
-    private static final String REVOKE_KEY_LUA =
-        "local json = redis.call('GET', KEYS[1])\n" +
-        "if not json then return {'NOT_FOUND'} end\n" +
-        "local key = cjson.decode(json)\n" +
-        "if key['status'] == 'REVOKED' then return {'ALREADY_REVOKED', json} end\n" +
-        "key['status'] = 'REVOKED'\n" +
-        "key['revoked_at'] = ARGV[2]\n" +
-        "if ARGV[1] ~= '' then key['revoked_reason'] = ARGV[1] end\n" +
-        "local updated = cjson.encode(key)\n" +
-        "redis.call('SET', KEYS[1], updated)\n" +
-        "return {'OK', updated}\n";
+    // NOTE: API-key revocation was previously implemented as a Lua script that
+    // round-tripped the full record JSON through cjson.decode/encode. That tripped
+    // Redis's well-known empty-array bug — `scope_filter: []` (and `permissions: []`
+    // on a freshly created key with no permissions override) were rewritten as
+    // `{}` by cjson.encode, after which Jackson could no longer deserialize the
+    // record (ApiKey.scope_filter / permissions are List<String>). The list()
+    // catch-all would then silently drop the key from admin responses.
+    // The revoke path now follows the same Jackson-in-Java pattern as update()
+    // below — see its docblock. Kept here as a hazard marker for anyone thinking
+    // about reintroducing cjson round-trips on records with array fields.
     public ApiKeyCreateResponse create(ApiKeyCreateRequest request) {
         try (Jedis jedis = jedisPool.getResource()) {
             String keyId = "key_" + UUID.randomUUID().toString().substring(0, 16);
@@ -174,21 +169,32 @@ public class ApiKeyRepository {
         }
     }
 
+    /**
+     * Revoke an API key. Uses Jackson in-Java (not a Lua cjson round-trip) to
+     * avoid the Redis cjson empty-array bug — see the comment where the old
+     * REVOKE_KEY_LUA used to live, and the matching note on update().
+     *
+     * If the key is already REVOKED, the stored record is returned unchanged
+     * (idempotent). This mirrors the previous Lua script's ALREADY_REVOKED path.
+     */
     public ApiKey revoke(String keyId, String reason) {
         try (Jedis jedis = jedisPool.getResource()) {
-            String nowIso = Instant.now().toString();
-
-            @SuppressWarnings("unchecked")
-            List<String> result = (List<String>) jedis.eval(REVOKE_KEY_LUA,
-                List.of("apikey:" + keyId),
-                List.of(reason != null ? reason : "", nowIso));
-
-            String status = result.get(0);
-            if ("NOT_FOUND".equals(status)) {
+            String json = jedis.get("apikey:" + keyId);
+            if (json == null) {
                 throw GovernanceException.apiKeyNotFound(keyId);
             }
-            // Both OK and ALREADY_REVOKED return the key JSON in result.get(1)
-            return objectMapper.readValue(result.get(1), ApiKey.class);
+            ApiKey key = objectMapper.readValue(json, ApiKey.class);
+            if (key.getStatus() == ApiKeyStatus.REVOKED) {
+                // Idempotent: don't overwrite revoked_at / revoked_reason.
+                return key;
+            }
+            key.setStatus(ApiKeyStatus.REVOKED);
+            key.setRevokedAt(Instant.now());
+            if (reason != null && !reason.isEmpty()) {
+                key.setRevokedReason(reason);
+            }
+            jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
+            return key;
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {

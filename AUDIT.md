@@ -1,9 +1,32 @@
 # Complete Budget Governance v0.1.25.8 — Admin Server Audit
 
-**Server version:** 0.1.25.16 (2026-04-13 — admin-on-behalf-of dual-auth on 6 tenant-scoped webhook endpoints)
-**Date:** 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Server version:** 0.1.25.17 (2026-04-14 — API-key revocation cjson round-trip fix)
+**Date:** 2026-04-14 (v0.1.25.17 API-key revoke cjson fix), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, v0.1.25.11) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-14 — v0.1.25.17 API-key revocation cjson round-trip fix
+
+Fixes [cycles-dashboard#43](https://github.com/runcycles/cycles-dashboard/issues/43): listing API keys after any revocation surfaced a noisy `MismatchedInputException` in admin logs; the corrupted key was then silently dropped from the response, so operators saw an incomplete list in the dashboard while the backend spewed stack traces.
+
+**Root cause.** `ApiKeyRepository.revoke()` used a Lua script that round-tripped the full record JSON through `cjson.decode` / `cjson.encode`. Redis's cjson has a long-standing empty-array bug: `cjson.encode({})` (empty Lua table) serializes as `{}`, not `[]`. Any `ApiKey` whose `scope_filter` or `permissions` was an empty list became JSON with `"scope_filter": {}` / `"permissions": {}` in Redis after a revoke. The `list()` path then failed Jackson deserialization (both fields are `List<String>`) and the outer catch swallowed the exception with a WARN log, skipping the record. The `update()` path had already been migrated off cjson (see the matching docblock); `revoke()` was missed.
+
+**Changes:**
+
+| File | Change |
+|---|---|
+| `ApiKeyRepository.java` | Dropped `REVOKE_KEY_LUA`. `revoke()` now does `jedis.get` → Jackson `readValue` → mutate → `jedis.set(writeValueAsString(key))`, same pattern as `update()`. Idempotent: already-revoked records are returned unchanged (original `revoked_at` / `revoked_reason` preserved). Replaced the old Lua block with a hazard-marker comment so no one reintroduces cjson round-trips on records with array fields. |
+| `ApiKey.java` | Added `@JsonDeserialize(using = LenientStringListDeserializer.class)` to `permissions` and `scope_filter`. Legacy records with `{}` in those positions are now read as empty lists; any non-empty object still errors as before. |
+| `LenientStringListDeserializer.java` | New Jackson deserializer: accepts `[]`, `null`, and empty `{}` as `List<String>`; forwards any other shape to Jackson's default mismatch handling. |
+| `ApiKeyRepositoryTest.java` | Four revoke tests rewritten against the Jackson-in-Java path (no more `jedis.eval` stubs). New `list_legacyCorruptedEmptyArrays_stillReadable` test asserts that a pre-v0.1.25.17 record with `scope_filter: {}` / `permissions: {}` is still parseable and not dropped. `revoke_alreadyRevoked_returnsRevokedKey` now also verifies idempotency (no re-write, original timestamp preserved). |
+| `pom.xml` | `revision` 0.1.25.16 → 0.1.25.17. |
+
+**Design choices:**
+- **Lenient on read, strict on write.** The deserializer only tolerates the exact `{}` shape produced by cjson corruption. New writes always go through Jackson and produce proper `[]`, so the fleet self-heals on the next `update()` or `revoke()` of each key.
+- **Idempotent revoke preserves the original revocation record.** Unlike the old Lua (which would overwrite `revoked_at` on every call when the key was already revoked — it didn't, it returned early, but the `ALREADY_REVOKED` branch still returned the same json blob), the Java path now definitively skips the write when the key is already REVOKED. This matches the auditor's expectation that revocation is a one-time event.
+- **No atomicity regression.** The previous Lua's atomicity was nominal — it didn't prevent a concurrent `update()` racing in, because `update()` was already Jackson-in-Java with no CAS. The new `revoke()` inherits the same last-writer-wins semantics as `update()`; if stricter CAS is ever required, both paths should be migrated together via `WATCH`/`MULTI`/`EXEC`.
+
+**Operator note.** No migration required. Corrupted records will be rewritten cleanly the next time any mutating admin call (`update()` or `revoke()`) touches them. Until then, the lenient deserializer keeps them listable.
 
 ### 2026-04-13 — v0.1.25.16 Stage 3 dual-auth: tenant-scoped webhook endpoints
 

@@ -283,23 +283,23 @@ class ApiKeyRepositoryTest {
 
     @Test
     void revoke_existingKey_setsRevokedStatus() throws Exception {
-        ApiKey revoked = ApiKey.builder()
+        ApiKey active = ApiKey.builder()
                 .keyId("key_1").tenantId("tenant-1").keyHash("hash")
-                .status(ApiKeyStatus.REVOKED).revokedReason("No longer needed")
-                .revokedAt(Instant.now()).createdAt(Instant.now()).build();
-        String revokedJson = objectMapper.writeValueAsString(revoked);
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", revokedJson));
+                .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String activeJson = objectMapper.writeValueAsString(active);
+        when(jedis.get("apikey:key_1")).thenReturn(activeJson);
 
         ApiKey result = repository.revoke("key_1", "No longer needed");
 
         assertThat(result.getStatus()).isEqualTo(ApiKeyStatus.REVOKED);
         assertThat(result.getRevokedReason()).isEqualTo("No longer needed");
         assertThat(result.getRevokedAt()).isNotNull();
+        verify(jedis).set(eq("apikey:key_1"), anyString());
     }
 
     @Test
     void revoke_missingKey_throwsNotFound() {
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("NOT_FOUND"));
+        when(jedis.get("apikey:missing")).thenReturn(null);
 
         assertThatThrownBy(() -> repository.revoke("missing", "reason"))
                 .isInstanceOf(GovernanceException.class)
@@ -413,16 +413,22 @@ class ApiKeyRepositoryTest {
 
     @Test
     void revoke_alreadyRevoked_returnsRevokedKey() throws Exception {
+        Instant originalRevokedAt = Instant.parse("2026-01-01T00:00:00Z");
         ApiKey revoked = ApiKey.builder()
                 .keyId("key_1").tenantId("tenant-1").keyHash("hash")
-                .status(ApiKeyStatus.REVOKED).revokedAt(Instant.now())
+                .status(ApiKeyStatus.REVOKED).revokedAt(originalRevokedAt)
+                .revokedReason("original reason")
                 .createdAt(Instant.now()).build();
         String revokedJson = objectMapper.writeValueAsString(revoked);
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("ALREADY_REVOKED", revokedJson));
+        when(jedis.get("apikey:key_1")).thenReturn(revokedJson);
 
-        ApiKey result = repository.revoke("key_1", "reason");
+        ApiKey result = repository.revoke("key_1", "different reason");
 
         assertThat(result.getStatus()).isEqualTo(ApiKeyStatus.REVOKED);
+        // Idempotent: original revoked_at and reason preserved, no re-write.
+        assertThat(result.getRevokedAt()).isEqualTo(originalRevokedAt);
+        assertThat(result.getRevokedReason()).isEqualTo("original reason");
+        verify(jedis, never()).set(anyString(), anyString());
     }
 
     @Test
@@ -553,7 +559,7 @@ class ApiKeyRepositoryTest {
 
     @Test
     void revoke_genericException_wrappedInRuntimeException() {
-        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
+        when(jedis.get("apikey:key_1")).thenThrow(new RuntimeException("Redis down"));
 
         assertThatThrownBy(() -> repository.revoke("key_1", "reason"))
                 .isInstanceOf(RuntimeException.class)
@@ -584,18 +590,45 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
-    void revoke_withNullReason_passesEmptyString() throws Exception {
-        ApiKey revoked = ApiKey.builder()
+    void revoke_withNullReason_leavesRevokedReasonUnset() throws Exception {
+        ApiKey active = ApiKey.builder()
                 .keyId("key_1").tenantId("tenant-1").keyHash("hash")
-                .status(ApiKeyStatus.REVOKED)
-                .revokedAt(Instant.now()).createdAt(Instant.now()).build();
-        String revokedJson = objectMapper.writeValueAsString(revoked);
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", revokedJson));
+                .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String activeJson = objectMapper.writeValueAsString(active);
+        when(jedis.get("apikey:key_1")).thenReturn(activeJson);
 
         ApiKey result = repository.revoke("key_1", null);
 
         assertThat(result.getStatus()).isEqualTo(ApiKeyStatus.REVOKED);
-        verify(jedis).eval(anyString(), anyList(), argThat(args -> args.contains("")));
+        assertThat(result.getRevokedReason()).isNull();
+        assertThat(result.getRevokedAt()).isNotNull();
+    }
+
+    @Test
+    void list_legacyCorruptedEmptyArrays_stillReadable() throws Exception {
+        // Pre-v0.1.25.17 records revoked via the old Lua cjson round-trip had
+        // scope_filter and permissions rewritten as {} instead of []. The
+        // lenient deserializer on ApiKey must accept those records so the
+        // admin list endpoint doesn't silently drop them (cycles-dashboard#43).
+        Set<String> ids = new LinkedHashSet<>(List.of("key_corrupt"));
+        when(jedis.smembers("apikeys:tenant-1")).thenReturn(ids);
+        String corruptedJson = "{"
+                + "\"key_id\":\"key_corrupt\","
+                + "\"tenant_id\":\"tenant-1\","
+                + "\"key_hash\":\"h\","
+                + "\"permissions\":{},"
+                + "\"scope_filter\":{},"
+                + "\"status\":\"REVOKED\","
+                + "\"created_at\":\"2026-01-01T00:00:00Z\""
+                + "}";
+        when(jedis.get("apikey:key_corrupt")).thenReturn(corruptedJson);
+
+        List<ApiKey> result = repository.list("tenant-1");
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getKeyId()).isEqualTo("key_corrupt");
+        assertThat(result.get(0).getPermissions()).isEmpty();
+        assertThat(result.get(0).getScopeFilter()).isEmpty();
     }
 
     @Test
