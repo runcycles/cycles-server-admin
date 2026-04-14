@@ -58,4 +58,28 @@ public enum Permission {
         }
         throw new IllegalArgumentException("Unknown permission: " + value);
     }
+
+    /** True iff the given string matches a known permission value. */
+    public static boolean isValid(String value) {
+        if (value == null) return false;
+        for (Permission p : values()) {
+            if (p.value.equals(value)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Returns the first permission string in the input that is not a known
+     * {@link Permission} value, or {@code null} if all are valid. Used by the
+     * create/update controllers to produce a 400 that names the exact offender
+     * instead of the generic "Malformed request body" Jackson would emit when
+     * binding to a strict {@code List<Permission>}.
+     */
+    public static String findUnknown(java.util.List<String> values) {
+        if (values == null) return null;
+        for (String v : values) {
+            if (!isValid(v)) return v;
+        }
+        return null;
+    }
 }

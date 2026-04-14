@@ -448,7 +448,7 @@ class ApiKeyRepositoryTest {
         ApiKeyCreateRequest request = new ApiKeyCreateRequest();
         request.setTenantId("test-tenant");
         request.setName("Test Key");
-        request.setPermissions(List.of(io.runcycles.admin.model.auth.Permission.RESERVATIONS_CREATE));
+        request.setPermissions(List.of("reservations:create"));
 
         ApiKeyCreateResponse response = repository.create(request);
 
@@ -763,13 +763,60 @@ class ApiKeyRepositoryTest {
 
         ApiKeyUpdateRequest request = new ApiKeyUpdateRequest();
         request.setName("Updated");
-        request.setPermissions(List.of(io.runcycles.admin.model.auth.Permission.BUDGETS_READ, io.runcycles.admin.model.auth.Permission.BUDGETS_WRITE));
+        request.setPermissions(List.of("budgets:read", "budgets:write"));
 
         ApiKey result = repository.update("key_1", request);
 
         assertThat(result.getName()).isEqualTo("Updated");
         assertThat(result.getPermissions()).containsExactly("budgets:read", "budgets:write");
         verify(jedis).set(eq("apikey:key_1"), anyString());
+    }
+
+    @Test
+    void update_unknownPermission_throws400WithSpecificValue() throws Exception {
+        // v0.1.25.17: raw-string permissions surface an actionable 400
+        // naming the exact bad value (replaces Jackson's opaque
+        // "Malformed request body" that the strict enum used to produce).
+        ApiKey existing = ApiKey.builder()
+                .keyId("key_1").tenantId("tenant-1").keyPrefix("cyc_live_abc12")
+                .keyHash("$2a$12$hash").status(ApiKeyStatus.ACTIVE)
+                .permissions(List.of("balances:read"))
+                .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(3600)).build();
+        String existingJson = objectMapper.writeValueAsString(existing);
+        when(jedis.get("apikey:key_1")).thenReturn(existingJson);
+
+        ApiKeyUpdateRequest request = new ApiKeyUpdateRequest();
+        // Typo on "write" — dashboard round-tripping legacy data can hit this
+        request.setPermissions(List.of("budgets:read", "budgets:wirte"));
+
+        assertThatThrownBy(() -> repository.update("key_1", request))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getHttpStatus()).isEqualTo(400);
+                    assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
+                    assertThat(ge.getMessage()).contains("budgets:wirte");
+                });
+        verify(jedis, never()).set(anyString(), anyString());
+    }
+
+    @Test
+    void create_unknownPermission_throws400WithSpecificValue() {
+        // Permission validation runs before any key generation, so no
+        // keyService stubbing is needed here.
+        ApiKeyCreateRequest request = new ApiKeyCreateRequest();
+        request.setTenantId("test-tenant");
+        request.setName("Test Key");
+        request.setPermissions(List.of("admin:apikey:read")); // singular typo — enum has "apikeys"
+
+        assertThatThrownBy(() -> repository.create(request))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getHttpStatus()).isEqualTo(400);
+                    assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
+                    assertThat(ge.getMessage()).contains("admin:apikey:read");
+                });
     }
 
     @Test

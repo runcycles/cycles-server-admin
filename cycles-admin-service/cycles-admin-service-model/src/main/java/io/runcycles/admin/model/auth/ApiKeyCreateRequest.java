@@ -10,13 +10,11 @@ public class ApiKeyCreateRequest {
     @NotBlank @JsonProperty("tenant_id") private String tenantId;
     @NotBlank @Size(max = 256) @JsonProperty("name") private String name;
     @Size(max = 1024) @JsonProperty("description") private String description;
-    @JsonProperty("permissions") private List<Permission> permissions;
+    // See rationale on ApiKeyUpdateRequest.permissions — accepted as raw
+    // strings so unknown values produce a descriptive 400 instead of
+    // Jackson's opaque "Malformed request body".
+    @JsonProperty("permissions") private List<String> permissions;
     @JsonProperty("scope_filter") private List<String> scopeFilter;
     @JsonProperty("expires_at") private Instant expiresAt;
     @JsonProperty("metadata") private Map<String, Object> metadata;
-
-    /** Returns permissions as wire-format strings, or null if unset. */
-    public List<String> getPermissionsAsStrings() {
-        return permissions == null ? null : permissions.stream().map(Permission::getValue).toList();
-    }
 }

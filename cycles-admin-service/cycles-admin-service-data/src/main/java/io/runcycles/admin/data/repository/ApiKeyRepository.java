@@ -47,6 +47,15 @@ public class ApiKeyRepository {
     // about reintroducing cjson round-trips on records with array fields.
     public ApiKeyCreateResponse create(ApiKeyCreateRequest request) {
         try (Jedis jedis = jedisPool.getResource()) {
+            // Validate permission values explicitly — produces a clear 400
+            // naming the bad value instead of Jackson's generic
+            // "Malformed request body" that the enum-bound path used to emit.
+            String unknown = Permission.findUnknown(request.getPermissions());
+            if (unknown != null) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                    "Unrecognized permission: " + unknown, 400);
+            }
             String keyId = "key_" + UUID.randomUUID().toString().substring(0, 16);
             String keySecret = keyService.generateKeySecret("cyc_live");
             String keyPrefix = keyService.extractPrefix(keySecret);
@@ -61,7 +70,7 @@ public class ApiKeyRepository {
                 .keyHash(keyHash)
                 .name(request.getName())
                 .description(request.getDescription())
-                .permissions(request.getPermissions() != null ? request.getPermissionsAsStrings() : DEFAULT_PERMISSIONS)
+                .permissions(request.getPermissions() != null ? request.getPermissions() : DEFAULT_PERMISSIONS)
                 .scopeFilter(request.getScopeFilter())
                 .status(ApiKeyStatus.ACTIVE)
                 .createdAt(Instant.now())
@@ -153,10 +162,18 @@ public class ApiKeyRepository {
                     io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
                     "Cannot modify an EXPIRED key", 409);
             }
+            // Validate permission values explicitly — produces a clear 400
+            // naming the bad value. See equivalent check in create().
+            String unknown = Permission.findUnknown(request.getPermissions());
+            if (unknown != null) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                    "Unrecognized permission: " + unknown, 400);
+            }
             // Apply partial updates — only non-null fields
             if (request.getName() != null) key.setName(request.getName());
             if (request.getDescription() != null) key.setDescription(request.getDescription());
-            if (request.getPermissions() != null) key.setPermissions(request.getPermissionsAsStrings());
+            if (request.getPermissions() != null) key.setPermissions(request.getPermissions());
             if (request.getScopeFilter() != null) key.setScopeFilter(request.getScopeFilter());
             if (request.getMetadata() != null) key.setMetadata(request.getMetadata());
             // Write back with Jackson (clean serialization, no cjson issues)
