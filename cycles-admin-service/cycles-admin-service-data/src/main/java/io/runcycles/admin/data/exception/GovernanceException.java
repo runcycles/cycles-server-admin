@@ -25,6 +25,9 @@ public class GovernanceException extends RuntimeException {
     public static GovernanceException apiKeyNotFound(String id) {
         return new GovernanceException(ErrorCode.NOT_FOUND, "API key not found: " + id, 404);
     }
+    public static GovernanceException apiKeyAlreadyRevoked(String id) {
+        return new GovernanceException(ErrorCode.KEY_REVOKED, "API key already revoked: " + id, 409);
+    }
     public static GovernanceException duplicateResource(String resource, String id) {
         return new GovernanceException(ErrorCode.DUPLICATE_RESOURCE, resource + " exists: " + id, 409);
     }

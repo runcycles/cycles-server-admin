@@ -412,22 +412,29 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
-    void revoke_alreadyRevoked_returnsRevokedKey() throws Exception {
-        Instant originalRevokedAt = Instant.parse("2026-01-01T00:00:00Z");
+    void revoke_alreadyRevoked_throws409() throws Exception {
+        // Spec (cycles-governance-admin-v0.1.25.yaml → revokeApiKey) requires
+        // 409 ALREADY_REVOKED when the key is already revoked. The old Lua path
+        // returned 200 with the stored record, which was a pre-existing spec
+        // violation; v0.1.25.17 corrects it.
         ApiKey revoked = ApiKey.builder()
                 .keyId("key_1").tenantId("tenant-1").keyHash("hash")
-                .status(ApiKeyStatus.REVOKED).revokedAt(originalRevokedAt)
+                .status(ApiKeyStatus.REVOKED)
+                .revokedAt(Instant.parse("2026-01-01T00:00:00Z"))
                 .revokedReason("original reason")
                 .createdAt(Instant.now()).build();
         String revokedJson = objectMapper.writeValueAsString(revoked);
         when(jedis.get("apikey:key_1")).thenReturn(revokedJson);
 
-        ApiKey result = repository.revoke("key_1", "different reason");
-
-        assertThat(result.getStatus()).isEqualTo(ApiKeyStatus.REVOKED);
-        // Idempotent: original revoked_at and reason preserved, no re-write.
-        assertThat(result.getRevokedAt()).isEqualTo(originalRevokedAt);
-        assertThat(result.getRevokedReason()).isEqualTo("original reason");
+        assertThatThrownBy(() -> repository.revoke("key_1", "different reason"))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getHttpStatus()).isEqualTo(409);
+                    assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.KEY_REVOKED);
+                    assertThat(ge.getMessage()).contains("already revoked");
+                });
+        // No write — the stored record is untouched.
         verify(jedis, never()).set(anyString(), anyString());
     }
 

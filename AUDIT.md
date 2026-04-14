@@ -43,6 +43,8 @@ Originally scoped to fix [cycles-dashboard#43](https://github.com/runcycles/cycl
 
 **Operator note.** No migration required. Corrupted records (api keys, policies) will be rewritten cleanly the next time any mutating admin call touches them. Until then, the lenient deserializer keeps them listable. Tenant records were never observably affected.
 
+**Also in v0.1.25.17 — revokeApiKey spec-compliance fix.** The spec (`cycles-governance-admin-v0.1.25.yaml` → `revokeApiKey`, line 4476-4481) requires HTTP 409 ALREADY_REVOKED when the caller attempts to revoke a key that is already REVOKED. The old Lua path (and the earlier commit in this PR before the compliance audit) returned HTTP 200 with the stored record. Corrected: `ApiKeyRepository.revoke()` now throws `GovernanceException.apiKeyAlreadyRevoked(keyId)` (KEY_REVOKED, 409) on that branch. A new factory method was added to `GovernanceException`. The `revoke_alreadyRevoked_*` test was rewritten to assert the 409 contract.
+
 ### 2026-04-13 — v0.1.25.16 Stage 3 dual-auth: tenant-scoped webhook endpoints
 
 Third and final stage of the admin-on-behalf-of rollout (v0.1.25.13 covered budgets/policies, v0.1.25.14 in cycles-server covered reservations). Closes the webhook ops gap: admin operators can now pause / force-delete / inspect tenant-provisioned webhooks during incident response without holding the tenant's API key.

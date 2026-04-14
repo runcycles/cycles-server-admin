@@ -174,8 +174,10 @@ public class ApiKeyRepository {
      * avoid the Redis cjson empty-array bug — see the comment where the old
      * REVOKE_KEY_LUA used to live, and the matching note on update().
      *
-     * If the key is already REVOKED, the stored record is returned unchanged
-     * (idempotent). This mirrors the previous Lua script's ALREADY_REVOKED path.
+     * Per spec (cycles-governance-admin-v0.1.25.yaml → revokeApiKey), attempting
+     * to revoke a key that is already REVOKED must return 409 ALREADY_REVOKED.
+     * The previous Lua path returned the stored record with HTTP 200, which was
+     * a pre-existing spec violation; this migration corrects it.
      */
     public ApiKey revoke(String keyId, String reason) {
         try (Jedis jedis = jedisPool.getResource()) {
@@ -185,8 +187,7 @@ public class ApiKeyRepository {
             }
             ApiKey key = objectMapper.readValue(json, ApiKey.class);
             if (key.getStatus() == ApiKeyStatus.REVOKED) {
-                // Idempotent: don't overwrite revoked_at / revoked_reason.
-                return key;
+                throw GovernanceException.apiKeyAlreadyRevoked(keyId);
             }
             key.setStatus(ApiKeyStatus.REVOKED);
             key.setRevokedAt(Instant.now());
