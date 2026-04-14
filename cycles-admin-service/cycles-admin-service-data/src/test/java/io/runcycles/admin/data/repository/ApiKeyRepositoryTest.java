@@ -283,23 +283,23 @@ class ApiKeyRepositoryTest {
 
     @Test
     void revoke_existingKey_setsRevokedStatus() throws Exception {
-        ApiKey revoked = ApiKey.builder()
+        ApiKey active = ApiKey.builder()
                 .keyId("key_1").tenantId("tenant-1").keyHash("hash")
-                .status(ApiKeyStatus.REVOKED).revokedReason("No longer needed")
-                .revokedAt(Instant.now()).createdAt(Instant.now()).build();
-        String revokedJson = objectMapper.writeValueAsString(revoked);
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", revokedJson));
+                .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String activeJson = objectMapper.writeValueAsString(active);
+        when(jedis.get("apikey:key_1")).thenReturn(activeJson);
 
         ApiKey result = repository.revoke("key_1", "No longer needed");
 
         assertThat(result.getStatus()).isEqualTo(ApiKeyStatus.REVOKED);
         assertThat(result.getRevokedReason()).isEqualTo("No longer needed");
         assertThat(result.getRevokedAt()).isNotNull();
+        verify(jedis).set(eq("apikey:key_1"), anyString());
     }
 
     @Test
     void revoke_missingKey_throwsNotFound() {
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("NOT_FOUND"));
+        when(jedis.get("apikey:missing")).thenReturn(null);
 
         assertThatThrownBy(() -> repository.revoke("missing", "reason"))
                 .isInstanceOf(GovernanceException.class)
@@ -412,17 +412,30 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
-    void revoke_alreadyRevoked_returnsRevokedKey() throws Exception {
+    void revoke_alreadyRevoked_throws409() throws Exception {
+        // Spec (cycles-governance-admin-v0.1.25.yaml → revokeApiKey) requires
+        // 409 ALREADY_REVOKED when the key is already revoked. The old Lua path
+        // returned 200 with the stored record, which was a pre-existing spec
+        // violation; v0.1.25.17 corrects it.
         ApiKey revoked = ApiKey.builder()
                 .keyId("key_1").tenantId("tenant-1").keyHash("hash")
-                .status(ApiKeyStatus.REVOKED).revokedAt(Instant.now())
+                .status(ApiKeyStatus.REVOKED)
+                .revokedAt(Instant.parse("2026-01-01T00:00:00Z"))
+                .revokedReason("original reason")
                 .createdAt(Instant.now()).build();
         String revokedJson = objectMapper.writeValueAsString(revoked);
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("ALREADY_REVOKED", revokedJson));
+        when(jedis.get("apikey:key_1")).thenReturn(revokedJson);
 
-        ApiKey result = repository.revoke("key_1", "reason");
-
-        assertThat(result.getStatus()).isEqualTo(ApiKeyStatus.REVOKED);
+        assertThatThrownBy(() -> repository.revoke("key_1", "different reason"))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getHttpStatus()).isEqualTo(409);
+                    assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.KEY_REVOKED);
+                    assertThat(ge.getMessage()).contains("already revoked");
+                });
+        // No write — the stored record is untouched.
+        verify(jedis, never()).set(anyString(), anyString());
     }
 
     @Test
@@ -435,7 +448,7 @@ class ApiKeyRepositoryTest {
         ApiKeyCreateRequest request = new ApiKeyCreateRequest();
         request.setTenantId("test-tenant");
         request.setName("Test Key");
-        request.setPermissions(List.of(io.runcycles.admin.model.auth.Permission.RESERVATIONS_CREATE));
+        request.setPermissions(List.of("reservations:create"));
 
         ApiKeyCreateResponse response = repository.create(request);
 
@@ -553,7 +566,7 @@ class ApiKeyRepositoryTest {
 
     @Test
     void revoke_genericException_wrappedInRuntimeException() {
-        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
+        when(jedis.get("apikey:key_1")).thenThrow(new RuntimeException("Redis down"));
 
         assertThatThrownBy(() -> repository.revoke("key_1", "reason"))
                 .isInstanceOf(RuntimeException.class)
@@ -584,18 +597,45 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
-    void revoke_withNullReason_passesEmptyString() throws Exception {
-        ApiKey revoked = ApiKey.builder()
+    void revoke_withNullReason_leavesRevokedReasonUnset() throws Exception {
+        ApiKey active = ApiKey.builder()
                 .keyId("key_1").tenantId("tenant-1").keyHash("hash")
-                .status(ApiKeyStatus.REVOKED)
-                .revokedAt(Instant.now()).createdAt(Instant.now()).build();
-        String revokedJson = objectMapper.writeValueAsString(revoked);
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK", revokedJson));
+                .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String activeJson = objectMapper.writeValueAsString(active);
+        when(jedis.get("apikey:key_1")).thenReturn(activeJson);
 
         ApiKey result = repository.revoke("key_1", null);
 
         assertThat(result.getStatus()).isEqualTo(ApiKeyStatus.REVOKED);
-        verify(jedis).eval(anyString(), anyList(), argThat(args -> args.contains("")));
+        assertThat(result.getRevokedReason()).isNull();
+        assertThat(result.getRevokedAt()).isNotNull();
+    }
+
+    @Test
+    void list_legacyCorruptedEmptyArrays_stillReadable() throws Exception {
+        // Pre-v0.1.25.17 records revoked via the old Lua cjson round-trip had
+        // scope_filter and permissions rewritten as {} instead of []. The
+        // lenient deserializer on ApiKey must accept those records so the
+        // admin list endpoint doesn't silently drop them (cycles-dashboard#43).
+        Set<String> ids = new LinkedHashSet<>(List.of("key_corrupt"));
+        when(jedis.smembers("apikeys:tenant-1")).thenReturn(ids);
+        String corruptedJson = "{"
+                + "\"key_id\":\"key_corrupt\","
+                + "\"tenant_id\":\"tenant-1\","
+                + "\"key_hash\":\"h\","
+                + "\"permissions\":{},"
+                + "\"scope_filter\":{},"
+                + "\"status\":\"REVOKED\","
+                + "\"created_at\":\"2026-01-01T00:00:00Z\""
+                + "}";
+        when(jedis.get("apikey:key_corrupt")).thenReturn(corruptedJson);
+
+        List<ApiKey> result = repository.list("tenant-1");
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getKeyId()).isEqualTo("key_corrupt");
+        assertThat(result.get(0).getPermissions()).isEmpty();
+        assertThat(result.get(0).getScopeFilter()).isEmpty();
     }
 
     @Test
@@ -723,13 +763,60 @@ class ApiKeyRepositoryTest {
 
         ApiKeyUpdateRequest request = new ApiKeyUpdateRequest();
         request.setName("Updated");
-        request.setPermissions(List.of(io.runcycles.admin.model.auth.Permission.BUDGETS_READ, io.runcycles.admin.model.auth.Permission.BUDGETS_WRITE));
+        request.setPermissions(List.of("budgets:read", "budgets:write"));
 
         ApiKey result = repository.update("key_1", request);
 
         assertThat(result.getName()).isEqualTo("Updated");
         assertThat(result.getPermissions()).containsExactly("budgets:read", "budgets:write");
         verify(jedis).set(eq("apikey:key_1"), anyString());
+    }
+
+    @Test
+    void update_unknownPermission_throws400WithSpecificValue() throws Exception {
+        // v0.1.25.17: raw-string permissions surface an actionable 400
+        // naming the exact bad value (replaces Jackson's opaque
+        // "Malformed request body" that the strict enum used to produce).
+        ApiKey existing = ApiKey.builder()
+                .keyId("key_1").tenantId("tenant-1").keyPrefix("cyc_live_abc12")
+                .keyHash("$2a$12$hash").status(ApiKeyStatus.ACTIVE)
+                .permissions(List.of("balances:read"))
+                .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(3600)).build();
+        String existingJson = objectMapper.writeValueAsString(existing);
+        when(jedis.get("apikey:key_1")).thenReturn(existingJson);
+
+        ApiKeyUpdateRequest request = new ApiKeyUpdateRequest();
+        // Typo on "write" — dashboard round-tripping legacy data can hit this
+        request.setPermissions(List.of("budgets:read", "budgets:wirte"));
+
+        assertThatThrownBy(() -> repository.update("key_1", request))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getHttpStatus()).isEqualTo(400);
+                    assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
+                    assertThat(ge.getMessage()).contains("budgets:wirte");
+                });
+        verify(jedis, never()).set(anyString(), anyString());
+    }
+
+    @Test
+    void create_unknownPermission_throws400WithSpecificValue() {
+        // Permission validation runs before any key generation, so no
+        // keyService stubbing is needed here.
+        ApiKeyCreateRequest request = new ApiKeyCreateRequest();
+        request.setTenantId("test-tenant");
+        request.setName("Test Key");
+        request.setPermissions(List.of("admin:apikey:read")); // singular typo — enum has "apikeys"
+
+        assertThatThrownBy(() -> repository.create(request))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> {
+                    GovernanceException ge = (GovernanceException) e;
+                    assertThat(ge.getHttpStatus()).isEqualTo(400);
+                    assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
+                    assertThat(ge.getMessage()).contains("admin:apikey:read");
+                });
     }
 
     @Test

@@ -36,7 +36,7 @@ class AuthModelTest {
         ApiKeyCreateRequest request = new ApiKeyCreateRequest();
         request.setTenantId("tenant-1");
         request.setName("my-key");
-        request.setPermissions(List.of(Permission.BALANCES_READ, Permission.BUDGETS_WRITE));
+        request.setPermissions(List.of(Permission.BALANCES_READ.getValue(), Permission.BUDGETS_WRITE.getValue()));
         request.setExpiresAt(Instant.parse("2027-01-01T00:00:00Z"));
 
         Set<ConstraintViolation<ApiKeyCreateRequest>> violations = validator.validate(request);
@@ -100,15 +100,17 @@ class AuthModelTest {
     }
 
     @Test
-    void apiKeyCreateRequest_unknownPermission_rejected() {
+    void apiKeyCreateRequest_unknownPermission_acceptedAtDeserialization() throws Exception {
+        // v0.1.25.17: permissions are now List<String> at the DTO level —
+        // unknown values no longer fail Jackson deserialization. Validation
+        // happens in the repository via Permission.findUnknown, which throws
+        // GovernanceException(400) with a message naming the offender.
         String json = """
             {"tenant_id":"tenant-1","name":"k","permissions":["budgets:wirte"]}
             """;
-        com.fasterxml.jackson.databind.JsonMappingException ex = assertThrows(
-                com.fasterxml.jackson.databind.JsonMappingException.class,
-                () -> mapper.readValue(json, ApiKeyCreateRequest.class));
-        assertTrue(ex.getMessage().contains("budgets:wirte"),
-                "Expected rejection message to mention bad permission, got: " + ex.getMessage());
+        ApiKeyCreateRequest req = mapper.readValue(json, ApiKeyCreateRequest.class);
+        assertEquals(List.of("budgets:wirte"), req.getPermissions());
+        assertEquals("budgets:wirte", Permission.findUnknown(req.getPermissions()));
     }
 
     @Test
@@ -117,8 +119,8 @@ class AuthModelTest {
             {"tenant_id":"tenant-1","name":"k","permissions":["budgets:read","admin:audit:read"]}
             """;
         ApiKeyCreateRequest req = mapper.readValue(json, ApiKeyCreateRequest.class);
-        assertEquals(List.of(Permission.BUDGETS_READ, Permission.ADMIN_AUDIT_READ), req.getPermissions());
-        assertEquals(List.of("budgets:read", "admin:audit:read"), req.getPermissionsAsStrings());
+        assertEquals(List.of("budgets:read", "admin:audit:read"), req.getPermissions());
+        assertNull(Permission.findUnknown(req.getPermissions()));
     }
 
     @Test

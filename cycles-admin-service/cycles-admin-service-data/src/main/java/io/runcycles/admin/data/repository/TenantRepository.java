@@ -33,58 +33,13 @@ public class TenantRepository {
         "redis.call('SADD', KEYS[2], ARGV[2])\n" +
         "return {'CREATED'}\n";
 
-    // Lua script for atomic tenant update: reads, validates status transition, and writes in one step.
-    // Prevents lost-update race conditions from concurrent read-modify-write cycles.
-    // KEYS[1] = tenant key
-    // ARGV[1] = new_name (empty string = no change)
-    // ARGV[2] = new_status (empty string = no change)
-    // ARGV[3] = new_metadata_json (empty string = no change)
-    // ARGV[4] = now_iso (ISO-8601 timestamp, must match Jackson serialization format)
-    // ARGV[5] = new_default_commit_overage_policy (empty string = no change)
-    // ARGV[6] = new_default_reservation_ttl_ms (empty string = no change)
-    // ARGV[7] = new_max_reservation_ttl_ms (empty string = no change)
-    // ARGV[8] = new_max_reservation_extensions (empty string = no change)
-    // Returns: {'OK', updated_json} on success, or {'ERROR', error_message} on failure
-    private static final String UPDATE_TENANT_LUA =
-        "local json = redis.call('GET', KEYS[1])\n" +
-        "if not json then return {'NOT_FOUND'} end\n" +
-        "local tenant = cjson.decode(json)\n" +
-        "local new_name = ARGV[1]\n" +
-        "local new_status = ARGV[2]\n" +
-        "local new_metadata = ARGV[3]\n" +
-        "local now_iso = ARGV[4]\n" +
-        // Apply name change
-        "if new_name ~= '' then tenant['name'] = new_name end\n" +
-        // Validate and apply status transition
-        "if new_status ~= '' then\n" +
-        "  local old_status = tenant['status'] or 'ACTIVE'\n" +
-        "  if old_status == 'CLOSED' then return {'INVALID_TRANSITION', 'Cannot transition from CLOSED'} end\n" +
-        "  if old_status == 'ACTIVE' and new_status ~= 'SUSPENDED' and new_status ~= 'CLOSED' and new_status ~= 'ACTIVE' then\n" +
-        "    return {'INVALID_TRANSITION', 'Invalid status transition: ' .. old_status .. ' -> ' .. new_status}\n" +
-        "  end\n" +
-        "  if old_status == 'SUSPENDED' and new_status ~= 'ACTIVE' and new_status ~= 'CLOSED' and new_status ~= 'SUSPENDED' then\n" +
-        "    return {'INVALID_TRANSITION', 'Invalid status transition: ' .. old_status .. ' -> ' .. new_status}\n" +
-        "  end\n" +
-        "  tenant['status'] = new_status\n" +
-        "  if new_status == 'SUSPENDED' then tenant['suspended_at'] = now_iso end\n" +
-        "  if new_status == 'CLOSED' then tenant['closed_at'] = now_iso end\n" +
-        "end\n" +
-        // Apply metadata change
-        "if new_metadata ~= '' then tenant['metadata'] = cjson.decode(new_metadata) end\n" +
-        // Apply default_commit_overage_policy change
-        "local new_policy = ARGV[5]\n" +
-        "if new_policy ~= '' then tenant['default_commit_overage_policy'] = new_policy end\n" +
-        // Apply TTL and extension fields
-        "local new_ttl = ARGV[6]\n" +
-        "if new_ttl ~= '' then tenant['default_reservation_ttl_ms'] = tonumber(new_ttl) end\n" +
-        "local new_max_ttl = ARGV[7]\n" +
-        "if new_max_ttl ~= '' then tenant['max_reservation_ttl_ms'] = tonumber(new_max_ttl) end\n" +
-        "local new_max_ext = ARGV[8]\n" +
-        "if new_max_ext ~= '' then tenant['max_reservation_extensions'] = tonumber(new_max_ext) end\n" +
-        "tenant['updated_at'] = now_iso\n" +
-        "local updated = cjson.encode(tenant)\n" +
-        "redis.call('SET', KEYS[1], updated)\n" +
-        "return {'OK', updated}\n";
+    // NOTE: tenant update was previously an atomic Lua script that round-tripped
+    // the full Tenant JSON through cjson.decode/encode. Tenant's only collection
+    // field is a Map<String, String> (metadata), which deserializes cleanly from
+    // an empty {} — so the corruption was symptom-free on this path in practice.
+    // Migrated off cjson anyway for consistency with policy/apikey writes and to
+    // eliminate the latent risk if any future Tenant field becomes a List<*>.
+    // See the matching note on ApiKeyRepository.revoke() for the underlying bug.
 
     public record TenantCreateResult(Tenant tenant, boolean created) {}
 
@@ -172,34 +127,66 @@ public class TenantRepository {
     public Tenant update(String tenantId, TenantUpdateRequest request) {
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "tenant:" + tenantId;
-            String nowIso = Instant.now().toString();
-
-            @SuppressWarnings("unchecked")
-            List<String> result = (List<String>) jedis.eval(UPDATE_TENANT_LUA,
-                List.of(key),
-                List.of(
-                    request.getName() != null ? request.getName() : "",
-                    request.getStatus() != null ? request.getStatus().name() : "",
-                    request.getMetadata() != null ? objectMapper.writeValueAsString(request.getMetadata()) : "",
-                    nowIso,
-                    request.getDefaultCommitOveragePolicy() != null ? request.getDefaultCommitOveragePolicy().name() : "",
-                    request.getDefaultReservationTtlMs() != null ? String.valueOf(request.getDefaultReservationTtlMs()) : "",
-                    request.getMaxReservationTtlMs() != null ? String.valueOf(request.getMaxReservationTtlMs()) : "",
-                    request.getMaxReservationExtensions() != null ? String.valueOf(request.getMaxReservationExtensions()) : ""
-                ));
-
-            String status = result.get(0);
-            if ("NOT_FOUND".equals(status)) {
+            String json = jedis.get(key);
+            if (json == null) {
                 throw GovernanceException.tenantNotFound(tenantId);
             }
-            if ("INVALID_TRANSITION".equals(status)) {
-                throw new GovernanceException(
-                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
-                    result.get(1), 400);
+            Tenant tenant = objectMapper.readValue(json, Tenant.class);
+            Instant now = Instant.now();
+
+            // Apply name change
+            if (request.getName() != null) {
+                tenant.setName(request.getName());
             }
 
-            // result.get(1) is the updated tenant JSON
-            return objectMapper.readValue(result.get(1), Tenant.class);
+            // Validate and apply status transition
+            if (request.getStatus() != null) {
+                TenantStatus oldStatus = tenant.getStatus() != null ? tenant.getStatus() : TenantStatus.ACTIVE;
+                TenantStatus newStatus = request.getStatus();
+                if (oldStatus == TenantStatus.CLOSED) {
+                    throw new GovernanceException(
+                        io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                        "Cannot transition from CLOSED", 400);
+                }
+                // From ACTIVE: -> ACTIVE, SUSPENDED, CLOSED
+                // From SUSPENDED: -> ACTIVE, SUSPENDED, CLOSED
+                // (Both sets are the same after CLOSED is excluded as a source state.)
+                if (!(newStatus == TenantStatus.ACTIVE
+                        || newStatus == TenantStatus.SUSPENDED
+                        || newStatus == TenantStatus.CLOSED)) {
+                    throw new GovernanceException(
+                        io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                        "Invalid status transition: " + oldStatus + " -> " + newStatus, 400);
+                }
+                tenant.setStatus(newStatus);
+                if (newStatus == TenantStatus.SUSPENDED) {
+                    tenant.setSuspendedAt(now);
+                } else if (newStatus == TenantStatus.CLOSED) {
+                    tenant.setClosedAt(now);
+                }
+            }
+
+            // Metadata replace (match prior Lua behavior: a non-null metadata on the
+            // request replaces the stored metadata wholesale)
+            if (request.getMetadata() != null) {
+                tenant.setMetadata(request.getMetadata());
+            }
+            if (request.getDefaultCommitOveragePolicy() != null) {
+                tenant.setDefaultCommitOveragePolicy(request.getDefaultCommitOveragePolicy());
+            }
+            if (request.getDefaultReservationTtlMs() != null) {
+                tenant.setDefaultReservationTtlMs(request.getDefaultReservationTtlMs());
+            }
+            if (request.getMaxReservationTtlMs() != null) {
+                tenant.setMaxReservationTtlMs(request.getMaxReservationTtlMs());
+            }
+            if (request.getMaxReservationExtensions() != null) {
+                tenant.setMaxReservationExtensions(request.getMaxReservationExtensions());
+            }
+            tenant.setUpdatedAt(now);
+
+            jedis.set(key, objectMapper.writeValueAsString(tenant));
+            return tenant;
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
