@@ -109,7 +109,7 @@ The API uses two authentication schemes:
 | **AdminKeyAuth** | `X-Admin-API-Key` | System administration (tenant/key management, audit, dashboard) |
 | **ApiKeyAuth** | `X-Cycles-API-Key` | Tenant-scoped operations (budgets, reservations, balances) |
 
-AdminKeyAuth is also accepted as an alternative on `GET /v1/admin/budgets`, `GET /v1/admin/budgets/lookup`, `GET /v1/admin/policies`, and `POST /v1/admin/budgets/fund` (dual-auth allowlist, v0.1.25.5+). On list and fund endpoints, `tenant_id` is required for scoping.
+AdminKeyAuth is also accepted as an alternative to ApiKeyAuth on an explicit per-operation allowlist — the authoritative list is the union of operations whose `security:` block declares `AdminKeyAuth` in the [governance spec](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml). This allowlist has grown over several revisions (v0.1.25.5 read ops; v0.1.25.6 fund; v0.1.25.13 createBudget / createPolicy / updatePolicy; v0.1.25.14 six tenant-scoped webhook ops) — consulting per-operation security blocks avoids drift between this prose and the actual wiring. On list and fund endpoints, a tenant scoping parameter (`tenant_id` or `tenant` depending on the operation — see the spec) is required for admin callers; 400 `INVALID_REQUEST` if missing. Lookup-style endpoints that uniquely identify a resource by non-tenant key (e.g. `GET /v1/admin/budgets/lookup`, where `(scope, unit)` is unique) do not require a tenant parameter.
 
 API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` (test), where the random part is 32 cryptographically random characters. Keys are stored as bcrypt hashes; the full secret is only returned once at creation time. Recommended expiry: 90 days.
 
