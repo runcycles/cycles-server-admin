@@ -8,6 +8,7 @@ public enum BudgetOperation {
     CREDIT,
     DEBIT,
     RESET,
+    RESET_SPENT,
     REPAY_DEBT,
     STATUS_CHANGE,
     CREATE,

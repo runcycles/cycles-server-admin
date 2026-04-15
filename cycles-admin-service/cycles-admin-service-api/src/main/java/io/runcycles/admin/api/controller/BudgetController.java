@@ -172,6 +172,25 @@ public class BudgetController {
         if (request.getAmount().getUnit() != unit) {
             throw GovernanceException.unitMismatch(unit.name(), request.getAmount().getUnit().name());
         }
+        // Validate the optional `spent` field: only meaningful for RESET_SPENT,
+        // must share the same unit as the budget (ledger is single-unit), and
+        // must be non-negative. Supplying `spent` on other operations is a
+        // client bug worth surfacing early rather than silently ignoring.
+        if (request.getSpent() != null) {
+            if (request.getOperation() != FundingOperation.RESET_SPENT) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                    "`spent` field is only honoured for RESET_SPENT operations", 400);
+            }
+            if (request.getSpent().getUnit() != unit) {
+                throw GovernanceException.unitMismatch(unit.name(), request.getSpent().getUnit().name());
+            }
+            if (request.getSpent().getAmount() < 0) {
+                throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                    "`spent` must be >= 0", 400);
+            }
+        }
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         if (tenantId == null) {
             // Admin key auth — tenant_id query param is required for scoping
@@ -190,7 +209,7 @@ public class BudgetController {
             .resourceType("budget").resourceId(scope + ":" + unit.name())
             .operation("fundBudget")
             .status(200)
-            .metadata(buildFundMetadata(scope, unit, request))
+            .metadata(buildFundMetadata(scope, unit, request, response))
             .build());
         try {
             EventType fundEventType;
@@ -198,16 +217,44 @@ public class BudgetController {
                 case CREDIT: fundEventType = EventType.BUDGET_FUNDED; break;
                 case DEBIT: fundEventType = EventType.BUDGET_DEBITED; break;
                 case RESET: fundEventType = EventType.BUDGET_RESET; break;
+                case RESET_SPENT: fundEventType = EventType.BUDGET_RESET_SPENT; break;
                 case REPAY_DEBT: fundEventType = EventType.BUDGET_DEBT_REPAID; break;
                 default: fundEventType = EventType.BUDGET_FUNDED; break;
             }
             ActorType actorType = httpRequest.getAttribute("authenticated_tenant_id") != null ? ActorType.API_KEY : ActorType.ADMIN;
+
+            // Pre/post state snapshots. For RESET_SPENT we populate the new spent
+            // and reserved fields so event consumers can see the transition cleanly.
+            // For other operations we populate what we have; unchanged fields appear
+            // equal on both sides.
+            EventDataBudgetLifecycle.BudgetState previousState = EventDataBudgetLifecycle.BudgetState.builder()
+                .allocated(response.getPreviousAllocated() != null ? response.getPreviousAllocated().getAmount() : null)
+                .remaining(response.getPreviousRemaining() != null ? response.getPreviousRemaining().getAmount() : null)
+                .debt(response.getPreviousDebt() != null ? response.getPreviousDebt().getAmount() : null)
+                .spent(response.getPreviousSpent() != null ? response.getPreviousSpent().getAmount() : null)
+                .build();
+            EventDataBudgetLifecycle.BudgetState newState = EventDataBudgetLifecycle.BudgetState.builder()
+                .allocated(response.getNewAllocated() != null ? response.getNewAllocated().getAmount() : null)
+                .remaining(response.getNewRemaining() != null ? response.getNewRemaining().getAmount() : null)
+                .debt(response.getNewDebt() != null ? response.getNewDebt().getAmount() : null)
+                .spent(response.getNewSpent() != null ? response.getNewSpent().getAmount() : null)
+                .build();
+
+            EventDataBudgetLifecycle.EventDataBudgetLifecycleBuilder payloadBuilder =
+                EventDataBudgetLifecycle.builder()
+                    .scope(scope).unit(unit)
+                    .operation(BudgetOperation.valueOf(request.getOperation().name()))
+                    .previousState(previousState)
+                    .newState(newState)
+                    .reason(request.getReason());
+            if (request.getOperation() == FundingOperation.RESET_SPENT) {
+                payloadBuilder.spentOverrideProvided(request.getSpent() != null);
+            }
+
             eventService.emit(fundEventType, tenantId, scope, "cycles-admin",
                 Actor.builder().type(actorType)
                     .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
-                objectMapper.convertValue(EventDataBudgetLifecycle.builder()
-                    .scope(scope).unit(unit).operation(BudgetOperation.valueOf(request.getOperation().name()))
-                    .reason(request.getReason()).build(), Map.class),
+                objectMapper.convertValue(payloadBuilder.build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
             LOG.warn("Failed to emit event: {}", e.getMessage());
@@ -291,7 +338,8 @@ public class BudgetController {
         return meta;
     }
 
-    private Map<String, Object> buildFundMetadata(String scope, UnitEnum unit, BudgetFundingRequest request) {
+    private Map<String, Object> buildFundMetadata(String scope, UnitEnum unit, BudgetFundingRequest request,
+                                                   BudgetFundingResponse response) {
         java.util.LinkedHashMap<String, Object> meta = new java.util.LinkedHashMap<>();
         meta.put("scope", scope);
         meta.put("unit", unit.name());
@@ -299,6 +347,21 @@ public class BudgetController {
         meta.put("amount", request.getAmount().getAmount());
         if (request.getReason() != null) meta.put("reason", request.getReason());
         if (request.getIdempotencyKey() != null) meta.put("idempotency_key", request.getIdempotencyKey());
+        // Spent-change audit trail. Only meaningful for RESET_SPENT today; populated
+        // for all operations since the values are cheap and give reviewers a
+        // before/after snapshot without joining to event logs. For preserve-spent
+        // operations prev and new are equal — a visual no-op.
+        if (response != null && response.getPreviousSpent() != null && response.getNewSpent() != null) {
+            meta.put("previous_spent", response.getPreviousSpent().getAmount());
+            meta.put("new_spent", response.getNewSpent().getAmount());
+        }
+        // Flag whether the caller explicitly supplied `spent` vs relied on the
+        // default — important for RESET_SPENT compliance review because explicit
+        // spent values fall under the "operator adjusted consumption" bucket that
+        // usually requires higher scrutiny than routine rollovers.
+        if (request.getOperation() == FundingOperation.RESET_SPENT) {
+            meta.put("spent_override_provided", request.getSpent() != null);
+        }
         return meta;
     }
 

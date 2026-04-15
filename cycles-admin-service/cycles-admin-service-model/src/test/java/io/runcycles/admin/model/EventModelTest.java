@@ -39,7 +39,11 @@ class EventModelTest {
 
     @Test
     void eventType_allTypesHaveExpectedCount() {
-        assertEquals(40, EventType.values().length);
+        // 41 = original 40 + BUDGET_RESET_SPENT (added in spec v0.1.25.17 alongside
+        // the RESET_SPENT funding operation). When adding new event types, bump
+        // this count and ensure the new type is also registered in
+        // EventPayloadTypeMapping (enforced by EventPayloadContractTest).
+        assertEquals(41, EventType.values().length);
     }
 
     @Test

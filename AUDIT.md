@@ -1,9 +1,60 @@
 # Complete Budget Governance v0.1.25.8 — Admin Server Audit
 
-**Server version:** 0.1.25.17 (2026-04-14 — cjson round-trip fix across ApiKey / Policy / Tenant write paths)
-**Date:** 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Server version:** 0.1.25.18 (2026-04-15 — RESET_SPENT operation: billing-period boundary)
+**Date:** 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, v0.1.25.11) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-15 — v0.1.25.18 RESET_SPENT operation: billing-period boundary
+
+Closes a long-standing gap between the docs (`how-to/budget-allocation-and-management-in-cycles#resetting-budgets` describes RESET as "for resetting a scope for a new billing period") and the RESET implementation (which only resizes the allocated ceiling and preserves spent — a strict no-op on an exhausted budget when re-RESET to the same allocated). Adds the new `RESET_SPENT` funding operation and its event type, paired with the cycles-protocol#45 spec PR.
+
+**Approach:** add a new operation, don't redefine RESET. Keeps RESET symmetric with CREDIT/DEBIT as a history-preserving ceiling adjustment; RESET_SPENT owns the billing-period semantic. No existing caller sees behaviour drift.
+
+**RESET_SPENT semantics** (Lua, BudgetRepository.java):
+- `allocated` = request `amount`
+- `spent` = optional request `spent` field (defaults to 0 when omitted)
+- `reserved` preserved (active runtime reservations straddle the period and land in the new period's spent when they commit)
+- `debt` preserved (periods don't forgive debt; `REPAY_DEBT` is the channel)
+- `remaining` recomputed from the ledger invariant; allowed to go negative if `(allocated - spent - reserved - debt) < 0` (overdraft semantics)
+- `is_over_limit` recomputed from `debt > overdraft_limit` (logic unchanged, inputs change)
+
+**Optional `spent` parameter** covers four operator needs beyond routine rollovers: migration from another billing system, prorated mid-period signup, credit-back / compensation, state correction. Constrained to `>= 0`. Validated at both the controller (Bean Validation + unit-mismatch check) and Lua layers (defensive `INVALID_REQUEST` on negative; surfaces as 400).
+
+**Spec coordination:** depends on cycles-protocol#45 (spec PR for v0.1.25.17). Admin contract test fetches `cycles-protocol@main`; this PR's contract tests pass against the spec PR branch and will pass against `main` once cycles-protocol#45 merges. Spec-first merge ordering required.
+
+**Idempotency cache versioned to v2.** The fund Lua now caches 9 pipe-delimited fields (was 7) — added `prev_spent` and `new_spent`. The cache key prefix bumped from `idempotency:fund:<key>` to `idempotency:fund:v2:<key>`. Old v1 entries expire naturally within 24h; old and new coexist with zero parse-failure risk during the rolling deploy. Java parser updated to read the v2 format.
+
+**Event emission:** new `BUDGET_RESET_SPENT` event type (`budget.reset_spent`), distinct from `budget.reset`. Event consumers (dashboards, webhook handlers, compliance queries) can route period boundaries separately from resize events. The payload's new `spent_override_provided` boolean flags whether the request explicitly set `spent` (migration / correction needing compliance scrutiny) vs defaulted to 0 (routine rollover).
+
+**Audit metadata enriched** in `BudgetController.buildFundMetadata`: now records `previous_spent`, `new_spent`, and (for RESET_SPENT) `spent_override_provided`. Reviewers see the before/after spent transition and whether the operator deliberately set it without joining to event logs.
+
+**Changes:**
+
+| File | Change |
+|---|---|
+| `cycles-admin-service-model/.../FundingOperation.java` | Add RESET_SPENT enum value + javadoc explaining each operation's role |
+| `cycles-admin-service-model/.../BudgetFundingRequest.java` | Add optional `spent` field (Amount); javadoc clarifies RESET_SPENT-only semantic |
+| `cycles-admin-service-model/.../BudgetFundingResponse.java` | Add nullable `previous_spent` and `new_spent` (additive, `@JsonInclude(NON_NULL)`) |
+| `cycles-admin-service-model/.../event/BudgetOperation.java` | Add RESET_SPENT enum value |
+| `cycles-admin-service-model/.../event/EventType.java` | Add `BUDGET_RESET_SPENT("budget.reset_spent", BUDGET)`; drop stale "(15)" comment |
+| `cycles-admin-service-model/.../event/EventPayloadTypeMapping.java` | Map `BUDGET_RESET_SPENT` → `EventDataBudgetLifecycle.class` |
+| `cycles-admin-service-model/.../event/EventDataBudgetLifecycle.java` | Add `spent` and `reserved` to `BudgetState`; new optional `spent_override_provided` field on the outer payload |
+| `cycles-admin-service-data/.../BudgetRepository.java` | New RESET_SPENT Lua branch with optional ARGV[7] spent override; return array extended 8 → 10 elements (adds prev_spent / new_spent); `INVALID_REQUEST` error path for negative spent; idempotency cache key prefix bumped to `idempotency:fund:v2:`; Java parser reads new fields |
+| `cycles-admin-service-api/.../BudgetController.java` | Validate optional `spent` (operation must be RESET_SPENT, unit must match, value `>= 0`); emit `BUDGET_RESET_SPENT` event with full pre/post BudgetState snapshots and `spent_override_provided` flag; enrich audit metadata with prev/new spent + the override flag |
+| `cycles-admin-service-data/.../BudgetRepositoryTest.java` | +6 new tests: default-clears-spent, with-explicit-override, rejects-negative, allows-negative-remaining, empty-ARGV-default-path, idempotent-hit-parses-v2-cache |
+| `cycles-admin-service-api/.../BudgetControllerTest.java` | +5 new tests: RESET_SPENT default, with override, spent on wrong operation rejected, negative spent rejected, spent unit mismatch rejected |
+| `cycles-admin-service-model/.../EventModelTest.java` | Bump expected event-type count 40 → 41 with explanatory comment |
+
+**Verification:**
+- `mvn verify` passes 518 tests (up from 512), JaCoCo coverage met (≥95%), spec coverage 43/43 endpoints.
+- Run with `-Dcontract.spec.url=https://raw.githubusercontent.com/runcycles/cycles-protocol/spec/budget-reset-spent-v0.1.25.17/cycles-governance-admin-v0.1.25.yaml` while cycles-protocol#45 is in flight; once merged, default contract URL (cycles-protocol@main) will validate cleanly.
+
+**Wire format:** additive. Existing RESET callers are unaffected. New fields are optional / nullable; new enum values follow the spec's existing extensibility policy ("consumers MUST ignore unrecognised enum values").
+
+**Cross-refs:** cycles-protocol#45 (spec PR), upcoming docs PR (split `how-to/budget-allocation-and-management-in-cycles#resetting-budgets` into "Resizing a budget" and "Starting a new billing period").
+
+---
 
 ### 2026-04-14 — v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant
 
