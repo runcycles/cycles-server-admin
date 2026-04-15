@@ -374,10 +374,11 @@ Use `POST /v1/admin/budgets/fund?scope={scope}&unit={unit}` with one of:
 
 | Operation | Effect |
 |-----------|--------|
-| `CREDIT` | `allocated += amount`, `remaining += amount` |
-| `DEBIT` | `allocated -= amount`, `remaining -= amount` (fails if remaining would go negative) |
-| `RESET` | `allocated = amount`, `remaining = amount - reserved - spent - debt` |
-| `REPAY_DEBT` | `debt -= amount` (uses remaining if debt < amount) |
+| `CREDIT` | `allocated += amount`, `remaining += amount`. Preserves spent / reserved / debt. |
+| `DEBIT` | `allocated -= amount`, `remaining -= amount` (fails if remaining would go negative). Preserves spent / reserved / debt. |
+| `RESET` | `allocated = amount`, `remaining = amount - reserved - spent - debt`. Preserves spent / reserved / debt. Use for **resizing the ceiling** (plan changes, limit adjustments). NOT for billing-period boundaries — use `RESET_SPENT`. |
+| `RESET_SPENT` (v0.1.25.18+) | `allocated = amount`, `spent = request.spent` (defaults to 0), `remaining = allocated - spent - reserved - debt`. Preserves reserved (active reservations straddle the period) and debt (use `REPAY_DEBT` to clear). Use for **starting a new billing period**, migrations, prorated signups, and consumption corrections. Optional `spent` field (Amount, must be ≥ 0, unit must match) lets the operator set a specific starting consumption — emits `budget.reset_spent` event with `spent_override_provided` flag for audit. |
+| `REPAY_DEBT` | `debt -= amount` (uses remaining if debt < amount). |
 
 All funding operations support `idempotency_key` (prevents double-funding; replayed requests return original response) and an optional `reason` field for the audit trail.
 

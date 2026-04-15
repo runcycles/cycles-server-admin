@@ -549,6 +549,80 @@ class BudgetControllerTest {
                 .andExpect(status().isBadRequest());
     }
 
+    /**
+     * Audit + event payload enrichment for RESET_SPENT: the audit entry
+     * MUST carry previous_spent / new_spent and the spent_override_provided
+     * flag (true when the request supplied an explicit spent value, false on
+     * default-to-zero). This is what compliance dashboards use to filter
+     * routine rollovers from operator-set consumption adjustments.
+     */
+    @Test
+    void fundBudget_resetSpentExplicit_auditMetadataIncludesSpentOverrideFlag() throws Exception {
+        setupApiKeyAuth();
+        BudgetFundingResponse funding = BudgetFundingResponse.builder()
+                .operation(FundingOperation.RESET_SPENT)
+                .previousAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .newAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 0L))
+                .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 600L))
+                .previousSpent(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .newSpent(new Amount(UnitEnum.USD_MICROCENTS, 400L))
+                .timestamp(Instant.now()).build();
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+
+        mockMvc.perform(post("/v1/admin/budgets/fund")
+                        .param("scope", "tenant:tenant-1/workspace:tscope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"RESET_SPENT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000},\"spent\":{\"unit\":\"USD_MICROCENTS\",\"amount\":400}}"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry ->
+                "fundBudget".equals(entry.getOperation())
+                && entry.getStatus() == 200
+                && entry.getMetadata() != null
+                && "RESET_SPENT".equals(entry.getMetadata().get("funding_operation"))
+                && Long.valueOf(1000L).equals(entry.getMetadata().get("previous_spent"))
+                && Long.valueOf(400L).equals(entry.getMetadata().get("new_spent"))
+                && Boolean.TRUE.equals(entry.getMetadata().get("spent_override_provided"))));
+    }
+
+    /**
+     * Audit metadata for the default-no-override case sets
+     * spent_override_provided=false. This is the routine-rollover signal
+     * that compliance dashboards can rely on to filter out high-frequency,
+     * low-scrutiny billing-period boundaries from the operator-adjustments
+     * stream.
+     */
+    @Test
+    void fundBudget_resetSpentDefault_auditMetadataMarksOverrideFalse() throws Exception {
+        setupApiKeyAuth();
+        BudgetFundingResponse funding = BudgetFundingResponse.builder()
+                .operation(FundingOperation.RESET_SPENT)
+                .previousAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .newAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 0L))
+                .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .previousSpent(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .newSpent(new Amount(UnitEnum.USD_MICROCENTS, 0L))
+                .timestamp(Instant.now()).build();
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+
+        mockMvc.perform(post("/v1/admin/budgets/fund")
+                        .param("scope", "tenant:tenant-1/workspace:tscope")
+                        .param("unit", "USD_MICROCENTS")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"RESET_SPENT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000}}"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry ->
+                entry.getMetadata() != null
+                && "RESET_SPENT".equals(entry.getMetadata().get("funding_operation"))
+                && Boolean.FALSE.equals(entry.getMetadata().get("spent_override_provided"))));
+    }
+
     @Test
     void fundBudget_repayDebtOperation_returns200() throws Exception {
         setupApiKeyAuth();
