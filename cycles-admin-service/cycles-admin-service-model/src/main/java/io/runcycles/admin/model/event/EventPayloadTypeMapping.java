@@ -38,6 +38,7 @@ public final class EventPayloadTypeMapping {
         m.put(EventType.BUDGET_FUNDED, EventDataBudgetLifecycle.class);
         m.put(EventType.BUDGET_DEBITED, EventDataBudgetLifecycle.class);
         m.put(EventType.BUDGET_RESET, EventDataBudgetLifecycle.class);
+        m.put(EventType.BUDGET_RESET_SPENT, EventDataBudgetLifecycle.class);
         m.put(EventType.BUDGET_DEBT_REPAID, EventDataBudgetLifecycle.class);
         m.put(EventType.BUDGET_FROZEN, EventDataBudgetLifecycle.class);
         m.put(EventType.BUDGET_UNFROZEN, EventDataBudgetLifecycle.class);

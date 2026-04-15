@@ -35,6 +35,16 @@ public class EventDataBudgetLifecycle {
     @JsonProperty("new_state")
     private BudgetState newState;
 
+    /**
+     * Only populated on {@code budget.reset_spent}. True when the request
+     * explicitly supplied a {@code spent} field (migration, proration,
+     * compensation, or correction), false when spent defaulted to 0
+     * (routine period rollover).
+     * Added in spec v0.1.25.17.
+     */
+    @JsonProperty("spent_override_provided")
+    private Boolean spentOverrideProvided;
+
     @JsonProperty("reason")
     private String reason;
 
@@ -53,6 +63,23 @@ public class EventDataBudgetLifecycle {
 
         @JsonProperty("debt")
         private Long debt;
+
+        /**
+         * Spent component of the budget state. Populated on
+         * {@code budget.reset_spent} pre/post snapshots so consumers
+         * can see the transition. Added in spec v0.1.25.17.
+         */
+        @JsonProperty("spent")
+        private Long spent;
+
+        /**
+         * Reserved component of the budget state. Populated on
+         * {@code budget.reset_spent} pre/post snapshots so consumers
+         * can see what carried forward across the period boundary.
+         * Added in spec v0.1.25.17.
+         */
+        @JsonProperty("reserved")
+        private Long reserved;
 
         @JsonProperty("status")
         private String status;

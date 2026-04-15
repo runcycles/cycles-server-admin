@@ -356,6 +356,181 @@ class BudgetRepositoryTest {
         assertThat(response.getNewRemaining().getAmount()).isEqualTo(4500L);
     }
 
+    // ---- RESET_SPENT (billing-period boundary) — v0.1.25.17+ ---------------
+
+    /**
+     * Default case: no explicit `spent` → Lua defaults to 0.
+     * Simulates the canonical "new billing period" flow on an exhausted budget.
+     * Lua return array has 10 elements in v0.1.25.17+: adds prev_spent/new_spent.
+     */
+    @Test
+    void fund_resetSpent_defaultClearsSpent() {
+        // Pre-state: allocated=1000, remaining=0, spent=1000 (exhausted). Post:
+        // allocated=1000, remaining=1000, spent=0. Mock echoes back what Lua
+        // would compute.
+        List<String> luaResult = List.of("OK",
+            "1000", "1000",       // prev_allocated, new_allocated
+            "0", "1000",          // prev_remaining, new_remaining
+            "0", "0",             // prev_debt, new_debt
+            "false",              // is_over
+            "1000", "0");         // prev_spent, new_spent
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(luaResult);
+
+        BudgetFundingRequest request = new BudgetFundingRequest();
+        request.setOperation(FundingOperation.RESET_SPENT);
+        request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
+        // No spent field — defaults to 0.
+
+        BudgetFundingResponse response = repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request);
+
+        assertThat(response.getOperation()).isEqualTo(FundingOperation.RESET_SPENT);
+        assertThat(response.getPreviousAllocated().getAmount()).isEqualTo(1000L);
+        assertThat(response.getNewAllocated().getAmount()).isEqualTo(1000L);
+        assertThat(response.getPreviousRemaining().getAmount()).isEqualTo(0L);
+        assertThat(response.getNewRemaining().getAmount()).isEqualTo(1000L);
+        assertThat(response.getPreviousSpent()).isNotNull();
+        assertThat(response.getPreviousSpent().getAmount()).isEqualTo(1000L);
+        assertThat(response.getNewSpent()).isNotNull();
+        assertThat(response.getNewSpent().getAmount()).isEqualTo(0L);
+    }
+
+    /**
+     * Explicit spent override: migration / proration / compensation use cases.
+     * Tests that the request's spent field is plumbed through to ARGV[7] and
+     * that the response reflects the explicit value.
+     */
+    @Test
+    void fund_resetSpent_withExplicitSpentOverride() {
+        // Pre: allocated=1000, spent=1000, remaining=0. Request: amount=1000,
+        // spent=400 (migration). Post: allocated=1000, spent=400, remaining=600.
+        List<String> luaResult = List.of("OK",
+            "1000", "1000",
+            "0", "600",
+            "0", "0",
+            "false",
+            "1000", "400");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(luaResult);
+
+        BudgetFundingRequest request = new BudgetFundingRequest();
+        request.setOperation(FundingOperation.RESET_SPENT);
+        request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
+        request.setSpent(new Amount(UnitEnum.USD_MICROCENTS, 400L));
+
+        BudgetFundingResponse response = repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request);
+
+        assertThat(response.getOperation()).isEqualTo(FundingOperation.RESET_SPENT);
+        assertThat(response.getNewSpent().getAmount()).isEqualTo(400L);
+        assertThat(response.getNewRemaining().getAmount()).isEqualTo(600L);
+
+        // Verify the Lua call received the spent override at ARGV[7]. Using
+        // ArgumentCaptor for the ARGV list.
+        org.mockito.ArgumentCaptor<List<String>> argsCap = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(jedis).eval(anyString(), anyList(), argsCap.capture());
+        List<String> argv = argsCap.getValue();
+        assertThat(argv).hasSize(7);
+        assertThat(argv.get(6)).isEqualTo("400");
+    }
+
+    /**
+     * Negative spent: Lua validates and returns INVALID_REQUEST. Java maps
+     * to GovernanceException with 400. This guards the runtime-side check in
+     * case Bean Validation gets bypassed (e.g., direct controller invocation
+     * in a test harness).
+     */
+    @Test
+    void fund_resetSpent_rejectsNegativeSpent() {
+        List<String> luaResult = List.of("INVALID_REQUEST", "spent must be >= 0");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(luaResult);
+
+        BudgetFundingRequest request = new BudgetFundingRequest();
+        request.setOperation(FundingOperation.RESET_SPENT);
+        request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
+        request.setSpent(new Amount(UnitEnum.USD_MICROCENTS, -1L));
+
+        assertThatThrownBy(() -> repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request))
+            .isInstanceOf(io.runcycles.admin.data.exception.GovernanceException.class)
+            .hasMessageContaining("spent must be >= 0");
+    }
+
+    /**
+     * Overdraft-style negative remaining: if the supplied spent plus reserved
+     * and debt exceed allocated, remaining goes negative. No error — matches
+     * existing overdraft ledger semantics. Caller sees the negative value.
+     */
+    @Test
+    void fund_resetSpent_allowsNegativeRemainingWhenOverflow() {
+        // allocated=100, reserved=50, debt=20, spent=200 → remaining=-170
+        List<String> luaResult = List.of("OK",
+            "1000", "100",
+            "0", "-170",
+            "20", "20",
+            "false",
+            "0", "200");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(luaResult);
+
+        BudgetFundingRequest request = new BudgetFundingRequest();
+        request.setOperation(FundingOperation.RESET_SPENT);
+        request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 100L));
+        request.setSpent(new Amount(UnitEnum.USD_MICROCENTS, 200L));
+
+        BudgetFundingResponse response = repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request);
+
+        assertThat(response.getNewRemaining().getAmount()).isEqualTo(-170L);
+        assertThat(response.getNewSpent().getAmount()).isEqualTo(200L);
+    }
+
+    /**
+     * Verify ARGV[7] is EMPTY when no spent override is supplied (default-0
+     * path). This is important because the Lua script distinguishes empty
+     * from present — an accidental "0" string from a null-unsafe call site
+     * would silently work on a RESET_SPENT but might leak to other ops.
+     */
+    @Test
+    void fund_resetSpent_emptyArgvForDefaultSpent() {
+        List<String> luaResult = List.of("OK",
+            "1000", "1000",
+            "0", "1000",
+            "0", "0",
+            "false",
+            "1000", "0");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(luaResult);
+
+        BudgetFundingRequest request = new BudgetFundingRequest();
+        request.setOperation(FundingOperation.RESET_SPENT);
+        request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
+        // spent field intentionally null
+
+        repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request);
+
+        org.mockito.ArgumentCaptor<List<String>> argsCap = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(jedis).eval(anyString(), anyList(), argsCap.capture());
+        assertThat(argsCap.getValue().get(6)).isEqualTo("");
+    }
+
+    /**
+     * Idempotent cache replay against the v2 cache format. The cached string
+     * now carries 9 pipe-delimited fields: ...|is_over|prev_spent|new_spent.
+     * Ensure the parser reads prev_spent and new_spent into the response.
+     */
+    @Test
+    void fund_idempotentHit_parsesV2CacheFormatWithSpent() {
+        // v2 cache format: prev_allocated|allocated|prev_remaining|remaining|
+        //                  prev_debt|debt|is_over|prev_spent|new_spent
+        String cached = "1000|1000|0|1000|0|0|false|1000|0";
+        List<String> luaResult = List.of("IDEMPOTENT_HIT", cached);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(luaResult);
+
+        BudgetFundingRequest request = new BudgetFundingRequest();
+        request.setOperation(FundingOperation.RESET_SPENT);
+        request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
+        request.setIdempotencyKey("same-key-retry");
+
+        BudgetFundingResponse response = repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request);
+
+        assertThat(response.getPreviousSpent().getAmount()).isEqualTo(1000L);
+        assertThat(response.getNewSpent().getAmount()).isEqualTo(0L);
+    }
+
     @Test
     void list_cursorPagination_skipsEntriesBeforeCursor() {
         Set<String> keys = new LinkedHashSet<>(List.of("budget:a:USD_MICROCENTS", "budget:b:USD_MICROCENTS", "budget:c:USD_MICROCENTS"));
