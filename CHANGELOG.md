@@ -14,6 +14,55 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.21] — 2026-04-16
+
+### Added
+
+- **Nightly CI coverage for the audit-write path** (closes #102
+  Phase 1). Two new scheduled workflows mirroring cycles-server's
+  pattern:
+  - `nightly-audit-soak.yml` (06:30 UTC) — runs
+    `AuditFailureSoakIntegrationTest` at 500 ops/s × 10 min against a
+    real Testcontainers Redis. Asserts 5 invariants: heap stability,
+    latency non-degradation, counter-sum completeness (no lost
+    increments under sustained contention), index-cardinality bound,
+    network-error rate < 1%. Configurable duration + rps via
+    `workflow_dispatch` inputs.
+  - `nightly-property-tests.yml` (06:00 UTC) — runs
+    `AuditCoverageInvariantsPropertyTest` via jqwik at
+    `defaultTries=100` (5× PR depth). 6 NORMATIVE invariants
+    around outcome-exclusivity, authenticated-tier immunity,
+    TTL tier selection, message sanitization, and non-throwing
+    contract. Shrinks failing cases to minimal reproducer.
+- New Maven profiles `property-tests` and `soak` in
+  `cycles-admin-service-api/pom.xml`. PR builds stay unchanged
+  (tagged tests excluded via `<excludedGroups>`); nightly CI
+  activates per-profile.
+- jqwik 1.9.1 + jqwik-spring 0.11.0 as test-scope dependencies.
+
+### Wire format
+
+Unchanged. Test-infrastructure-only release. No production code paths modified beyond widening `AuditRepository.resolveTtlSeconds` visibility from package-private to public (test-access across modules; not intended as external API).
+
+### Notes for upgraders
+
+No action required. Pulling the image or JAR exposes no behaviour
+change — this release purely adds nightly regression coverage that
+ops will see as green/red workflow runs on `main`.
+
+If you want to reproduce a nightly locally:
+
+```bash
+# Soak (10 min @ 500 ops/s vs real Redis)
+mvn test -Psoak --file cycles-admin-service/pom.xml \
+  -pl cycles-admin-service-api -am \
+  -Dtest=AuditFailureSoakIntegrationTest
+
+# Property-based invariants (100 tries)
+mvn test -Pproperty-tests --file cycles-admin-service/pom.xml \
+  -Djqwik.defaultTries=100
+```
+
 ## [0.1.25.20] — 2026-04-16
 
 ### Added
@@ -310,6 +359,7 @@ should switch to treating 409 as success-equivalent.
 - Multiple spec-compliance hardening fixes across controllers and error
   contracts (see `AUDIT.md` for the full list).
 
+[0.1.25.21]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.21
 [0.1.25.20]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.20
 [0.1.25.19]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.19
 [0.1.25.18]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.18

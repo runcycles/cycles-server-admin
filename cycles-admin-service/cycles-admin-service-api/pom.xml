@@ -73,6 +73,21 @@
             <version>2.1.7</version>
             <scope>test</scope>
         </dependency>
+        <!-- Property-based testing (v0.1.25.21 nightly invariants). Only the
+             property-tests profile surfaces jqwik-tagged tests to surefire;
+             the default build excludes them via <excludedGroups>. -->
+        <dependency>
+            <groupId>net.jqwik</groupId>
+            <artifactId>jqwik</artifactId>
+            <version>1.9.1</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>net.jqwik</groupId>
+            <artifactId>jqwik-spring</artifactId>
+            <version>0.11.0</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
     <build>
         <plugins>
@@ -95,6 +110,11 @@
                     <excludes>
                         <exclude>**/*IntegrationTest.java</exclude>
                     </excludes>
+                    <!-- v0.1.25.21: tag-based exclusion for nightly-only tests.
+                         `soak` and `property-tests` tags are activated only via
+                         their dedicated profiles; default PR build skips them
+                         to keep feedback fast. -->
+                    <excludedGroups>soak,property-tests</excludedGroups>
                     <!-- Spec coverage report lives in api.zzz subpackage; alphabetical
                          order ensures it runs LAST so SpecCoverageCollector holds the
                          full set of hit operations by the time the report runs. -->
@@ -113,6 +133,52 @@
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
                             <excludes combine.self="override" />
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <!-- v0.1.25.21: Nightly jqwik property tests. Overrides default
+             exclusion (both filename + excludedGroups) and pins to the
+             `property-tests` tag. Runs only the 5 NORMATIVE invariant
+             properties for the audit-write path. Nightly workflow invokes
+             with `-Djqwik.defaultTries=100` for 5× deeper interleaving
+             coverage than a PR-feedback run would do (default 20 from
+             jqwik.properties). -->
+        <profile>
+            <id>property-tests</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <excludes combine.self="override" />
+                            <excludedGroups combine.self="override" />
+                            <groups>property-tests</groups>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <!-- v0.1.25.21: Nightly sustained-load soak test. Overrides default
+             exclusion and pins to the `soak` tag. Surefire timeout raised
+             to 4500s (75 min) to cover 10-min default plus workflow_dispatch
+             variants up to ~60 min. For longer deep-soak runs, increase
+             both -Dsurefire.forkedProcessTimeoutInSeconds and
+             -Dsoak.duration.minutes. -->
+        <profile>
+            <id>soak</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <excludes combine.self="override" />
+                            <excludedGroups combine.self="override" />
+                            <groups>soak</groups>
+                            <forkedProcessTimeoutInSeconds>4500</forkedProcessTimeoutInSeconds>
                         </configuration>
                     </plugin>
                 </plugins>

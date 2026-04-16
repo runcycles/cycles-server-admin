@@ -406,6 +406,32 @@ entries call this out when the coordination pattern is used.
 
 ---
 
+## Nightly CI coverage (v0.1.25.21+)
+
+Two scheduled workflows watch the audit-write path for emergent issues that PR-level tests can't catch:
+
+| Workflow | Schedule | Purpose | Failure-signal runbook |
+|---|---|---|---|
+| [`.github/workflows/nightly-property-tests.yml`](.github/workflows/nightly-property-tests.yml) | 06:00 UTC daily | jqwik property-based invariants (6 tests, 100 tries nightly). Asserts `logFailure` correctness across arbitrary inputs — exactly-one-outcome per call, authenticated-tier never sampled, TTL tier matches tenant_id, sanitizeMessage bulletproof, non-throwing contract. | **A failure here means a real contract regression.** Download the surefire report from the failed run — jqwik embeds the minimal shrunk input (e.g. `tenantId=""`, `rate=Integer.MAX_VALUE`, `status=500`). Paste it into a unit test for fast-feedback iteration. Priority: **high** — these invariants are NORMATIVE; failing means v0.1.25.20's compliance guarantees no longer hold. |
+| [`.github/workflows/nightly-audit-soak.yml`](.github/workflows/nightly-audit-soak.yml) | 06:30 UTC daily | 10-min × 500 ops/s failure flood against real Testcontainers Redis. 5 invariants: heap stable (AS1), latency stable (AS2), counter-sum complete (AS3), index-cardinality bounded (AS4), network-error rate < 1% (AS5). | Which invariant failed determines the triage path: **AS1** — memory leak in the audit-write path; check `AuditFailureService` or `AuditRepository` for recent additions. **AS2** — p99 latency regression on the hot path; profile `logFailure` with a flame graph. **AS3** — lost counter increments under contention; examine `ThreadLocalRandom` usage and meter-registry atomics. **AS4** — orphan ZADD bug; check Lua script for divergence between SET + ZADD atomicity. **AS5** — Redis-pool exhaustion; increase pool size or investigate connection leak. Priority: **medium** — soak catches slow regressions; single-day failure is often transient (CI load variance). Two consecutive failures = genuine problem. |
+
+Both workflows have `workflow_dispatch` triggers — run manually via the Actions tab to reproduce on-demand, useful when triaging a failed PR before merge.
+
+**Manual reproduction locally:**
+
+```bash
+# Soak (Docker required for Testcontainers)
+mvn test -Psoak --file cycles-admin-service/pom.xml \
+  -pl cycles-admin-service-api -am \
+  -Dtest=AuditFailureSoakIntegrationTest
+
+# Property-based (no Docker needed — uses Mockito + SimpleMeterRegistry)
+mvn test -Pproperty-tests --file cycles-admin-service/pom.xml \
+  -Djqwik.defaultTries=100
+```
+
+PR CI does not run either workflow — `<excludedGroups>soak,property-tests</excludedGroups>` in the default surefire config skips them. A PR that breaks these invariants will pass PR CI and only fail the next nightly run. If ops sees a nightly red shortly after a release, look at the prior day's merged PRs.
+
 ## Related docs
 
 - [`README.md`](README.md) — quickstart, architecture, build-from-source.
