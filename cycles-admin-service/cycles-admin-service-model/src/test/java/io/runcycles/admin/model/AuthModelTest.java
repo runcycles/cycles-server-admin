@@ -7,6 +7,8 @@ import io.runcycles.admin.model.auth.ApiKey;
 import io.runcycles.admin.model.auth.ApiKeyCreateRequest;
 import io.runcycles.admin.model.auth.ApiKeyResponse;
 import io.runcycles.admin.model.auth.ApiKeyStatus;
+import io.runcycles.admin.model.auth.AuthIntrospectResponse;
+import io.runcycles.admin.model.auth.Capabilities;
 import io.runcycles.admin.model.auth.Permission;
 import jakarta.validation.*;
 import org.junit.jupiter.api.BeforeAll;
@@ -169,5 +171,110 @@ class AuthModelTest {
         // Verify round-trip: deserialize back and check hash is preserved
         ApiKey deserialized = mapper.readValue(json, ApiKey.class);
         assertEquals("$2a$12$secret_hash", deserialized.getKeyHash());
+    }
+
+    // --- v0.1.25.19 introspect dual-auth (spec v0.1.25.15) ---
+
+    @Test
+    void authIntrospectResponse_adminShape_omitsTenantAndScopeFilter() throws Exception {
+        // Under auth_type=admin, tenant_id and scope_filter MUST be absent
+        // (spec yaml:3187-3198). Per-field @JsonInclude on the DTO takes care
+        // of this as long as the fields are left null.
+        AuthIntrospectResponse admin = AuthIntrospectResponse.builder()
+                .authenticated(true)
+                .authType("admin")
+                .permissions(List.of("*"))
+                .capabilities(Capabilities.builder()
+                        .viewOverview(true).viewBudgets(true).viewEvents(true)
+                        .viewWebhooks(true).viewAudit(true).viewTenants(true)
+                        .viewApiKeys(true).viewPolicies(true)
+                        .build())
+                .build();
+        String json = mapper.writeValueAsString(admin);
+        assertTrue(json.contains("\"auth_type\":\"admin\""));
+        assertFalse(json.contains("\"tenant_id\""), "admin shape must not include tenant_id");
+        assertFalse(json.contains("\"scope_filter\""), "admin shape must not include scope_filter");
+    }
+
+    @Test
+    void authIntrospectResponse_tenantShape_includesTenantIdAndScopeFilterWhenSet() throws Exception {
+        AuthIntrospectResponse tenant = AuthIntrospectResponse.builder()
+                .authenticated(true)
+                .authType("tenant")
+                .permissions(List.of("budgets:read"))
+                .tenantId("t-1")
+                .scopeFilter(List.of("tenant:t-1/workspace:a"))
+                .capabilities(Capabilities.builder()
+                        .viewOverview(false).viewBudgets(true).viewEvents(false)
+                        .viewWebhooks(false).viewAudit(false).viewTenants(false)
+                        .viewApiKeys(false).viewPolicies(false)
+                        .build())
+                .build();
+        String json = mapper.writeValueAsString(tenant);
+        assertTrue(json.contains("\"auth_type\":\"tenant\""));
+        assertTrue(json.contains("\"tenant_id\":\"t-1\""));
+        assertTrue(json.contains("\"scope_filter\":[\"tenant:t-1/workspace:a\"]"));
+    }
+
+    @Test
+    void authIntrospectResponse_tenantShape_emptyScopeFilterOmitted() throws Exception {
+        // scope_filter is @JsonInclude(NON_EMPTY) — an empty list serializes
+        // as absent per spec yaml:3194-3198 ("absent or empty means no scope
+        // narrowing"). Prevents wire ambiguity between "no restrictions" and
+        // "explicitly empty restrictions".
+        AuthIntrospectResponse tenant = AuthIntrospectResponse.builder()
+                .authenticated(true)
+                .authType("tenant")
+                .permissions(List.of("events:read"))
+                .tenantId("t-2")
+                .scopeFilter(List.of())
+                .capabilities(Capabilities.builder().build())
+                .build();
+        String json = mapper.writeValueAsString(tenant);
+        assertFalse(json.contains("\"scope_filter\""),
+                "empty scope_filter must serialize as absent");
+    }
+
+    @Test
+    void capabilities_optionalManageFields_absentWhenUnset() throws Exception {
+        // Legacy shape (pre-v0.1.25.19): only the 8 view_* booleans. Optional
+        // manage_* fields are @JsonInclude(NON_NULL) so they stay absent when
+        // left null — wire-compatible with pre-v0.1.25.19 consumers.
+        Capabilities legacy = Capabilities.builder()
+                .viewOverview(true).viewBudgets(true).viewEvents(true)
+                .viewWebhooks(true).viewAudit(true).viewTenants(true)
+                .viewApiKeys(true).viewPolicies(true)
+                .build();
+        String json = mapper.writeValueAsString(legacy);
+        assertTrue(json.contains("\"view_overview\":true"));
+        assertFalse(json.contains("manage_budgets"));
+        assertFalse(json.contains("manage_policies"));
+        assertFalse(json.contains("manage_webhooks"));
+        assertFalse(json.contains("manage_tenants"));
+        assertFalse(json.contains("manage_api_keys"));
+        assertFalse(json.contains("manage_reservations"));
+        assertFalse(json.contains("view_reservations"));
+    }
+
+    @Test
+    void capabilities_allFieldsSet_serializesEverything() throws Exception {
+        Capabilities full = Capabilities.builder()
+                .viewOverview(true).viewBudgets(true).viewEvents(true)
+                .viewWebhooks(true).viewAudit(true).viewTenants(true)
+                .viewApiKeys(true).viewPolicies(true)
+                .viewReservations(true)
+                .manageBudgets(true).managePolicies(true).manageWebhooks(true)
+                .manageTenants(true).manageApiKeys(true).manageReservations(true)
+                .build();
+        String json = mapper.writeValueAsString(full);
+        // All 15 fields present.
+        assertTrue(json.contains("\"view_overview\":true"));
+        assertTrue(json.contains("\"view_reservations\":true"));
+        assertTrue(json.contains("\"manage_budgets\":true"));
+        assertTrue(json.contains("\"manage_policies\":true"));
+        assertTrue(json.contains("\"manage_webhooks\":true"));
+        assertTrue(json.contains("\"manage_tenants\":true"));
+        assertTrue(json.contains("\"manage_api_keys\":true"));
+        assertTrue(json.contains("\"manage_reservations\":true"));
     }
 }

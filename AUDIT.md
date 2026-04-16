@@ -1,9 +1,61 @@
 # Complete Budget Governance v0.1.25.8 — Admin Server Audit
 
-**Server version:** 0.1.25.18 (2026-04-15 — RESET_SPENT operation: billing-period boundary)
-**Date:** 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
-**Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, v0.1.25.11) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
+**Server version:** 0.1.25.19 (2026-04-16 — /v1/auth/introspect dual-auth: spec v0.1.25.15)
+**Date:** 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.16`; content includes RESET_SPENT from spec PR #45 v0.1.25.17) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-16 — v0.1.25.19 /v1/auth/introspect dual-auth + operator docs (spec v0.1.25.15)
+
+Closes the one remaining parity gap against the admin spec: `GET /v1/auth/introspect` now accepts both `AdminKeyAuth` (admin-shape) and `ApiKeyAuth` (tenant-shape) per spec v0.1.25.15 (cycles-protocol@101416f, yaml:3066-3198 + 4703-4768). Prior admin releases returned the admin-only stub that the spec's BACKWARD COMPATIBILITY clause (yaml:225-228, 4729-4734) explicitly allows as a forward-compat position — this release closes the gap so tenants can introspect their own API keys through the dashboard.
+
+Also introduces consumer-facing `CHANGELOG.md` and operator-facing `OPERATIONS.md`, mirroring the shape just added to cycles-server (CHANGELOG.md + OPERATIONS.md per cycles-server PR #98). `AUDIT.md` remains the engineering-history log; `CHANGELOG.md` is the summary for downstream consumers pulling the Docker image / JAR.
+
+**Parity audit context.** Full review of cycles-governance-admin-v0.1.25.yaml revisions v0.1.25.11 → v0.1.25.17 found every spec change already covered in prior admin releases (v0.1.25.11–v0.1.25.18) except the introspect dual-auth contract from v0.1.25.15. cycles-server recently mirrored `BUDGET_RESET_SPENT` into its runtime `EventType` vocabulary (cycles-server PR #103); admin has had this enum value since v0.1.25.18 — no action required.
+
+**Auth-shape semantics (NORMATIVE, yaml:3105-3166).**
+
+| Branch | `auth_type` | `permissions` | `tenant_id` | `scope_filter` | Capabilities |
+|---|---|---|---|---|---|
+| AdminKeyAuth (X-Admin-API-Key) | `"admin"` | `["*"]` | **absent** | **absent** | all 15 flags true |
+| ApiKeyAuth (X-Cycles-API-Key) | `"tenant"` | concrete key perms | tenant id (required) | key `scope_filter` if non-empty | derived per table; admin-plane caps forced false |
+
+Admin-plane capabilities (`view_tenants`, `view_api_keys`, `view_audit`, `view_overview`, `manage_tenants`, `manage_api_keys`) are hard-coded to `false` under tenant auth regardless of any `admin:*` permissions on the key (yaml:3138-3147 — prevents accidental admin-UI elevation via legacy admin-permission tenant keys).
+
+**Changes:**
+
+| File | Change |
+|---|---|
+| `cycles-admin-service-api/.../config/AuthInterceptor.java` | `/v1/auth/introspect` removed from `requiresAdminKey()`; added to `ADMIN_ALLOWED_ENDPOINTS` (exact dual-auth match) and `requiresApiKey()` path set. Tenant keys now stamp `authenticated_tenant_id`/`authenticated_permissions`/`authenticated_scope_filter` on the request; admin keys take the admin-only branch (no attributes stamped). |
+| `cycles-admin-service-api/.../controller/AuthController.java` | Rewrote `introspect()` to branch on `authenticated_tenant_id` attribute. New helpers `allCapabilitiesTrue()` (admin-shape) and `deriveTenantCapabilities(List<String>)` (tenant-shape per NORMATIVE table). Obsolete `deriveCapabilities(List<String>)` removed. |
+| `cycles-admin-service-model/.../auth/AuthIntrospectResponse.java` | Added nullable `tenant_id` (`@JsonInclude(NON_NULL)`) and `scope_filter` (`@JsonInclude(NON_EMPTY)`). Per-field include overrides class-level `ALWAYS` so admin-shape stays wire-identical to pre-v0.1.25.19. |
+| `cycles-admin-service-model/.../auth/Capabilities.java` | Added 7 optional boxed-`Boolean` fields (`view_reservations`, `manage_budgets`, `manage_policies`, `manage_webhooks`, `manage_tenants`, `manage_api_keys`, `manage_reservations`) each with `@JsonInclude(NON_NULL)`. Absent by default — legacy consumers see unchanged wire output. |
+| `cycles-admin-service-api/.../controller/AuthControllerTest.java` | +5 tests: admin-shape now asserts all 15 caps true + absence of tenant_id/scope_filter; 4 new tenant-shape tests including NORMATIVE admin-plane forced-false guard and scope_filter omit/include. Existing `introspect_withoutAdminKey_returns401` → `introspect_withoutAnyKey_returns401`. |
+| `cycles-admin-service-api/.../config/AuthInterceptorTest.java` | +3 tests: tenant-key success with attribute stamping, invalid-tenant-key 403, zero-permission minimal-key success (no required permission on introspect). Existing admin-key test updated to assert no tenant-auth attributes. |
+| `cycles-admin-service-model/.../AuthModelTest.java` | +5 serialization tests: admin-shape omits tenant_id+scope_filter; tenant-shape includes both; empty scope_filter omitted; legacy Capabilities shape omits all 7 new manage_* fields; full-caps shape serializes all 15. |
+| `cycles-admin-service-api/.../integration/AdminFlowIntegrationTest.java` | New step 17b tenant-key introspect call (before step 18's key revoke), validated through `ContractValidatingRestTemplateInterceptor` against `cycles-protocol@main` — admin-plane caps asserted false, tenant-plane caps derived from step 5's granted permissions. |
+| `pom.xml` | `revision` 0.1.25.18 → 0.1.25.19. |
+| `README.md` | Spec ref line updated v0.1.25.14 → v0.1.25.15. |
+| `docker-compose.prod.yml` + `docker-compose.full-stack.prod.yml` | Image tag bumped 0.1.25.18 → 0.1.25.19. |
+| `CHANGELOG.md` (new) | Consumer-facing Keep-a-Changelog format, entries v0.1.25.10 → v0.1.25.19. |
+| `OPERATIONS.md` (new) | Operator-facing runbook: metrics inventory, alerts, tuning, incident playbook. |
+
+**Design choices:**
+- **Per-field Jackson include overrides class-level `ALWAYS`.** Chose this over restructuring into two response classes because spec has one schema (`AuthIntrospectResponse`) with optional fields — two-class split would drift from spec. `@JsonInclude(NON_NULL)` on `tenantId` and `@JsonInclude(NON_EMPTY)` on `scopeFilter` preserve wire compatibility with pre-v0.1.25.19 admin-shape responses.
+- **Boxed `Boolean` for the 7 optional caps.** Primitive `boolean` defaults to `false` and would serialize (with `ALWAYS` class-level inclusion), breaking pre-v0.1.25.19 wire compatibility for consumers parsing the admin shape.
+- **NORMATIVE admin-plane forced-false under tenant auth.** Dashboard security boundary. Legacy tenant keys with `admin:read`/`admin:write` still govern per-endpoint access control (unchanged in `AuthInterceptor.hasPermission()`) but MUST NOT lift the dashboard's admin-UI chrome.
+- **No new endpoint; no operationId change.** `introspectAuth` already existed; only its security schemes + response shape expand. `OpenApiContractDiffTest` reports zero INCOMPATIBLE diff.
+
+**Verification:**
+- `mvn verify` passes 528 tests (up from 518), JaCoCo ≥95% on all modules, `SpecCoverageReportTest` 43/43 endpoints.
+- `ContractValidationConfig` validates all introspect responses (admin + tenant shapes) against the pinned spec on `cycles-protocol@main` — zero drift.
+- `OpenApiContractDiffTest` vs live spec: zero INCOMPATIBLE diff; added optional fields on `AuthIntrospectResponse`/`Capabilities` show as COMPATIBLE (additive).
+
+**Wire format:** additive. Pre-v0.1.25.19 admin-shape responses remain byte-identical. New tenant-shape and optional cap fields only materialize when the new code paths / new cap setters fire. Existing admin-key callers see no change.
+
+**Cross-refs:** implements [cycles-protocol#43](https://github.com/runcycles/cycles-protocol/pull/43) spec v0.1.25.15 (tenant-introspect dual-auth).
+
+---
 
 ### 2026-04-15 — v0.1.25.18 RESET_SPENT operation: billing-period boundary
 

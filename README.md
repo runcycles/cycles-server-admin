@@ -4,7 +4,13 @@
 
 # Runcycles Admin Server
 
-Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25.14](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml).
+Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25.15](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml).
+
+## Documentation
+
+- **[`CHANGELOG.md`](CHANGELOG.md)** — consumer-facing release notes for downstream consumers pulling the Docker image / JAR.
+- **[`OPERATIONS.md`](OPERATIONS.md)** — operator-facing runbook: metrics inventory, alerting recipes, configuration tuning, incident playbook.
+- **[`AUDIT.md`](AUDIT.md)** — internal engineering history (root cause analyses, rejected alternatives, test-strategy decisions).
 
 ## Overview
 
@@ -273,7 +279,7 @@ curl -X PUT http://localhost:7979/v1/admin/config/webhook-security \
 | `GET` | `/v1/webhooks/{id}/deliveries` | List tenant deliveries | ApiKey |
 | `GET` | `/v1/events` | Query tenant events | ApiKey |
 
-Tenants can subscribe to `budget.*`, `reservation.*`, `tenant.*` (26 of 40 event types). Admin-only: `api_key.*`, `policy.*`, `system.*`.
+Tenants can subscribe to `budget.*`, `reservation.*`, `tenant.*` (27 of 41 event types). Admin-only: `api_key.*`, `policy.*`, `system.*`.
 
 ### Budget Operations (v0.1.25.6)
 
@@ -289,11 +295,11 @@ Tenants can subscribe to `budget.*`, `reservation.*`, `tenant.*` (26 of 40 event
 | Method | Path | Operation | Auth |
 |--------|------|-----------|------|
 | `GET` | `/v1/admin/overview` | Operational health overview | Admin |
-| `GET` | `/v1/auth/introspect` | Auth introspection & capabilities | Admin |
+| `GET` | `/v1/auth/introspect` | Auth introspection & capabilities | ApiKey / Admin |
 
-The overview endpoint returns a single-request aggregated payload with tenant/budget/webhook counts, top-offender arrays (over-limit, debt, failing webhooks), and recent event summaries. The introspect endpoint returns effective capabilities for dashboard UI gating.
+The overview endpoint returns a single-request aggregated payload with tenant/budget/webhook counts, top-offender arrays (over-limit, debt, failing webhooks), and recent event summaries. The introspect endpoint returns effective capabilities for dashboard UI gating — dual-auth as of v0.1.25.19 (spec v0.1.25.15): admin keys return the admin-shape (`auth_type=admin`, all 15 capabilities true); tenant API keys return the tenant-shape (`auth_type=tenant`, `tenant_id`, concrete permissions, derived per-capability flags, admin-plane caps forced to false).
 
-**40 event types** across 6 categories: budget (15), reservation (5), tenant (6), api_key (6), policy (3), system (5).
+**41 event types** across 6 categories: budget (16), reservation (5), tenant (6), api_key (6), policy (3), system (5).
 
 **Webhook features:** HMAC-SHA256 signing, at-least-once delivery, exponential backoff retry, auto-disable on consecutive failures, event replay with distributed lock (prevents duplicate replays), SSRF prevention (private IP blocking by default).
 
@@ -566,7 +572,7 @@ Multiple origins are supported for staging + prod deployments behind the same se
 
 The full OpenAPI 3.1.0 specification is [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) in the [cycles-protocol](https://github.com/runcycles/cycles-protocol) repository.
 
-v0.1.25 adds Pillar 4 (Events & Webhooks): 40 event types, 20 webhook endpoints, HMAC-SHA256 signing, at-least-once delivery, and webhook secret encryption at rest.
+v0.1.25 adds Pillar 4 (Events & Webhooks): 41 event types, 20 webhook endpoints, HMAC-SHA256 signing, at-least-once delivery, and webhook secret encryption at rest.
 
 v0.1.25.4 enforces strict spec compliance: `additionalProperties: false` on all request and response models, range/size constraints on all fields per spec, distributed replay lock (409 `REPLAY_IN_PROGRESS`), and cascading `@Valid` on nested objects.
 

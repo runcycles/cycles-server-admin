@@ -528,9 +528,11 @@ class AuthInterceptorTest {
     }
 
     @Test
-    void preHandle_introspectEndpoint_withoutAdminKey_returns401() throws Exception {
+    void preHandle_introspectEndpoint_withoutAnyKey_returns401() throws Exception {
+        // v0.1.25.19: dual-auth — neither header → 401 (spec yaml:4729-4734).
         request.setMethod("GET");
         request.setRequestURI("/v1/auth/introspect");
+        request.setServletPath("/v1/auth/introspect");
 
         assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
         assertThat(response.getStatus()).isEqualTo(401);
@@ -540,7 +542,68 @@ class AuthInterceptorTest {
     void preHandle_introspectEndpoint_withValidAdminKey_succeeds() throws Exception {
         request.setMethod("GET");
         request.setRequestURI("/v1/auth/introspect");
+        request.setServletPath("/v1/auth/introspect");
         request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+        // Admin auth path: no authenticated_* attributes stamped on request.
+        assertThat(request.getAttribute("authenticated_tenant_id")).isNull();
+    }
+
+    // --- v0.1.25.19: dual-auth on /v1/auth/introspect (spec v0.1.25.15) ---
+
+    @Test
+    void preHandle_introspectEndpoint_withValidTenantKey_succeedsAndStampsAttributes() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/auth/introspect");
+        request.setServletPath("/v1/auth/introspect");
+        request.addHeader("X-Cycles-API-Key", "tenant-key");
+
+        when(apiKeyRepository.validate("tenant-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t-1").keyId("k-1")
+                        .permissions(List.of("budgets:read"))
+                        .scopeFilter(List.of("tenant:t-1/app:prod"))
+                        .build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+        // Tenant auth path: attributes stamped so controller can branch on them.
+        assertThat(request.getAttribute("authenticated_tenant_id")).isEqualTo("t-1");
+        assertThat(request.getAttribute("authenticated_permissions"))
+                .isEqualTo(List.of("budgets:read"));
+        assertThat(request.getAttribute("authenticated_scope_filter"))
+                .isEqualTo(List.of("tenant:t-1/app:prod"));
+    }
+
+    @Test
+    void preHandle_introspectEndpoint_withInvalidTenantKey_returns403() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/auth/introspect");
+        request.setServletPath("/v1/auth/introspect");
+        request.addHeader("X-Cycles-API-Key", "bad-key");
+
+        when(apiKeyRepository.validate("bad-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(false).tenantId("").reason("KEY_NOT_FOUND").build());
+
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    void preHandle_introspectEndpoint_noPermissionRequired() throws Exception {
+        // /v1/auth/introspect is not in PERMISSION_MAP — any valid tenant key
+        // can introspect itself regardless of permissions (spec yaml:4703-4768).
+        request.setMethod("GET");
+        request.setRequestURI("/v1/auth/introspect");
+        request.setServletPath("/v1/auth/introspect");
+        request.addHeader("X-Cycles-API-Key", "minimal-key");
+
+        when(apiKeyRepository.validate("minimal-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("t-min").keyId("k-min")
+                        .permissions(List.of()) // zero permissions
+                        .build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
     }

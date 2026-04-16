@@ -43,29 +43,131 @@ public class AuthController {
         return ResponseEntity.ok(response);
     }
 
+    /**
+     * Introspect the authenticated credential (spec v0.1.25.15, dual-auth).
+     *
+     * AdminKeyAuth → admin-shape: auth_type="admin", permissions=["*"], all
+     * 15 capabilities true, no tenant_id, no scope_filter.
+     *
+     * ApiKeyAuth → tenant-shape: auth_type="tenant", concrete permissions
+     * from the key, tenant_id populated, scope_filter populated when
+     * non-empty, capabilities derived per the NORMATIVE table
+     * (yaml:3105-3166) with the six admin-plane caps forced to false
+     * regardless of any admin:* permissions on the key.
+     *
+     * Dual-auth routing is wired in {@code AuthInterceptor}:
+     * {@code GET:/v1/auth/introspect} is in ADMIN_ALLOWED_ENDPOINTS and
+     * {@code /v1/auth/introspect} is in requiresApiKey(). When the
+     * admin key header is present and valid, the interceptor stamps no
+     * authenticated_* attributes and we take the admin branch; when a
+     * tenant api key header is present and valid, the interceptor stamps
+     * authenticated_tenant_id / authenticated_permissions /
+     * authenticated_scope_filter and we take the tenant branch.
+     */
     @GetMapping("/introspect") @Operation(operationId = "introspectAuth", tags = {"Dashboard"})
     public ResponseEntity<AuthIntrospectResponse> introspect(HttpServletRequest request) {
-        // Admin key already validated by interceptor (v1: AdminKeyAuth only)
-        List<String> permissions = List.of("*");
+        Object tenantIdAttr = request.getAttribute("authenticated_tenant_id");
+        if (tenantIdAttr != null) {
+            @SuppressWarnings("unchecked")
+            List<String> permissions = (List<String>) request.getAttribute("authenticated_permissions");
+            @SuppressWarnings("unchecked")
+            List<String> scopeFilter = (List<String>) request.getAttribute("authenticated_scope_filter");
+            if (permissions == null) {
+                permissions = List.of();
+            }
+            // scope_filter serializes via @JsonInclude(NON_EMPTY) — absent or
+            // empty at source → absent in response.
+            return ResponseEntity.ok(AuthIntrospectResponse.builder()
+                    .authenticated(true)
+                    .authType("tenant")
+                    .permissions(permissions)
+                    .tenantId(tenantIdAttr.toString())
+                    .scopeFilter(scopeFilter)
+                    .capabilities(deriveTenantCapabilities(permissions))
+                    .build());
+        }
+        // AdminKeyAuth path — unconstrained, all caps true.
         return ResponseEntity.ok(AuthIntrospectResponse.builder()
                 .authenticated(true)
                 .authType("admin")
-                .permissions(permissions)
-                .capabilities(deriveCapabilities(permissions))
+                .permissions(List.of("*"))
+                .capabilities(allCapabilitiesTrue())
                 .build());
     }
 
-    private Capabilities deriveCapabilities(List<String> permissions) {
-        boolean isAdmin = permissions.contains("*");
+    /**
+     * Admin-shape capabilities: every view_* and manage_* flag true.
+     * Spec yaml:3157-3159: "Under auth_type=admin the server SHOULD return
+     * all capabilities as true (permissions=[\"*\"] being unconstrained)".
+     */
+    static Capabilities allCapabilitiesTrue() {
         return Capabilities.builder()
-                .viewOverview(isAdmin)
-                .viewBudgets(isAdmin || permissions.contains("admin:read") || permissions.contains("admin:budgets:read"))
-                .viewEvents(isAdmin || permissions.contains("events:read") || permissions.contains("admin:events:read"))
-                .viewWebhooks(isAdmin || permissions.contains("webhooks:read") || permissions.contains("admin:webhooks:read"))
-                .viewAudit(isAdmin || permissions.contains("admin:audit:read"))
-                .viewTenants(isAdmin || permissions.contains("admin:tenants:read"))
-                .viewApiKeys(isAdmin || permissions.contains("admin:apikeys:read"))
-                .viewPolicies(isAdmin || permissions.contains("admin:read") || permissions.contains("admin:policies:read"))
+                .viewOverview(true)
+                .viewBudgets(true)
+                .viewEvents(true)
+                .viewWebhooks(true)
+                .viewAudit(true)
+                .viewTenants(true)
+                .viewApiKeys(true)
+                .viewPolicies(true)
+                .viewReservations(true)
+                .manageBudgets(true)
+                .managePolicies(true)
+                .manageWebhooks(true)
+                .manageTenants(true)
+                .manageApiKeys(true)
+                .manageReservations(true)
                 .build();
+    }
+
+    /**
+     * Derive capabilities under tenant auth per the NORMATIVE table at
+     * yaml:3115-3148. Admin-plane caps (view_tenants, view_api_keys,
+     * view_audit, view_overview, manage_tenants, manage_api_keys) are
+     * hard-coded to false regardless of any admin:* permissions the key
+     * holds — yaml:3138-3147 is explicit: "The admin:read / admin:write
+     * wildcard semantics apply to per-endpoint access control, NOT to
+     * dashboard capability gating. This decoupling prevents accidental
+     * admin-UI elevation via legacy admin-permission tenant keys and is
+     * intentional."
+     */
+    static Capabilities deriveTenantCapabilities(List<String> perms) {
+        return Capabilities.builder()
+                // Admin-plane: forced false under tenant auth.
+                .viewOverview(false)
+                .viewTenants(false)
+                .viewApiKeys(false)
+                .viewAudit(false)
+                .manageTenants(false)
+                .manageApiKeys(false)
+                // Tenant-plane: derived per table.
+                .viewBudgets(hasAny(perms, "budgets:read", "admin:read", "admin:budgets:read"))
+                .viewPolicies(hasAny(perms, "policies:read", "admin:read", "admin:policies:read"))
+                .viewWebhooks(hasAny(perms, "webhooks:read", "admin:read", "admin:webhooks:read"))
+                .viewEvents(hasAny(perms, "events:read", "admin:read", "admin:events:read"))
+                .viewReservations(hasAny(perms,
+                        "reservations:list", "reservations:create",
+                        "reservations:commit", "reservations:release",
+                        "reservations:extend", "admin:read"))
+                .manageBudgets(hasAny(perms, "budgets:write", "admin:write", "admin:budgets:write"))
+                .managePolicies(hasAny(perms, "policies:write", "admin:write", "admin:policies:write"))
+                .manageWebhooks(hasAny(perms, "webhooks:write", "admin:write", "admin:webhooks:write"))
+                .manageReservations(hasAny(perms,
+                        "reservations:create", "reservations:commit",
+                        "reservations:release", "reservations:extend",
+                        "admin:write"))
+                .build();
+    }
+
+    private static boolean hasAny(List<String> perms, String... needles) {
+        if (perms == null) {
+            return false;
+        }
+        for (String n : needles) {
+            if (perms.contains(n)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

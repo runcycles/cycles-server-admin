@@ -157,6 +157,31 @@ class AdminFlowIntegrationTest extends BaseIntegrationTest {
         assertThat(adminDelete("/v1/admin/webhooks/" + subscriptionId).getStatusCode())
                 .isEqualTo(HttpStatus.NO_CONTENT);
 
+        // --- 17b. Tenant-key introspect (v0.1.25.19 dual-auth path; spec v0.1.25.15) ---
+        // Must happen BEFORE step 18 revokes the tenant key. Covers the
+        // ApiKeyAuth branch of /v1/auth/introspect and the tenant-shape
+        // AuthIntrospectResponse (auth_type=tenant, tenant_id, scope_filter,
+        // NORMATIVE capability derivation). Contract validator catches any
+        // schema drift on this shape against cycles-protocol@main.
+        ResponseEntity<Map> tenantIntrospect = restTemplate.exchange(
+                baseUrl() + "/v1/auth/introspect", HttpMethod.GET,
+                new HttpEntity<>(tenantH),
+                Map.class);
+        assertThat(tenantIntrospect.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(tenantIntrospect.getBody().get("auth_type")).isEqualTo("tenant");
+        assertThat(tenantIntrospect.getBody().get("tenant_id")).isEqualTo("tenant-integration");
+        Map<?,?> tenantCaps = (Map<?,?>) tenantIntrospect.getBody().get("capabilities");
+        // Admin-plane caps MUST be false under tenant auth (NORMATIVE).
+        assertThat(tenantCaps.get("view_tenants")).isEqualTo(false);
+        assertThat(tenantCaps.get("view_api_keys")).isEqualTo(false);
+        assertThat(tenantCaps.get("view_audit")).isEqualTo(false);
+        assertThat(tenantCaps.get("view_overview")).isEqualTo(false);
+        // Tenant-plane caps derived from the granted permissions.
+        assertThat(tenantCaps.get("view_budgets")).isEqualTo(true);
+        assertThat(tenantCaps.get("manage_budgets")).isEqualTo(true);
+        assertThat(tenantCaps.get("view_webhooks")).isEqualTo(true);
+        assertThat(tenantCaps.get("manage_webhooks")).isEqualTo(true);
+
         // --- 18. Revoke API key ---
         assertThat(adminDelete("/v1/admin/api-keys/" + keyId + "?reason=integration-test-cleanup")
                 .getStatusCode()).isEqualTo(HttpStatus.OK);
