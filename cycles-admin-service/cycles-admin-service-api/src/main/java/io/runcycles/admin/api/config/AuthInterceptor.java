@@ -1,5 +1,6 @@
 package io.runcycles.admin.api.config;
 
+import io.runcycles.admin.api.service.AuditFailureService;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.model.auth.ApiKeyValidationResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -110,10 +111,18 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     private final ApiKeyRepository apiKeyRepository;
     private final ObjectMapper objectMapper;
+    // v0.1.25.20: pre-controller auth rejections (401/403/400/500) never
+    // reach the controller, so GlobalExceptionHandler doesn't see them.
+    // AuditFailureService closes that gap — every writeError() call also
+    // emits an audit entry with the pending response status and error code.
+    private final AuditFailureService auditFailure;
 
-    public AuthInterceptor(ApiKeyRepository apiKeyRepository, ObjectMapper objectMapper) {
+    public AuthInterceptor(ApiKeyRepository apiKeyRepository,
+                           ObjectMapper objectMapper,
+                           AuditFailureService auditFailure) {
         this.apiKeyRepository = apiKeyRepository;
         this.objectMapper = objectMapper;
+        this.auditFailure = auditFailure;
     }
 
     @Override
@@ -320,6 +329,11 @@ public class AuthInterceptor implements HandlerInterceptor {
     }
 
     private void writeError(HttpServletRequest request, HttpServletResponse response, int status, ErrorCode code, String message) throws Exception {
+        // v0.1.25.20: audit first, respond second. logFailure is non-throwing —
+        // if it ever fails internally it increments the outcome=error counter
+        // and logs a warning but never propagates, so the error response is
+        // guaranteed to reach the client even if audit-write is broken.
+        auditFailure.logFailure(request, status, code, message, null);
         response.setStatus(status);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         Object reqId = request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE);

@@ -222,5 +222,72 @@ class AdminFlowIntegrationTest extends BaseIntegrationTest {
                         adminHeaders()),
                 Map.class);
         assertThat(putConfig.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        // --- 25. v0.1.25.20: failure-path audit coverage ---
+        // Deliberate failures exercise all three audit-on-failure sources:
+        //   - AuthInterceptor (missing key → 401, unauthenticated tenant sentinel)
+        //   - GlobalExceptionHandler (HttpMessageNotReadable → 400, authenticated tenant)
+        //   - GlobalExceptionHandler (GovernanceException 404)
+        // Every entry is contract-validated on the wire against the pinned
+        // spec by ContractValidatingRestTemplateInterceptor.
+
+        // 25a. Unauthenticated admin call — writeError path in AuthInterceptor.
+        HttpHeaders noAuth = new HttpHeaders();
+        noAuth.set("Content-Type", "application/json");
+        ResponseEntity<Map> unauth = restTemplate.exchange(
+                baseUrl() + "/v1/admin/tenants", HttpMethod.GET,
+                new HttpEntity<>(noAuth), Map.class);
+        assertThat(unauth.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+
+        // 25b. Malformed JSON under valid admin auth — handleMalformedJson branch.
+        HttpHeaders adminRaw = adminHeaders();
+        adminRaw.set("Content-Type", "application/json");
+        ResponseEntity<Map> malformed = restTemplate.exchange(
+                baseUrl() + "/v1/admin/tenants", HttpMethod.POST,
+                new HttpEntity<>("this is not json", adminRaw),
+                Map.class);
+        assertThat(malformed.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+
+        // 25c. Nonexistent resource under valid admin auth — GovernanceException branch.
+        ResponseEntity<Map> notFound = restTemplate.exchange(
+                baseUrl() + "/v1/admin/tenants/does-not-exist", HttpMethod.GET,
+                new HttpEntity<>(adminHeaders()),
+                Map.class);
+        assertThat(notFound.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+
+        // 25d. Query audit log and confirm each failure landed with the right
+        // status + error_code + operation shape. Cursor-paginated, so fetch
+        // a wide slice (200) to cover the whole flow.
+        ResponseEntity<Map> auditAfter = adminGet("/v1/admin/audit/logs?limit=200");
+        assertThat(auditAfter.getStatusCode()).isEqualTo(HttpStatus.OK);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> logs = (List<Map<String, Object>>) auditAfter.getBody().get("logs");
+
+        // Unauth 401 → tenant_id sentinel, operation=GET:/v1/admin/tenants,
+        // error_code=UNAUTHORIZED.
+        assertThat(logs).anyMatch(e ->
+                Integer.valueOf(401).equals(e.get("status")) &&
+                "UNAUTHORIZED".equals(e.get("error_code")) &&
+                "GET:/v1/admin/tenants".equals(e.get("operation")) &&
+                "<unauthenticated>".equals(e.get("tenant_id")));
+
+        // 400 malformed JSON → authenticated admin (no tenant_id stamped;
+        // sentinel still applies since admin key does NOT stamp
+        // authenticated_tenant_id per AuthInterceptor contract).
+        assertThat(logs).anyMatch(e ->
+                Integer.valueOf(400).equals(e.get("status")) &&
+                "INVALID_REQUEST".equals(e.get("error_code")) &&
+                "POST:/v1/admin/tenants".equals(e.get("operation")));
+
+        // 404 governance → error_code=TENANT_NOT_FOUND.
+        assertThat(logs).anyMatch(e ->
+                Integer.valueOf(404).equals(e.get("status")) &&
+                "TENANT_NOT_FOUND".equals(e.get("error_code")) &&
+                "GET:/v1/admin/tenants/does-not-exist".equals(e.get("operation")));
+
+        // Sanity: success entries from steps 1-24 still present alongside
+        // the new failure entries (single-write invariant preserved).
+        assertThat(logs).anyMatch(e ->
+                Integer.valueOf(201).equals(e.get("status")));
     }
 }

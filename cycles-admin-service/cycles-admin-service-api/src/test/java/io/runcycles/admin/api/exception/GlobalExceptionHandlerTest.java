@@ -1,5 +1,6 @@
 package io.runcycles.admin.api.exception;
 
+import io.runcycles.admin.api.service.AuditFailureService;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.ErrorResponse;
@@ -24,17 +25,27 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class GlobalExceptionHandlerTest {
 
     private GlobalExceptionHandler handler;
     private HttpServletRequest mockRequest;
+    private AuditFailureService auditFailure;
 
     @BeforeEach
     void setUp() {
-        handler = new GlobalExceptionHandler();
+        auditFailure = mock(AuditFailureService.class);
+        handler = new GlobalExceptionHandler(auditFailure);
         mockRequest = mock(HttpServletRequest.class);
     }
 
@@ -255,5 +266,110 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(response.getBody().getMessage()).contains("scope");
         assertThat(response.getBody().getMessage()).contains("must not be blank");
+    }
+
+    // --- v0.1.25.20: audit-on-failure — every @ExceptionHandler branch must
+    // emit a failure audit entry via AuditFailureService.logFailure before
+    // the error response is returned. Locks the contract so future refactors
+    // can't silently drop audit coverage on 4xx/5xx paths. ---
+
+    @Test
+    void handleGovernanceException_writesFailureAudit() {
+        GovernanceException ex = GovernanceException.tenantNotFound("tenant-1");
+
+        handler.handleGovernanceException(ex, mockRequest);
+
+        verify(auditFailure).logFailure(eq(mockRequest), eq(404),
+                eq(ErrorCode.TENANT_NOT_FOUND), anyString(), isNull());
+    }
+
+    @Test
+    void handleValidationException_writesFailureAudit() throws Exception {
+        BeanPropertyBindingResult bindingResult = new BeanPropertyBindingResult(new Object(), "request");
+        bindingResult.addError(new FieldError("request", "name", "must not be blank"));
+        MethodParameter param = new MethodParameter(Object.class.getDeclaredMethod("toString"), -1);
+        MethodArgumentNotValidException ex = new MethodArgumentNotValidException(param, bindingResult);
+
+        handler.handleValidationException(ex, mockRequest);
+
+        verify(auditFailure).logFailure(eq(mockRequest), eq(400),
+                eq(ErrorCode.INVALID_REQUEST), anyString(), isNull());
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void handleConstraintViolation_writesFailureAudit() {
+        ConstraintViolation<Object> violation = mock(ConstraintViolation.class);
+        Path path = mock(Path.class);
+        when(path.toString()).thenReturn("create.request.scope");
+        when(violation.getPropertyPath()).thenReturn(path);
+        when(violation.getMessage()).thenReturn("must not be null");
+        ConstraintViolationException ex = new ConstraintViolationException(Set.of(violation));
+
+        handler.handleConstraintViolation(ex, mockRequest);
+
+        verify(auditFailure).logFailure(eq(mockRequest), eq(400),
+                eq(ErrorCode.INVALID_REQUEST), anyString(), isNull());
+    }
+
+    @Test
+    void handleMissingParam_writesFailureAudit() throws Exception {
+        MissingServletRequestParameterException ex =
+                new MissingServletRequestParameterException("tenant_id", "String");
+
+        handler.handleMissingParam(ex, mockRequest);
+
+        verify(auditFailure).logFailure(eq(mockRequest), eq(400),
+                eq(ErrorCode.INVALID_REQUEST), anyString(), isNull());
+    }
+
+    @Test
+    void handleTypeMismatch_writesFailureAudit() {
+        MethodArgumentTypeMismatchException ex = new MethodArgumentTypeMismatchException(
+                "abc", Integer.class, "limit", null, new NumberFormatException("bad"));
+
+        handler.handleTypeMismatch(ex, mockRequest);
+
+        verify(auditFailure).logFailure(eq(mockRequest), eq(400),
+                eq(ErrorCode.INVALID_REQUEST), anyString(), isNull());
+    }
+
+    @Test
+    void handleMalformedJson_writesFailureAudit() {
+        HttpMessageNotReadableException ex = mock(HttpMessageNotReadableException.class);
+
+        handler.handleMalformedJson(ex, mockRequest);
+
+        verify(auditFailure).logFailure(eq(mockRequest), eq(400),
+                eq(ErrorCode.INVALID_REQUEST), eq("Malformed request body"), isNull());
+    }
+
+    @Test
+    void handleGenericException_writesFailureAudit_withExceptionClassInExtras() {
+        Exception ex = new RuntimeException("unexpected boom");
+
+        handler.handleGenericException(ex, mockRequest);
+
+        // Generic-branch audit carries exception_class in extras so ops can
+        // correlate audit entry to server log line post-incident.
+        verify(auditFailure).logFailure(eq(mockRequest), eq(500),
+                eq(ErrorCode.INTERNAL_ERROR), eq("unexpected boom"),
+                any(Map.class));
+    }
+
+    @Test
+    void handleGenericException_wrappedGovernance_delegatesWithoutDoubleAudit() {
+        // Single-write invariant: when a GovernanceException reaches the
+        // generic branch it must delegate to handleGovernanceException, which
+        // does exactly ONE audit write. The generic branch must not also
+        // write (would produce two rows for the same failure).
+        GovernanceException governance = GovernanceException.budgetNotFound("scope1");
+
+        handler.handleGenericException(governance, mockRequest);
+
+        verify(auditFailure, times(1)).logFailure(eq(mockRequest), eq(404),
+                eq(ErrorCode.BUDGET_NOT_FOUND), anyString(), isNull());
+        verify(auditFailure, never()).logFailure(eq(mockRequest), eq(500),
+                eq(ErrorCode.INTERNAL_ERROR), anyString(), any());
     }
 }
