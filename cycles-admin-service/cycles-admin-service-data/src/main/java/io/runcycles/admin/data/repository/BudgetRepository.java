@@ -390,6 +390,12 @@ public class BudgetRepository {
      * Cursor format: "{tenantId}|{ledgerId}". Resumes at the next ledger
      * strictly after the cursor within the cursor's tenant, then
      * continues into subsequent tenants.
+     *
+     * If the cursor tenant has been deleted between pages, resumes at
+     * the first tenant whose id sorts strictly after the cursor tenant,
+     * serving that tenant from the start. This avoids stalling
+     * pagination (returning empty and implying end-of-data) when the
+     * cursor tenant is gone but later tenants still have data.
      */
     public List<BudgetLedger> listAllTenants(BudgetListFilters filters, String cursor, int limit) {
         String cursorTenantId = null;
@@ -410,19 +416,20 @@ public class BudgetRepository {
             List<BudgetLedger> collected = new ArrayList<>();
             boolean pastTenantCursor = (cursorTenantId == null);
             for (String tenantId : sortedTenantIds) {
+                String innerCursor;
                 if (!pastTenantCursor) {
-                    if (tenantId.equals(cursorTenantId)) pastTenantCursor = true;
-                    else continue;
-                    String innerCursor = cursorLedgerId;
-                    int remaining = limit - collected.size();
-                    if (remaining <= 0) break;
-                    collected.addAll(collectForTenant(jedis, tenantId, filters, innerCursor, remaining));
-                    if (collected.size() >= limit) break;
-                    continue;
+                    int cmp = tenantId.compareTo(cursorTenantId);
+                    if (cmp < 0) continue;
+                    pastTenantCursor = true;
+                    // cmp == 0: same tenant as cursor → resume inside using cursorLedgerId.
+                    // cmp  > 0: cursor tenant was deleted → serve this tenant from start.
+                    innerCursor = (cmp == 0) ? cursorLedgerId : null;
+                } else {
+                    innerCursor = null;
                 }
                 int remaining = limit - collected.size();
                 if (remaining <= 0) break;
-                collected.addAll(collectForTenant(jedis, tenantId, filters, null, remaining));
+                collected.addAll(collectForTenant(jedis, tenantId, filters, innerCursor, remaining));
                 if (collected.size() >= limit) break;
             }
             return collected;

@@ -1023,4 +1023,22 @@ class ApiKeyRepositoryTest {
 
         assertThat(result).isEmpty();
     }
+
+    @Test
+    void listAllTenants_cursorTenantDeleted_skipsForwardToNextTenant() throws Exception {
+        // Cursor points at tenant-b, but tenant-b has been deleted between pages.
+        // Must not stall at empty: should resume at tenant-c (sorts strictly after).
+        String jsonC1 = objectMapper.writeValueAsString(buildKey("tenant-c", "key_c1"));
+        String jsonC2 = objectMapper.writeValueAsString(buildKey("tenant-c", "key_c2"));
+        when(jedis.smembers("tenants"))
+                .thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-c")));
+        when(jedis.smembers("apikeys:tenant-c"))
+                .thenReturn(new LinkedHashSet<>(List.of("key_c1", "key_c2")));
+        lenient().when(jedis.get("apikey:key_c1")).thenReturn(jsonC1);
+        lenient().when(jedis.get("apikey:key_c2")).thenReturn(jsonC2);
+
+        List<ApiKey> result = repository.listAllTenants(null, "tenant-b|key_b1", 50);
+
+        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_c1", "key_c2");
+    }
 }

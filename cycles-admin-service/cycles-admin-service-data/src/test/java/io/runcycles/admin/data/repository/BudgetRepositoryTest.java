@@ -1241,6 +1241,28 @@ class BudgetRepositoryTest {
     }
 
     @Test
+    void listAllTenants_cursorTenantDeleted_skipsForwardToNextTenant() {
+        // Cursor points at tenant-b, but tenant-b has been deleted between pages.
+        // Must not stall at empty: should resume at tenant-c (sorts strictly after)
+        // and serve tenant-c from the start.
+        when(jedis.smembers("tenants"))
+                .thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-c")));
+        when(jedis.smembers("budgets:tenant-c"))
+                .thenReturn(new LinkedHashSet<>(List.of(
+                        "budget:c1:USD_MICROCENTS", "budget:c2:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:c1:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-c1", "c1", "USD_MICROCENTS", 100, 0, 0, false, "tenant-c"));
+        when(jedis.hgetAll("budget:c2:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-c2", "c2", "USD_MICROCENTS", 100, 0, 0, false, "tenant-c"));
+
+        List<BudgetLedger> result = repository.listAllTenants(
+                BudgetListFilters.empty(), "tenant-b|led-b1", 50);
+
+        assertThat(result).extracting(BudgetLedger::getLedgerId)
+                .containsExactly("led-c1", "led-c2");
+    }
+
+    @Test
     void list_filterBased_overLimit_filters() {
         when(jedis.smembers("budgets:tenant-1"))
                 .thenReturn(new LinkedHashSet<>(List.of(

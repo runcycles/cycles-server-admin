@@ -148,9 +148,14 @@ public class ApiKeyRepository {
      * walks that tenant's keys in sorted order. Filters apply before
      * cursor traversal so pagination is stable.
      *
-     * Cursor format: "{tenantId}|{keyId}". Resumes at the next key
-     * strictly after the cursor within the cursor's tenant, then
-     * continues into subsequent tenants.
+     * Cursor format: "{tenantId}|{keyId}". Resume semantics:
+     *   - cursor tenant still present → resume within it using cursorKeyId
+     *     (strictly after that key), then continue into later tenants.
+     *   - cursor tenant deleted between pages → advance to the first
+     *     tenant whose id is lexically greater than cursorTenantId and
+     *     serve it from the beginning. Without this "skip forward"
+     *     behaviour the iterator would stall (never match by equality)
+     *     and the client would incorrectly infer end-of-data.
      */
     public List<ApiKey> listAllTenants(ApiKeyStatus statusFilter, String cursor, int limit) {
         String cursorTenantId = null;
@@ -171,18 +176,20 @@ public class ApiKeyRepository {
             List<ApiKey> collected = new ArrayList<>();
             boolean pastTenantCursor = (cursorTenantId == null);
             for (String tenantId : sortedTenantIds) {
+                String innerCursor;
                 if (!pastTenantCursor) {
-                    if (tenantId.equals(cursorTenantId)) pastTenantCursor = true;
-                    else continue;
-                    int remaining = limit - collected.size();
-                    if (remaining <= 0) break;
-                    collected.addAll(collectForTenant(jedis, tenantId, statusFilter, cursorKeyId, remaining));
-                    if (collected.size() >= limit) break;
-                    continue;
+                    int cmp = tenantId.compareTo(cursorTenantId);
+                    if (cmp < 0) continue;
+                    pastTenantCursor = true;
+                    // cmp == 0: same tenant as cursor → resume inside using cursorKeyId.
+                    // cmp  > 0: cursor tenant was deleted → serve this tenant from start.
+                    innerCursor = (cmp == 0) ? cursorKeyId : null;
+                } else {
+                    innerCursor = null;
                 }
                 int remaining = limit - collected.size();
                 if (remaining <= 0) break;
-                collected.addAll(collectForTenant(jedis, tenantId, statusFilter, null, remaining));
+                collected.addAll(collectForTenant(jedis, tenantId, statusFilter, innerCursor, remaining));
                 if (collected.size() >= limit) break;
             }
             return collected;
