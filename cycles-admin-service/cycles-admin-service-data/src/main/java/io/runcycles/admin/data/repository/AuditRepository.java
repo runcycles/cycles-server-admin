@@ -96,8 +96,12 @@ public class AuditRepository {
      * Pick the per-entry TTL based on whether the entry is attributed to a
      * real tenant or the unauthenticated sentinel. Returns seconds; 0 means
      * "no expiry" (Lua branch skips the {@code EX} argument).
+     *
+     * <p>Public to permit unit + property-based tests (v0.1.25.21) in sibling
+     * modules to verify the tier-selection contract directly. Not intended
+     * for external callers — prefer invoking {@link #log(AuditLogEntry)}.
      */
-    long resolveTtlSeconds(AuditLogEntry entry) {
+    public long resolveTtlSeconds(AuditLogEntry entry) {
         boolean unauth = AuditLogEntry.UNAUTHENTICATED_TENANT.equals(entry.getTenantId());
         int days = unauth ? unauthenticatedRetentionDays : authenticatedRetentionDays;
         return days > 0 ? (long) days * 86400L : 0L;

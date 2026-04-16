@@ -1,9 +1,92 @@
 # Complete Budget Governance v0.1.25.8 — Admin Server Audit
 
-**Server version:** 0.1.25.20 (2026-04-16 — audit log on failure paths: 4xx/5xx coverage via GlobalExceptionHandler + AuthInterceptor)
-**Date:** 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Server version:** 0.1.25.21 (2026-04-16 — nightly CI coverage: audit-soak + jqwik property-based invariants)
+**Date:** 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.16`; content includes RESET_SPENT from spec PR #45 v0.1.25.17) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-16 — v0.1.25.21 nightly CI coverage for audit-write path (soak + property-based)
+
+Closes the nightly-CI parity gap between cycles-server and cycles-server-admin for the audit-write surface introduced in v0.1.25.20. cycles-server has 3 scheduled workflows (`nightly-property-tests.yml`, `nightly-soak-test.yml`, `nightly-benchmark.yml`); admin previously had none. This release ships Phase 1 of the plan laid out in [#102](https://github.com/runcycles/cycles-server-admin/issues/102): the property-based and soak workflows. Phase 2 (Redis resilience + benchmark baseline) remains deferred.
+
+**Why now.** v0.1.25.20 added substantial new code paths — failure audit writes via `GlobalExceptionHandler` + `AuthInterceptor.writeError`, tiered TTL, opt-in unauthenticated-tier sampling, scheduled index sweep — that unit tests exercise at the method level but nothing exercises under sustained contention or across a wide input space. Two nightly gaps specifically:
+
+1. **Sustained-load stability.** A 1000-sample unit test is fast but can't catch multi-hour emergent behaviour: Redis-pool exhaustion under continuous failure flood, p99 latency climb as audit writes accumulate, index-cardinality bloat if sweep misfires, heap leaks from counter-registry growth. cycles-server solved this with `SoakIntegrationTest`; admin now has `AuditFailureSoakIntegrationTest`.
+2. **Wide-input invariant coverage.** Unit tests pick specific input values. jqwik generates arbitrary inputs and shrinks failing cases to the minimal reproducer — catching edge cases (empty tenant IDs, Integer.MAX_VALUE sample rates, binary-like messages) that no unit-test author would have enumerated. cycles-server has 4 such tests; admin now has 1 (`AuditCoverageInvariantsPropertyTest`) covering 6 NORMATIVE invariants.
+
+**Soak test — `AuditFailureSoakIntegrationTest`.** Drives 500 ops/s for 10 minutes by default (configurable via `soak.duration.minutes` and `soak.target.rps`) across 16 worker threads with nanosecond-precision pacing. Round-robins 3 failure flavours so every failure-audit code path is exercised under contention:
+
+| Flavour | HTTP method + path | Auth | Audit code path |
+|---|---|---|---|
+| 1 | `GET /v1/admin/tenants` (no auth) | none | `AuthInterceptor.writeError` (401, sentinel tenant_id) |
+| 2 | `POST /v1/admin/budgets` (under-permissioned tenant key) | ApiKeyAuth | `AuthInterceptor.writeError` (403, real tenant_id) |
+| 3 | `POST /v1/admin/tenants` (malformed body, admin key) | AdminKeyAuth | `GlobalExceptionHandler.handleMalformedJson` (400, sentinel since admin-key auth doesn't stamp tenant_id) |
+
+Invariants asserted after the soak window:
+
+| ID | Invariant | Measurement |
+|---|---|---|
+| AS1 | JVM heap end/start ratio < 2.0 | JMX `MemoryMXBean` |
+| AS2 | 401 mean latency < 100ms | Micrometer `http.server.requests` timer |
+| AS3 | `written + error + sampled-out == total_requests` (no lost increments) | `cycles_admin_audit_writes_total` |
+| AS4 | `audit:logs:_all` cardinality ≤ written count (no orphan ZADD) | Jedis `ZCARD` |
+| AS5 | Network-error rate < 1% | `AtomicLong` httpErrors / totalRequests |
+
+Nightly CI: `.github/workflows/nightly-audit-soak.yml` fires at 06:30 UTC, 90-min timeout, `workflow_dispatch` inputs for duration + rps overrides. Surefire reports uploaded on failure.
+
+**Property test — `AuditCoverageInvariantsPropertyTest`.** 6 `@Property` methods at jqwik default 20 tries (PR) / 100 tries (nightly). Uses plain Mockito + `SimpleMeterRegistry` rather than `@SpringBootTest` — deliberate choice to keep property-test runtime bounded (Spring context boot × 100 tries would run into hours). The Spring-wired behaviour is already covered by the soak test and `AdminFlowIntegrationTest`.
+
+Invariants:
+
+| ID | Invariant | Failure mode prevented |
+|---|---|---|
+| I1 | Exactly one outcome per `logFailure` call — never zero, never two | Lost counter increment / double-count regression |
+| I2 | Authenticated entries never sampled, even at `Integer.MAX_VALUE` rate | Compliance gap from a widened sampling gate |
+| I3 | TTL tier matches tenant_id (sentinel → unauth retention; real → auth retention; 0 days → no EX) | DDoS memory amplification (unauth got long retention) or compliance gap (auth got short retention) |
+| I4 | Sanitized `error_message` has no `\r`/`\n` and length ≤ 1024 for any input | Log-injection vector or audit-row bloat |
+| I5 | `logFailure` never propagates, even under adversarial `AuditRepository.log()` failure | Business response blocked by audit breakage |
+| (bonus) | Sample rate ≤ 1 never samples out | Misconfigured `0` silently dropping every audit entry |
+
+Nightly CI: `.github/workflows/nightly-property-tests.yml` fires at 06:00 UTC (before the soak), 30-min timeout, `-Djqwik.defaultTries=100`. Uses `mvn test` (not `verify`) because JaCoCo 95% check would fail on the 7-test property subset — the full-suite coverage bar is still enforced on every PR; nightly property tests are about invariant coverage over interleavings, not code-path coverage.
+
+**Maven profile scaffolding.** Two new profiles added to `cycles-admin-service-api/pom.xml`:
+
+- `property-tests` — overrides default `<excludes>` + `<excludedGroups>` and pins `<groups>property-tests</groups>`. Activates only the 6 `@net.jqwik.api.Tag("property-tests")` properties.
+- `soak` — same pattern with `<groups>soak</groups>` and `forkedProcessTimeoutInSeconds=4500` (75 min — covers 10-min default + up to ~60-min workflow_dispatch deep soaks).
+
+Default PR build adds `<excludedGroups>soak,property-tests</excludedGroups>` so tagged tests are skipped; PR CI stays at 560 tests / ~45s build as before.
+
+jqwik + jqwik-spring dependencies added to api module. `junit-platform.properties` (admin convention) could replace the `jqwik.properties` file going forward, but current jqwik 1.9.1 still reads `jqwik.properties` with a deprecation warning — matching cycles-server's current state, and keeping the admin/server pattern symmetric. Migration to `junit-platform.properties` tracked for a future housekeeping pass.
+
+**Changes:**
+
+| File | Change |
+|---|---|
+| `.github/workflows/nightly-audit-soak.yml` (new) | Cron 06:30 UTC, 90-min timeout, `-Psoak -Dsoak.duration.minutes=... -Dsoak.target.rps=... -Dtest=AuditFailureSoakIntegrationTest`. Uploads surefire reports on failure. |
+| `.github/workflows/nightly-property-tests.yml` (new) | Cron 06:00 UTC, 30-min timeout, `-Pproperty-tests -Djqwik.defaultTries=100`. |
+| `cycles-admin-service-api/pom.xml` | Added jqwik 1.9.1 + jqwik-spring 0.11.0 test deps. Default surefire `<excludedGroups>soak,property-tests</excludedGroups>`. New `property-tests` and `soak` profiles. |
+| `cycles-admin-service-api/src/test/resources/jqwik.properties` (new) | `defaultTries=20` (PR speed). Mirrors cycles-server. |
+| `cycles-admin-service-api/src/test/java/.../service/AuditCoverageInvariantsPropertyTest.java` (new) | 6 `@Property` methods + 6 `@Provide` generators. Uses plain Mockito + `SimpleMeterRegistry` for speed. |
+| `cycles-admin-service-api/src/test/java/.../integration/AuditFailureSoakIntegrationTest.java` (new) | Testcontainers-backed soak extending `BaseIntegrationTest`. 16 workers × nanosecond pacing × 3-flavour round-robin. |
+| `cycles-admin-service-data/.../repository/AuditRepository.java` | Widened `resolveTtlSeconds` visibility from package-private to public for property-test access across modules. Added javadoc noting the test-access rationale; not intended as external API. |
+| `pom.xml` | `revision` 0.1.25.20 → 0.1.25.21. |
+| `docker-compose.prod.yml` + `docker-compose.full-stack.prod.yml` | Image tag bumped 0.1.25.20 → 0.1.25.21. |
+| `AUDIT.md`, `CHANGELOG.md`, `OPERATIONS.md` | Dated entry + operator-facing runbook additions. |
+
+**Verification:**
+
+- `mvn verify` (default): 560 unit tests pass (unchanged from v0.1.25.20 — soak + property correctly excluded), JaCoCo ≥95% on all modules, `SpecCoverageReportTest` 43/43, zero `OpenApiContractDiff`.
+- `mvn test -Pproperty-tests`: 7 property tests pass (6 + 1 bonus), `@Tag("property-tests")` filter resolves through `net.jqwik.api.Tag`, all 5 NORMATIVE invariants hold across 20 jqwik-generated input triples each.
+- Nightly workflows committed but not yet executed (first run at 06:00 UTC and 06:30 UTC). Exit criteria per #102: 7 consecutive green nights before closing the issue.
+
+**Deferred (tracked separately):**
+
+- Phase 2: `RedisDisconnectResilienceIntegrationTest` (parity with cycles-server) + benchmark baseline via `-Pbenchmark`. Target v0.1.25.22 or later.
+- Phase 3: long-run 48h+ soak (requires dedicated perf-lab infra — GH Actions 6h cap doesn't fit) + org-level spec-drift nightly. Target v0.1.26+.
+
+**Cross-refs:** Phase 1 of [#102](https://github.com/runcycles/cycles-server-admin/issues/102). No spec dependency. No cycles-server impact — CI infra only.
+
+---
 
 ### 2026-04-16 — v0.1.25.20 audit log on failure paths (hybrid — success writes unchanged)
 

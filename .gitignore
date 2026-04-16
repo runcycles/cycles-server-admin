@@ -38,3 +38,6 @@ replay_pid*
 **/.flattened-pom.xml
 .claude/settings.local.json
 dump.rdb
+
+# jqwik failure-replay cache (v0.1.25.21+)
+/**/.jqwik-database

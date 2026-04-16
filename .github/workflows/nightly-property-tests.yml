@@ -1,0 +1,70 @@
+name: Nightly Property Tests
+
+# Runs jqwik property-based invariant tests against the v0.1.25.20 audit-
+# write path. Excluded from PR CI because a single run takes several
+# minutes; nightly gives deep interleaving coverage without blocking PR
+# feedback.
+#
+# Test: AuditCoverageInvariantsPropertyTest (@Tag("property-tests"))
+# Invariants asserted (from issue #102):
+#   I1. Exactly one of {written, error, sampled-out} fires per request
+#       (never zero, never two — the "no lost increments" contract).
+#   I2. Authenticated entries are NEVER sampled out, even at
+#       Integer.MAX_VALUE rate. Compliance-of-record guarantee.
+#   I3. TTL tier always matches tenant_id: sentinel => unauth retention,
+#       real tenant => auth retention, 0 days => no expiry.
+#   I4. sanitizeMessage output contains no \r or \n, length <= 1024,
+#       for any input including empty/long/binary-like strings.
+#   I5. logFailure never propagates an exception, even under adversarial
+#       AuditRepository failure modes.
+#
+# Failure triage: jqwik shrinks automatically. Surefire reports include
+# the minimal (tenantId, rate, status, message) triple that violates an
+# invariant — copy-paste it into a unit test for fast-feedback iteration.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC daily (runs before the soak workflow)
+  workflow_dispatch: {}    # manual trigger
+
+jobs:
+  property-tests:
+    name: Property-based audit-coverage invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      # jqwik.defaultTries=100 overrides the 20 from jqwik.properties to
+      # give nightly 5x deeper interleaving coverage than a PR-feedback
+      # run (matching cycles-server's pattern). Use `mvn test` (not
+      # `verify`) because -Pproperty-tests restricts surefire to only the
+      # 7 property-tagged tests — running `verify` would trigger JaCoCo's
+      # 95% coverage check on a test subset that exercises almost no code
+      # paths, failing the build despite all invariants passing. PR CI
+      # still enforces the full-suite coverage bar; this nightly is about
+      # invariant coverage over interleavings, not code-path coverage.
+      - name: Run property-based tests
+        run: >
+          mvn -B test
+          --file cycles-admin-service/pom.xml
+          -Pproperty-tests
+          -Djqwik.defaultTries=100
+          -Dsurefire.failIfNoSpecifiedTests=false
+
+      - name: Upload surefire reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports-property-tests
+          path: cycles-admin-service/cycles-admin-service-api/target/surefire-reports/
+          retention-days: 14
