@@ -2,6 +2,7 @@ package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.model.shared.CommitOveragePolicy;
+import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.tenant.Tenant;
 import io.runcycles.admin.model.tenant.TenantCreateRequest;
 import io.runcycles.admin.model.tenant.TenantStatus;
@@ -95,17 +96,33 @@ public class TenantRepository {
         }
     }
     public List<Tenant> list(TenantStatus status, String parentTenantId, String cursor, int limit) {
+        return list(status, parentTenantId, cursor, limit, null);
+    }
+
+    /**
+     * Sort-aware list (spec v0.1.25.20). When sortSpec is null, falls
+     * back to the pre-sort tenant_id-lexicographic order for wire-compat
+     * with older callers that haven't opted in.
+     *
+     * With a sortSpec, the implementation hydrates the full filtered set
+     * in memory, applies the Comparator, then walks past `cursor` and
+     * takes `limit`. The SMEMBERS set is bounded (set of tenant IDs),
+     * so worst-case memory is one Tenant record per active tenant —
+     * acceptable for the admin pane's cardinality envelope.
+     */
+    public List<Tenant> list(TenantStatus status, String parentTenantId, String cursor, int limit, SortSpec sortSpec) {
         try (Jedis jedis = jedisPool.getResource()) {
+            // Null SortSpec preserves the pre-v0.1.25.20 cursor semantics:
+            // the cursor is matched against the raw tenant_id set (before
+            // hydration), so a cursor pointing at a since-deleted tenant
+            // still advances past it. Callers who opt in with a SortSpec
+            // get the sort-aware path below.
+            if (sortSpec == null) {
+                return listLegacy(jedis, status, parentTenantId, cursor, limit);
+            }
             Set<String> ids = jedis.smembers("tenants");
-            List<String> sortedIds = new ArrayList<>(ids);
-            Collections.sort(sortedIds);
-            List<Tenant> tenants = new ArrayList<>();
-            boolean pastCursor = (cursor == null || cursor.isBlank());
-            for (String id : sortedIds) {
-                if (!pastCursor) {
-                    if (id.equals(cursor)) pastCursor = true;
-                    continue;
-                }
+            List<Tenant> hydrated = new ArrayList<>();
+            for (String id : ids) {
                 try {
                     String data = jedis.get("tenant:" + id);
                     if (data == null) {
@@ -115,14 +132,92 @@ public class TenantRepository {
                     Tenant t = objectMapper.readValue(data, Tenant.class);
                     if (status != null && t.getStatus() != status) continue;
                     if (parentTenantId != null && !parentTenantId.equals(t.getParentTenantId())) continue;
-                    tenants.add(t);
-                    if (tenants.size() >= limit) break;
+                    hydrated.add(t);
                 } catch (Exception e) {
                     LOG.warn("Failed to load tenant: {}", id, e);
                 }
             }
-            return tenants;
+            hydrated.sort(tenantComparator(sortSpec));
+            List<Tenant> page = new ArrayList<>();
+            boolean pastCursor = (cursor == null || cursor.isBlank());
+            for (Tenant t : hydrated) {
+                if (!pastCursor) {
+                    if (t.getTenantId().equals(cursor)) pastCursor = true;
+                    continue;
+                }
+                page.add(t);
+                if (page.size() >= limit) break;
+            }
+            return page;
         }
+    }
+
+    private List<Tenant> listLegacy(Jedis jedis, TenantStatus status, String parentTenantId,
+                                     String cursor, int limit) {
+        Set<String> ids = jedis.smembers("tenants");
+        List<String> sortedIds = new ArrayList<>(ids);
+        Collections.sort(sortedIds);
+        List<Tenant> tenants = new ArrayList<>();
+        boolean pastCursor = (cursor == null || cursor.isBlank());
+        for (String id : sortedIds) {
+            if (!pastCursor) {
+                if (id.equals(cursor)) pastCursor = true;
+                continue;
+            }
+            try {
+                String data = jedis.get("tenant:" + id);
+                if (data == null) {
+                    LOG.warn("Tenant data missing for id: {}", id);
+                    continue;
+                }
+                Tenant t = objectMapper.readValue(data, Tenant.class);
+                if (status != null && t.getStatus() != status) continue;
+                if (parentTenantId != null && !parentTenantId.equals(t.getParentTenantId())) continue;
+                tenants.add(t);
+                if (tenants.size() >= limit) break;
+            } catch (Exception e) {
+                LOG.warn("Failed to load tenant: {}", id, e);
+            }
+        }
+        return tenants;
+    }
+
+    /**
+     * Build a Comparator matching the requested SortSpec. The secondary
+     * key on tenant_id guarantees a strict total order under equal
+     * primary keys (e.g. two tenants sharing a name), so cursor
+     * pagination is deterministic across calls.
+     *
+     * sortSpec == null preserves the pre-v0.1.25.20 default (tenant_id
+     * ascending) for wire-compat with callers who haven't opted in.
+     */
+    private static Comparator<Tenant> tenantComparator(SortSpec sortSpec) {
+        Comparator<String> nullLastStr = Comparator.nullsLast(Comparator.naturalOrder());
+        Comparator<Tenant> tid = Comparator.comparing(Tenant::getTenantId, nullLastStr);
+        if (sortSpec == null) {
+            return tid;
+        }
+        String field = sortSpec.field() != null ? sortSpec.field() : "tenant_id";
+        Comparator<Tenant> primary;
+        switch (field) {
+            case "name":
+                primary = Comparator.comparing(Tenant::getName, nullLastStr);
+                break;
+            case "status":
+                primary = Comparator.comparing(
+                    t -> t.getStatus() != null ? t.getStatus().name() : null, nullLastStr);
+                break;
+            case "created_at":
+                primary = Comparator.comparing(Tenant::getCreatedAt,
+                    Comparator.nullsLast(Comparator.naturalOrder()));
+                break;
+            case "tenant_id":
+            default:
+                primary = tid;
+                break;
+        }
+        Comparator<Tenant> directed = sortSpec.isAscending() ? primary : primary.reversed();
+        return directed.thenComparing(tid);
     }
     public Tenant update(String tenantId, TenantUpdateRequest request) {
         try (Jedis jedis = jedisPool.getResource()) {

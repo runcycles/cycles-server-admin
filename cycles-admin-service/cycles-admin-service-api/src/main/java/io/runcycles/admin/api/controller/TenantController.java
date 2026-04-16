@@ -1,7 +1,11 @@
 package io.runcycles.admin.api.controller;
+import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.TenantRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
+import io.runcycles.admin.model.shared.ErrorCode;
+import io.runcycles.admin.model.shared.SortDirection;
+import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.tenant.Tenant;
 import io.runcycles.admin.model.tenant.TenantCreateRequest;
 import io.runcycles.admin.model.tenant.TenantListResponse;
@@ -21,9 +25,16 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 @RestController @RequestMapping("/v1/admin/tenants") @Tag(name = "Tenants")
 public class TenantController {
     private static final Logger LOG = LoggerFactory.getLogger(TenantController.class);
+    // Per-endpoint sort_by whitelist + default. Pins the spec v0.1.25.20
+    // enum at compile time — any drift between code and spec becomes a
+    // unit-test failure, not a silent runtime 500.
+    private static final Set<String> ALLOWED_SORT_FIELDS = Set.of(
+        "tenant_id", "name", "status", "created_at");
+    private static final String DEFAULT_SORT_FIELD = "created_at";
     @Autowired private TenantRepository repository;
     @Autowired private AuditRepository auditRepository;
     @Autowired private EventService eventService;
@@ -57,9 +68,12 @@ public class TenantController {
             // v0.1.25.8: accepted and ignored. v0.1.26+ servers with observe_mode extension will wire this up.
             @SuppressWarnings("unused") @RequestParam(required = false) String observe_mode,
             @RequestParam(required = false) String cursor,
-            @RequestParam(defaultValue = "50") int limit) {
+            @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(required = false) String sort_by,
+            @RequestParam(required = false) String sort_dir) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
-        var tenants = repository.list(status, parent_tenant_id, cursor, effectiveLimit);
+        SortSpec sortSpec = parseSortSpec(sort_by, sort_dir);
+        var tenants = repository.list(status, parent_tenant_id, cursor, effectiveLimit, sortSpec);
         TenantListResponse response = TenantListResponse.builder()
             .tenants(tenants)
             .hasMore(tenants.size() >= effectiveLimit)
@@ -113,6 +127,27 @@ public class TenantController {
         if (request.getMaxReservationTtlMs() != null) meta.put("max_reservation_ttl_ms", request.getMaxReservationTtlMs());
         if (request.getMaxReservationExtensions() != null) meta.put("max_reservation_extensions", request.getMaxReservationExtensions());
         return meta.isEmpty() ? null : meta;
+    }
+
+    /**
+     * Parse sort_by / sort_dir query params into a validated SortSpec.
+     * Per spec v0.1.25.20: unknown sort_by → 400; unknown sort_dir → 400;
+     * missing sort_by defaults to the endpoint's canonical default;
+     * missing sort_dir defaults to DESC. A single 400 for all parse/
+     * validation failures keeps the client contract uniform.
+     */
+    private SortSpec parseSortSpec(String sortBy, String sortDir) {
+        SortDirection direction;
+        try {
+            direction = SortDirection.fromWire(sortDir);
+        } catch (IllegalArgumentException e) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
+        }
+        try {
+            return SortSpec.resolve(sortBy, direction, ALLOWED_SORT_FIELDS, DEFAULT_SORT_FIELD);
+        } catch (IllegalArgumentException e) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
+        }
     }
 
     private AuditLogEntry.AuditLogEntryBuilder buildAuditEntry(HttpServletRequest request) {

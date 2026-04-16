@@ -24,6 +24,7 @@ import redis.clients.jedis.JedisPool;
 import java.time.Instant;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -117,7 +118,7 @@ class TenantControllerTest {
     void listTenants_returns200() throws Exception {
         List<Tenant> tenants = List.of(
                 Tenant.builder().tenantId("tenant-1").name("A").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build());
-        when(tenantRepository.list(any(), any(), any(), anyInt())).thenReturn(tenants);
+        when(tenantRepository.list(any(), any(), any(), anyInt(), any())).thenReturn(tenants);
 
         mockMvc.perform(get("/v1/admin/tenants")
                         .header("X-Admin-API-Key", ADMIN_KEY))
@@ -128,7 +129,7 @@ class TenantControllerTest {
 
     @Test
     void listTenants_withStatusFilter() throws Exception {
-        when(tenantRepository.list(eq(TenantStatus.ACTIVE), any(), any(), anyInt())).thenReturn(List.of());
+        when(tenantRepository.list(eq(TenantStatus.ACTIVE), any(), any(), anyInt(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/tenants")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -241,7 +242,7 @@ class TenantControllerTest {
 
     @Test
     void listTenants_emptyResult_hasMoreFalseAndNoCursor() throws Exception {
-        when(tenantRepository.list(any(), any(), any(), anyInt())).thenReturn(List.of());
+        when(tenantRepository.list(any(), any(), any(), anyInt(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/tenants")
                         .header("X-Admin-API-Key", ADMIN_KEY))
@@ -253,14 +254,14 @@ class TenantControllerTest {
 
     @Test
     void listTenants_limitClampedToMax100() throws Exception {
-        when(tenantRepository.list(any(), any(), any(), eq(100))).thenReturn(List.of());
+        when(tenantRepository.list(any(), any(), any(), eq(100), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/tenants")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .param("limit", "999"))
                 .andExpect(status().isOk());
 
-        verify(tenantRepository).list(any(), any(), any(), eq(100));
+        verify(tenantRepository).list(any(), any(), any(), eq(100), any());
     }
 
     @Test
@@ -278,14 +279,14 @@ class TenantControllerTest {
 
     @Test
     void listTenants_limitClampedToMin1() throws Exception {
-        when(tenantRepository.list(any(), any(), any(), eq(1))).thenReturn(List.of());
+        when(tenantRepository.list(any(), any(), any(), eq(1), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/tenants")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .param("limit", "0"))
                 .andExpect(status().isOk());
 
-        verify(tenantRepository).list(any(), any(), any(), eq(1));
+        verify(tenantRepository).list(any(), any(), any(), eq(1), any());
     }
 
     @Test
@@ -385,14 +386,14 @@ class TenantControllerTest {
 
     @Test
     void listTenants_withParentTenantIdFilter() throws Exception {
-        when(tenantRepository.list(any(), eq("parent-1"), any(), anyInt())).thenReturn(List.of());
+        when(tenantRepository.list(any(), eq("parent-1"), any(), anyInt(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/tenants")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .param("parent_tenant_id", "parent-1"))
                 .andExpect(status().isOk());
 
-        verify(tenantRepository).list(any(), eq("parent-1"), any(), anyInt());
+        verify(tenantRepository).list(any(), eq("parent-1"), any(), anyInt(), any());
     }
 
     @Test
@@ -401,7 +402,7 @@ class TenantControllerTest {
         List<Tenant> tenants = List.of(
                 Tenant.builder().tenantId("tenant-1").name("A").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build(),
                 Tenant.builder().tenantId("tenant-2").name("B").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build());
-        when(tenantRepository.list(any(), any(), any(), eq(2))).thenReturn(tenants);
+        when(tenantRepository.list(any(), any(), any(), eq(2), any())).thenReturn(tenants);
 
         mockMvc.perform(get("/v1/admin/tenants")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -413,14 +414,14 @@ class TenantControllerTest {
 
     @Test
     void listTenants_withCursorParam_passesToRepository() throws Exception {
-        when(tenantRepository.list(any(), any(), eq("t-cursor"), anyInt())).thenReturn(List.of());
+        when(tenantRepository.list(any(), any(), eq("t-cursor"), anyInt(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/tenants")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .param("cursor", "t-cursor"))
                 .andExpect(status().isOk());
 
-        verify(tenantRepository).list(any(), any(), eq("t-cursor"), anyInt());
+        verify(tenantRepository).list(any(), any(), eq("t-cursor"), anyInt(), any());
     }
 
     @Test
@@ -548,7 +549,7 @@ class TenantControllerTest {
     // v0.1.25.8: observe_mode query param must be accepted and silently ignored
     @Test
     void listTenants_withObserveModeParam_acceptedAndIgnored() throws Exception {
-        when(tenantRepository.list(any(), any(), any(), anyInt())).thenReturn(List.of());
+        when(tenantRepository.list(any(), any(), any(), anyInt(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/tenants")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -557,6 +558,74 @@ class TenantControllerTest {
                 .andExpect(jsonPath("$.tenants").isArray());
 
         // Repository call unchanged — observe_mode is not passed through on v0.1.25.x
-        verify(tenantRepository).list(any(), any(), any(), anyInt());
+        verify(tenantRepository).list(any(), any(), any(), anyInt(), any());
+    }
+
+    // ---- v0.1.25.20: sort_by / sort_dir contract ----
+
+    @Test
+    void listTenants_withValidSortByAndSortDir_delegatesToRepository() throws Exception {
+        when(tenantRepository.list(any(), any(), any(), anyInt(), any())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/tenants")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("sort_by", "name")
+                        .param("sort_dir", "asc"))
+                .andExpect(status().isOk());
+
+        org.mockito.ArgumentCaptor<io.runcycles.admin.model.shared.SortSpec> captor =
+            org.mockito.ArgumentCaptor.forClass(io.runcycles.admin.model.shared.SortSpec.class);
+        verify(tenantRepository).list(any(), any(), any(), anyInt(), captor.capture());
+        assertEquals("name", captor.getValue().field());
+        assertEquals(io.runcycles.admin.model.shared.SortDirection.ASC, captor.getValue().direction());
+    }
+
+    @Test
+    void listTenants_defaultsToCreatedAtDescending() throws Exception {
+        when(tenantRepository.list(any(), any(), any(), anyInt(), any())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/tenants")
+                        .header("X-Admin-API-Key", ADMIN_KEY))
+                .andExpect(status().isOk());
+
+        org.mockito.ArgumentCaptor<io.runcycles.admin.model.shared.SortSpec> captor =
+            org.mockito.ArgumentCaptor.forClass(io.runcycles.admin.model.shared.SortSpec.class);
+        verify(tenantRepository).list(any(), any(), any(), anyInt(), captor.capture());
+        assertEquals("created_at", captor.getValue().field());
+        assertEquals(io.runcycles.admin.model.shared.SortDirection.DESC, captor.getValue().direction());
+    }
+
+    @Test
+    void listTenants_unknownSortByReturns400() throws Exception {
+        mockMvc.perform(get("/v1/admin/tenants")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("sort_by", "not_a_field"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(tenantRepository, never()).list(any(), any(), any(), anyInt(), any());
+    }
+
+    @Test
+    void listTenants_unknownSortDirReturns400() throws Exception {
+        mockMvc.perform(get("/v1/admin/tenants")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("sort_dir", "sideways"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(tenantRepository, never()).list(any(), any(), any(), anyInt(), any());
+    }
+
+    @Test
+    void listTenants_acceptsAllWhitelistedSortFields() throws Exception {
+        when(tenantRepository.list(any(), any(), any(), anyInt(), any())).thenReturn(List.of());
+
+        for (String field : new String[]{"tenant_id", "name", "status", "created_at"}) {
+            mockMvc.perform(get("/v1/admin/tenants")
+                            .header("X-Admin-API-Key", ADMIN_KEY)
+                            .param("sort_by", field))
+                    .andExpect(status().isOk());
+        }
     }
 }
