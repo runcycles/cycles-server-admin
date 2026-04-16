@@ -5,6 +5,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.runcycles.admin.data.repository.EventRepository;
 import io.runcycles.admin.model.event.*;
+import io.runcycles.admin.model.shared.SortSpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -130,9 +131,15 @@ public class EventService {
     public EventListResponse list(String tenantId, String eventType, String category,
                                    String scope, String correlationId, Instant from, Instant to,
                                    String cursor, int limit) {
+        return list(tenantId, eventType, category, scope, correlationId, from, to, cursor, limit, null);
+    }
+
+    public EventListResponse list(String tenantId, String eventType, String category,
+                                   String scope, String correlationId, Instant from, Instant to,
+                                   String cursor, int limit, SortSpec sortSpec) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         List<Event> events = eventRepository.list(tenantId, eventType, category, scope,
-            correlationId, from, to, cursor, effectiveLimit);
+            correlationId, from, to, cursor, effectiveLimit, sortSpec);
         return EventListResponse.builder()
             .events(events)
             .hasMore(events.size() >= effectiveLimit)

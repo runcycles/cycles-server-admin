@@ -8,6 +8,8 @@ import io.runcycles.admin.model.event.Event;
 import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.ErrorCode;
+import io.runcycles.admin.model.shared.SortDirection;
+import io.runcycles.admin.model.shared.SortSpec;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -542,5 +544,193 @@ class EventRepositoryTest {
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getEventId()).isEqualTo("evt_2");
+    }
+
+    // ---- sort (spec v0.1.25.20 §V4) ----
+
+    private Event ev(String id, String tenantId, EventType type, String scope, Instant ts) {
+        return Event.builder()
+            .eventId(id).tenantId(tenantId).eventType(type)
+            .category(type.getCategory()).source("admin").scope(scope).timestamp(ts)
+            .build();
+    }
+
+    private void stubZSet(String indexKey, boolean ascending, List<Event> events) throws Exception {
+        List<String> ids = new ArrayList<>();
+        List<String> jsons = new ArrayList<>();
+        for (Event e : events) {
+            ids.add(e.getEventId());
+            jsons.add(objectMapper.writeValueAsString(e));
+        }
+        if (ascending) {
+            when(jedis.zrangeByScore(eq(indexKey), anyDouble(), anyDouble(), eq(0), anyInt()))
+                .thenReturn(ids);
+        } else {
+            when(jedis.zrevrangeByScore(eq(indexKey), anyDouble(), anyDouble(), eq(0), anyInt()))
+                .thenReturn(ids);
+        }
+        for (int i = 0; i < events.size(); i++) {
+            when(jedis.get("event:" + events.get(i).getEventId())).thenReturn(jsons.get(i));
+        }
+    }
+
+    @Test
+    void list_sortByTimestampDesc_usesZrevrangeByScore() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        Event a = ev("evt_a", "tenant-1", EventType.TENANT_CREATED, "org", t);
+        Event b = ev("evt_b", "tenant-1", EventType.TENANT_CREATED, "org", t.plusSeconds(60));
+        // Repo returns newest-first when zrevrangeByScore is mocked to descending list.
+        stubZSet("events:tenant-1", false, List.of(b, a));
+
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, null, 50,
+            SortSpec.of("timestamp", SortDirection.DESC));
+
+        assertThat(result).extracting(Event::getEventId).containsExactly("evt_b", "evt_a");
+        verify(jedis).zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt());
+    }
+
+    @Test
+    void list_sortByTimestampAsc_usesZrangeByScore() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        Event a = ev("evt_a", "tenant-1", EventType.TENANT_CREATED, "org", t);
+        Event b = ev("evt_b", "tenant-1", EventType.TENANT_CREATED, "org", t.plusSeconds(60));
+        stubZSet("events:tenant-1", true, List.of(a, b));
+
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, null, 50,
+            SortSpec.of("timestamp", SortDirection.ASC));
+
+        assertThat(result).extracting(Event::getEventId).containsExactly("evt_a", "evt_b");
+        verify(jedis).zrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt());
+    }
+
+    @Test
+    void list_sortByEventTypeAsc_hydratesAndReorders() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        Event a = ev("evt_a", "tenant-1", EventType.TENANT_CREATED, "org", t);
+        Event b = ev("evt_b", "tenant-1", EventType.BUDGET_CREATED, "org", t.plusSeconds(60));
+        Event c = ev("evt_c", "tenant-1", EventType.API_KEY_CREATED, "org", t.plusSeconds(120));
+        // Passed newest-first via zrev; sort re-orders by event_type ascending.
+        stubZSet("events:tenant-1", false, List.of(c, b, a));
+
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, null, 50,
+            SortSpec.of("event_type", SortDirection.ASC));
+
+        // Lex order of wire values: api_key.created < budget.created < tenant.created
+        assertThat(result).extracting(Event::getEventId).containsExactly("evt_c", "evt_b", "evt_a");
+    }
+
+    @Test
+    void list_sortByTenantIdDesc_withGlobalIndex() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        Event a = ev("evt_a", "tenant-alpha", EventType.TENANT_CREATED, "org", t);
+        Event b = ev("evt_b", "tenant-zulu", EventType.TENANT_CREATED, "org", t);
+        stubZSet("events:_all", false, List.of(b, a));
+
+        List<Event> result = repository.list(null, null, null, null, null, null, null, null, 50,
+            SortSpec.of("tenant_id", SortDirection.DESC));
+
+        assertThat(result).extracting(Event::getEventId).containsExactly("evt_b", "evt_a");
+    }
+
+    @Test
+    void list_sortedCursorResumesInSortedOrder() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        Event a = ev("evt_a", "tenant-1", EventType.API_KEY_CREATED, "org", t);
+        Event b = ev("evt_b", "tenant-1", EventType.BUDGET_CREATED, "org", t);
+        Event c = ev("evt_c", "tenant-1", EventType.TENANT_CREATED, "org", t);
+        stubZSet("events:tenant-1", false, List.of(c, b, a));
+
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, "evt_a", 50,
+            SortSpec.of("event_type", SortDirection.ASC));
+
+        assertThat(result).extracting(Event::getEventId).containsExactly("evt_b", "evt_c");
+    }
+
+    @Test
+    void list_sortedRespectsLimit() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        Event a = ev("evt_a", "tenant-1", EventType.API_KEY_CREATED, "org", t);
+        Event b = ev("evt_b", "tenant-1", EventType.BUDGET_CREATED, "org", t);
+        Event c = ev("evt_c", "tenant-1", EventType.TENANT_CREATED, "org", t);
+        stubZSet("events:tenant-1", false, List.of(c, b, a));
+
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, null, 2,
+            SortSpec.of("event_type", SortDirection.ASC));
+
+        assertThat(result).hasSize(2);
+        assertThat(result).extracting(Event::getEventId).containsExactly("evt_a", "evt_b");
+    }
+
+    @Test
+    void list_sortByScope_nullScopeSortsLast() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        Event a = ev("evt_a", "tenant-1", EventType.TENANT_CREATED, null, t);
+        Event b = ev("evt_b", "tenant-1", EventType.TENANT_CREATED, "org/eng", t);
+        stubZSet("events:tenant-1", false, List.of(b, a));
+
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, null, 50,
+            SortSpec.of("scope", SortDirection.ASC));
+
+        // Non-null first; nullsLast puts null at tail.
+        assertThat(result).extracting(Event::getEventId).containsExactly("evt_b", "evt_a");
+    }
+
+    @Test
+    void list_sortByCategory_appliesBeforeCursor() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        Event a = ev("evt_a", "tenant-1", EventType.API_KEY_CREATED, "org", t); // api_key
+        Event b = ev("evt_b", "tenant-1", EventType.BUDGET_CREATED, "org", t); // budget
+        Event c = ev("evt_c", "tenant-1", EventType.TENANT_CREATED, "org", t); // tenant
+        stubZSet("events:tenant-1", false, List.of(c, b, a));
+
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, null, 50,
+            SortSpec.of("category", SortDirection.DESC));
+
+        // category DESC: tenant > budget > api_key
+        assertThat(result).extracting(Event::getEventId).containsExactly("evt_c", "evt_b", "evt_a");
+    }
+
+    @Test
+    void list_nullSortSpec_preservesLegacyZrevBehaviour() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        Event a = ev("evt_a", "tenant-1", EventType.TENANT_CREATED, "org", t);
+        stubZSet("events:tenant-1", false, List.of(a));
+
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, null, 50, null);
+
+        assertThat(result).hasSize(1);
+        verify(jedis).zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt());
+    }
+
+    @Test
+    void list_timestampAscCursorAdvancesMinScore() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        Event a = ev("evt_a", "tenant-1", EventType.TENANT_CREATED, "org", t);
+        stubZSet("events:tenant-1", true, List.of(a));
+        when(jedis.zscore("events:tenant-1", "evt_cursor")).thenReturn(1000.0);
+
+        repository.list("tenant-1", null, null, null, null, null, null, "evt_cursor", 50,
+            SortSpec.of("timestamp", SortDirection.ASC));
+
+        verify(jedis).zrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt());
+    }
+
+    @Test
+    void list_correlationFilter_appliesSortAfterHydration() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        Event a = ev("evt_a", "tenant-1", EventType.API_KEY_CREATED, "org", t);
+        Event b = ev("evt_b", "tenant-1", EventType.TENANT_CREATED, "org", t);
+        String aJson = objectMapper.writeValueAsString(a);
+        String bJson = objectMapper.writeValueAsString(b);
+        LinkedHashSet<String> ids = new LinkedHashSet<>(List.of("evt_a", "evt_b"));
+        when(jedis.smembers("events:correlation:corr_abc")).thenReturn(ids);
+        when(jedis.get("event:evt_a")).thenReturn(aJson);
+        when(jedis.get("event:evt_b")).thenReturn(bJson);
+
+        List<Event> result = repository.list(null, null, null, null, "corr_abc", null, null, null, 50,
+            SortSpec.of("event_type", SortDirection.DESC));
+
+        // tenant.created > api_key.created under DESC
+        assertThat(result).extracting(Event::getEventId).containsExactly("evt_b", "evt_a");
     }
 }

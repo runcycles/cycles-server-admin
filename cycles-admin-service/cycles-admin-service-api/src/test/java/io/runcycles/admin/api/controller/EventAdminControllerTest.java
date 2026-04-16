@@ -5,7 +5,10 @@ import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.model.event.*;
+import io.runcycles.admin.model.shared.SortDirection;
+import io.runcycles.admin.model.shared.SortSpec;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
@@ -39,7 +42,7 @@ class EventAdminControllerTest {
     void listEvents_returns200() throws Exception {
         EventListResponse response = EventListResponse.builder()
             .events(List.of()).hasMore(false).build();
-        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any()))
             .thenReturn(response);
 
         mockMvc.perform(get("/v1/admin/events")
@@ -54,7 +57,7 @@ class EventAdminControllerTest {
         EventListResponse response = EventListResponse.builder()
             .events(List.of()).hasMore(false).build();
         when(eventService.list(eq("tenant-1"), eq("budget.created"), eq("budget"), eq("org/team1"),
-                eq("corr_1"), any(), any(), any(), anyInt()))
+                eq("corr_1"), any(), any(), any(), anyInt(), any()))
             .thenReturn(response);
 
         mockMvc.perform(get("/v1/admin/events")
@@ -92,7 +95,7 @@ class EventAdminControllerTest {
     void listEvents_clampsLimitTo100() throws Exception {
         EventListResponse response = EventListResponse.builder()
             .events(List.of()).hasMore(false).build();
-        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(100)))
+        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(100), any()))
             .thenReturn(response);
 
         mockMvc.perform(get("/v1/admin/events")
@@ -100,7 +103,7 @@ class EventAdminControllerTest {
                         .param("limit", "999"))
                 .andExpect(status().isOk());
 
-        verify(eventService).list(any(), any(), any(), any(), any(), any(), any(), any(), eq(100));
+        verify(eventService).list(any(), any(), any(), any(), any(), any(), any(), any(), eq(100), any());
     }
 
     @Test
@@ -112,5 +115,79 @@ class EventAdminControllerTest {
                         .header("X-Admin-API-Key", ADMIN_KEY))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error").value("EVENT_NOT_FOUND"));
+    }
+
+    // --- Sort contract tests (spec v0.1.25.20 §V4) ---
+
+    @Test
+    void listEvents_defaultsToTimestampDesc() throws Exception {
+        EventListResponse response = EventListResponse.builder()
+            .events(List.of()).hasMore(false).build();
+        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any()))
+            .thenReturn(response);
+
+        mockMvc.perform(get("/v1/admin/events")
+                        .header("X-Admin-API-Key", ADMIN_KEY))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<SortSpec> captor = ArgumentCaptor.forClass(SortSpec.class);
+        verify(eventService).list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), captor.capture());
+        SortSpec sort = captor.getValue();
+        org.junit.jupiter.api.Assertions.assertEquals("timestamp", sort.field());
+        org.junit.jupiter.api.Assertions.assertEquals(SortDirection.DESC, sort.direction());
+    }
+
+    @Test
+    void listEvents_acceptsValidSortByAndDir() throws Exception {
+        EventListResponse response = EventListResponse.builder()
+            .events(List.of()).hasMore(false).build();
+        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any()))
+            .thenReturn(response);
+
+        mockMvc.perform(get("/v1/admin/events")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("sort_by", "event_type")
+                        .param("sort_dir", "asc"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<SortSpec> captor = ArgumentCaptor.forClass(SortSpec.class);
+        verify(eventService).list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), captor.capture());
+        SortSpec sort = captor.getValue();
+        org.junit.jupiter.api.Assertions.assertEquals("event_type", sort.field());
+        org.junit.jupiter.api.Assertions.assertEquals(SortDirection.ASC, sort.direction());
+    }
+
+    @Test
+    void listEvents_acceptsAllWhitelistedFields() throws Exception {
+        EventListResponse response = EventListResponse.builder()
+            .events(List.of()).hasMore(false).build();
+        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any()))
+            .thenReturn(response);
+
+        for (String field : List.of("event_type", "category", "scope", "tenant_id", "timestamp")) {
+            mockMvc.perform(get("/v1/admin/events")
+                            .header("X-Admin-API-Key", ADMIN_KEY)
+                            .param("sort_by", field))
+                    .andExpect(status().isOk());
+        }
+    }
+
+    @Test
+    void listEvents_unknownSortBy_returns400() throws Exception {
+        mockMvc.perform(get("/v1/admin/events")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("sort_by", "bogus"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void listEvents_unknownSortDir_returns400() throws Exception {
+        mockMvc.perform(get("/v1/admin/events")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("sort_by", "timestamp")
+                        .param("sort_dir", "sideways"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
     }
 }
