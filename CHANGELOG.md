@@ -14,6 +14,38 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.23] — 2026-04-16
+
+### Added
+
+- **`BudgetLedger.tenant_id` exposed on the wire.** Aligns with
+  spec `cycles-governance-admin-v0.1.25.yaml` info.version
+  `0.1.25.19`, which classifies `tenant_id` as an OPTIONAL response
+  field on every `BudgetLedger` returned by the service. Prior to
+  `0.1.25.23` the field existed on the Java model but was annotated
+  `@JsonIgnore`, so cross-tenant list responses (introduced in
+  `0.1.25.22`) returned rows with no wire-level tenant attribution —
+  dashboards had to scope-string-parse to display per-row tenant
+  context, which the spec explicitly does not guarantee.
+
+### Wire format
+
+- `BudgetLedger` now serializes `tenant_id` as snake_case JSON.
+  `@JsonInclude(NON_NULL)`: when the backing value is null (legacy
+  ledgers stored before tenant_id was tracked, edge-case paths), the
+  field is omitted rather than emitted as `"tenant_id": null`. This
+  matches the spec's OPTIONAL (not REQUIRED) classification.
+
+### Notes for upgraders
+
+- **Additive, non-breaking.** Clients that ignore unknown response
+  fields observe no change; clients that consume `tenant_id` get
+  per-row tenant attribution in both per-tenant and cross-tenant
+  list responses without additional requests.
+- Pre-v0.1.25.19 spec clients with `additionalProperties: false`
+  validation would fail on the new field; upgrade the spec in
+  lock-step with the server.
+
 ## [0.1.25.22] — 2026-04-16
 
 ### Added

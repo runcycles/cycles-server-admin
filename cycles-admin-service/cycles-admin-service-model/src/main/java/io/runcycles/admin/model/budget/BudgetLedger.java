@@ -12,7 +12,7 @@ import java.util.Map;
 public class BudgetLedger {
     // Required per spec: ledger_id, scope, unit, allocated, remaining, status, created_at
     @JsonProperty("ledger_id") private String ledgerId;
-    @JsonIgnore private String tenantId;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("tenant_id") private String tenantId;
     @JsonProperty("scope") private String scope;
     @JsonProperty("unit") private UnitEnum unit;
     @JsonProperty("allocated") private Amount allocated;
