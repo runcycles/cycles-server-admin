@@ -49,7 +49,16 @@ public class AuthInterceptor implements HandlerInterceptor {
         // subscriptions during incident response without holding the
         // tenant's API key. Per-subscription paths (id in URL) use the
         // prefix matcher below.
-        "GET:/v1/webhooks"
+        "GET:/v1/webhooks",
+        // v0.1.25.19: dual-auth on GET /v1/auth/introspect per spec
+        // v0.1.25.15. AdminKey returns admin-shape (auth_type=admin,
+        // permissions=["*"], no tenant_id/scope_filter). Tenant ApiKey
+        // returns tenant-shape (auth_type=tenant, concrete permissions,
+        // tenant_id, optional scope_filter) with capabilities derived
+        // per the NORMATIVE table — admin-plane caps (view_tenants,
+        // view_api_keys, view_audit, view_overview, manage_tenants,
+        // manage_api_keys) forced to false under tenant auth.
+        "GET:/v1/auth/introspect"
     );
 
     // Method:path-prefix entries for dual-auth where the path includes a
@@ -167,10 +176,11 @@ public class AuthInterceptor implements HandlerInterceptor {
     private boolean requiresAdminKey(String method, String path) {
         // Admin endpoints per spec: tenants, api-keys, auth/validate, auth/introspect, audit, webhooks, events, config, overview
         // Also: PATCH /v1/admin/budgets, freeze, unfreeze require AdminKeyAuth
+        // v0.1.25.19: /v1/auth/introspect moves off admin-only to the
+        // dual-auth path (see ADMIN_ALLOWED_ENDPOINTS + requiresApiKey).
         if (path.startsWith("/v1/admin/tenants") ||
                path.startsWith("/v1/admin/api-keys") ||
                path.startsWith("/v1/auth/validate") ||
-               path.startsWith("/v1/auth/introspect") ||
                path.startsWith("/v1/admin/audit") ||
                path.startsWith("/v1/admin/webhooks") ||
                path.startsWith("/v1/admin/events") ||
@@ -211,13 +221,18 @@ public class AuthInterceptor implements HandlerInterceptor {
     }
 
     private boolean requiresApiKey(String path) {
-        // Tenant-scoped endpoints per spec: budgets, policies, balances, reservations
+        // Tenant-scoped endpoints per spec: budgets, policies, balances, reservations.
+        // v0.1.25.19: /v1/auth/introspect is dual-auth (spec v0.1.25.15) —
+        // listed here so the interceptor routes tenant keys through the
+        // ApiKey path; AdminKey variant is picked up via the
+        // ADMIN_ALLOWED_ENDPOINTS dual-auth check inside preHandle.
         return path.startsWith("/v1/admin/budgets") ||
                path.startsWith("/v1/admin/policies") ||
                path.startsWith("/v1/balances") ||
                path.startsWith("/v1/reservations") ||
                path.startsWith("/v1/webhooks") ||
-               path.startsWith("/v1/events");
+               path.startsWith("/v1/events") ||
+               path.startsWith("/v1/auth/introspect");
     }
 
     private boolean validateAdminKey(HttpServletRequest request, HttpServletResponse response) throws Exception {
