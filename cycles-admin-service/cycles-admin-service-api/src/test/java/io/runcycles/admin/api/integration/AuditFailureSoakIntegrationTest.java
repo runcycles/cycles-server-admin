@@ -119,6 +119,26 @@ class AuditFailureSoakIntegrationTest extends BaseIntegrationTest {
                 "permissions", java.util.List.of("balances:read")));
         String tenantKey = (String) keyResp.getBody().get("key_secret");
 
+        // ---- AS4 baseline ----
+        // Setup calls above (createTenant + createApiKey) are SUCCESS paths
+        // that write audit entries via their respective per-controller
+        // AuditRepository.log() calls. Those ZADD to audit:logs:_all + per-
+        // tenant indexes but do NOT increment cycles_admin_audit_writes_total
+        // — that counter is failure-side only. Capture the index baseline
+        // after setup so AS4 can compare the load-phase delta against the
+        // failure counter without the setup entries polluting the math.
+        //
+        // Any deviation (v0.1.25.21 initial soak run: 14602 vs 14600) was
+        // entirely setup-side. The invariant we actually want to check is
+        // "every failure write that lands in Redis also increments the
+        // counter" — which needs the baseline subtraction.
+        long indexBaselineGlobal;
+        long indexBaselineTenant;
+        try (Jedis jedis = jedisPool.getResource()) {
+            indexBaselineGlobal = jedis.zcard("audit:logs:_all");
+            indexBaselineTenant = jedis.zcard("audit:logs:tenant-soak");
+        }
+
         ExecutorService pool = Executors.newFixedThreadPool(WORKER_THREADS);
         CountDownLatch start = new CountDownLatch(1);
         CountDownLatch done = new CountDownLatch(WORKER_THREADS);
@@ -261,23 +281,37 @@ class AuditFailureSoakIntegrationTest extends BaseIntegrationTest {
                         counterTotal, written, error, sampledOut, totalRequests)
                 .isEqualTo((double) totalRequests);
 
-        // ---- AS4: audit index cardinality ≤ written count ----
+        // ---- AS4: failure-phase index writes match written counter ----
+        // Subtract the baseline captured after setup so the assertion
+        // measures only the load phase. An orphan ZADD in the v0.1.25.20
+        // failure path (Lua racing with the counter increment) would show
+        // up as delta > written. Matching delta == written (at default
+        // rate=1, no sampling) is the strong invariant.
         try (Jedis jedis = jedisPool.getResource()) {
-            long globalIndex = jedis.zcard("audit:logs:_all");
-            assertThat(globalIndex)
-                    .as("AS4: audit:logs:_all cardinality %d must be ≤ written %f — "
+            long globalIndexAfter = jedis.zcard("audit:logs:_all");
+            long globalDelta = globalIndexAfter - indexBaselineGlobal;
+            assertThat(globalDelta)
+                    .as("AS4: audit:logs:_all load-phase delta %d must equal written %f — "
                             + "if greater, something is ZADDing without a corresponding "
-                            + "counter increment",
-                            globalIndex, written)
-                    .isLessThanOrEqualTo((long) written);
+                            + "counter increment (orphan-ZADD bug); if smaller, a write "
+                            + "incremented the counter but failed to index (sweep racing "
+                            + "writes, or script divergence)",
+                            globalDelta, written)
+                    .isEqualTo((long) written);
 
-            // Also confirm every sentinel + real-tenant index exists
-            // and has bounded cardinality.
+            // Per-tier delta sanity: every failure write lands in exactly
+            // one tier index (sentinel OR real tenant). Their delta sum
+            // must equal the global delta — guards against a ZADD going
+            // into only one of the two index families.
             long sentinelIndex = jedis.zcard("audit:logs:<unauthenticated>");
             long tenantSoakIndex = jedis.zcard("audit:logs:tenant-soak");
-            assertThat(sentinelIndex + tenantSoakIndex)
-                    .as("AS4: sum of tier indexes should equal global index")
-                    .isLessThanOrEqualTo(globalIndex);
+            long tenantSoakDelta = tenantSoakIndex - indexBaselineTenant;
+            assertThat(sentinelIndex + tenantSoakDelta)
+                    .as("AS4: sentinel + (tenant-soak - baseline) must equal "
+                            + "load-phase global delta — ensures every write lands in "
+                            + "both its tier index AND the global index",
+                            sentinelIndex, tenantSoakDelta, globalDelta)
+                    .isEqualTo(globalDelta);
         }
 
         // ---- AS5: network error rate < 1% ----
