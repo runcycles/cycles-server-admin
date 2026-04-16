@@ -7,6 +7,8 @@ import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.service.KeyService;
 import io.runcycles.admin.model.auth.*;
 import io.runcycles.admin.model.shared.ErrorCode;
+import io.runcycles.admin.model.shared.SortDirection;
+import io.runcycles.admin.model.shared.SortSpec;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -1040,5 +1042,182 @@ class ApiKeyRepositoryTest {
         List<ApiKey> result = repository.listAllTenants(null, "tenant-b|key_b1", 50);
 
         assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_c1", "key_c2");
+    }
+
+    // --- v0.1.25.24 sort support ---
+
+    private ApiKey buildKeySorted(String tenantId, String keyId, String name,
+                                  ApiKeyStatus status, Instant createdAt, Instant expiresAt) {
+        return ApiKey.builder()
+                .keyId(keyId).tenantId(tenantId).name(name).keyPrefix("cyc_live_" + keyId)
+                .keyHash("hash").status(status)
+                .createdAt(createdAt).expiresAt(expiresAt)
+                .build();
+    }
+
+    private void stubSingleTenantKeys(String tenantId, ApiKey... keys) throws Exception {
+        Set<String> ids = new LinkedHashSet<>();
+        Map<String, String> jsonByKey = new LinkedHashMap<>();
+        for (ApiKey k : keys) {
+            ids.add(k.getKeyId());
+            jsonByKey.put("apikey:" + k.getKeyId(), objectMapper.writeValueAsString(k));
+        }
+        when(jedis.smembers("apikeys:" + tenantId)).thenReturn(ids);
+        for (var e : jsonByKey.entrySet()) {
+            when(jedis.get(e.getKey())).thenReturn(e.getValue());
+        }
+    }
+
+    @Test
+    void list_sortByNameAscending_ordersByName() throws Exception {
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        ApiKey zebra = buildKeySorted("t1", "key_2", "Zebra", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+        ApiKey alpha = buildKeySorted("t1", "key_1", "Alpha", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+        stubSingleTenantKeys("t1", zebra, alpha);
+
+        List<ApiKey> result = repository.list("t1", null, null, 50,
+                SortSpec.of("name", SortDirection.ASC));
+
+        assertThat(result).extracting(ApiKey::getName).containsExactly("Alpha", "Zebra");
+    }
+
+    @Test
+    void list_sortByCreatedAtDescending_newestFirst() throws Exception {
+        Instant older = Instant.parse("2025-01-01T00:00:00Z");
+        Instant newer = Instant.parse("2026-01-01T00:00:00Z");
+        ApiKey old = buildKeySorted("t1", "key_1", "Old", ApiKeyStatus.ACTIVE, older, older.plusSeconds(3600));
+        ApiKey fresh = buildKeySorted("t1", "key_2", "Fresh", ApiKeyStatus.ACTIVE, newer, newer.plusSeconds(3600));
+        stubSingleTenantKeys("t1", old, fresh);
+
+        List<ApiKey> result = repository.list("t1", null, null, 50,
+                SortSpec.of("created_at", SortDirection.DESC));
+
+        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_2", "key_1");
+    }
+
+    @Test
+    void list_sortByStatus_nullSafeWithFallback() throws Exception {
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        ApiKey revoked = buildKeySorted("t1", "key_1", "A", ApiKeyStatus.REVOKED, now, now.plusSeconds(3600));
+        ApiKey active = buildKeySorted("t1", "key_2", "B", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+        stubSingleTenantKeys("t1", revoked, active);
+
+        List<ApiKey> result = repository.list("t1", null, null, 50,
+                SortSpec.of("status", SortDirection.ASC));
+
+        // ACTIVE < REVOKED lexicographically
+        assertThat(result).extracting(ApiKey::getStatus)
+                .containsExactly(ApiKeyStatus.ACTIVE, ApiKeyStatus.REVOKED);
+    }
+
+    @Test
+    void list_sortByExpiresAt_ascending() throws Exception {
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        ApiKey later = buildKeySorted("t1", "key_b", "B", ApiKeyStatus.ACTIVE, now, now.plusSeconds(7200));
+        ApiKey sooner = buildKeySorted("t1", "key_a", "A", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+        stubSingleTenantKeys("t1", later, sooner);
+
+        List<ApiKey> result = repository.list("t1", null, null, 50,
+                SortSpec.of("expires_at", SortDirection.ASC));
+
+        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_a", "key_b");
+    }
+
+    @Test
+    void list_sortedCursorResumesAfterSortKey() throws Exception {
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        ApiKey a = buildKeySorted("t1", "key_a", "Alpha", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+        ApiKey b = buildKeySorted("t1", "key_b", "Beta", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+        ApiKey c = buildKeySorted("t1", "key_c", "Charlie", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+        stubSingleTenantKeys("t1", a, b, c);
+
+        List<ApiKey> result = repository.list("t1", null, "key_a", 50,
+                SortSpec.of("name", SortDirection.ASC));
+
+        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_b", "key_c");
+    }
+
+    @Test
+    void list_unknownSortField_fallsBackToKeyId() throws Exception {
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        ApiKey b = buildKeySorted("t1", "key_b", "B", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+        ApiKey a = buildKeySorted("t1", "key_a", "A", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+        stubSingleTenantKeys("t1", b, a);
+
+        List<ApiKey> result = repository.list("t1", null, null, 50,
+                new SortSpec("unknown_field", SortDirection.ASC));
+
+        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_a", "key_b");
+    }
+
+    @Test
+    void list_nullSortSpec_preservesLegacyPath() throws Exception {
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        ApiKey b = buildKeySorted("t1", "key_b", "B", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+        ApiKey a = buildKeySorted("t1", "key_a", "A", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+        stubSingleTenantKeys("t1", b, a);
+
+        List<ApiKey> result = repository.list("t1", null, null, 50, null);
+
+        // Legacy path sorts by raw keyId
+        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_a", "key_b");
+    }
+
+    @Test
+    void listAllTenants_sortedByName_globalOrder() throws Exception {
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        ApiKey a = buildKeySorted("tenant-a", "key_1", "Zebra", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+        ApiKey b = buildKeySorted("tenant-b", "key_2", "Alpha", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+        String jsonA = objectMapper.writeValueAsString(a);
+        String jsonB = objectMapper.writeValueAsString(b);
+        when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-b")));
+        when(jedis.smembers("apikeys:tenant-a")).thenReturn(new LinkedHashSet<>(List.of("key_1")));
+        when(jedis.smembers("apikeys:tenant-b")).thenReturn(new LinkedHashSet<>(List.of("key_2")));
+        when(jedis.get("apikey:key_1")).thenReturn(jsonA);
+        when(jedis.get("apikey:key_2")).thenReturn(jsonB);
+
+        List<ApiKey> result = repository.listAllTenants(null, null, 50,
+                SortSpec.of("name", SortDirection.ASC));
+
+        // Alpha (tenant-b) < Zebra (tenant-a)
+        assertThat(result).extracting(ApiKey::getTenantId).containsExactly("tenant-b", "tenant-a");
+    }
+
+    @Test
+    void listAllTenants_sortedCursor_resumesAfterComposite() throws Exception {
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        ApiKey a = buildKeySorted("tenant-a", "key_1", "Alpha", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+        ApiKey b = buildKeySorted("tenant-b", "key_2", "Beta", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+        ApiKey c = buildKeySorted("tenant-c", "key_3", "Charlie", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+        String jsonA = objectMapper.writeValueAsString(a);
+        String jsonB = objectMapper.writeValueAsString(b);
+        String jsonC = objectMapper.writeValueAsString(c);
+        when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-b", "tenant-c")));
+        when(jedis.smembers("apikeys:tenant-a")).thenReturn(new LinkedHashSet<>(List.of("key_1")));
+        when(jedis.smembers("apikeys:tenant-b")).thenReturn(new LinkedHashSet<>(List.of("key_2")));
+        when(jedis.smembers("apikeys:tenant-c")).thenReturn(new LinkedHashSet<>(List.of("key_3")));
+        when(jedis.get("apikey:key_1")).thenReturn(jsonA);
+        when(jedis.get("apikey:key_2")).thenReturn(jsonB);
+        when(jedis.get("apikey:key_3")).thenReturn(jsonC);
+
+        List<ApiKey> result = repository.listAllTenants(null, "tenant-a|key_1", 50,
+                SortSpec.of("name", SortDirection.ASC));
+
+        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_2", "key_3");
+    }
+
+    @Test
+    void listAllTenants_nullSortSpec_preservesLegacySkipForward() throws Exception {
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        ApiKey c1 = buildKeySorted("tenant-c", "key_c1", "C", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+        String jsonC1 = objectMapper.writeValueAsString(c1);
+        when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-c")));
+        when(jedis.smembers("apikeys:tenant-c")).thenReturn(new LinkedHashSet<>(List.of("key_c1")));
+        lenient().when(jedis.get("apikey:key_c1")).thenReturn(jsonC1);
+
+        // Null SortSpec → legacy path; cursor tenant-b is deleted → skip forward to tenant-c
+        List<ApiKey> result = repository.listAllTenants(null, "tenant-b|key_b1", 50, null);
+
+        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_c1");
     }
 }

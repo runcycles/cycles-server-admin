@@ -1,8 +1,12 @@
 package io.runcycles.admin.api.controller;
+import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.auth.*;
+import io.runcycles.admin.model.shared.ErrorCode;
+import io.runcycles.admin.model.shared.SortDirection;
+import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -17,11 +21,17 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 import redis.clients.jedis.JedisPool;
 @RestController @RequestMapping("/v1/admin/api-keys") @Tag(name = "API Keys")
 public class ApiKeyController {
     private static final Logger LOG = LoggerFactory.getLogger(ApiKeyController.class);
+    // Per spec v0.1.25.20. Keeping the whitelist in the controller (not
+    // the repo) keeps the 400/validation surface at the HTTP boundary.
+    private static final Set<String> ALLOWED_SORT_FIELDS = Set.of(
+        "key_id", "name", "tenant_id", "status", "created_at", "expires_at");
+    private static final String DEFAULT_SORT_FIELD = "created_at";
     @Autowired private ApiKeyRepository repository;
     @Autowired private AuditRepository auditRepository;
     @Autowired private EventService eventService;
@@ -57,8 +67,11 @@ public class ApiKeyController {
             @RequestParam(required = false) String tenant_id,
             @RequestParam(required = false) ApiKeyStatus status,
             @RequestParam(required = false) String cursor,
-            @RequestParam(defaultValue = "50") int limit) {
+            @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(required = false) String sort_by,
+            @RequestParam(required = false) String sort_dir) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
+        SortSpec sortSpec = parseSortSpec(sort_by, sort_dir);
         // Per governance spec v0.1.25.18: `tenant_id` is now optional under
         // AdminKeyAuth. When absent, list keys across every tenant; the
         // cursor carries "{tenantId}|{keyId}" so a follow-up page resumes
@@ -67,10 +80,10 @@ public class ApiKeyController {
         boolean crossTenant;
         if (tenant_id != null && !tenant_id.isBlank()) {
             crossTenant = false;
-            keys = repository.list(tenant_id, status, cursor, effectiveLimit);
+            keys = repository.list(tenant_id, status, cursor, effectiveLimit, sortSpec);
         } else {
             crossTenant = true;
-            keys = repository.listAllTenants(status, cursor, effectiveLimit);
+            keys = repository.listAllTenants(status, cursor, effectiveLimit, sortSpec);
         }
         var responses = keys.stream().map(ApiKeyResponse::from).collect(Collectors.toList());
         String nextCursor = null;
@@ -86,6 +99,26 @@ public class ApiKeyController {
             .nextCursor(nextCursor)
             .build();
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Parse sort_by / sort_dir query params into a validated SortSpec.
+     * See TenantController.parseSortSpec for the rationale — identical
+     * contract here: unknown sort_by / sort_dir → 400 INVALID_REQUEST,
+     * omitted values use the endpoint's canonical defaults.
+     */
+    private SortSpec parseSortSpec(String sortBy, String sortDir) {
+        SortDirection direction;
+        try {
+            direction = SortDirection.fromWire(sortDir);
+        } catch (IllegalArgumentException e) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
+        }
+        try {
+            return SortSpec.resolve(sortBy, direction, ALLOWED_SORT_FIELDS, DEFAULT_SORT_FIELD);
+        } catch (IllegalArgumentException e) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
+        }
     }
     @PatchMapping("/{key_id}") @Operation(operationId = "updateApiKey")
     public ResponseEntity<ApiKeyResponse> update(@PathVariable("key_id") String keyId,
