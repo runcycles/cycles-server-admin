@@ -6,10 +6,14 @@ import org.springframework.boot.*;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.info.BuildProperties;
 import org.springframework.context.annotation.ComponentScan;
+import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.stereotype.Component;
 
 @SpringBootApplication
 @ComponentScan(basePackages = "io.runcycles.admin")
+// v0.1.25.20: @EnableScheduling activates AuditRepository.sweepStaleIndexEntries
+// (cron-driven index-pointer GC) and any future @Scheduled tasks.
+@EnableScheduling
 public class BudgetGovernanceApplication {
 
     public static void main(String[] args) {

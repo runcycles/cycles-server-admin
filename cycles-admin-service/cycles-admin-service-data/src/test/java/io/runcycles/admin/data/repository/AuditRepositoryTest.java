@@ -11,8 +11,11 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.params.ScanParams;
+import redis.clients.jedis.resps.ScanResult;
 
 import java.time.Instant;
 import java.util.*;
@@ -305,5 +308,145 @@ class AuditRepositoryTest {
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getLogId()).isEqualTo("log_good");
+    }
+
+    // --- v0.1.25.20: tiered TTL + index sweep ---
+
+    @Test
+    void resolveTtlSeconds_authenticatedTenant_usesAuthenticatedRetention() {
+        ReflectionTestUtils.setField(repository, "authenticatedRetentionDays", 400);
+        ReflectionTestUtils.setField(repository, "unauthenticatedRetentionDays", 30);
+
+        AuditLogEntry entry = AuditLogEntry.builder().tenantId("tenant-1").build();
+
+        // 400 days × 86400s
+        assertThat(repository.resolveTtlSeconds(entry)).isEqualTo(400L * 86400L);
+    }
+
+    @Test
+    void resolveTtlSeconds_unauthenticatedSentinel_usesShortRetention() {
+        ReflectionTestUtils.setField(repository, "authenticatedRetentionDays", 400);
+        ReflectionTestUtils.setField(repository, "unauthenticatedRetentionDays", 30);
+
+        AuditLogEntry entry = AuditLogEntry.builder()
+                .tenantId(AuditLogEntry.UNAUTHENTICATED_TENANT).build();
+
+        // 30 days × 86400s
+        assertThat(repository.resolveTtlSeconds(entry)).isEqualTo(30L * 86400L);
+    }
+
+    @Test
+    void resolveTtlSeconds_zeroDays_meansIndefinite() {
+        ReflectionTestUtils.setField(repository, "authenticatedRetentionDays", 0);
+        ReflectionTestUtils.setField(repository, "unauthenticatedRetentionDays", 0);
+
+        AuditLogEntry authed = AuditLogEntry.builder().tenantId("tenant-1").build();
+        AuditLogEntry unauthed = AuditLogEntry.builder()
+                .tenantId(AuditLogEntry.UNAUTHENTICATED_TENANT).build();
+
+        assertThat(repository.resolveTtlSeconds(authed)).isEqualTo(0L);
+        assertThat(repository.resolveTtlSeconds(unauthed)).isEqualTo(0L);
+    }
+
+    @Test
+    void log_authenticatedEntry_evalReceivesAuthenticatedTtlInArgv() {
+        ReflectionTestUtils.setField(repository, "authenticatedRetentionDays", 400);
+        ReflectionTestUtils.setField(repository, "unauthenticatedRetentionDays", 30);
+
+        AuditLogEntry entry = AuditLogEntry.builder()
+                .tenantId("tenant-1").operation("createTenant").status(201).build();
+
+        repository.log(entry);
+
+        // ARGV[4] (index 3 in 0-based args list) must be the authenticated
+        // retention in seconds.
+        verify(jedis).eval(anyString(), anyList(), argThat(args ->
+                String.valueOf(400L * 86400L).equals(args.get(3))));
+    }
+
+    @Test
+    void log_unauthenticatedSentinelEntry_evalReceivesUnauthenticatedTtlInArgv() {
+        ReflectionTestUtils.setField(repository, "authenticatedRetentionDays", 400);
+        ReflectionTestUtils.setField(repository, "unauthenticatedRetentionDays", 30);
+
+        AuditLogEntry entry = AuditLogEntry.builder()
+                .tenantId(AuditLogEntry.UNAUTHENTICATED_TENANT)
+                .operation("POST:/v1/admin/budgets")
+                .status(401).errorCode("UNAUTHORIZED").build();
+
+        repository.log(entry);
+
+        verify(jedis).eval(anyString(), anyList(), argThat(args ->
+                String.valueOf(30L * 86400L).equals(args.get(3))));
+    }
+
+    @Test
+    void log_retentionZero_evalReceivesZeroTtl_luaSkipsExpire() {
+        // Retention 0 days → 0 seconds → Lua's `if ttl > 0` check short-
+        // circuits → plain SET without EX. Contract test locks the
+        // "0 == indefinite" semantic.
+        ReflectionTestUtils.setField(repository, "authenticatedRetentionDays", 0);
+        ReflectionTestUtils.setField(repository, "unauthenticatedRetentionDays", 0);
+
+        AuditLogEntry entry = AuditLogEntry.builder()
+                .tenantId("tenant-indefinite").operation("op").status(200).build();
+
+        repository.log(entry);
+
+        verify(jedis).eval(anyString(), anyList(), argThat(args ->
+                "0".equals(args.get(3))));
+    }
+
+    @Test
+    void sweepStaleIndexEntries_retentionZero_skipsSweep() {
+        ReflectionTestUtils.setField(repository, "authenticatedRetentionDays", 0);
+
+        repository.sweepStaleIndexEntries();
+
+        // No Redis ops when retention is indefinite — we don't want to
+        // accidentally delete index pointers whose target keys are still
+        // valid (indefinite TTL means targets never expire).
+        verify(jedis, never()).zremrangeByScore(anyString(), anyDouble(), anyDouble());
+        verify(jedis, never()).scan(anyString(), any(ScanParams.class));
+    }
+
+    @Test
+    void sweepStaleIndexEntries_removesGlobalAndPerTenantPointers() {
+        ReflectionTestUtils.setField(repository, "authenticatedRetentionDays", 400);
+
+        // Global index removes some stale entries.
+        when(jedis.zremrangeByScore(eq("audit:logs:_all"), eq(Double.NEGATIVE_INFINITY), anyDouble()))
+                .thenReturn(5L);
+
+        // SCAN returns two per-tenant indexes and the global one (which
+        // should be skipped since it's already swept).
+        @SuppressWarnings("unchecked")
+        ScanResult<String> scan1 = mock(ScanResult.class);
+        when(scan1.getResult()).thenReturn(List.of(
+                "audit:logs:_all", "audit:logs:tenant-a", "audit:logs:tenant-b"));
+        when(scan1.getCursor()).thenReturn(ScanParams.SCAN_POINTER_START);
+        when(jedis.scan(eq(ScanParams.SCAN_POINTER_START), any(ScanParams.class))).thenReturn(scan1);
+
+        when(jedis.zremrangeByScore(eq("audit:logs:tenant-a"), anyDouble(), anyDouble()))
+                .thenReturn(3L);
+        when(jedis.zremrangeByScore(eq("audit:logs:tenant-b"), anyDouble(), anyDouble()))
+                .thenReturn(2L);
+
+        repository.sweepStaleIndexEntries();
+
+        verify(jedis).zremrangeByScore(eq("audit:logs:_all"), eq(Double.NEGATIVE_INFINITY), anyDouble());
+        verify(jedis).zremrangeByScore(eq("audit:logs:tenant-a"), anyDouble(), anyDouble());
+        verify(jedis).zremrangeByScore(eq("audit:logs:tenant-b"), anyDouble(), anyDouble());
+        // Must NOT double-sweep the global index via the SCAN loop.
+        verify(jedis, times(1)).zremrangeByScore(eq("audit:logs:_all"), anyDouble(), anyDouble());
+    }
+
+    @Test
+    void sweepStaleIndexEntries_redisFailure_swallowsException() {
+        ReflectionTestUtils.setField(repository, "authenticatedRetentionDays", 400);
+        when(jedisPool.getResource()).thenThrow(new RuntimeException("Redis unavailable"));
+
+        // Must not throw — sweep is best-effort.
+        repository.sweepStaleIndexEntries();
     }
 }

@@ -14,6 +14,109 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.20] — 2026-04-16
+
+### Added
+
+- `GET /v1/admin/audit/logs` now returns entries for **failed** requests
+  (401 / 403 / 400 / 404 / 409 / 500) alongside the existing success-path
+  entries. Previously the audit log only captured successful operations
+  (STATUS 201 / 200 / 204) because writes happened inside each controller
+  method after the service call returned; errors short-circuited before
+  the write. Closes a real compliance-auditing gap for SOC2 / GDPR
+  reviewers who need authz denials, malformed requests, and state-
+  transition violations on the record.
+- Failure entries carry `status`, `error_code` (e.g. `UNAUTHORIZED`,
+  `INVALID_REQUEST`, `TENANT_NOT_FOUND`), `operation="<METHOD>:<URI>"`
+  (e.g. `POST:/v1/admin/budgets`), `metadata.error_message` (sanitized,
+  1024-char capped), `metadata.method`, `metadata.path`, and — on
+  `500 INTERNAL_ERROR` — `metadata.exception_class` for post-incident
+  triage. `request_id`, `source_ip`, `user_agent` populated from the
+  request the same way as success entries.
+- New sentinel tenant value `"<unauthenticated>"` on failure entries
+  where no authenticated tenant exists (missing / invalid API key, pre-
+  auth failure). Preserves the spec's `tenant_id: required` invariant
+  without a wire-format change. Queryable via
+  `GET /v1/admin/audit/logs?tenant_id=%3Cunauthenticated%3E` for
+  failed-attempt review.
+- New Prometheus counter `cycles_admin_audit_writes_total{path_class,
+  outcome}`. `path_class=failure,outcome=written` increments per
+  failure entry persisted. `path_class=failure,outcome=error`
+  increments when an audit write itself fails (Redis down, meter
+  registry wedged, …). `path_class=failure,outcome=sampled-out`
+  increments when an unauthenticated-tier entry was intentionally
+  dropped by sampling. **Alert on `outcome=error` nonzero** — audit
+  writes are non-fatal to the request but silent coverage loss is the
+  exact failure mode this release is trying to prevent.
+- **Tiered TTL on audit entries** with SOC2-compliant defaults
+  (configurable, settable to 0 for indefinite):
+  - `audit.retention.authenticated.days` — default **400** (SOC2 Type
+    II 12-month lookback + 1-month auditor-engagement buffer). Applies
+    to every entry where `tenant_id != "<unauthenticated>"` — success
+    entries and authenticated failures alike. Set to `0` for
+    indefinite retention (legal hold, HIPAA-adjacent, forever-retain
+    deployments).
+  - `audit.retention.unauthenticated.days` — default **30**. Applies
+    to pre-auth failures attributed to the sentinel tenant. Enough
+    for brute-force / credential-stuffing post-mortem; aggregate
+    attempt volume stays visible via the Prometheus counter regardless
+    of TTL. Set to `0` for indefinite.
+- **Optional sampling for unauthenticated entries** —
+  `audit.sample.unauthenticated` (default **1** = no sampling).
+  Setting to `100` records 1 in 100 pre-auth failures; operator
+  opt-in only. Authenticated entries are **never** sampled.
+- **Daily audit index sweep** — new `@Scheduled` job
+  (`audit.sweep.cron`, default `0 0 3 * * *`) purges TTL-expired
+  pointers from the `audit:logs:_all` + per-tenant sorted-set indexes.
+  Without this, indexes grow unboundedly even though the underlying
+  log records have expired. Sweep is best-effort and non-fatal; skipped
+  entirely when `audit.retention.authenticated.days=0` (indefinite
+  retention — no expiry means no zombies to clean up).
+
+### Wire format
+
+Additive. Success-path entries are byte-identical to 0.1.25.19. Failure
+entries reuse the existing `AuditLogEntry` schema — `error_code` was
+already defined as optional; `metadata` was already `Map<String,
+Object>`. No spec change required.
+
+Retention is a Redis-side TTL on audit-log keys — it's an *infrastructure*
+change, not a wire-format change. Clients that persist audit-log
+responses locally aren't affected by retention settings server-side.
+
+### Notes for upgraders
+
+- **Breaking semantic change for audit-log consumers.** Queries filtered
+  by `status=201` / `status=200` / `status=204` return exactly the same
+  rows as before. Queries without a `status` filter (or with
+  `status=4xx/5xx`) now surface failure entries that didn't exist in
+  0.1.25.19. Dashboards that assumed "audit entry exists ⇒ operation
+  succeeded" must switch to checking `status` or `error_code` to
+  distinguish.
+- Redis memory footprint grows with failure traffic. The existing
+  retention (Redis TTL on `audit:log:{logId}` + sorted sets) applies
+  unchanged — no separate knob for failure entries. If failure volume
+  dominates (e.g. under an authz misconfiguration causing sustained
+  403s), consider lowering the TTL or reviewing the traffic pattern
+  rather than the audit layer.
+- Grafana / Prometheus: add an alert on
+  `sum(rate(cycles_admin_audit_writes_total{outcome="error"}[5m])) > 0`
+  so silent audit-write failures page ops.
+- **Retention defaults are SOC2-compliant out of the box**. Operators
+  with different compliance regimes should set the retention properties
+  (or their env-var equivalents `AUDIT_RETENTION_AUTHENTICATED_DAYS`,
+  `AUDIT_RETENTION_UNAUTHENTICATED_DAYS`) before first boot. HIPAA and
+  certain financial regulations require multi-year retention — set
+  `audit.retention.authenticated.days=0` for indefinite, then archive
+  externally on whatever cadence your policy requires. Legal hold:
+  also `0`, never decrement while the hold is active.
+- **DDoS exposure assessment**: if the admin endpoint is internet-
+  facing with no upstream rate limiter, set `audit.sample.unauthenticated`
+  to `100` (or higher) to cap write amplification from failed-auth
+  floods. Aggregate attempt volume remains observable via
+  `cycles_admin_audit_writes_total` — sampling reduces Redis load, not
+  monitoring fidelity.
+
 ## [0.1.25.19] — 2026-04-16
 
 ### Added
@@ -207,6 +310,7 @@ should switch to treating 409 as success-equivalent.
 - Multiple spec-compliance hardening fixes across controllers and error
   contracts (see `AUDIT.md` for the full list).
 
+[0.1.25.20]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.20
 [0.1.25.19]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.19
 [0.1.25.18]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.18
 [0.1.25.17]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.17

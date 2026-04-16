@@ -17,10 +17,74 @@ Alerts for the two planes should be routed separately.
 
 ## Table of contents
 
-1. [Metrics inventory](#metrics-inventory)
-2. [Alerts worth paging on](#alerts-worth-paging-on)
-3. [Configuration tuning](#configuration-tuning)
-4. [Incident playbook](#incident-playbook)
+1. [Audit coverage](#audit-coverage)
+2. [Metrics inventory](#metrics-inventory)
+3. [Alerts worth paging on](#alerts-worth-paging-on)
+4. [Configuration tuning](#configuration-tuning)
+5. [Incident playbook](#incident-playbook)
+
+---
+
+## Audit coverage
+
+`GET /v1/admin/audit/logs` returns entries for every authenticated write
+operation **and every failed request** (since v0.1.25.20). The write side
+is split across two distinct code paths.
+
+**Success-path entries** — written by each controller after the
+repository / service call returns successfully. Rich, operation-specific
+metadata:
+
+| Field | Typical value on success |
+|---|---|
+| `operation` | Rich per-op name, e.g. `createBudget`, `fundBudget`, `updateTenant` |
+| `status` | HTTP status of the successful response — 201, 200, 204 |
+| `resource_type`, `resource_id` | Populated for mutations — `budget` / `scope:unit`, `tenant` / `tenant_id`, `policy` / `policy_id` |
+| `subject`, `action`, `amount` | Populated on funding operations, policy changes, etc. |
+| `metadata` | Operation-specific extras — fund reason, before/after spent (RESET_SPENT), policy caps diff, actor_type=admin_on_behalf_of on dual-auth writes |
+
+**Failure-path entries** (v0.1.25.20+) — written by
+`GlobalExceptionHandler` (4xx/5xx inside the controller) and
+`AuthInterceptor` (401/403/400/500 rejections before the controller
+runs). Coarse but always-present:
+
+| Field | Typical value on failure |
+|---|---|
+| `operation` | `METHOD:URI` form — e.g. `POST:/v1/admin/budgets`, `GET:/v1/auth/introspect` |
+| `status` | Actual HTTP status of the error response — 401, 403, 400, 404, 409, 500 |
+| `error_code` | `ErrorCode.name()` — `UNAUTHORIZED`, `INVALID_REQUEST`, `TENANT_NOT_FOUND`, `KEY_REVOKED`, `INSUFFICIENT_PERMISSIONS`, `INTERNAL_ERROR`, … |
+| `tenant_id` | Real tenant id if authenticated; sentinel `"<unauthenticated>"` if the request never produced a bound tenant (missing / invalid API key, admin-key-only auth where no `authenticated_tenant_id` attr is stamped) |
+| `metadata.error_message` | Sanitized server-side message (CR/LF stripped, 1024-char capped) |
+| `metadata.method`, `metadata.path` | Request method and URI |
+| `metadata.exception_class` | Only on `500 INTERNAL_ERROR` — fully-qualified Java class name for post-incident triage |
+| `resource_type`, `resource_id`, `subject`, `action`, `amount` | Absent — not derivable on failure paths |
+
+**Single-write invariant.** One request produces one audit entry: either
+a success entry (controller reached the audit-log line) or a failure
+entry (`GlobalExceptionHandler` or `AuthInterceptor.writeError` handled
+the request). Never both. Never zero either — failed writes themselves
+are captured in the `cycles_admin_audit_writes_total{outcome}` counter.
+
+**Dashboards that pre-date v0.1.25.20** may assume "audit entry exists ⇒
+operation succeeded". That's no longer true. Check `status` (2xx vs
+4xx/5xx) or `error_code` (null on success, populated on failure) to
+distinguish.
+
+**Query examples:**
+
+```bash
+# Failed admin attempts (unauthenticated).
+GET /v1/admin/audit/logs?tenant_id=%3Cunauthenticated%3E
+
+# All 401 rejections in the last hour.
+GET /v1/admin/audit/logs?status=401&from=<iso8601>
+
+# All budget-plane failures by a specific tenant.
+GET /v1/admin/audit/logs?tenant_id=tenant-1&operation=POST:/v1/admin/budgets
+
+# Single-request trace — pairs the audit entry with the server log by request_id.
+GET /v1/admin/audit/logs  # then filter client-side by request_id
+```
 
 ---
 
@@ -42,6 +106,12 @@ auto-metrics (`http_server_requests_seconds`, `jvm_*`, `process_*`,
 | Metric | Tags | What it tells you |
 |---|---|---|
 | `cycles_admin_webhook_dispatched_total` | `result` | Every webhook-delivery enqueue attempt. `result=queued` when at least one matching subscription existed and a delivery row was created; `result=failure` on dispatch/enqueue error. This is a dispatch-path counter, not a delivery-outcome one — actual HTTP-delivery outcomes live in the sibling `cycles-server-events` service. |
+
+### Audit log writes (v0.1.25.20+)
+
+| Metric | Tags | What it tells you |
+|---|---|---|
+| `cycles_admin_audit_writes_total` | `path_class`, `outcome` | Every failure-path audit-write attempt. `path_class=failure` (only value currently emitted — success-path writes come from per-controller `AuditRepository.log()` calls directly, no counter). Outcomes: `written` (persisted), `error` (write itself failed — Redis down, meter registry wedged, serialization bug; business request still returned correctly), `sampled-out` (unauthenticated-tier entry intentionally dropped by `audit.sample.unauthenticated` > 1). **`outcome=error` is the silent-coverage-loss alert surface** — alert on any nonzero rate. **`outcome=sampled-out` is operator-intentional** — high values under DDoS are the sampling working as configured; aggregate volume is (`written` + `sampled-out`). |
 
 ### HTTP
 
@@ -136,6 +206,22 @@ above catches it. A more specific alert:
     description: "Check ADMIN_API_KEY env var / admin.api-key property on the running pod."
 ```
 
+### Audit-write silent-coverage loss
+
+```yaml
+- alert: AdminAuditWriteErrors
+  # v0.1.25.20+: failure-path audit writes that themselves fail. The
+  # business request still returns the correct error response, but the
+  # audit trail silently loses coverage. Compliance-critical — page on
+  # first occurrence.
+  expr: sum(rate(cycles_admin_audit_writes_total{outcome="error"}[5m])) > 0
+  for: 5m
+  labels: {severity: page}
+  annotations:
+    summary: admin audit writes failing — compliance coverage at risk
+    description: "Failure-path audit entries are not persisting. Check Redis health + AuditRepository error logs."
+```
+
 ### Webhook dispatch failures
 
 ```yaml
@@ -175,8 +261,63 @@ with env overrides.
 | `webhook.secret.encryption-key` | `WEBHOOK_SECRET_ENCRYPTION_KEY` | (unset) | Base64 AES-256 key used to encrypt webhook signing secrets at rest. Must match the value on `cycles-server-events`. Rotate by generating a new value, re-encrypting existing secrets, and deploying in lockstep with the events service. |
 | `events.retention.event-ttl-days` | `EVENT_TTL_DAYS` | `90` | Retention for emitted events in Redis. Tune down in high-volume deployments to bound memory. |
 | `events.retention.delivery-ttl-days` | `DELIVERY_TTL_DAYS` | `14` | Retention for webhook-delivery attempt records. |
+| `audit.retention.authenticated.days` | `AUDIT_RETENTION_AUTHENTICATED_DAYS` | `400` | Retention (days) for authenticated audit entries (success + authenticated failure). Default 400 = SOC2 Type II 12-month lookback + 1-month buffer. **Set to `0` for indefinite** (legal hold, HIPAA-adjacent, forever-retain deployments, or when archiving externally). See [Audit retention tuning](#audit-retention-tuning) below. |
+| `audit.retention.unauthenticated.days` | `AUDIT_RETENTION_UNAUTHENTICATED_DAYS` | `30` | Retention for pre-auth failure audit entries (sentinel `tenant_id=<unauthenticated>`). Enough for brute-force / credential-stuffing forensic window. Set to `0` for indefinite. |
+| `audit.sample.unauthenticated` | `AUDIT_SAMPLE_UNAUTHENTICATED` | `1` | Sampling rate for unauthenticated-tier entries — record 1 in N. Default `1` = record every attempt (full fidelity). Tune to `100` in DDoS-exposed deployments to cut Redis write volume 100×. Aggregate volume remains visible via the `cycles_admin_audit_writes_total` counter. Authenticated entries are **never** sampled regardless of this setting. Values `≤ 0` treated as `1` (misconfig safety). |
+| `audit.sweep.cron` | `AUDIT_SWEEP_CRON` | `0 0 3 * * *` | Cron schedule for the daily audit index sweep (`ZREMRANGEBYSCORE` on expired pointers). Default 03:00 server time. Sweep is best-effort; skipped entirely when `audit.retention.authenticated.days=0` (indefinite — nothing to sweep). |
 | `dashboard.cors.origin` | `DASHBOARD_CORS_ORIGIN` | `http://localhost:5173` | CORS allowed origin(s). Comma-separated. **In production, set to your dashboard URL** — the default only works against the local Vite dev server. |
 | `contract.validation.enabled` | `CONTRACT_VALIDATION_ENABLED` | `true` (tests) / `false` (runtime) | Fetch and validate against the live admin spec at build time. Disable for offline / air-gapped builds. Does not affect runtime — enforcement happens only in the test harness. |
+
+### Audit retention tuning
+
+The retention defaults (400 days authenticated, 30 days unauthenticated)
+are calibrated for SOC2 Type II out of the box. Different compliance
+regimes and operational realities warrant different settings:
+
+**Scenario: SOC2 only — standard deployment.** Defaults work as shipped.
+No changes needed.
+
+**Scenario: HIPAA-adjacent / multi-year retention required.** Set
+`audit.retention.authenticated.days=0` (indefinite). The authenticated
+tier now retains forever in Redis. Plan for external archival (S3,
+SIEM) — Redis isn't designed to be a long-term store. Pair this with
+explicit monitoring of Redis memory, and consider shipping audit events
+to an immutable archive on a schedule.
+
+**Scenario: legal hold triggered on a specific tenant.** Set
+`audit.retention.authenticated.days=0` during the hold period. After
+resolution, restore the previous value — entries written during the
+hold will still age out normally (TTL is applied at write time, not
+retroactively).
+
+**Scenario: internet-facing admin endpoint, no upstream WAF.** Set
+`audit.sample.unauthenticated=100` (or higher) to reduce DDoS
+write-amplification. A sustained 10k req/s failed-auth flood at rate 1
+would write ~30k Redis ops/s on a single Lua-serialized surface; rate
+100 cuts that to 300 ops/s. Aggregate attempt volume stays visible via
+`cycles_admin_audit_writes_total{outcome=sampled-out}`.
+
+**Scenario: memory-constrained deployment.** Tune retention down
+(e.g. `authenticated.days=90`, `unauthenticated.days=7`) BEFORE adjusting
+sampling. TTL + sweep bound memory footprint at a predictable rate;
+sampling reduces fidelity. If ops really needs to trade memory for
+fidelity, both levers together work — just understand which compliance
+controls you're affecting.
+
+**Checking what you actually have stored:**
+
+```bash
+# Authenticated entries for a specific tenant, TTL remaining on first hit:
+redis-cli -h $REDIS_HOST KEYS 'audit:log:*' | head -1 | xargs redis-cli -h $REDIS_HOST TTL
+
+# Global index size (unbounded if no sweep or retention=0):
+redis-cli -h $REDIS_HOST ZCARD audit:logs:_all
+
+# Per-tenant index sizes (top 10 by cardinality):
+redis-cli -h $REDIS_HOST KEYS 'audit:logs:*' | while read k; do
+  echo "$(redis-cli -h $REDIS_HOST ZCARD "$k") $k"
+done | sort -rn | head -10
+```
 
 ### Rotating the admin API key
 

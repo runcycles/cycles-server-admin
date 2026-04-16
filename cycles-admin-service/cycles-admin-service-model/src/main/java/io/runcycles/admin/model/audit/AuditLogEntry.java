@@ -8,6 +8,28 @@ import java.time.Instant;
 import java.util.Map;
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 public class AuditLogEntry {
+
+    /**
+     * Sentinel tenant id used on failure audit entries where no authenticated
+     * tenant is bound to the request (missing / invalid API key, pre-auth
+     * path-traversal rejection, admin-key-only requests that fail before the
+     * controller runs). Preserves the spec's {@code tenant_id: required}
+     * invariant without a wire-format change, and gives ops a queryable
+     * filter value: {@code GET /v1/admin/audit/logs?tenant_id=%3Cunauthenticated%3E}.
+     *
+     * <p>Tenants use the grammar {@code ^[a-z0-9-]+$} per AuditController
+     * validation, so the angle brackets guarantee no collision with any
+     * real tenant id.
+     *
+     * <p>Defined at the model layer so both the failure-side writer
+     * ({@code AuditFailureService}) and the data-layer repository
+     * ({@code AuditRepository} — which branches on this value for tiered
+     * TTL) can reference it without a cross-layer dependency.
+     *
+     * @since 0.1.25.20
+     */
+    public static final String UNAUTHENTICATED_TENANT = "<unauthenticated>";
+
     @JsonProperty("log_id") private String logId;
     @JsonProperty("timestamp") private Instant timestamp;
     @JsonProperty("tenant_id") private String tenantId;

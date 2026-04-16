@@ -1,9 +1,113 @@
 # Complete Budget Governance v0.1.25.8 — Admin Server Audit
 
-**Server version:** 0.1.25.19 (2026-04-16 — /v1/auth/introspect dual-auth: spec v0.1.25.15)
-**Date:** 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Server version:** 0.1.25.20 (2026-04-16 — audit log on failure paths: 4xx/5xx coverage via GlobalExceptionHandler + AuthInterceptor)
+**Date:** 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.16`; content includes RESET_SPENT from spec PR #45 v0.1.25.17) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-16 — v0.1.25.20 audit log on failure paths (hybrid — success writes unchanged)
+
+Closes a real compliance-auditing gap reported during post-v0.1.25.19 review: `GET /v1/admin/audit/logs` only returned STATUS 201 / 200 / 204 entries because admin-server writes audit records **exclusively on success paths** — each controller hardcodes `auditRepository.log(...)` *after* the repository/service call returns. Every error path (401/403 in `AuthInterceptor`, 400/404/409/500 in `GlobalExceptionHandler`) short-circuits before the audit write, leaving auth rejections, malformed requests, and server errors invisible to SOC2/GDPR reviewers.
+
+**Approach: hybrid, not full replacement, with tiered retention + DDoS protection.** Success-path per-controller writes stay verbatim — they carry rich operation-specific metadata (funded amount, budget scope, policy caps, subject/action/amount) that a catch-all interceptor couldn't reconstruct. Failure writes land in two new places:
+
+1. **`GlobalExceptionHandler`** — every `@ExceptionHandler` method calls `auditFailure.logFailure(...)` before returning the error response. Covers 4xx/5xx that make it *into* the controller and then throw.
+2. **`AuthInterceptor.writeError`** — every pre-controller auth rejection calls the same helper. Covers 401/403/400/500 failures that never reach the controller.
+
+Plus two defense-in-depth measures that make this safe to ship against a DDoS amplification risk:
+
+3. **Tiered TTL** (configurable, indefinite by default for compliance-critical entries).
+4. **Unauthenticated-tier sampling** (configurable, off by default).
+
+### DDoS amplification and the tiered-retention response
+
+A naïve failure-audit implementation converts every failed request into a Redis write — at 10k req/s sustained that's ~10 MB/s of Redis memory growth and 30k Redis ops/s on a single Lua-serialized surface. The `audit:logs:<unauthenticated>` sorted set becomes a hotspot, `audit:logs:_all` grows unboundedly, and under `volatile-*` eviction policies the non-TTL audit keys survive while legitimate operational data (keys with TTL — idempotency caches, session data) gets evicted. Worst of both worlds.
+
+Solution: **differentiate retention by authentication tier.** Compliance-critical entries (authenticated success + authenticated failure) keep long retention by default; DDoS-amplifiable entries (pre-auth failures, marked by the `<unauthenticated>` sentinel) get short retention and optional sampling.
+
+| Tier | Example entries | Default TTL | Rationale |
+|---|---|---|---|
+| **Authenticated** (`tenant_id != "<unauthenticated>"`) | success mutations, 403 by valid tenant key, 404 / 409 on owned resource, 500 in authenticated path | **400 days** (`audit.retention.authenticated.days=400`) | SOC2 Type II covers a 12-month period. Auditor engagement usually begins ~30 days after period close. 400 days = 365 + ~35 buffer — the audit-of-record trail is intact when the auditor arrives. Set to `0` for indefinite (legal hold, HIPAA-adjacent, forever-retain deployments). |
+| **Unauthenticated** (`tenant_id == "<unauthenticated>"`) | missing / invalid admin key 401, pre-auth path traversal 400, admin-key-only requests failing before the controller runs | **30 days** (`audit.retention.unauthenticated.days=30`) | Enough for brute-force / credential-stuffing post-mortem. Aggregate attempt volume stays visible via `cycles_admin_audit_writes_total` regardless of TTL. Set to `0` for indefinite. |
+
+Setting a retention to `0` disables expiry for that tier. Setting BOTH to `0` also disables the index sweep entirely (`sweepStaleIndexEntries()` short-circuits when `authenticatedRetentionDays <= 0` to avoid accidentally removing pointers to live indefinite-retention records).
+
+### Unauthenticated-tier sampling (`audit.sample.unauthenticated`, default `1`)
+
+Independent of TTL. Records 1 in N unauthenticated entries. Default `1` preserves full fidelity — operator must opt in. Typical DDoS-exposed deployment sets this to `100`, cutting Redis write volume by 100× while keeping aggregate attempt volume visible via a new Prometheus counter outcome `sampled-out`.
+
+Values `<= 0` are treated as `1` (no sampling) defensively — a misconfigured `0` must never silently drop every audit entry. Authenticated failures are **never** sampled regardless of the setting; they're compliance-relevant security signals, not DDoS noise.
+
+### Daily index sweep (`audit.sweep.cron`, default `0 0 3 * * *`)
+
+When `audit:log:{logId}` keys TTL-expire, the matching sorted-set entries in `audit:logs:_all` and `audit:logs:{tenant}` still hold pointers to the now-dead keys. Without cleanup those indexes grow unboundedly even though the underlying records are gone (~32 bytes per stale pointer).
+
+`AuditRepository.sweepStaleIndexEntries()` runs daily (03:00 server time by default): `ZREMRANGEBYSCORE` on the global index and — via `SCAN` — each per-tenant index, removing pointers older than the longest retention window. `AuditRepository.list()` already tolerates `null` from `GET audit:log:{id}` (line 71-74), so the sweep is eventual-consistency cleanup, not on the read critical path. Sweep is best-effort: Redis-unavailable failures are logged ERROR and swallowed; next tick retries. `@EnableScheduling` added to `BudgetGovernanceApplication`.
+
+**Single-write invariant by construction.** If the controller threw, execution never reached the controller's `audit.log(...)` — `GlobalExceptionHandler` is the only audit source for that request. Pre-auth failures never enter the controller at all — `AuthInterceptor.writeError` is the only source. No idempotency key, no dedup logic: a request produces either a success entry or a failure entry, never both. The generic `handleGenericException` branch explicitly delegates `GovernanceException` to `handleGovernanceException` to avoid double-writing on dispatch-order corner cases.
+
+**Unauthenticated tenant sentinel.** Spec marks `AuditLogEntry.tenant_id` as **required**. Pre-auth failures have no authenticated tenant. Sentinel value `"<unauthenticated>"` preserves the spec required-field invariant — no spec change needed — and keeps failed attempts queryable via `GET /v1/admin/audit/logs?tenant_id=%3Cunauthenticated%3E`. Admin-key auth (e.g. `X-Admin-API-Key` present but paired with malformed JSON) also falls back to the sentinel because `AuthInterceptor.validateAdminKey` doesn't stamp `authenticated_tenant_id` on the request — by design, admin keys have no effective tenant.
+
+**Failure entry shape:**
+
+| Field | Source on failure | Example |
+|---|---|---|
+| `tenant_id` | `authenticated_tenant_id` attr OR sentinel | `"<unauthenticated>"`, `"tenant-1"` |
+| `key_id` | `authenticated_key_id` attr (absent under admin auth) | omitted when null |
+| `operation` | `"<METHOD>:<URI>"` | `"POST:/v1/admin/budgets"` |
+| `status` | actual HTTP status | 401, 403, 400, 404, 409, 500 |
+| `error_code` | `ErrorCode.name()` | `UNAUTHORIZED`, `INVALID_REQUEST` |
+| `metadata.error_message` | CR/LF-stripped, 1024-cap sanitized | `"Missing X-Admin-API-Key header"` |
+| `metadata.method`, `metadata.path` | request method + URI | `"POST"`, `"/v1/admin/budgets"` |
+| `metadata.exception_class` | fully-qualified name (generic handler only) | `"java.lang.RuntimeException"` |
+| `resource_type`, `resource_id`, `subject`, `action`, `amount` | omitted — not derivable on failure paths | `null` |
+| `source_ip`, `user_agent`, `request_id` | from request | unchanged from success side |
+
+**Non-fatal contract preserved.** `AuditRepository.log()` already swallowed all exceptions (logs ERROR, returns). New `AuditFailureService` wraps its own body in a separate `try/catch` as defense-in-depth — if the metric-registry call or anything else ever threw, the error response is guaranteed to reach the client. A Prometheus counter `cycles_admin_audit_writes_total{path_class, outcome}` exposes silent audit-write failures to ops:
+- `path_class=failure, outcome=written` — failure audit entry written successfully
+- `path_class=failure, outcome=error` — failure audit write itself failed (alert on nonzero)
+
+**Log-injection hardening.** Failure audit entries carry the server-side error message in `metadata.error_message`. `AuditFailureService.sanitizeMessage(...)` replaces CR/LF with spaces and caps at 1024 chars. Server-side messages are typically fixed strings (`"Missing X-Admin-API-Key header"`, `"Validation failed: name: must not be blank"`), but sanitize defensively in case any caller-controlled content ever leaks in.
+
+**Changes:**
+
+| File | Change |
+|---|---|
+| `cycles-admin-service-model/.../audit/AuditLogEntry.java` | Added `UNAUTHENTICATED_TENANT = "<unauthenticated>"` public constant. Source of truth — both `AuditRepository` (data) and `AuditFailureService` (api) reference it without cross-layer coupling. |
+| `cycles-admin-service-api/.../service/AuditFailureService.java` (new) | Shared failure-audit writer. `logFailure(HttpServletRequest, int status, ErrorCode, String message, Map extras)`. Populates `tenant_id` via attr-or-sentinel, `operation=METHOD:URI`, sanitized message + handler extras in metadata. Non-throwing. Emits `cycles_admin_audit_writes_total{path_class, outcome}` counter with outcome values `written` / `error` / `sampled-out`. New `@Value("${audit.sample.unauthenticated:1}")` sampling gate applied ONLY to unauthenticated-tier entries — authenticated failures always persist at full fidelity. Values `<= 1` treated as "no sampling" (defense against misconfigured zero). `ThreadLocalRandom` for lock-free sampling under contention. |
+| `cycles-admin-service-data/.../repository/AuditRepository.java` | Widened `LOG_AUDIT_LUA` to accept per-entry TTL (seconds) via `ARGV[4]`. Lua branches on `ttl > 0` — non-positive → plain `SET`, positive → `SET ... EX ttl`. Two new `@Value`-bound fields: `audit.retention.authenticated.days:400` and `audit.retention.unauthenticated.days:30`. New `resolveTtlSeconds(entry)` picks tier by `AuditLogEntry.UNAUTHENTICATED_TENANT` check. New `@Scheduled(cron = "${audit.sweep.cron:0 0 3 * * *}") sweepStaleIndexEntries()` method purges TTL-expired pointers from global + per-tenant indexes via `ZREMRANGEBYSCORE` (uses `SCAN` to enumerate per-tenant indexes; O(log N + M) per remove). Sweep skipped when `authenticatedRetentionDays <= 0` (indefinite retention). `list()` debug log message updated to note TTL-expired entries are expected. |
+| `cycles-admin-service-api/.../BudgetGovernanceApplication.java` | Added `@EnableScheduling` so `AuditRepository.sweepStaleIndexEntries()` fires on the configured cron. |
+| `cycles-admin-service-api/src/main/resources/application.properties` | Added 4 new properties: `audit.retention.authenticated.days` (default 400), `audit.retention.unauthenticated.days` (default 30), `audit.sample.unauthenticated` (default 1), `audit.sweep.cron` (default `0 0 3 * * *`). All env-var overridable. |
+| `cycles-admin-service-api/.../exception/GlobalExceptionHandler.java` | Constructor inject `AuditFailureService`. All 7 `@ExceptionHandler` methods call `logFailure(...)` before returning. Generic handler passes `exception_class` in metadata for post-incident triage; delegates `GovernanceException` to its dedicated handler to prevent double-writes. |
+| `cycles-admin-service-api/.../config/AuthInterceptor.java` | Constructor widened from 2 → 3 deps (added `AuditFailureService`). `writeError(...)` calls `logFailure(...)` before writing the error body. Covers all 7 call sites: path traversal 400; admin key missing 401; admin key blank/invalid 401; admin key misconfigured 500; api key missing 401; api key invalid 403; insufficient permissions 403. |
+| `cycles-admin-service-api/.../config/AuthInterceptorTest.java` | Added `@Mock AuditFailureService`; updated constructor call. +8 tests locking the failure-audit contract at the interceptor layer (7 failure call sites + 1 single-write-invariant guard for the success path). |
+| `cycles-admin-service-api/.../exception/GlobalExceptionHandlerTest.java` | Added `AuditFailureService` mock injection to setUp. +8 tests verifying every `@ExceptionHandler` branch writes the failure audit entry with correct status + error_code; explicit single-write-invariant test for the `GovernanceException` → generic-dispatch edge case. |
+| `cycles-admin-service-api/.../service/AuditFailureServiceTest.java` (new) | 15 unit tests: sentinel resolution (null attr, empty attr); authenticated tier not sampled at any rate (guard against widened gate); unauthenticated tier at rate 1 (never sampled, 200 iterations deterministic); unauthenticated at rate 100 (statistical bounds, 1000 iterations); rate 0 treated as 1 (misconfig safety); CR/LF sanitization; 1024-char truncation; null message omits key; extras merged; non-throwing under `AuditRepository` failure (error counter increments); null request safe. **Plus 2 DDoS-in-miniature concurrency tests**: (a) 1000 concurrent `logFailure` calls on 16 threads at rate=100 — asserts `written + sampled-out + error == 1000` exactly (no lost increments), `error == 0` (non-throwing under contention), and statistical sampling bounds hold; (b) 500 concurrent authenticated failures at rate=10000 — asserts 100% fidelity (authenticated tier immune to sampling under load). |
+| `cycles-admin-service-data/.../repository/AuditRepositoryTest.java` | +7 tests: `resolveTtlSeconds` for authenticated / unauthenticated / zero tiers; `log()` passes correct TTL in `ARGV[4]` per tier; `log()` with retention 0 passes 0 (Lua skips EX); `sweepStaleIndexEntries` skipped when retention is indefinite; sweep removes from both global and per-tenant indexes without double-sweeping `audit:logs:_all` through the SCAN enumeration; sweep Redis-failure non-throwing. |
+| `cycles-admin-service-api/.../integration/AuditRetentionIntegrationTest.java` (new) | 3 end-to-end tests against real Redis (Testcontainers): authenticated failure produces key with `ttl ≈ 400d`; unauthenticated failure produces key with `ttl ≈ 30d`; the two tiers produce materially distinct TTLs (diff > 300d). Closes the Lua-mock gap — proves Redis actually applies the EX, not just that the Lua receives the right value. Runs under `-Pintegration-tests`. |
+| `cycles-admin-service-api/.../integration/AuditRetentionIndefiniteIntegrationTest.java` (new) | 3 end-to-end tests with `@TestPropertySource(audit.retention.*.days=0)` overriding defaults: unauthenticated failure produces key with `ttl = -1` (no expiry); authenticated failure same; `sweepStaleIndexEntries` under retention=0 does not touch live pointers (regression guard — a future refactor that re-enables sweep under indefinite retention would delete pointers to forever-retain records). |
+| `cycles-admin-service-api/.../integration/AdminFlowIntegrationTest.java` | New step 25 — 3 deliberate failures (unauth 401, malformed JSON 400, nonexistent resource 404) followed by audit-log query asserting each failure landed with correct status, error_code, operation, and tenant_id sentinel on unauth case. Contract-validated end-to-end against `cycles-protocol@main`. |
+| `OPERATIONS.md` | New "Audit coverage" subsection documenting success-path (per-controller, rich metadata) vs failure-path (handler/interceptor, coarse but status + error_code). Added `cycles_admin_audit_writes_total` to Metrics inventory with alert recipe on `outcome=error` rate. |
+| `CHANGELOG.md` | New `## [0.1.25.20]` section. |
+| `pom.xml` | `revision` 0.1.25.19 → 0.1.25.20. |
+| `docker-compose.prod.yml` + `docker-compose.full-stack.prod.yml` | Image tag 0.1.25.19 → 0.1.25.20. |
+
+**Design choices:**
+- **Sentinel over nullable tenant_id.** Spec declares `tenant_id` required. Making it nullable would need a cycles-protocol PR and block this release on spec-first merge ordering. Sentinel is backward-compatible: existing queries that filter `tenant_id=<real-tenant>` continue returning only that tenant's entries; failed-attempt review uses the sentinel as a filter value.
+- **Include error_message in metadata (operator confirmed).** Queryable `error_code` is the machine key; `error_message` is the "what specifically went wrong" for the human reviewer. Sanitization keeps it safe.
+- **"METHOD:URI" operation format on failure.** Per-controller operation names (`createBudget`, `fundBudget`) aren't available pre-controller or in `GlobalExceptionHandler`. Ops queries can still group by operation; success entries use the rich name, failure entries use the coarse form. Different format across success/failure is deliberate — failure entries are intentionally less specific.
+- **Prometheus counter outcome=error as the alert surface.** If audit writes silently fail (Redis down, auth-chain breakage), `outcome=error` spikes while the error responses themselves still reach clients. Critical for compliance: never trust that "zero failure entries in Redis" means "zero failures occurred" without also checking this counter.
+
+**Verification:**
+- `mvn verify` passes 560 unit tests (up from 528), JaCoCo ≥95% on all modules, `SpecCoverageReportTest` 43/43 endpoints. 2 new integration tests (`AuditRetentionIntegrationTest`, `AuditRetentionIndefiniteIntegrationTest`) run under `-Pintegration-tests` against Testcontainers Redis.
+- `OpenApiContractDiffTest` — zero INCOMPATIBLE diff. No wire-format changes: `AuditLogEntry` schema already had every field populated on failure (`error_code` was already declared optional, `metadata` was already `Map<String, Object>`).
+- `AdminFlowIntegrationTest` — 25-step flow ends with an audit-log query that asserts each deliberate failure landed with correct status, error_code, and tenant_id sentinel. Entries validated on the wire by `ContractValidatingRestTemplateInterceptor`.
+
+**Operator note:** Queries that filter `status=201` / `status=200` are unaffected — those return exactly the same rows as before. Queries without a status filter (or with `status=401/403/400/404/409/500`) now surface the new failure entries. Dashboards that assume "audit entry exists ⇒ operation succeeded" are broken by this change — callers must now check `status` or `error_code` to distinguish success from failure. No CLAUDE.md/integration-tests change required: the admin-owned integration tests (`runcycles/.github`) only read audit logs for post-flow verification and don't make the success-assumption.
+
+**Cross-refs:** this release has no cycles-protocol dependency — the fix is entirely admin-side and the spec already accommodates the failure entry shape. No change to cycles-server or cycles-server-events.
+
+---
 
 ### 2026-04-16 — v0.1.25.19 /v1/auth/introspect dual-auth + operator docs (spec v0.1.25.15)
 

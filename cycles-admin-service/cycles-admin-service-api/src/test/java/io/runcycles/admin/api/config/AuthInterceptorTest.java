@@ -1,11 +1,14 @@
 package io.runcycles.admin.api.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.admin.api.service.AuditFailureService;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.model.auth.ApiKeyValidationResponse;
+import io.runcycles.admin.model.shared.ErrorCode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -15,13 +18,18 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class AuthInterceptorTest {
 
     @Mock private ApiKeyRepository apiKeyRepository;
+    @Mock private AuditFailureService auditFailure;
     private AuthInterceptor interceptor;
     private ObjectMapper objectMapper = new ObjectMapper();
     private MockHttpServletRequest request;
@@ -29,7 +37,7 @@ class AuthInterceptorTest {
 
     @BeforeEach
     void setUp() {
-        interceptor = new AuthInterceptor(apiKeyRepository, objectMapper);
+        interceptor = new AuthInterceptor(apiKeyRepository, objectMapper, auditFailure);
         ReflectionTestUtils.setField(interceptor, "adminApiKey", "admin-secret-key");
         request = new MockHttpServletRequest();
         response = new MockHttpServletResponse();
@@ -909,5 +917,109 @@ class AuthInterceptorTest {
 
         assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
         assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    // --- v0.1.25.20: audit-on-failure — every writeError() call site must
+    // emit an audit entry with matching status + error_code via
+    // AuditFailureService. Locks the contract at the interceptor layer
+    // so subsequent refactors can't silently drop audit coverage. ---
+
+    @Test
+    void preHandle_adminEndpointMissingHeader_writesFailureAudit_401Unauthorized() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/tenants");
+
+        interceptor.preHandle(request, response, new Object());
+
+        verify(auditFailure).logFailure(eq(request), eq(401), eq(ErrorCode.UNAUTHORIZED), anyString(), isNull());
+    }
+
+    @Test
+    void preHandle_adminEndpointInvalidKey_writesFailureAudit_401Unauthorized() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/tenants");
+        request.addHeader("X-Admin-API-Key", "wrong-key");
+
+        interceptor.preHandle(request, response, new Object());
+
+        verify(auditFailure).logFailure(eq(request), eq(401), eq(ErrorCode.UNAUTHORIZED), anyString(), isNull());
+    }
+
+    @Test
+    void preHandle_adminKeyMisconfigured_writesFailureAudit_500Internal() throws Exception {
+        ReflectionTestUtils.setField(interceptor, "adminApiKey", "");
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/tenants");
+        request.addHeader("X-Admin-API-Key", "any-value");
+
+        interceptor.preHandle(request, response, new Object());
+
+        verify(auditFailure).logFailure(eq(request), eq(500), eq(ErrorCode.INTERNAL_ERROR), anyString(), isNull());
+    }
+
+    @Test
+    void preHandle_pathTraversal_writesFailureAudit_400InvalidRequest() throws Exception {
+        request.setMethod("PATCH");
+        request.setRequestURI("/v1/admin/policies/..%2Ftenants/t_1");
+        request.setServletPath("/v1/admin/policies/../tenants/t_1");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        interceptor.preHandle(request, response, new Object());
+
+        verify(auditFailure).logFailure(eq(request), eq(400), eq(ErrorCode.INVALID_REQUEST), anyString(), isNull());
+    }
+
+    @Test
+    void preHandle_apiKeyEndpointMissingHeader_writesFailureAudit_401Unauthorized() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/budgets");
+
+        interceptor.preHandle(request, response, new Object());
+
+        verify(auditFailure).logFailure(eq(request), eq(401), eq(ErrorCode.UNAUTHORIZED), anyString(), isNull());
+    }
+
+    @Test
+    void preHandle_apiKeyInvalid_writesFailureAudit_403Forbidden() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/budgets");
+        request.addHeader("X-Cycles-API-Key", "bad-key");
+        when(apiKeyRepository.validate("bad-key")).thenReturn(
+                ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_FOUND").build());
+
+        interceptor.preHandle(request, response, new Object());
+
+        verify(auditFailure).logFailure(eq(request), eq(403), eq(ErrorCode.FORBIDDEN), anyString(), isNull());
+    }
+
+    @Test
+    void preHandle_apiKeyInsufficientPermissions_writesFailureAudit_403InsufficientPermissions() throws Exception {
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/budgets");
+        request.addHeader("X-Cycles-API-Key", "valid-key");
+        when(apiKeyRepository.validate("valid-key")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(true).tenantId("tenant-1").keyId("key_1")
+                        .permissions(List.of("balances:read")) // missing budgets:write
+                        .build());
+
+        interceptor.preHandle(request, response, new Object());
+
+        verify(auditFailure).logFailure(eq(request), eq(403),
+                eq(ErrorCode.INSUFFICIENT_PERMISSIONS), anyString(), isNull());
+    }
+
+    @Test
+    void preHandle_adminKeyValid_noFailureAuditWritten() throws Exception {
+        // Single-write invariant sanity check — success paths never trigger
+        // a failure-side write. Controllers do their own (richer) success
+        // audit-log.
+        request.setMethod("GET");
+        request.setRequestURI("/v1/admin/audit/logs");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+
+        interceptor.preHandle(request, response, new Object());
+
+        verify(auditFailure, never()).logFailure(any(), anyInt(), any(), anyString(), any());
     }
 }
