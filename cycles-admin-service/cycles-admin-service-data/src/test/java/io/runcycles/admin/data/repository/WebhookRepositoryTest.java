@@ -8,6 +8,8 @@ import io.runcycles.admin.data.service.CryptoService;
 import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.ErrorCode;
+import io.runcycles.admin.model.shared.SortDirection;
+import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.webhook.WebhookStatus;
 import io.runcycles.admin.model.webhook.WebhookSubscription;
 import org.junit.jupiter.api.BeforeEach;
@@ -644,5 +646,184 @@ class WebhookRepositoryTest {
         String secret = repository.getSigningSecret("whsub_missing");
 
         assertThat(secret).isNull();
+    }
+
+    // ---- sort (spec v0.1.25.20 §V4) ----
+
+    private WebhookSubscription sub(String id, String tenantId, String url,
+                                    WebhookStatus status, Integer failures) {
+        return WebhookSubscription.builder()
+                .subscriptionId(id).tenantId(tenantId).url(url).status(status)
+                .eventTypes(List.of(EventType.TENANT_CREATED))
+                .createdAt(Instant.now())
+                .consecutiveFailures(failures)
+                .build();
+    }
+
+    private void stubSet(String setKey, WebhookSubscription... subs) throws Exception {
+        LinkedHashSet<String> ids = new LinkedHashSet<>();
+        // Pre-serialize JSON outside Mockito's when(...) scope to avoid
+        // UnfinishedStubbing when the @Spy ObjectMapper is invoked mid-stub.
+        List<String> jsons = new ArrayList<>();
+        for (WebhookSubscription s : subs) {
+            ids.add(s.getSubscriptionId());
+            jsons.add(objectMapper.writeValueAsString(s));
+        }
+        when(jedis.smembers(setKey)).thenReturn(ids);
+        for (int i = 0; i < subs.length; i++) {
+            when(jedis.get("webhook:" + subs[i].getSubscriptionId())).thenReturn(jsons.get(i));
+        }
+    }
+
+    @Test
+    void listByTenant_sortByUrlAsc_ordersLexicographically() throws Exception {
+        WebhookSubscription a = sub("whsub_3", "tenant-1", "https://aardvark.com", WebhookStatus.ACTIVE, 0);
+        WebhookSubscription b = sub("whsub_1", "tenant-1", "https://mango.com", WebhookStatus.ACTIVE, 0);
+        WebhookSubscription c = sub("whsub_2", "tenant-1", "https://zebra.com", WebhookStatus.ACTIVE, 0);
+        stubSet("webhooks:tenant-1", a, b, c);
+
+        List<WebhookSubscription> result = repository.listByTenant(
+            "tenant-1", null, null, null, 50, SortSpec.of("url", SortDirection.ASC));
+
+        assertThat(result).extracting(WebhookSubscription::getUrl)
+            .containsExactly("https://aardvark.com", "https://mango.com", "https://zebra.com");
+    }
+
+    @Test
+    void listByTenant_sortByUrlDesc_reversesOrder() throws Exception {
+        WebhookSubscription a = sub("whsub_1", "tenant-1", "https://aardvark.com", WebhookStatus.ACTIVE, 0);
+        WebhookSubscription b = sub("whsub_2", "tenant-1", "https://zebra.com", WebhookStatus.ACTIVE, 0);
+        stubSet("webhooks:tenant-1", a, b);
+
+        List<WebhookSubscription> result = repository.listByTenant(
+            "tenant-1", null, null, null, 50, SortSpec.of("url", SortDirection.DESC));
+
+        assertThat(result).extracting(WebhookSubscription::getUrl)
+            .containsExactly("https://zebra.com", "https://aardvark.com");
+    }
+
+    @Test
+    void listAll_sortByTenantIdAsc() throws Exception {
+        WebhookSubscription a = sub("whsub_1", "tenant-zulu", "https://a.com", WebhookStatus.ACTIVE, 0);
+        WebhookSubscription b = sub("whsub_2", "tenant-alpha", "https://b.com", WebhookStatus.ACTIVE, 0);
+        stubSet("webhooks:_all", a, b);
+
+        List<WebhookSubscription> result = repository.listAll(
+            null, null, null, 50, SortSpec.of("tenant_id", SortDirection.ASC));
+
+        assertThat(result).extracting(WebhookSubscription::getTenantId)
+            .containsExactly("tenant-alpha", "tenant-zulu");
+    }
+
+    @Test
+    void listAll_sortByStatusAsc() throws Exception {
+        WebhookSubscription a = sub("whsub_1", "tenant-1", "https://a.com", WebhookStatus.PAUSED, 0);
+        WebhookSubscription b = sub("whsub_2", "tenant-1", "https://b.com", WebhookStatus.ACTIVE, 0);
+        WebhookSubscription c = sub("whsub_3", "tenant-1", "https://c.com", WebhookStatus.DISABLED, 0);
+        stubSet("webhooks:_all", a, b, c);
+
+        List<WebhookSubscription> result = repository.listAll(
+            null, null, null, 50, SortSpec.of("status", SortDirection.ASC));
+
+        assertThat(result).extracting(s -> s.getStatus().name())
+            .containsExactly("ACTIVE", "DISABLED", "PAUSED");
+    }
+
+    @Test
+    void listAll_sortByConsecutiveFailuresDesc_surfacesFlakyFirst() throws Exception {
+        WebhookSubscription a = sub("whsub_1", "tenant-1", "https://a.com", WebhookStatus.ACTIVE, 0);
+        WebhookSubscription b = sub("whsub_2", "tenant-1", "https://b.com", WebhookStatus.ACTIVE, 7);
+        WebhookSubscription c = sub("whsub_3", "tenant-1", "https://c.com", WebhookStatus.ACTIVE, 3);
+        stubSet("webhooks:_all", a, b, c);
+
+        List<WebhookSubscription> result = repository.listAll(
+            null, null, null, 50, SortSpec.of("consecutive_failures", SortDirection.DESC));
+
+        assertThat(result).extracting(WebhookSubscription::getSubscriptionId)
+            .containsExactly("whsub_2", "whsub_3", "whsub_1");
+    }
+
+    @Test
+    void listAll_sortByConsecutiveFailures_treatsNullAsZero() throws Exception {
+        WebhookSubscription a = sub("whsub_1", "tenant-1", "https://a.com", WebhookStatus.ACTIVE, null);
+        WebhookSubscription b = sub("whsub_2", "tenant-1", "https://b.com", WebhookStatus.ACTIVE, 5);
+        stubSet("webhooks:_all", a, b);
+
+        List<WebhookSubscription> result = repository.listAll(
+            null, null, null, 50, SortSpec.of("consecutive_failures", SortDirection.ASC));
+
+        assertThat(result).extracting(WebhookSubscription::getSubscriptionId)
+            .containsExactly("whsub_1", "whsub_2");
+    }
+
+    @Test
+    void listAll_sortedCursorResumesInSortedOrder() throws Exception {
+        WebhookSubscription a = sub("whsub_a", "tenant-1", "https://aaa.com", WebhookStatus.ACTIVE, 0);
+        WebhookSubscription b = sub("whsub_b", "tenant-1", "https://bbb.com", WebhookStatus.ACTIVE, 0);
+        WebhookSubscription c = sub("whsub_c", "tenant-1", "https://ccc.com", WebhookStatus.ACTIVE, 0);
+        stubSet("webhooks:_all", a, b, c);
+
+        List<WebhookSubscription> result = repository.listAll(
+            null, null, "whsub_a", 50, SortSpec.of("url", SortDirection.ASC));
+
+        assertThat(result).extracting(WebhookSubscription::getSubscriptionId)
+            .containsExactly("whsub_b", "whsub_c");
+    }
+
+    @Test
+    void listAll_unknownSortField_fallsBackToSubscriptionIdTieBreaker() throws Exception {
+        WebhookSubscription a = sub("whsub_c", "tenant-1", "https://c.com", WebhookStatus.ACTIVE, 0);
+        WebhookSubscription b = sub("whsub_a", "tenant-1", "https://a.com", WebhookStatus.ACTIVE, 0);
+        WebhookSubscription c = sub("whsub_b", "tenant-1", "https://b.com", WebhookStatus.ACTIVE, 0);
+        stubSet("webhooks:_all", a, b, c);
+
+        // Bypass whitelist to exercise the comparator's default branch directly.
+        SortSpec bogus = new SortSpec("unknown_field", SortDirection.ASC);
+        List<WebhookSubscription> result = repository.listAll(null, null, null, 50, bogus);
+
+        assertThat(result).extracting(WebhookSubscription::getSubscriptionId)
+            .containsExactly("whsub_a", "whsub_b", "whsub_c");
+    }
+
+    @Test
+    void listAll_nullSortSpec_preservesLegacyLexicographicOrder() throws Exception {
+        WebhookSubscription a = sub("whsub_c", "tenant-1", "https://c.com", WebhookStatus.ACTIVE, 0);
+        WebhookSubscription b = sub("whsub_a", "tenant-1", "https://a.com", WebhookStatus.ACTIVE, 0);
+        stubSet("webhooks:_all", a, b);
+
+        List<WebhookSubscription> result = repository.listAll(null, null, null, 50, null);
+
+        assertThat(result).extracting(WebhookSubscription::getSubscriptionId)
+            .containsExactly("whsub_a", "whsub_c");
+    }
+
+    @Test
+    void listByTenant_sortedWithStatusFilter_appliesBothBeforeSort() throws Exception {
+        WebhookSubscription a = sub("whsub_1", "tenant-1", "https://a.com", WebhookStatus.PAUSED, 0);
+        WebhookSubscription b = sub("whsub_2", "tenant-1", "https://b.com", WebhookStatus.ACTIVE, 0);
+        WebhookSubscription c = sub("whsub_3", "tenant-1", "https://c.com", WebhookStatus.ACTIVE, 0);
+        stubSet("webhooks:tenant-1", a, b, c);
+
+        List<WebhookSubscription> result = repository.listByTenant(
+            "tenant-1", "ACTIVE", null, null, 50, SortSpec.of("url", SortDirection.DESC));
+
+        assertThat(result).hasSize(2);
+        assertThat(result).extracting(WebhookSubscription::getSubscriptionId)
+            .containsExactly("whsub_3", "whsub_2");
+    }
+
+    @Test
+    void listAll_sortedRespectsLimit() throws Exception {
+        WebhookSubscription a = sub("whsub_1", "tenant-1", "https://a.com", WebhookStatus.ACTIVE, 1);
+        WebhookSubscription b = sub("whsub_2", "tenant-1", "https://b.com", WebhookStatus.ACTIVE, 2);
+        WebhookSubscription c = sub("whsub_3", "tenant-1", "https://c.com", WebhookStatus.ACTIVE, 3);
+        stubSet("webhooks:_all", a, b, c);
+
+        List<WebhookSubscription> result = repository.listAll(
+            null, null, null, 2, SortSpec.of("consecutive_failures", SortDirection.DESC));
+
+        assertThat(result).hasSize(2);
+        assertThat(result).extracting(WebhookSubscription::getSubscriptionId)
+            .containsExactly("whsub_3", "whsub_2");
     }
 }

@@ -6,8 +6,11 @@ import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.model.event.EventType;
+import io.runcycles.admin.model.shared.SortDirection;
+import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.webhook.*;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
@@ -75,7 +78,7 @@ class WebhookAdminControllerTest {
     void listWebhooks_returns200() throws Exception {
         WebhookListResponse response = WebhookListResponse.builder()
             .subscriptions(List.of()).hasMore(false).build();
-        when(webhookService.listAll(any(), any(), any(), any(), anyInt())).thenReturn(response);
+        when(webhookService.listAll(any(), any(), any(), any(), anyInt(), any())).thenReturn(response);
 
         mockMvc.perform(get("/v1/admin/webhooks")
                         .header("X-Admin-API-Key", ADMIN_KEY))
@@ -180,14 +183,14 @@ class WebhookAdminControllerTest {
     void listWebhooks_clampsLimitTo100() throws Exception {
         WebhookListResponse response = WebhookListResponse.builder()
             .subscriptions(List.of()).hasMore(false).build();
-        when(webhookService.listAll(any(), any(), any(), any(), eq(100))).thenReturn(response);
+        when(webhookService.listAll(any(), any(), any(), any(), eq(100), any())).thenReturn(response);
 
         mockMvc.perform(get("/v1/admin/webhooks")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .param("limit", "999"))
                 .andExpect(status().isOk());
 
-        verify(webhookService).listAll(any(), any(), any(), any(), eq(100));
+        verify(webhookService).listAll(any(), any(), any(), any(), eq(100), any());
     }
 
     @Test
@@ -222,5 +225,93 @@ class WebhookAdminControllerTest {
         verify(auditRepository).log(argThat(entry ->
                 "replayEvents".equals(entry.getOperation()) &&
                 entry.getStatus() == 202));
+    }
+
+    // --- Sort contract tests (spec v0.1.25.20 §V4 server-side sort) ---
+
+    @Test
+    void listWebhooks_defaultsToConsecutiveFailuresDesc() throws Exception {
+        WebhookListResponse response = WebhookListResponse.builder()
+            .subscriptions(List.of()).hasMore(false).build();
+        when(webhookService.listAll(any(), any(), any(), any(), anyInt(), any())).thenReturn(response);
+
+        mockMvc.perform(get("/v1/admin/webhooks")
+                        .header("X-Admin-API-Key", ADMIN_KEY))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<SortSpec> captor = ArgumentCaptor.forClass(SortSpec.class);
+        verify(webhookService).listAll(any(), any(), any(), any(), anyInt(), captor.capture());
+        SortSpec sort = captor.getValue();
+        org.junit.jupiter.api.Assertions.assertEquals("consecutive_failures", sort.field());
+        org.junit.jupiter.api.Assertions.assertEquals(SortDirection.DESC, sort.direction());
+    }
+
+    @Test
+    void listWebhooks_acceptsValidSortByAndDir() throws Exception {
+        WebhookListResponse response = WebhookListResponse.builder()
+            .subscriptions(List.of()).hasMore(false).build();
+        when(webhookService.listAll(any(), any(), any(), any(), anyInt(), any())).thenReturn(response);
+
+        mockMvc.perform(get("/v1/admin/webhooks")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("sort_by", "url")
+                        .param("sort_dir", "asc"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<SortSpec> captor = ArgumentCaptor.forClass(SortSpec.class);
+        verify(webhookService).listAll(any(), any(), any(), any(), anyInt(), captor.capture());
+        SortSpec sort = captor.getValue();
+        org.junit.jupiter.api.Assertions.assertEquals("url", sort.field());
+        org.junit.jupiter.api.Assertions.assertEquals(SortDirection.ASC, sort.direction());
+    }
+
+    @Test
+    void listWebhooks_acceptsAllWhitelistedFields() throws Exception {
+        WebhookListResponse response = WebhookListResponse.builder()
+            .subscriptions(List.of()).hasMore(false).build();
+        when(webhookService.listAll(any(), any(), any(), any(), anyInt(), any())).thenReturn(response);
+
+        for (String field : List.of("url", "tenant_id", "status", "consecutive_failures")) {
+            mockMvc.perform(get("/v1/admin/webhooks")
+                            .header("X-Admin-API-Key", ADMIN_KEY)
+                            .param("sort_by", field))
+                    .andExpect(status().isOk());
+        }
+    }
+
+    @Test
+    void listWebhooks_unknownSortBy_returns400() throws Exception {
+        mockMvc.perform(get("/v1/admin/webhooks")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("sort_by", "bogus"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void listWebhooks_unknownSortDir_returns400() throws Exception {
+        mockMvc.perform(get("/v1/admin/webhooks")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("sort_by", "url")
+                        .param("sort_dir", "sideways"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void listWebhooks_sortDirDefaultsToDesc_whenOmittedWithSortBy() throws Exception {
+        // Spec v0.1.25.20: omitted sort_dir → DESC (newest/worst first).
+        WebhookListResponse response = WebhookListResponse.builder()
+            .subscriptions(List.of()).hasMore(false).build();
+        when(webhookService.listAll(any(), any(), any(), any(), anyInt(), any())).thenReturn(response);
+
+        mockMvc.perform(get("/v1/admin/webhooks")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("sort_by", "url"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<SortSpec> captor = ArgumentCaptor.forClass(SortSpec.class);
+        verify(webhookService).listAll(any(), any(), any(), any(), anyInt(), captor.capture());
+        org.junit.jupiter.api.Assertions.assertEquals(SortDirection.DESC, captor.getValue().direction());
     }
 }

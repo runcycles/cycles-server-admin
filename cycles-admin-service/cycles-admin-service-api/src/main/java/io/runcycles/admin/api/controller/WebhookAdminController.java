@@ -2,8 +2,12 @@ package io.runcycles.admin.api.controller;
 
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.api.service.WebhookService;
+import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
+import io.runcycles.admin.model.shared.ErrorCode;
+import io.runcycles.admin.model.shared.SortDirection;
+import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.webhook.*;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -13,9 +17,15 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import java.time.Instant;
+import java.util.Set;
 
 @RestController @RequestMapping("/v1/admin/webhooks") @Tag(name = "Webhooks")
 public class WebhookAdminController {
+    // Per spec v0.1.25.20. consecutive_failures is the default — operators
+    // monitoring webhook health want flaky subscriptions surfaced first.
+    private static final Set<String> ALLOWED_SORT_FIELDS = Set.of(
+        "url", "tenant_id", "status", "consecutive_failures");
+    private static final String DEFAULT_SORT_FIELD = "consecutive_failures";
     @Autowired private WebhookService webhookService;
     @Autowired private AuditRepository auditRepository;
 
@@ -40,9 +50,30 @@ public class WebhookAdminController {
             @RequestParam(required = false) String status,
             @RequestParam(required = false) String event_type,
             @RequestParam(required = false) String cursor,
-            @RequestParam(defaultValue = "50") int limit) {
+            @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(required = false) String sort_by,
+            @RequestParam(required = false) String sort_dir) {
         limit = Math.max(1, Math.min(limit, 100));
-        return ResponseEntity.ok(webhookService.listAll(tenant_id, status, event_type, cursor, limit));
+        SortSpec sortSpec = parseSortSpec(sort_by, sort_dir);
+        return ResponseEntity.ok(webhookService.listAll(tenant_id, status, event_type, cursor, limit, sortSpec));
+    }
+
+    /**
+     * Parse sort_by / sort_dir query params into a validated SortSpec.
+     * See TenantController.parseSortSpec for the shared rationale.
+     */
+    private SortSpec parseSortSpec(String sortBy, String sortDir) {
+        SortDirection direction;
+        try {
+            direction = SortDirection.fromWire(sortDir);
+        } catch (IllegalArgumentException e) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
+        }
+        try {
+            return SortSpec.resolve(sortBy, direction, ALLOWED_SORT_FIELDS, DEFAULT_SORT_FIELD);
+        } catch (IllegalArgumentException e) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
+        }
     }
 
     @GetMapping("/{subscription_id}") @Operation(operationId = "getWebhookSubscription")

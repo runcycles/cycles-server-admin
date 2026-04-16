@@ -2,6 +2,7 @@ package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.service.CryptoService;
 import io.runcycles.admin.model.event.EventType;
+import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.webhook.WebhookStatus;
 import io.runcycles.admin.model.webhook.WebhookSubscription;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -161,11 +162,20 @@ public class WebhookRepository {
 
     public List<WebhookSubscription> listByTenant(String tenantId, String status, String eventType,
                                                    String cursor, int limit) {
-        return listFromSet("webhooks:" + tenantId, status, eventType, cursor, limit);
+        return listFromSet("webhooks:" + tenantId, status, eventType, cursor, limit, null);
+    }
+
+    public List<WebhookSubscription> listByTenant(String tenantId, String status, String eventType,
+                                                   String cursor, int limit, SortSpec sortSpec) {
+        return listFromSet("webhooks:" + tenantId, status, eventType, cursor, limit, sortSpec);
     }
 
     public List<WebhookSubscription> listAll(String status, String eventType, String cursor, int limit) {
-        return listFromSet("webhooks:_all", status, eventType, cursor, limit);
+        return listFromSet("webhooks:_all", status, eventType, cursor, limit, null);
+    }
+
+    public List<WebhookSubscription> listAll(String status, String eventType, String cursor, int limit, SortSpec sortSpec) {
+        return listFromSet("webhooks:_all", status, eventType, cursor, limit, sortSpec);
     }
 
     public List<WebhookSubscription> findMatchingSubscriptions(String tenantId, EventType eventType, String scope) {
@@ -220,7 +230,7 @@ public class WebhookRepository {
     }
 
     private List<WebhookSubscription> listFromSet(String setKey, String status, String eventType,
-                                                   String cursor, int limit) {
+                                                   String cursor, int limit, SortSpec sortSpec) {
         if (limit <= 0) {
             return new ArrayList<>();
         }
@@ -229,38 +239,123 @@ public class WebhookRepository {
             if (ids == null || ids.isEmpty()) {
                 return new ArrayList<>();
             }
-
-            // Sort for deterministic pagination
-            List<String> sortedIds = new ArrayList<>(ids);
-            Collections.sort(sortedIds);
-
-            // Apply cursor: skip all IDs up to and including the cursor
-            int startIdx = 0;
-            if (cursor != null && !cursor.isBlank()) {
-                for (int i = 0; i < sortedIds.size(); i++) {
-                    if (sortedIds.get(i).equals(cursor)) {
-                        startIdx = i + 1;
-                        break;
-                    }
-                }
+            if (sortSpec == null) {
+                return listLegacy(jedis, ids, status, eventType, cursor, limit);
             }
-
-            List<WebhookSubscription> results = new ArrayList<>();
-            for (int i = startIdx; i < sortedIds.size() && results.size() < limit; i++) {
-                String id = sortedIds.get(i);
-                try {
-                    String data = jedis.get("webhook:" + id);
-                    if (data == null) continue;
-                    WebhookSubscription sub = objectMapper.readValue(data, WebhookSubscription.class);
-                    if (status != null && !status.equals(sub.getStatus().name())) continue;
-                    if (eventType != null && sub.getEventTypes() != null
-                        && sub.getEventTypes().stream().noneMatch(et -> et.getValue().equals(eventType))) continue;
-                    results.add(sub);
-                } catch (Exception e) {
-                    LOG.warn("Failed to parse webhook subscription: {}", id, e);
-                }
-            }
-            return results;
+            return listSorted(jedis, ids, status, eventType, cursor, limit, sortSpec);
         }
+    }
+
+    private List<WebhookSubscription> listLegacy(Jedis jedis, Set<String> ids, String status,
+                                                  String eventType, String cursor, int limit) {
+        // Sort IDs lexicographically for deterministic pagination (pre-v0.1.25.20
+        // behaviour). Preserved when caller passes no SortSpec so existing cursor
+        // chains don't break.
+        List<String> sortedIds = new ArrayList<>(ids);
+        Collections.sort(sortedIds);
+        int startIdx = 0;
+        if (cursor != null && !cursor.isBlank()) {
+            for (int i = 0; i < sortedIds.size(); i++) {
+                if (sortedIds.get(i).equals(cursor)) {
+                    startIdx = i + 1;
+                    break;
+                }
+            }
+        }
+        List<WebhookSubscription> results = new ArrayList<>();
+        for (int i = startIdx; i < sortedIds.size() && results.size() < limit; i++) {
+            WebhookSubscription sub = tryHydrate(jedis, sortedIds.get(i));
+            if (sub == null) continue;
+            if (!matchesStatusAndEventType(sub, status, eventType)) continue;
+            results.add(sub);
+        }
+        return results;
+    }
+
+    private List<WebhookSubscription> listSorted(Jedis jedis, Set<String> ids, String status,
+                                                  String eventType, String cursor, int limit,
+                                                  SortSpec sortSpec) {
+        // Sorted path: hydrate all, filter, sort, walk cursor strictly-after.
+        // Cursor remains the subscription_id (wire-compat); caller must pass the
+        // same sortSpec on follow-up pages for stable traversal.
+        List<WebhookSubscription> all = new ArrayList<>();
+        for (String id : ids) {
+            WebhookSubscription sub = tryHydrate(jedis, id);
+            if (sub == null) continue;
+            if (!matchesStatusAndEventType(sub, status, eventType)) continue;
+            all.add(sub);
+        }
+        all.sort(webhookComparator(sortSpec));
+        List<WebhookSubscription> results = new ArrayList<>();
+        boolean pastCursor = (cursor == null || cursor.isBlank());
+        for (WebhookSubscription sub : all) {
+            if (!pastCursor) {
+                if (cursor.equals(sub.getSubscriptionId())) pastCursor = true;
+                continue;
+            }
+            results.add(sub);
+            if (results.size() >= limit) break;
+        }
+        return results;
+    }
+
+    private WebhookSubscription tryHydrate(Jedis jedis, String id) {
+        try {
+            String data = jedis.get("webhook:" + id);
+            if (data == null) return null;
+            return objectMapper.readValue(data, WebhookSubscription.class);
+        } catch (Exception e) {
+            LOG.warn("Failed to parse webhook subscription: {}", id, e);
+            return null;
+        }
+    }
+
+    private boolean matchesStatusAndEventType(WebhookSubscription sub, String status, String eventType) {
+        if (status != null && (sub.getStatus() == null || !status.equals(sub.getStatus().name()))) {
+            return false;
+        }
+        if (eventType != null) {
+            if (sub.getEventTypes() == null
+                || sub.getEventTypes().stream().noneMatch(et -> et.getValue().equals(eventType))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Null-safe comparator on the whitelisted sort fields. Secondary sort on
+     * subscription_id guarantees total order for deterministic cursor resume.
+     * Unknown fields fall back to the tie-breaker so the repo contract stays
+     * total even if a new field is ever threaded in without a comparator case.
+     */
+    static Comparator<WebhookSubscription> webhookComparator(SortSpec sortSpec) {
+        String field = sortSpec.field();
+        Comparator<WebhookSubscription> primary;
+        switch (field) {
+            case "url":
+                primary = Comparator.comparing(WebhookSubscription::getUrl, Comparator.nullsLast(String::compareTo));
+                break;
+            case "tenant_id":
+                primary = Comparator.comparing(WebhookSubscription::getTenantId, Comparator.nullsLast(String::compareTo));
+                break;
+            case "status":
+                primary = Comparator.comparing(
+                    s -> s.getStatus() == null ? null : s.getStatus().name(),
+                    Comparator.nullsLast(String::compareTo));
+                break;
+            case "consecutive_failures":
+                primary = Comparator.comparing(
+                    s -> s.getConsecutiveFailures() == null ? 0 : s.getConsecutiveFailures(),
+                    Comparator.naturalOrder());
+                break;
+            default:
+                primary = Comparator.comparing(WebhookSubscription::getSubscriptionId,
+                    Comparator.nullsLast(String::compareTo));
+                break;
+        }
+        Comparator<WebhookSubscription> withTieBreak = primary.thenComparing(
+            WebhookSubscription::getSubscriptionId, Comparator.nullsLast(String::compareTo));
+        return sortSpec.isAscending() ? withTieBreak : withTieBreak.reversed();
     }
 }
