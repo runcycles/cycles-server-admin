@@ -1039,4 +1039,243 @@ class BudgetRepositoryTest {
                     assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.BUDGET_CLOSED);
                 });
     }
+
+    // --- v0.1.25.22 BudgetListFilters + cross-tenant listAllTenants ---
+
+    private Map<String, String> hashWith(String ledgerId, String scope, String unit,
+                                          long allocated, long spent, long debt, boolean overLimit,
+                                          String tenantId) {
+        Map<String, String> h = new LinkedHashMap<>();
+        h.put("ledger_id", ledgerId);
+        h.put("tenant_id", tenantId);
+        h.put("scope", scope);
+        h.put("unit", unit);
+        h.put("allocated", String.valueOf(allocated));
+        h.put("remaining", String.valueOf(allocated - spent - debt));
+        h.put("reserved", "0");
+        h.put("spent", String.valueOf(spent));
+        h.put("debt", String.valueOf(debt));
+        h.put("overdraft_limit", "0");
+        h.put("is_over_limit", String.valueOf(overLimit));
+        h.put("status", "ACTIVE");
+        h.put("created_at", String.valueOf(System.currentTimeMillis()));
+        return h;
+    }
+
+    @Test
+    void budgetListFilters_empty_matchesEverything() {
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1").tenantId("tenant-1").scope("tenant:tenant-1")
+                .unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .spent(new Amount(UnitEnum.USD_MICROCENTS, 500L))
+                .debt(new Amount(UnitEnum.USD_MICROCENTS, 0L))
+                .isOverLimit(false)
+                .status(BudgetStatus.ACTIVE)
+                .build();
+
+        assertThat(BudgetListFilters.empty().matches(ledger)).isTrue();
+    }
+
+    @Test
+    void budgetListFilters_utilization_allocatedZero_treatedAsZero() {
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1").tenantId("tenant-1").scope("tenant:tenant-1")
+                .unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 0L))
+                .spent(new Amount(UnitEnum.USD_MICROCENTS, 500L))
+                .debt(new Amount(UnitEnum.USD_MICROCENTS, 0L))
+                .isOverLimit(false)
+                .status(BudgetStatus.ACTIVE)
+                .build();
+
+        // utilization treated as 0 regardless of spent
+        BudgetListFilters min0 = new BudgetListFilters(null, null, null, null, null, 0.0, null);
+        BudgetListFilters min01 = new BudgetListFilters(null, null, null, null, null, 0.1, null);
+        assertThat(min0.matches(ledger)).isTrue();
+        assertThat(min01.matches(ledger)).isFalse();
+    }
+
+    @Test
+    void budgetListFilters_overLimit_filtersCorrectly() {
+        BudgetLedger over = BudgetLedger.builder()
+                .ledgerId("led-over").tenantId("t").scope("s").unit(UnitEnum.TOKENS)
+                .allocated(new Amount(UnitEnum.TOKENS, 100L))
+                .spent(new Amount(UnitEnum.TOKENS, 0L))
+                .debt(new Amount(UnitEnum.TOKENS, 50L))
+                .isOverLimit(true).status(BudgetStatus.ACTIVE).build();
+        BudgetLedger notOver = BudgetLedger.builder()
+                .ledgerId("led-ok").tenantId("t").scope("s").unit(UnitEnum.TOKENS)
+                .allocated(new Amount(UnitEnum.TOKENS, 100L))
+                .spent(new Amount(UnitEnum.TOKENS, 0L))
+                .debt(new Amount(UnitEnum.TOKENS, 0L))
+                .isOverLimit(false).status(BudgetStatus.ACTIVE).build();
+
+        BudgetListFilters onlyOver = new BudgetListFilters(null, null, null, true, null, null, null);
+        assertThat(onlyOver.matches(over)).isTrue();
+        assertThat(onlyOver.matches(notOver)).isFalse();
+    }
+
+    @Test
+    void budgetListFilters_hasDebt_filtersCorrectly() {
+        BudgetLedger withDebt = BudgetLedger.builder()
+                .ledgerId("led-d").tenantId("t").scope("s").unit(UnitEnum.TOKENS)
+                .allocated(new Amount(UnitEnum.TOKENS, 100L))
+                .spent(new Amount(UnitEnum.TOKENS, 0L))
+                .debt(new Amount(UnitEnum.TOKENS, 10L))
+                .isOverLimit(false).status(BudgetStatus.ACTIVE).build();
+        BudgetLedger noDebt = BudgetLedger.builder()
+                .ledgerId("led-0").tenantId("t").scope("s").unit(UnitEnum.TOKENS)
+                .allocated(new Amount(UnitEnum.TOKENS, 100L))
+                .spent(new Amount(UnitEnum.TOKENS, 0L))
+                .debt(new Amount(UnitEnum.TOKENS, 0L))
+                .isOverLimit(false).status(BudgetStatus.ACTIVE).build();
+
+        BudgetListFilters wantDebt = new BudgetListFilters(null, null, null, null, true, null, null);
+        assertThat(wantDebt.matches(withDebt)).isTrue();
+        assertThat(wantDebt.matches(noDebt)).isFalse();
+    }
+
+    @Test
+    void budgetListFilters_scopePrefix_andUnit_andStatus_combined() {
+        BudgetLedger l = BudgetLedger.builder()
+                .ledgerId("led-1").tenantId("t").scope("tenant:acme/workspace:eng")
+                .unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 100L))
+                .spent(new Amount(UnitEnum.USD_MICROCENTS, 0L))
+                .debt(new Amount(UnitEnum.USD_MICROCENTS, 0L))
+                .isOverLimit(false).status(BudgetStatus.ACTIVE).build();
+
+        assertThat(new BudgetListFilters("tenant:acme", UnitEnum.USD_MICROCENTS,
+                BudgetStatus.ACTIVE, null, null, null, null).matches(l)).isTrue();
+        assertThat(new BudgetListFilters("tenant:other", null, null, null, null, null, null)
+                .matches(l)).isFalse();
+        assertThat(new BudgetListFilters(null, UnitEnum.TOKENS, null, null, null, null, null)
+                .matches(l)).isFalse();
+        assertThat(new BudgetListFilters(null, null, BudgetStatus.FROZEN, null, null, null, null)
+                .matches(l)).isFalse();
+    }
+
+    @Test
+    void listAllTenants_walksAllTenantsInSortedOrder() {
+        when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-b", "tenant-a")));
+        when(jedis.smembers("budgets:tenant-a"))
+                .thenReturn(new LinkedHashSet<>(List.of("budget:a1:USD_MICROCENTS")));
+        when(jedis.smembers("budgets:tenant-b"))
+                .thenReturn(new LinkedHashSet<>(List.of("budget:b1:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:a1:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-a1", "a1", "USD_MICROCENTS", 100, 0, 0, false, "tenant-a"));
+        when(jedis.hgetAll("budget:b1:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-b1", "b1", "USD_MICROCENTS", 100, 0, 0, false, "tenant-b"));
+
+        List<BudgetLedger> result = repository.listAllTenants(BudgetListFilters.empty(), null, 50);
+
+        assertThat(result).extracting(BudgetLedger::getLedgerId).containsExactly("led-a1", "led-b1");
+    }
+
+    @Test
+    void listAllTenants_withCursor_resumesInsideMatchingTenant() {
+        when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-b")));
+        when(jedis.smembers("budgets:tenant-a"))
+                .thenReturn(new LinkedHashSet<>(List.of("budget:a1:USD_MICROCENTS", "budget:a2:USD_MICROCENTS")));
+        when(jedis.smembers("budgets:tenant-b"))
+                .thenReturn(new LinkedHashSet<>(List.of("budget:b1:USD_MICROCENTS")));
+        // a1 is the cursor and must be skipped; a2 and b1 should appear.
+        lenient().when(jedis.hgetAll("budget:a1:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-a1", "a1", "USD_MICROCENTS", 100, 0, 0, false, "tenant-a"));
+        when(jedis.hgetAll("budget:a2:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-a2", "a2", "USD_MICROCENTS", 100, 0, 0, false, "tenant-a"));
+        when(jedis.hgetAll("budget:b1:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-b1", "b1", "USD_MICROCENTS", 100, 0, 0, false, "tenant-b"));
+
+        List<BudgetLedger> result = repository.listAllTenants(
+                BudgetListFilters.empty(), "tenant-a|led-a1", 50);
+
+        assertThat(result).extracting(BudgetLedger::getLedgerId).containsExactly("led-a2", "led-b1");
+    }
+
+    @Test
+    void listAllTenants_filterApplies_beforePagination() {
+        when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-a")));
+        when(jedis.smembers("budgets:tenant-a"))
+                .thenReturn(new LinkedHashSet<>(List.of(
+                        "budget:a1:USD_MICROCENTS", "budget:a2:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:a1:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-a1", "a1", "USD_MICROCENTS", 100, 0, 0, false, "tenant-a"));
+        when(jedis.hgetAll("budget:a2:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-a2", "a2", "USD_MICROCENTS", 100, 0, 20, true, "tenant-a"));
+
+        BudgetListFilters onlyOver = new BudgetListFilters(null, null, null, true, null, null, null);
+        List<BudgetLedger> result = repository.listAllTenants(onlyOver, null, 50);
+
+        assertThat(result).extracting(BudgetLedger::getLedgerId).containsExactly("led-a2");
+    }
+
+    @Test
+    void listAllTenants_respectsLimit() {
+        when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-b")));
+        when(jedis.smembers("budgets:tenant-a"))
+                .thenReturn(new LinkedHashSet<>(List.of(
+                        "budget:a1:USD_MICROCENTS", "budget:a2:USD_MICROCENTS")));
+        lenient().when(jedis.smembers("budgets:tenant-b"))
+                .thenReturn(new LinkedHashSet<>(List.of("budget:b1:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:a1:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-a1", "a1", "USD_MICROCENTS", 100, 0, 0, false, "tenant-a"));
+        when(jedis.hgetAll("budget:a2:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-a2", "a2", "USD_MICROCENTS", 100, 0, 0, false, "tenant-a"));
+
+        List<BudgetLedger> result = repository.listAllTenants(BudgetListFilters.empty(), null, 2);
+
+        assertThat(result).hasSize(2);
+        assertThat(result).extracting(BudgetLedger::getLedgerId)
+                .containsExactly("led-a1", "led-a2");
+    }
+
+    @Test
+    void listAllTenants_emptyTenantsSet_returnsEmpty() {
+        when(jedis.smembers("tenants")).thenReturn(Collections.emptySet());
+
+        List<BudgetLedger> result = repository.listAllTenants(BudgetListFilters.empty(), null, 50);
+
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    void list_filterBased_overLimit_filters() {
+        when(jedis.smembers("budgets:tenant-1"))
+                .thenReturn(new LinkedHashSet<>(List.of(
+                        "budget:a:USD_MICROCENTS", "budget:b:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:a:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-a", "a", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1"));
+        when(jedis.hgetAll("budget:b:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-b", "b", "USD_MICROCENTS", 100, 0, 10, true, "tenant-1"));
+
+        List<BudgetLedger> result = repository.list(
+                "tenant-1",
+                new BudgetListFilters(null, null, null, true, null, null, null),
+                null, 50);
+
+        assertThat(result).extracting(BudgetLedger::getLedgerId).containsExactly("led-b");
+    }
+
+    @Test
+    void list_filterBased_utilizationRange_filters() {
+        when(jedis.smembers("budgets:tenant-1"))
+                .thenReturn(new LinkedHashSet<>(List.of(
+                        "budget:a:USD_MICROCENTS", "budget:b:USD_MICROCENTS",
+                        "budget:c:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:a:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-a", "a", "USD_MICROCENTS", 100, 10, 0, false, "tenant-1"));
+        when(jedis.hgetAll("budget:b:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-b", "b", "USD_MICROCENTS", 100, 50, 0, false, "tenant-1"));
+        when(jedis.hgetAll("budget:c:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-c", "c", "USD_MICROCENTS", 100, 90, 0, false, "tenant-1"));
+
+        List<BudgetLedger> result = repository.list(
+                "tenant-1",
+                new BudgetListFilters(null, null, null, null, null, 0.25, 0.75),
+                null, 50);
+
+        assertThat(result).extracting(BudgetLedger::getLedgerId).containsExactly("led-b");
+    }
 }

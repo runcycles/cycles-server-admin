@@ -54,17 +54,36 @@ public class ApiKeyController {
     }
     @GetMapping @Operation(operationId = "listApiKeys")
     public ResponseEntity<ApiKeyListResponse> list(
-            @RequestParam(required = true) String tenant_id,
+            @RequestParam(required = false) String tenant_id,
             @RequestParam(required = false) ApiKeyStatus status,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
-        var keys = repository.list(tenant_id, status, cursor, effectiveLimit);
+        // Per governance spec v0.1.25.18: `tenant_id` is now optional under
+        // AdminKeyAuth. When absent, list keys across every tenant; the
+        // cursor carries "{tenantId}|{keyId}" so a follow-up page resumes
+        // inside the correct tenant.
+        java.util.List<ApiKey> keys;
+        boolean crossTenant;
+        if (tenant_id != null && !tenant_id.isBlank()) {
+            crossTenant = false;
+            keys = repository.list(tenant_id, status, cursor, effectiveLimit);
+        } else {
+            crossTenant = true;
+            keys = repository.listAllTenants(status, cursor, effectiveLimit);
+        }
         var responses = keys.stream().map(ApiKeyResponse::from).collect(Collectors.toList());
+        String nextCursor = null;
+        if (keys.size() >= effectiveLimit) {
+            ApiKey last = keys.get(keys.size() - 1);
+            nextCursor = crossTenant
+                ? last.getTenantId() + "|" + last.getKeyId()
+                : last.getKeyId();
+        }
         ApiKeyListResponse response = ApiKeyListResponse.builder()
             .keys(responses)
             .hasMore(keys.size() >= effectiveLimit)
-            .nextCursor(keys.size() >= effectiveLimit ? keys.get(keys.size() - 1).getKeyId() : null)
+            .nextCursor(nextCursor)
             .build();
         return ResponseEntity.ok(response);
     }

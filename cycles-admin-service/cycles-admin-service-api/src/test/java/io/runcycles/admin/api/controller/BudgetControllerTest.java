@@ -5,6 +5,7 @@ import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
+import io.runcycles.admin.data.repository.BudgetListFilters;
 import io.runcycles.admin.data.repository.BudgetRepository;
 import io.runcycles.admin.model.auth.ApiKeyValidationResponse;
 import io.runcycles.admin.model.budget.*;
@@ -117,7 +118,7 @@ class BudgetControllerTest {
                 .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .remaining(new Amount(UnitEnum.USD_MICROCENTS, 800L))
                 .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(budgetRepository.list(eq("tenant-1"), any(), any(), any(), any(), anyInt())).thenReturn(List.of(ledger));
+        when(budgetRepository.list(eq("tenant-1"), any(BudgetListFilters.class), any(), anyInt())).thenReturn(List.of(ledger));
 
         mockMvc.perform(get("/v1/admin/budgets")
                         .header("X-Cycles-API-Key", "valid-api-key"))
@@ -272,20 +273,20 @@ class BudgetControllerTest {
     @Test
     void listBudgets_usesAuthenticatedTenantId_ignoresUserSupplied() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), any(), any(), any(), any(), anyInt())).thenReturn(List.of());
+        when(budgetRepository.list(eq("tenant-1"), any(BudgetListFilters.class), any(), anyInt())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/budgets")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .param("tenant_id", "attacker-tenant"))
                 .andExpect(status().isOk());
 
-        verify(budgetRepository).list(eq("tenant-1"), any(), any(), any(), any(), anyInt());
+        verify(budgetRepository).list(eq("tenant-1"), any(BudgetListFilters.class), any(), anyInt());
     }
 
     @Test
     void listBudgets_emptyResult_hasMoreFalseAndNoCursor() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), any(), any(), any(), any(), anyInt())).thenReturn(List.of());
+        when(budgetRepository.list(eq("tenant-1"), any(BudgetListFilters.class), any(), anyInt())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/budgets")
                         .header("X-Cycles-API-Key", "valid-api-key"))
@@ -298,27 +299,27 @@ class BudgetControllerTest {
     @Test
     void listBudgets_limitClampedToMax100() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), any(), any(), any(), any(), eq(100))).thenReturn(List.of());
+        when(budgetRepository.list(eq("tenant-1"), any(BudgetListFilters.class), any(), eq(100))).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/budgets")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .param("limit", "999"))
                 .andExpect(status().isOk());
 
-        verify(budgetRepository).list(eq("tenant-1"), any(), any(), any(), any(), eq(100));
+        verify(budgetRepository).list(eq("tenant-1"), any(BudgetListFilters.class), any(), eq(100));
     }
 
     @Test
     void listBudgets_limitClampedToMin1() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), any(), any(), any(), any(), eq(1))).thenReturn(List.of());
+        when(budgetRepository.list(eq("tenant-1"), any(BudgetListFilters.class), any(), eq(1))).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/budgets")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .param("limit", "0"))
                 .andExpect(status().isOk());
 
-        verify(budgetRepository).list(eq("tenant-1"), any(), any(), any(), any(), eq(1));
+        verify(budgetRepository).list(eq("tenant-1"), any(BudgetListFilters.class), any(), eq(1));
     }
 
     @Test
@@ -340,27 +341,31 @@ class BudgetControllerTest {
     @Test
     void listBudgets_withCursorParam_passesToRepository() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), any(), any(), any(), eq("led-abc"), anyInt())).thenReturn(List.of());
+        when(budgetRepository.list(eq("tenant-1"), any(BudgetListFilters.class), eq("led-abc"), anyInt())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/budgets")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .param("cursor", "led-abc"))
                 .andExpect(status().isOk());
 
-        verify(budgetRepository).list(eq("tenant-1"), any(), any(), any(), eq("led-abc"), anyInt());
+        verify(budgetRepository).list(eq("tenant-1"), any(BudgetListFilters.class), eq("led-abc"), anyInt());
     }
 
     @Test
     void listBudgets_withStatusFilter_passesToRepository() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), any(), any(), eq(BudgetStatus.FROZEN), any(), anyInt())).thenReturn(List.of());
+        when(budgetRepository.list(eq("tenant-1"),
+                argThat((BudgetListFilters f) -> f != null && f.status() == BudgetStatus.FROZEN),
+                any(), anyInt())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/budgets")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .param("status", "FROZEN"))
                 .andExpect(status().isOk());
 
-        verify(budgetRepository).list(eq("tenant-1"), any(), any(), eq(BudgetStatus.FROZEN), any(), anyInt());
+        verify(budgetRepository).list(eq("tenant-1"),
+                argThat((BudgetListFilters f) -> f != null && f.status() == BudgetStatus.FROZEN),
+                any(), anyInt());
     }
 
     @Test
@@ -648,27 +653,35 @@ class BudgetControllerTest {
     @Test
     void listBudgets_withScopePrefixFilter_passesToRepository() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), eq("org/"), any(), any(), any(), anyInt())).thenReturn(List.of());
+        when(budgetRepository.list(eq("tenant-1"),
+                argThat((BudgetListFilters f) -> f != null && "org/".equals(f.scopePrefix())),
+                any(), anyInt())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/budgets")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .param("scope_prefix", "org/"))
                 .andExpect(status().isOk());
 
-        verify(budgetRepository).list(eq("tenant-1"), eq("org/"), any(), any(), any(), anyInt());
+        verify(budgetRepository).list(eq("tenant-1"),
+                argThat((BudgetListFilters f) -> f != null && "org/".equals(f.scopePrefix())),
+                any(), anyInt());
     }
 
     @Test
     void listBudgets_withUnitFilter_passesToRepository() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), any(), eq(UnitEnum.TOKENS), any(), any(), anyInt())).thenReturn(List.of());
+        when(budgetRepository.list(eq("tenant-1"),
+                argThat((BudgetListFilters f) -> f != null && f.unit() == UnitEnum.TOKENS),
+                any(), anyInt())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/budgets")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .param("unit", "TOKENS"))
                 .andExpect(status().isOk());
 
-        verify(budgetRepository).list(eq("tenant-1"), any(), eq(UnitEnum.TOKENS), any(), any(), anyInt());
+        verify(budgetRepository).list(eq("tenant-1"),
+                argThat((BudgetListFilters f) -> f != null && f.unit() == UnitEnum.TOKENS),
+                any(), anyInt());
     }
 
     @Test
@@ -684,7 +697,7 @@ class BudgetControllerTest {
                 .allocated(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
                 .remaining(new Amount(UnitEnum.USD_MICROCENTS, 1500L))
                 .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(budgetRepository.list(eq("tenant-1"), any(), any(), any(), any(), eq(2))).thenReturn(List.of(l1, l2));
+        when(budgetRepository.list(eq("tenant-1"), any(BudgetListFilters.class), any(), eq(2))).thenReturn(List.of(l1, l2));
 
         mockMvc.perform(get("/v1/admin/budgets")
                         .header("X-Cycles-API-Key", "valid-api-key")
@@ -1026,7 +1039,7 @@ class BudgetControllerTest {
     void listBudgets_apiKeyHashNeverInResponse() throws Exception {
         // Verify the ApiKey internal model is never directly serialized — controllers use ApiKeyResponse DTO
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), any(), any(), any(), any(), anyInt())).thenReturn(List.of());
+        when(budgetRepository.list(eq("tenant-1"), any(BudgetListFilters.class), any(), anyInt())).thenReturn(List.of());
 
         String responseBody = mockMvc.perform(get("/v1/admin/budgets")
                         .header("X-Cycles-API-Key", "valid-api-key"))
@@ -1377,5 +1390,178 @@ class BudgetControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"tenant_id\":\"\",\"scope\":\"tenant:tenant-acme/workspace:prod\",\"unit\":\"USD_MICROCENTS\",\"allocated\":{\"unit\":\"USD_MICROCENTS\",\"amount\":5000000}}"))
                 .andExpect(status().isBadRequest());
+    }
+
+    // --- v0.1.25.22 cross-tenant listBudgets + new filter params ---
+
+    @Test
+    void listBudgets_adminKey_withoutTenantId_dispatchesCrossTenant() throws Exception {
+        BudgetLedger l = BudgetLedger.builder()
+                .ledgerId("led-x").tenantId("tenant-a").scope("tenant:tenant-a/workspace:team1")
+                .unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 800L))
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(budgetRepository.listAllTenants(any(BudgetListFilters.class), any(), anyInt()))
+                .thenReturn(List.of(l));
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Admin-API-Key", "test-admin-key"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.ledgers[0].ledger_id").value("led-x"));
+
+        verify(budgetRepository).listAllTenants(any(BudgetListFilters.class), any(), anyInt());
+        verify(budgetRepository, never()).list(anyString(), any(BudgetListFilters.class), any(), anyInt());
+    }
+
+    @Test
+    void listBudgets_adminKey_withTenantId_dispatchesPerTenant() throws Exception {
+        when(budgetRepository.list(eq("tenant-abc"), any(BudgetListFilters.class), any(), anyInt()))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .param("tenant_id", "tenant-abc"))
+                .andExpect(status().isOk());
+
+        verify(budgetRepository).list(eq("tenant-abc"), any(BudgetListFilters.class), any(), anyInt());
+        verify(budgetRepository, never()).listAllTenants(any(), any(), anyInt());
+    }
+
+    @Test
+    void listBudgets_crossTenant_fullPage_nextCursorIsTenantLedgerComposite() throws Exception {
+        List<BudgetLedger> fullPage = new java.util.ArrayList<>();
+        for (int i = 0; i < 50; i++) {
+            fullPage.add(BudgetLedger.builder()
+                    .ledgerId("led-" + i).tenantId("tenant-" + (i / 25))
+                    .scope("tenant:tenant-" + (i / 25) + "/workspace:w" + i)
+                    .unit(UnitEnum.USD_MICROCENTS)
+                    .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                    .remaining(new Amount(UnitEnum.USD_MICROCENTS, 500L))
+                    .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build());
+        }
+        when(budgetRepository.listAllTenants(any(BudgetListFilters.class), any(), anyInt()))
+                .thenReturn(fullPage);
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Admin-API-Key", "test-admin-key"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.has_more").value(true))
+                .andExpect(jsonPath("$.next_cursor").value("tenant-1|led-49"));
+    }
+
+    @Test
+    void listBudgets_perTenant_fullPage_nextCursorIsBareLedgerId() throws Exception {
+        setupApiKeyAuth();
+        List<BudgetLedger> fullPage = new java.util.ArrayList<>();
+        for (int i = 0; i < 50; i++) {
+            fullPage.add(BudgetLedger.builder()
+                    .ledgerId("led-" + i).tenantId("tenant-1")
+                    .scope("tenant:tenant-1/workspace:w" + i).unit(UnitEnum.USD_MICROCENTS)
+                    .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                    .remaining(new Amount(UnitEnum.USD_MICROCENTS, 500L))
+                    .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build());
+        }
+        when(budgetRepository.list(eq("tenant-1"), any(BudgetListFilters.class), any(), anyInt()))
+                .thenReturn(fullPage);
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.has_more").value(true))
+                .andExpect(jsonPath("$.next_cursor").value("led-49"));
+    }
+
+    @Test
+    void listBudgets_utilizationMinGreaterThanMax_returns400() throws Exception {
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .param("utilization_min", "0.8")
+                        .param("utilization_max", "0.5"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString(
+                        "utilization_min must be <= utilization_max")));
+    }
+
+    @Test
+    void listBudgets_utilizationMinBelowZero_returns400() throws Exception {
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .param("utilization_min", "-0.1"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString(
+                        "utilization_min must be in [0, 1]")));
+    }
+
+    @Test
+    void listBudgets_utilizationMaxAboveOne_returns400() throws Exception {
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .param("utilization_max", "1.5"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString(
+                        "utilization_max must be in [0, 1]")));
+    }
+
+    @Test
+    void listBudgets_overLimitFilter_propagatedToFilters() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("tenant-1"),
+                argThat((BudgetListFilters f) -> f != null && Boolean.TRUE.equals(f.overLimit())),
+                any(), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("over_limit", "true"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void listBudgets_hasDebtFilter_propagatedToFilters() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("tenant-1"),
+                argThat((BudgetListFilters f) -> f != null && Boolean.TRUE.equals(f.hasDebt())),
+                any(), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("has_debt", "true"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void listBudgets_utilizationRange_propagatedToFilters() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("tenant-1"),
+                argThat((BudgetListFilters f) -> f != null
+                        && f.utilizationMin() != null && f.utilizationMin() == 0.25
+                        && f.utilizationMax() != null && f.utilizationMax() == 0.75),
+                any(), anyInt())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .param("utilization_min", "0.25")
+                        .param("utilization_max", "0.75"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void listBudgets_apiKeyAuth_ignoresUserSuppliedTenantId_evenForCrossTenantLook() throws Exception {
+        // Under ApiKeyAuth, the authenticated tenant ALWAYS wins — even if the
+        // caller attempts to omit tenant_id (which under AdminKeyAuth would be
+        // cross-tenant, but here must stay scoped to tenant-1).
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("tenant-1"), any(BudgetListFilters.class), any(), anyInt()))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Cycles-API-Key", "valid-api-key"))
+                .andExpect(status().isOk());
+
+        verify(budgetRepository).list(eq("tenant-1"), any(BudgetListFilters.class), any(), anyInt());
+        verify(budgetRepository, never()).listAllTenants(any(), any(), anyInt());
     }
 }

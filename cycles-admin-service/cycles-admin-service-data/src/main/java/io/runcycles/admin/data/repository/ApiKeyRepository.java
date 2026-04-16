@@ -140,6 +140,82 @@ public class ApiKeyRepository {
     public List<ApiKey> list(String tenantId) {
         return list(tenantId, null, null, 1000);
     }
+
+    /**
+     * Cross-tenant listing introduced in governance spec v0.1.25.18 for
+     * AdminKeyAuth callers that did not supply a `tenant_id` query param.
+     * Iterates the global `tenants` set in sorted order; for each tenant,
+     * walks that tenant's keys in sorted order. Filters apply before
+     * cursor traversal so pagination is stable.
+     *
+     * Cursor format: "{tenantId}|{keyId}". Resumes at the next key
+     * strictly after the cursor within the cursor's tenant, then
+     * continues into subsequent tenants.
+     */
+    public List<ApiKey> listAllTenants(ApiKeyStatus statusFilter, String cursor, int limit) {
+        String cursorTenantId = null;
+        String cursorKeyId = null;
+        if (cursor != null && !cursor.isBlank()) {
+            int sep = cursor.indexOf('|');
+            if (sep > 0) {
+                cursorTenantId = cursor.substring(0, sep);
+                cursorKeyId = cursor.substring(sep + 1);
+            } else {
+                cursorTenantId = cursor;
+            }
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            Set<String> tenantIds = jedis.smembers("tenants");
+            List<String> sortedTenantIds = new ArrayList<>(tenantIds);
+            Collections.sort(sortedTenantIds);
+            List<ApiKey> collected = new ArrayList<>();
+            boolean pastTenantCursor = (cursorTenantId == null);
+            for (String tenantId : sortedTenantIds) {
+                if (!pastTenantCursor) {
+                    if (tenantId.equals(cursorTenantId)) pastTenantCursor = true;
+                    else continue;
+                    int remaining = limit - collected.size();
+                    if (remaining <= 0) break;
+                    collected.addAll(collectForTenant(jedis, tenantId, statusFilter, cursorKeyId, remaining));
+                    if (collected.size() >= limit) break;
+                    continue;
+                }
+                int remaining = limit - collected.size();
+                if (remaining <= 0) break;
+                collected.addAll(collectForTenant(jedis, tenantId, statusFilter, null, remaining));
+                if (collected.size() >= limit) break;
+            }
+            return collected;
+        }
+    }
+
+    private List<ApiKey> collectForTenant(Jedis jedis, String tenantId, ApiKeyStatus statusFilter, String cursor, int limit) {
+        Set<String> ids = jedis.smembers("apikeys:" + tenantId);
+        List<String> sortedIds = new ArrayList<>(ids);
+        Collections.sort(sortedIds);
+        List<ApiKey> keys = new ArrayList<>();
+        boolean pastCursor = (cursor == null || cursor.isBlank());
+        for (String id : sortedIds) {
+            if (!pastCursor) {
+                if (id.equals(cursor)) pastCursor = true;
+                continue;
+            }
+            try {
+                String data = jedis.get("apikey:" + id);
+                if (data == null) {
+                    LOG.warn("API key data missing for id: {}", id);
+                    continue;
+                }
+                ApiKey key = objectMapper.readValue(data, ApiKey.class);
+                if (statusFilter != null && key.getStatus() != statusFilter) continue;
+                keys.add(key);
+                if (keys.size() >= limit) break;
+            } catch (Exception e) {
+                LOG.warn("Failed to parse key: {}", id, e);
+            }
+        }
+        return keys;
+    }
     /**
      * Update mutable fields on an API key. Uses Jackson for serialization
      * (not Lua cjson roundtrip) to avoid the Redis cjson empty-array bug
