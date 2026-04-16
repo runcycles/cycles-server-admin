@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.admin.model.budget.BudgetCreateRequest;
 import io.runcycles.admin.model.budget.BudgetFundingRequest;
+import io.runcycles.admin.model.budget.BudgetLedger;
+import io.runcycles.admin.model.budget.BudgetStatus;
 import io.runcycles.admin.model.shared.*;
 import jakarta.validation.*;
 import org.junit.jupiter.api.BeforeAll;
@@ -103,5 +105,55 @@ class BudgetModelTest {
             {"operation":"CREDIT","amount":{"unit":"TOKENS","amount":100},"phantom":true}
             """;
         assertThrows(UnrecognizedPropertyException.class, () -> mapper.readValue(json, BudgetFundingRequest.class));
+    }
+
+    @Test
+    void budgetLedger_tenantId_roundTripsOnWire() throws Exception {
+        // Per spec v0.1.25.19, BudgetLedger exposes tenant_id as an optional
+        // response field. Servers implementing the spec MUST populate it on
+        // every ledger they return so cross-tenant list responses can be
+        // attributed to their tenant without scope-string parsing.
+        Amount allocated = new Amount(UnitEnum.USD_MICROCENTS, 1_000_000L);
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-1")
+                .tenantId("acme-corp")
+                .scope("tenant:acme-corp/workspace:prod")
+                .unit(UnitEnum.USD_MICROCENTS)
+                .allocated(allocated)
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 1_000_000L))
+                .status(BudgetStatus.ACTIVE)
+                .createdAt(Instant.parse("2026-01-01T00:00:00Z"))
+                .build();
+
+        String json = mapper.writeValueAsString(ledger);
+
+        assertTrue(json.contains("\"tenant_id\":\"acme-corp\""),
+                "BudgetLedger MUST serialize tenant_id on the wire; got: " + json);
+
+        BudgetLedger deserialized = mapper.readValue(json, BudgetLedger.class);
+        assertEquals("acme-corp", deserialized.getTenantId(),
+                "tenant_id MUST round-trip back from JSON");
+    }
+
+    @Test
+    void budgetLedger_tenantId_omittedWhenNull() throws Exception {
+        // NON_NULL inclusion keeps the wire clean for pre-v0.1.25.19 stored
+        // ledgers (or any edge case where tenant_id is unknown). Spec says
+        // OPTIONAL, not REQUIRED, so absence is valid.
+        Amount allocated = new Amount(UnitEnum.TOKENS, 100L);
+        BudgetLedger ledger = BudgetLedger.builder()
+                .ledgerId("led-nil")
+                .scope("legacy-scope")
+                .unit(UnitEnum.TOKENS)
+                .allocated(allocated)
+                .remaining(new Amount(UnitEnum.TOKENS, 100L))
+                .status(BudgetStatus.ACTIVE)
+                .createdAt(Instant.parse("2026-01-01T00:00:00Z"))
+                .build();
+
+        String json = mapper.writeValueAsString(ledger);
+
+        assertFalse(json.contains("\"tenant_id\""),
+                "BudgetLedger with null tenantId MUST omit the field from JSON; got: " + json);
     }
 }
