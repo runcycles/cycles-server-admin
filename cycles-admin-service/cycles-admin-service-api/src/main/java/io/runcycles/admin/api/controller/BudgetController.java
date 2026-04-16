@@ -1,6 +1,7 @@
 package io.runcycles.admin.api.controller;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
+import io.runcycles.admin.data.repository.BudgetListFilters;
 import io.runcycles.admin.data.repository.BudgetRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.budget.*;
@@ -19,6 +20,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import java.util.List;
 import java.util.Map;
 @RestController @RequestMapping("/v1/admin/budgets") @Tag(name = "Budgets")
 public class BudgetController {
@@ -96,27 +98,74 @@ public class BudgetController {
             @RequestParam(required = false) String scope_prefix,
             @RequestParam(required = false) UnitEnum unit,
             @RequestParam(required = false) BudgetStatus status,
+            @RequestParam(required = false) Boolean over_limit,
+            @RequestParam(required = false) Boolean has_debt,
+            @RequestParam(required = false) Double utilization_min,
+            @RequestParam(required = false) Double utilization_max,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit,
             HttpServletRequest httpRequest) {
         ScopeFilterUtil.enforceScopeFilter(httpRequest, scope_prefix);
-        String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
-        if (tenantId == null) {
-            // Admin key auth — tenant_id query param is required for scoping
-            if (tenant_id == null || tenant_id.isBlank()) {
-                throw new GovernanceException(
-                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
-                    "tenant_id query parameter is required when using admin key authentication",
-                    400);
-            }
-            tenantId = tenant_id;
+        // Cross-parameter constraint declared normatively in governance spec
+        // v0.1.25.18 FILTER SEMANTICS. OpenAPI can't express
+        // "utilization_min <= utilization_max" in-schema, so we enforce it
+        // here. Also validate each bound is within [0, 1] — the spec only
+        // pins the min/max via `format: double` + `minimum/maximum`, but
+        // Spring's @RequestParam binding won't reject out-of-range values
+        // on its own, so we re-check to keep behaviour symmetrical under
+        // ApiKeyAuth and AdminKeyAuth.
+        if (utilization_min != null && (utilization_min < 0.0 || utilization_min > 1.0)) {
+            throw new GovernanceException(
+                io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                "utilization_min must be in [0, 1]", 400);
         }
+        if (utilization_max != null && (utilization_max < 0.0 || utilization_max > 1.0)) {
+            throw new GovernanceException(
+                io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                "utilization_max must be in [0, 1]", 400);
+        }
+        if (utilization_min != null && utilization_max != null && utilization_min > utilization_max) {
+            throw new GovernanceException(
+                io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                "utilization_min must be <= utilization_max", 400);
+        }
+        String authTenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
+        // Tenant resolution per spec v0.1.25.18:
+        //   - ApiKeyAuth: always scoped to the authenticated tenant. A
+        //     `tenant_id` query param is ignored silently (no 400) to
+        //     match the existing pattern used by other endpoints.
+        //   - AdminKeyAuth + tenant_id provided: per-tenant listing.
+        //   - AdminKeyAuth + tenant_id absent: cross-tenant listing.
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
-        var ledgers = repository.list(tenantId, scope_prefix, unit, status, cursor, effectiveLimit);
+        BudgetListFilters filters = new BudgetListFilters(
+            scope_prefix, unit, status, over_limit, has_debt, utilization_min, utilization_max);
+        List<BudgetLedger> ledgers;
+        boolean crossTenant;
+        if (authTenantId != null) {
+            crossTenant = false;
+            ledgers = repository.list(authTenantId, filters, cursor, effectiveLimit);
+        } else if (tenant_id != null && !tenant_id.isBlank()) {
+            crossTenant = false;
+            ledgers = repository.list(tenant_id, filters, cursor, effectiveLimit);
+        } else {
+            crossTenant = true;
+            ledgers = repository.listAllTenants(filters, cursor, effectiveLimit);
+        }
+        String nextCursor = null;
+        if (ledgers.size() >= effectiveLimit) {
+            BudgetLedger last = ledgers.get(ledgers.size() - 1);
+            // Cross-tenant cursor format is "{tenantId}|{ledgerId}" so the
+            // next page can resume inside the correct tenant; per-tenant
+            // cursor stays as the bare ledger_id for wire-compat with
+            // existing clients.
+            nextCursor = crossTenant
+                ? last.getTenantId() + "|" + last.getLedgerId()
+                : last.getLedgerId();
+        }
         BudgetListResponse response = BudgetListResponse.builder()
             .ledgers(ledgers)
             .hasMore(ledgers.size() >= effectiveLimit)
-            .nextCursor(ledgers.size() >= effectiveLimit ? ledgers.get(ledgers.size() - 1).getLedgerId() : null)
+            .nextCursor(nextCursor)
             .build();
         return ResponseEntity.ok(response);
     }

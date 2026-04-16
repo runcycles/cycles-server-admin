@@ -436,4 +436,86 @@ class ApiKeyControllerTest {
         verify(eventService, never()).emit(eq(io.runcycles.admin.model.event.EventType.API_KEY_PERMISSIONS_CHANGED),
                 any(), any(), any(), any(), any(), any(), any());
     }
+
+    // --- v0.1.25.22 cross-tenant listApiKeys ---
+
+    @Test
+    void listApiKeys_noTenantId_dispatchesCrossTenant() throws Exception {
+        ApiKey keyA = ApiKey.builder()
+                .keyId("key_a").tenantId("tenant-a").keyPrefix("cyc_live_aa")
+                .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(86400)).build();
+        ApiKey keyB = ApiKey.builder()
+                .keyId("key_b").tenantId("tenant-b").keyPrefix("cyc_live_bb")
+                .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(86400)).build();
+        when(apiKeyRepository.listAllTenants(any(), any(), anyInt()))
+                .thenReturn(List.of(keyA, keyB));
+
+        mockMvc.perform(get("/v1/admin/api-keys")
+                        .header("X-Admin-API-Key", ADMIN_KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.keys").isArray())
+                .andExpect(jsonPath("$.keys[0].key_id").value("key_a"))
+                .andExpect(jsonPath("$.keys[1].key_id").value("key_b"));
+
+        verify(apiKeyRepository).listAllTenants(isNull(), isNull(), eq(50));
+        verify(apiKeyRepository, never()).list(anyString(), any(), any(), anyInt());
+    }
+
+    @Test
+    void listApiKeys_crossTenant_nextCursorIsTenantKeyComposite() throws Exception {
+        // 50 results returned -> page is full -> next_cursor must be {tenantId}|{keyId}
+        List<ApiKey> fullPage = new java.util.ArrayList<>();
+        for (int i = 0; i < 50; i++) {
+            fullPage.add(ApiKey.builder()
+                    .keyId("key_" + i).tenantId("tenant-" + (i / 10))
+                    .keyPrefix("cyc_live_" + i)
+                    .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
+                    .expiresAt(Instant.now().plusSeconds(86400)).build());
+        }
+        when(apiKeyRepository.listAllTenants(any(), any(), anyInt())).thenReturn(fullPage);
+
+        mockMvc.perform(get("/v1/admin/api-keys")
+                        .header("X-Admin-API-Key", ADMIN_KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.has_more").value(true))
+                .andExpect(jsonPath("$.next_cursor").value("tenant-4|key_49"));
+    }
+
+    @Test
+    void listApiKeys_perTenant_nextCursorIsBareKeyId() throws Exception {
+        List<ApiKey> fullPage = new java.util.ArrayList<>();
+        for (int i = 0; i < 50; i++) {
+            fullPage.add(ApiKey.builder()
+                    .keyId("key_" + i).tenantId("tenant-1").keyPrefix("cyc_live_" + i)
+                    .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
+                    .expiresAt(Instant.now().plusSeconds(86400)).build());
+        }
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), anyInt())).thenReturn(fullPage);
+
+        mockMvc.perform(get("/v1/admin/api-keys")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("tenant_id", "tenant-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.has_more").value(true))
+                .andExpect(jsonPath("$.next_cursor").value("key_49"));
+
+        verify(apiKeyRepository, never()).listAllTenants(any(), any(), anyInt());
+    }
+
+    @Test
+    void listApiKeys_crossTenant_passesStatusAndCursor() throws Exception {
+        when(apiKeyRepository.listAllTenants(eq(ApiKeyStatus.REVOKED), eq("tenant-9|key_abc"), eq(25)))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/api-keys")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("status", "REVOKED")
+                        .param("cursor", "tenant-9|key_abc")
+                        .param("limit", "25"))
+                .andExpect(status().isOk());
+
+        verify(apiKeyRepository).listAllTenants(eq(ApiKeyStatus.REVOKED), eq("tenant-9|key_abc"), eq(25));
+    }
 }

@@ -14,6 +14,60 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.22] — 2026-04-16
+
+### Added
+
+- **Cross-tenant list for `GET /v1/admin/api-keys`.** `tenant_id` is
+  now optional under AdminKeyAuth. Absent → walks every tenant in the
+  global `tenants` set in sorted order; returns a composite cursor
+  `{tenantId}|{keyId}` so follow-up pages resume inside the correct
+  tenant boundary. Present → existing per-tenant path, unchanged
+  (cursor stays `{keyId}`). ApiKeyAuth callers always resolve to
+  their own tenant regardless of query string — no cross-tenant leak.
+- **Cross-tenant list for `GET /v1/admin/budgets`.** Same shape:
+  `tenant_id` optional under AdminKeyAuth; cross-tenant mode returns
+  `{tenantId}|{ledgerId}`. Under ApiKeyAuth, scoped to the
+  authenticated tenant.
+- **Four new optional budget filter params** on `GET /v1/admin/budgets`:
+  - `over_limit` (boolean) — include only ledgers with
+    `is_over_limit == true`.
+  - `has_debt` (boolean) — include only ledgers with `debt.amount > 0`.
+  - `utilization_min` (double, `[0, 1]`) — lower bound on
+    `spent / allocated`. `allocated == 0` treats utilization as 0.
+  - `utilization_max` (double, `[0, 1]`) — upper bound on
+    `spent / allocated`.
+  Filters AND-combine. Applied **before** cursor traversal so
+  pagination stays stable across filter changes.
+  `utilization_min > utilization_max` → `400 INVALID_REQUEST`
+  (cross-parameter rule OpenAPI cannot express in-schema).
+- **Deleted-cursor-tenant handling** on both cross-tenant list paths.
+  If the tenant named by the cursor was removed between pages, the
+  walk skips forward to the first tenant whose id sorts strictly
+  after the cursor tenant and serves it from the start. Previously
+  the walk would stall at empty, implying end-of-data even when
+  later tenants still had rows.
+
+### Wire format
+
+Additive. Existing per-tenant pagination (with `tenant_id` required
+and cursor = `{keyId}` / `{ledgerId}`) is byte-identical to 0.1.25.21.
+Only new callers that omit `tenant_id` or pass the new budget filter
+params see the v0.1.25.22 surface.
+
+### Notes for upgraders
+
+- No action required if you already scope list calls with `tenant_id`.
+- Dashboards that surface keys / budgets across many tenants should
+  swap N+1 per-tenant loops for the single cross-tenant call — closes
+  the fan-out storm at thousand-tenant scale.
+- Callers must parse the cross-tenant cursor on the **first** `|`
+  (tenant IDs never contain `|`; ledger / key IDs MAY). Treat the
+  cursor as opaque and pass it back unchanged; do not split or
+  normalize it in client code.
+- Spec: governance `cycles-governance-admin-v0.1.25.yaml`
+  `info.version` = `0.1.25.18`.
+
 ## [0.1.25.21] — 2026-04-16
 
 ### Added

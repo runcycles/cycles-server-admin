@@ -1,9 +1,62 @@
-# Complete Budget Governance v0.1.25.8 — Admin Server Audit
+# Complete Budget Governance v0.1.25.22 — Admin Server Audit
 
-**Server version:** 0.1.25.21 (2026-04-16 — nightly CI coverage: audit-soak + jqwik property-based invariants)
-**Date:** 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
-**Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.16`; content includes RESET_SPENT from spec PR #45 v0.1.25.17) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
+**Server version:** 0.1.25.22 (2026-04-16 — cross-tenant list for api-keys + budgets, new budget filter params)
+**Date:** 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.18`; listApiKeys/listBudgets now accept `tenant_id` optional for AdminKeyAuth + four new budget filter params: `over_limit`, `has_debt`, `utilization_min`, `utilization_max`) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-16 — v0.1.25.22 cross-tenant list (api-keys, budgets) + budget filter params
+
+Closes dashboard scale-hardening gaps **R1** (ApiKeysView N+1 storm) and **R2** (BudgetsView cross-tenant N+1 + over_limit/has_debt/utilization filtering silently missing page 2+). Both were traceable to an endpoint-shape gap: `listApiKeys` required `tenant_id`, so a dashboard surfacing keys across all tenants had to fan out one HTTP call per tenant; and `listBudgets` only paginated within a single tenant and exposed none of the filter dimensions the dashboard needs. Governance spec v0.1.25.18 (cycles-protocol PR #46) added the endpoint-shape fix, and this release wires the server side to match.
+
+**Spec-first lineage.** Spec PR #46 was merged before any server work. This release implements exactly that contract — no shape drift, no undocumented extensions. The `cycles-governance-admin-v0.1.25.yaml` CHANGELOG entry at `0.1.25.18 (2026-04-16)` describes the normative surface; this section describes only how the server honours it.
+
+**listApiKeys — `GET /v1/admin/api-keys`.** `tenant_id` is now `required: false`. Under AdminKeyAuth:
+
+- `tenant_id` provided → existing per-tenant path, unchanged. Cursor format stays `{keyId}`.
+- `tenant_id` absent → new cross-tenant path. Walks every tenant in `tenants` (global Redis set) in sorted order; for each tenant iterates `apikeys:<tenantId>` in sorted order. Cursor format becomes `{tenantId}|{keyId}` so the follow-up page resumes inside the correct tenant boundary instead of restarting the global walk.
+
+AdminKeyAuth is still the only auth type that reaches the listApiKeys endpoint (see `AuthInterceptor` at `/v1/admin/api-keys`), so there is no ApiKeyAuth-vs-AdminKeyAuth branching here — the authenticated tenant never scopes this endpoint today.
+
+**listBudgets — `GET /v1/admin/budgets`.** Four new optional filter params beyond the existing `scope_prefix` / `unit` / `status`:
+
+| Param | Type | Semantics |
+|---|---|---|
+| `over_limit` | boolean | True → include only ledgers whose stored `is_over_limit == true`. |
+| `has_debt` | boolean | True → include only ledgers whose `debt.amount > 0`. |
+| `utilization_min` | double in [0, 1] | Lower bound on `spent / allocated`. Ledgers with `allocated == 0` treat utilization as 0 (not NaN). |
+| `utilization_max` | double in [0, 1] | Upper bound on `spent / allocated`. |
+
+Filter semantics (matching spec v0.1.25.18):
+
+- **AND across filters.** A budget must match every provided filter to appear.
+- **Filter-before-cursor.** Filters apply to the candidate set before cursor traversal; pagination is therefore stable under any filter combination.
+- **Cross-parameter validation.** `utilization_min > utilization_max` → 400 INVALID_REQUEST. OpenAPI cannot express this in-schema, so it is enforced at the controller boundary. Each bound is also re-validated against [0, 1] because Spring's `@RequestParam` binding does not re-check OpenAPI `minimum`/`maximum` at bind time.
+- **allocated == 0.** Treated as utilization 0, never as a filter miss. Keeps new / just-created ledgers visible under the default `utilization_min=0` case.
+- **Both auth types.** Filters work symmetrically under ApiKeyAuth (scoped to the authenticated tenant) and AdminKeyAuth (scoped to the resolved tenant or cross-tenant).
+
+Tenant-resolution precedence under AdminKeyAuth:
+
+1. `authenticated_tenant_id` set (ApiKeyAuth) → per-tenant path, ignores any `tenant_id` query param to avoid impersonation.
+2. AdminKeyAuth + `tenant_id` query param present → per-tenant path.
+3. AdminKeyAuth + `tenant_id` query param absent → cross-tenant path.
+
+**`BudgetListFilters` record.** New under `cycles-admin-service-data/.../repository/BudgetListFilters.java`. Composable filter set — seven nullable fields, all optional, with a `matches(BudgetLedger)` method that encodes the AND-combination and the `allocated == 0 → utilization = 0` rule in one place. Repository-level iteration applies `matches()` before cursor traversal so pagination stays stable as filters change.
+
+**Cross-tenant cursor format.** `{tenantId}|{ledgerId}` for budgets, `{tenantId}|{keyId}` for api-keys. Server parses on `indexOf('|')`, so ledger / key IDs MAY contain pipes and still round-trip correctly as long as tenant IDs don't (tenants are UUID-like and never contain `|`). Per-tenant cursors stay unchanged for wire-compat with existing callers.
+
+**Why no Redis SCAN.** SCAN has non-deterministic ordering across calls, which would break cursor stability. The `tenants` + `budgets:<tenantId>` + `apikeys:<tenantId>` sets are already small enough to `SMEMBERS` + sort in-memory (tenant counts measured in thousands, per-tenant fan-out in thousands at worst). Bounded-scale deployments tolerate this cleanly; the next revision can move to a sorted-set index if single-operator-all-tenants queries start showing up as hot in profiling.
+
+**Backward compatibility.** The old `BudgetRepository.list(tenantId, scopePrefix, unit, status, cursor, limit)` 6-arg signature is kept as a thin shim that constructs an empty-filter `BudgetListFilters` and delegates. This is deliberate: preserves every existing `BudgetRepository.list(...)` mock in `BudgetControllerTest` without rewriting them, while giving the new code path one source of truth for filter semantics.
+
+**AUDIT trail.**
+
+- `cycles-admin-service/pom.xml` → `<revision>0.1.25.22</revision>`.
+- `cycles-admin-service-api/.../controller/ApiKeyController.java` — `tenant_id` now optional; cross-tenant branch added.
+- `cycles-admin-service-api/.../controller/BudgetController.java` — four new `@RequestParam` filter fields; utilization bounds + cross-parameter validation; three-way tenant resolution.
+- `cycles-admin-service-data/.../repository/ApiKeyRepository.java` — new `listAllTenants(status, cursor, limit)` + shared `collectForTenant` helper.
+- `cycles-admin-service-data/.../repository/BudgetRepository.java` — new `list(tenantId, filters, cursor, limit)` + `listAllTenants(filters, cursor, limit)` + shared `collectForTenant` helper; 6-arg shim preserved.
+- `cycles-admin-service-data/.../repository/BudgetListFilters.java` — NEW composable filter record.
 
 ### 2026-04-16 — v0.1.25.21 nightly CI coverage for audit-write path (soak + property-based)
 

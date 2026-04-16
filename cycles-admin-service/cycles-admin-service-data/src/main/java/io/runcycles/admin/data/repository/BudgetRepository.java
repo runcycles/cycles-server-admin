@@ -369,36 +369,101 @@ public class BudgetRepository {
     }
 
     public List<BudgetLedger> list(String tenantId, String scopePrefix, UnitEnum unitFilter, BudgetStatus statusFilter, String cursor, int limit) {
+        BudgetListFilters filters = new BudgetListFilters(
+                scopePrefix, unitFilter, statusFilter, null, null, null, null);
+        return list(tenantId, filters, cursor, limit);
+    }
+
+    public List<BudgetLedger> list(String tenantId, BudgetListFilters filters, String cursor, int limit) {
         try (Jedis jedis = jedisPool.getResource()) {
-            Set<String> keys = jedis.smembers("budgets:" + tenantId);
-            List<String> sortedKeys = new ArrayList<>(keys);
-            Collections.sort(sortedKeys);
-            List<BudgetLedger> ledgers = new ArrayList<>();
-            boolean pastCursor = (cursor == null || cursor.isBlank());
-            for (String key : sortedKeys) {
-                try {
-                    Map<String, String> hash = jedis.hgetAll(key);
-                    if (hash.isEmpty()) {
-                        LOG.warn("Budget data missing for key: {}, cleaning index", key);
-                        jedis.srem("budgets:" + tenantId, key);
-                        continue;
-                    }
-                    BudgetLedger ledger = hashToBudgetLedger(hash, key);
-                    if (!pastCursor) {
-                        if (ledger.getLedgerId().equals(cursor)) pastCursor = true;
-                        continue;
-                    }
-                    if (scopePrefix != null && !ledger.getScope().startsWith(scopePrefix)) continue;
-                    if (unitFilter != null && ledger.getUnit() != unitFilter) continue;
-                    if (statusFilter != null && ledger.getStatus() != statusFilter) continue;
-                    ledgers.add(ledger);
-                    if (ledgers.size() >= limit) break;
-                } catch (Exception e) {
-                    LOG.warn("Failed to parse budget: {}", key, e);
-                }
-            }
-            return ledgers;
+            return collectForTenant(jedis, tenantId, filters, cursor, limit);
         }
+    }
+
+    /**
+     * Cross-tenant listing introduced in governance spec v0.1.25.18 for
+     * AdminKeyAuth callers. Iterates the global `tenants` set in sorted
+     * order; for each tenant, walks that tenant's budgets in sorted
+     * order. Filters are applied before pagination so cursor traversal
+     * is stable under any filter set.
+     *
+     * Cursor format: "{tenantId}|{ledgerId}". Resumes at the next ledger
+     * strictly after the cursor within the cursor's tenant, then
+     * continues into subsequent tenants.
+     *
+     * If the cursor tenant has been deleted between pages, resumes at
+     * the first tenant whose id sorts strictly after the cursor tenant,
+     * serving that tenant from the start. This avoids stalling
+     * pagination (returning empty and implying end-of-data) when the
+     * cursor tenant is gone but later tenants still have data.
+     */
+    public List<BudgetLedger> listAllTenants(BudgetListFilters filters, String cursor, int limit) {
+        String cursorTenantId = null;
+        String cursorLedgerId = null;
+        if (cursor != null && !cursor.isBlank()) {
+            int sep = cursor.indexOf('|');
+            if (sep > 0) {
+                cursorTenantId = cursor.substring(0, sep);
+                cursorLedgerId = cursor.substring(sep + 1);
+            } else {
+                cursorTenantId = cursor;
+            }
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            Set<String> tenantIds = jedis.smembers("tenants");
+            List<String> sortedTenantIds = new ArrayList<>(tenantIds);
+            Collections.sort(sortedTenantIds);
+            List<BudgetLedger> collected = new ArrayList<>();
+            boolean pastTenantCursor = (cursorTenantId == null);
+            for (String tenantId : sortedTenantIds) {
+                String innerCursor;
+                if (!pastTenantCursor) {
+                    int cmp = tenantId.compareTo(cursorTenantId);
+                    if (cmp < 0) continue;
+                    pastTenantCursor = true;
+                    // cmp == 0: same tenant as cursor → resume inside using cursorLedgerId.
+                    // cmp  > 0: cursor tenant was deleted → serve this tenant from start.
+                    innerCursor = (cmp == 0) ? cursorLedgerId : null;
+                } else {
+                    innerCursor = null;
+                }
+                int remaining = limit - collected.size();
+                if (remaining <= 0) break;
+                collected.addAll(collectForTenant(jedis, tenantId, filters, innerCursor, remaining));
+                if (collected.size() >= limit) break;
+            }
+            return collected;
+        }
+    }
+
+    private List<BudgetLedger> collectForTenant(Jedis jedis, String tenantId, BudgetListFilters filters, String cursor, int limit) {
+        Set<String> keys = jedis.smembers("budgets:" + tenantId);
+        List<String> sortedKeys = new ArrayList<>(keys);
+        Collections.sort(sortedKeys);
+        List<BudgetLedger> ledgers = new ArrayList<>();
+        boolean pastCursor = (cursor == null || cursor.isBlank());
+        BudgetListFilters effective = filters != null ? filters : BudgetListFilters.empty();
+        for (String key : sortedKeys) {
+            try {
+                Map<String, String> hash = jedis.hgetAll(key);
+                if (hash.isEmpty()) {
+                    LOG.warn("Budget data missing for key: {}, cleaning index", key);
+                    jedis.srem("budgets:" + tenantId, key);
+                    continue;
+                }
+                BudgetLedger ledger = hashToBudgetLedger(hash, key);
+                if (!pastCursor) {
+                    if (ledger.getLedgerId().equals(cursor)) pastCursor = true;
+                    continue;
+                }
+                if (!effective.matches(ledger)) continue;
+                ledgers.add(ledger);
+                if (ledgers.size() >= limit) break;
+            } catch (Exception e) {
+                LOG.warn("Failed to parse budget: {}", key, e);
+            }
+        }
+        return ledgers;
     }
 
     public List<BudgetLedger> list(String tenantId) {

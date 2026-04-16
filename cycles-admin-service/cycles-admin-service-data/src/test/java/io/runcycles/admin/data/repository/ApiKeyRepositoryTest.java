@@ -894,4 +894,151 @@ class ApiKeyRepositoryTest {
         assertThat(result.getPermissions()).containsExactly("balances:read");
         assertThat(result.getScopeFilter()).containsExactly("workspace:eng");
     }
+
+    // --- v0.1.25.22 cross-tenant listAllTenants ---
+
+    private ApiKey buildKey(String tenantId, String keyId) throws Exception {
+        return ApiKey.builder()
+                .keyId(keyId).tenantId(tenantId).keyPrefix("cyc_live_" + keyId)
+                .keyHash("hash").status(ApiKeyStatus.ACTIVE)
+                .createdAt(Instant.now()).expiresAt(Instant.now().plusSeconds(86400))
+                .build();
+    }
+
+    @Test
+    void listAllTenants_noCursor_walksEveryTenantInSortedOrder() throws Exception {
+        String jsonA1 = objectMapper.writeValueAsString(buildKey("tenant-a", "key_a1"));
+        String jsonA2 = objectMapper.writeValueAsString(buildKey("tenant-a", "key_a2"));
+        String jsonB1 = objectMapper.writeValueAsString(buildKey("tenant-b", "key_b1"));
+        when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-b", "tenant-a")));
+        when(jedis.smembers("apikeys:tenant-a"))
+                .thenReturn(new LinkedHashSet<>(List.of("key_a1", "key_a2")));
+        when(jedis.smembers("apikeys:tenant-b"))
+                .thenReturn(new LinkedHashSet<>(List.of("key_b1")));
+        when(jedis.get("apikey:key_a1")).thenReturn(jsonA1);
+        when(jedis.get("apikey:key_a2")).thenReturn(jsonA2);
+        when(jedis.get("apikey:key_b1")).thenReturn(jsonB1);
+
+        List<ApiKey> result = repository.listAllTenants(null, null, 50);
+
+        // Sorted tenants → tenant-a, tenant-b; within each tenant, sorted keys.
+        assertThat(result).extracting(ApiKey::getTenantId)
+                .containsExactly("tenant-a", "tenant-a", "tenant-b");
+        assertThat(result).extracting(ApiKey::getKeyId)
+                .containsExactly("key_a1", "key_a2", "key_b1");
+    }
+
+    @Test
+    void listAllTenants_withCursor_resumesInsideMatchingTenant() throws Exception {
+        String jsonA1 = objectMapper.writeValueAsString(buildKey("tenant-a", "key_a1"));
+        String jsonA2 = objectMapper.writeValueAsString(buildKey("tenant-a", "key_a2"));
+        String jsonB1 = objectMapper.writeValueAsString(buildKey("tenant-b", "key_b1"));
+        when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-b")));
+        when(jedis.smembers("apikeys:tenant-a"))
+                .thenReturn(new LinkedHashSet<>(List.of("key_a1", "key_a2")));
+        when(jedis.smembers("apikeys:tenant-b"))
+                .thenReturn(new LinkedHashSet<>(List.of("key_b1")));
+        lenient().when(jedis.get("apikey:key_a1")).thenReturn(jsonA1);
+        lenient().when(jedis.get("apikey:key_a2")).thenReturn(jsonA2);
+        lenient().when(jedis.get("apikey:key_b1")).thenReturn(jsonB1);
+
+        // Cursor = "tenant-a|key_a1" → resume strictly after key_a1 within tenant-a.
+        List<ApiKey> result = repository.listAllTenants(null, "tenant-a|key_a1", 50);
+
+        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_a2", "key_b1");
+    }
+
+    @Test
+    void listAllTenants_bareCursor_resumesAtStartOfCursorTenant() throws Exception {
+        String jsonB1 = objectMapper.writeValueAsString(buildKey("tenant-b", "key_b1"));
+        when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-b")));
+        when(jedis.smembers("apikeys:tenant-b"))
+                .thenReturn(new LinkedHashSet<>(List.of("key_b1")));
+        lenient().when(jedis.get("apikey:key_b1")).thenReturn(jsonB1);
+
+        // Cursor with no "|" means "start at the first key of the cursor tenant".
+        List<ApiKey> result = repository.listAllTenants(null, "tenant-b", 50);
+
+        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_b1");
+    }
+
+    @Test
+    void listAllTenants_statusFilter_excludesNonMatching() throws Exception {
+        ApiKey active = buildKey("tenant-a", "key_active");
+        ApiKey revoked = ApiKey.builder().keyId("key_revoked").tenantId("tenant-a")
+                .keyPrefix("cyc_live_r").keyHash("h").status(ApiKeyStatus.REVOKED)
+                .createdAt(Instant.now()).build();
+        String jsonActive = objectMapper.writeValueAsString(active);
+        String jsonRevoked = objectMapper.writeValueAsString(revoked);
+        when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-a")));
+        when(jedis.smembers("apikeys:tenant-a"))
+                .thenReturn(new LinkedHashSet<>(List.of("key_active", "key_revoked")));
+        when(jedis.get("apikey:key_active")).thenReturn(jsonActive);
+        when(jedis.get("apikey:key_revoked")).thenReturn(jsonRevoked);
+
+        List<ApiKey> result = repository.listAllTenants(ApiKeyStatus.REVOKED, null, 50);
+
+        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_revoked");
+    }
+
+    @Test
+    void listAllTenants_respectsLimit_stopsAtBoundary() throws Exception {
+        String jsonA1 = objectMapper.writeValueAsString(buildKey("tenant-a", "key_a1"));
+        String jsonA2 = objectMapper.writeValueAsString(buildKey("tenant-a", "key_a2"));
+        String jsonB1 = objectMapper.writeValueAsString(buildKey("tenant-b", "key_b1"));
+        when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-b")));
+        when(jedis.smembers("apikeys:tenant-a"))
+                .thenReturn(new LinkedHashSet<>(List.of("key_a1", "key_a2")));
+        lenient().when(jedis.smembers("apikeys:tenant-b"))
+                .thenReturn(new LinkedHashSet<>(List.of("key_b1")));
+        lenient().when(jedis.get("apikey:key_a1")).thenReturn(jsonA1);
+        lenient().when(jedis.get("apikey:key_a2")).thenReturn(jsonA2);
+        lenient().when(jedis.get("apikey:key_b1")).thenReturn(jsonB1);
+
+        List<ApiKey> result = repository.listAllTenants(null, null, 2);
+
+        assertThat(result).hasSize(2);
+        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_a1", "key_a2");
+    }
+
+    @Test
+    void listAllTenants_missingKeyData_skipsGracefully() throws Exception {
+        String jsonA1 = objectMapper.writeValueAsString(buildKey("tenant-a", "key_a1"));
+        when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-a")));
+        when(jedis.smembers("apikeys:tenant-a"))
+                .thenReturn(new LinkedHashSet<>(List.of("key_a1", "key_missing")));
+        when(jedis.get("apikey:key_a1")).thenReturn(jsonA1);
+        when(jedis.get("apikey:key_missing")).thenReturn(null);
+
+        List<ApiKey> result = repository.listAllTenants(null, null, 50);
+
+        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_a1");
+    }
+
+    @Test
+    void listAllTenants_emptyTenantsSet_returnsEmptyList() {
+        when(jedis.smembers("tenants")).thenReturn(Collections.emptySet());
+
+        List<ApiKey> result = repository.listAllTenants(null, null, 50);
+
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    void listAllTenants_cursorTenantDeleted_skipsForwardToNextTenant() throws Exception {
+        // Cursor points at tenant-b, but tenant-b has been deleted between pages.
+        // Must not stall at empty: should resume at tenant-c (sorts strictly after).
+        String jsonC1 = objectMapper.writeValueAsString(buildKey("tenant-c", "key_c1"));
+        String jsonC2 = objectMapper.writeValueAsString(buildKey("tenant-c", "key_c2"));
+        when(jedis.smembers("tenants"))
+                .thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-c")));
+        when(jedis.smembers("apikeys:tenant-c"))
+                .thenReturn(new LinkedHashSet<>(List.of("key_c1", "key_c2")));
+        lenient().when(jedis.get("apikey:key_c1")).thenReturn(jsonC1);
+        lenient().when(jedis.get("apikey:key_c2")).thenReturn(jsonC2);
+
+        List<ApiKey> result = repository.listAllTenants(null, "tenant-b|key_b1", 50);
+
+        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_c1", "key_c2");
+    }
 }
