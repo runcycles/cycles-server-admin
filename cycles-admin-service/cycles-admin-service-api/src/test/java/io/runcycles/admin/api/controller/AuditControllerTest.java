@@ -35,13 +35,22 @@ class AuditControllerTest {
 
     private static final String ADMIN_KEY = "test-admin-key";
 
+    // 16-arg canonical matcher suite per spec v0.1.25.24:
+    // tenantId, keyId, operations, status, resourceTypes, resourceId,
+    // from, to, cursor, limit, sortSpec, search,
+    // errorCodes, errorCodeExcludes, statusMin, statusMax.
+    private static void stubAnyListReturns(AuditRepository repo, List<AuditLogEntry> out) {
+        when(repo.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
+                any(), any(), any(), any(), any(), any()))
+                .thenReturn(out);
+    }
+
     @Test
     void listAuditLogs_returns200() throws Exception {
         AuditLogEntry entry = AuditLogEntry.builder()
                 .logId("log_1").tenantId("tenant-1").operation("createTenant")
                 .status(201).timestamp(Instant.now()).build();
-        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any(), any()))
-                .thenReturn(List.of(entry));
+        stubAnyListReturns(auditRepository, List.of(entry));
 
         mockMvc.perform(get("/v1/admin/audit/logs")
                         .header("X-Admin-API-Key", ADMIN_KEY))
@@ -52,7 +61,9 @@ class AuditControllerTest {
 
     @Test
     void listAuditLogs_withFilters() throws Exception {
-        when(auditRepository.list(eq("tenant-1"), eq("key_1"), eq("createTenant"), eq(201), any(), any(), any(), any(), any(), anyInt(), any(), any()))
+        when(auditRepository.list(eq("tenant-1"), eq("key_1"), eq(List.of("createTenant")), eq(201),
+                any(), any(), any(), any(), any(), anyInt(), any(), any(),
+                any(), any(), any(), any()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -73,8 +84,7 @@ class AuditControllerTest {
 
     @Test
     void listAuditLogs_emptyResult_returnsEmptyList() throws Exception {
-        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any(), any()))
-                .thenReturn(List.of());
+        stubAnyListReturns(auditRepository, List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
                         .header("X-Admin-API-Key", ADMIN_KEY))
@@ -85,7 +95,8 @@ class AuditControllerTest {
 
     @Test
     void listAuditLogs_limitClampedToMax100() throws Exception {
-        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(100), any(), any()))
+        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(100),
+                any(), any(), any(), any(), any(), any()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -93,12 +104,14 @@ class AuditControllerTest {
                         .param("limit", "500"))
                 .andExpect(status().isOk());
 
-        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(100), any(), any());
+        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(100),
+                any(), any(), any(), any(), any(), any());
     }
 
     @Test
     void listAuditLogs_limitClampedToMin1() throws Exception {
-        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(1), any(), any()))
+        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(1),
+                any(), any(), any(), any(), any(), any()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -106,13 +119,13 @@ class AuditControllerTest {
                         .param("limit", "0"))
                 .andExpect(status().isOk());
 
-        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(1), any(), any());
+        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(1),
+                any(), any(), any(), any(), any(), any());
     }
 
     @Test
     void listAuditLogs_emptyResult_nextCursorIsNull() throws Exception {
-        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any(), any()))
-                .thenReturn(List.of());
+        stubAnyListReturns(auditRepository, List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
                         .header("X-Admin-API-Key", ADMIN_KEY))
@@ -128,7 +141,8 @@ class AuditControllerTest {
         AuditLogEntry e2 = AuditLogEntry.builder()
                 .logId("log_2").tenantId("tenant-1").operation("updateTenant")
                 .status(200).timestamp(Instant.now()).build();
-        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(2), any(), any()))
+        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(2),
+                any(), any(), any(), any(), any(), any()))
                 .thenReturn(List.of(e1, e2));
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -143,7 +157,8 @@ class AuditControllerTest {
     void listAuditLogs_withFromAndTo_passesInstantParams() throws Exception {
         Instant from = Instant.parse("2025-01-01T00:00:00Z");
         Instant to = Instant.parse("2025-12-31T23:59:59Z");
-        when(auditRepository.list(isNull(), isNull(), isNull(), isNull(), isNull(), isNull(), eq(from), eq(to), isNull(), eq(50), any(), any()))
+        when(auditRepository.list(isNull(), isNull(), isNull(), isNull(), isNull(), isNull(),
+                eq(from), eq(to), isNull(), eq(50), any(), any(), isNull(), isNull(), isNull(), isNull()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -153,22 +168,23 @@ class AuditControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.logs").isEmpty());
 
-        verify(auditRepository).list(isNull(), isNull(), isNull(), isNull(), isNull(), isNull(), eq(from), eq(to), isNull(), eq(50), any(), any());
+        verify(auditRepository).list(isNull(), isNull(), isNull(), isNull(), isNull(), isNull(),
+                eq(from), eq(to), isNull(), eq(50), any(), any(), isNull(), isNull(), isNull(), isNull());
     }
 
     // --- Sort contract tests (spec v0.1.25.20 §V4) ---
 
     @Test
     void listAuditLogs_defaultsToTimestampDesc() throws Exception {
-        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any(), any()))
-                .thenReturn(List.of());
+        stubAnyListReturns(auditRepository, List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
                         .header("X-Admin-API-Key", ADMIN_KEY))
                 .andExpect(status().isOk());
 
         ArgumentCaptor<SortSpec> captor = ArgumentCaptor.forClass(SortSpec.class);
-        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), captor.capture(), any());
+        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
+                captor.capture(), any(), any(), any(), any(), any());
         SortSpec sort = captor.getValue();
         org.junit.jupiter.api.Assertions.assertEquals("timestamp", sort.field());
         org.junit.jupiter.api.Assertions.assertEquals(SortDirection.DESC, sort.direction());
@@ -176,8 +192,7 @@ class AuditControllerTest {
 
     @Test
     void listAuditLogs_acceptsValidSortByAndDir() throws Exception {
-        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any(), any()))
-                .thenReturn(List.of());
+        stubAnyListReturns(auditRepository, List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -186,7 +201,8 @@ class AuditControllerTest {
                 .andExpect(status().isOk());
 
         ArgumentCaptor<SortSpec> captor = ArgumentCaptor.forClass(SortSpec.class);
-        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), captor.capture(), any());
+        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
+                captor.capture(), any(), any(), any(), any(), any());
         SortSpec sort = captor.getValue();
         org.junit.jupiter.api.Assertions.assertEquals("operation", sort.field());
         org.junit.jupiter.api.Assertions.assertEquals(SortDirection.ASC, sort.direction());
@@ -194,8 +210,7 @@ class AuditControllerTest {
 
     @Test
     void listAuditLogs_acceptsAllWhitelistedFields() throws Exception {
-        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any(), any()))
-                .thenReturn(List.of());
+        stubAnyListReturns(auditRepository, List.of());
 
         for (String field : List.of("timestamp", "operation", "resource_type", "tenant_id", "key_id", "status")) {
             mockMvc.perform(get("/v1/admin/audit/logs")
@@ -234,6 +249,286 @@ class AuditControllerTest {
                 .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
 
         verify(auditRepository, never()).list(any(), any(), any(), any(), any(), any(),
-                any(), any(), any(), anyInt(), any(), any());
+                any(), any(), any(), anyInt(), any(), any(), any(), any(), any(), any());
+    }
+
+    // --- v0.1.25.24 filter DSL upgrade: error_code IN-list, error_code_exclude,
+    // status_min/status_max range, operation+resource_type promoted to IN-list ---
+
+    @Test
+    void listAuditLogs_errorCodeSingle_passesThroughAsList() throws Exception {
+        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
+                any(), any(), eq(List.of("BUDGET_EXCEEDED")), any(), any(), any()))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("error_code", "BUDGET_EXCEEDED"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
+                any(), any(), eq(List.of("BUDGET_EXCEEDED")), any(), any(), any());
+    }
+
+    @Test
+    void listAuditLogs_errorCodeCommaSeparated_splitsAndDedupes() throws Exception {
+        // Spring's @RequestParam List<String> pre-splits commas before parseCodeList
+        // sees them; controller then dedupes. Pass "A,B,A" → expect ["A","B"].
+        stubAnyListReturns(auditRepository, List.of());
+
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("error_code", "BUDGET_EXCEEDED,TENANT_SUSPENDED,BUDGET_EXCEEDED"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
+                any(), any(), eq(List.of("BUDGET_EXCEEDED", "TENANT_SUSPENDED")), any(), any(), any());
+    }
+
+    @Test
+    void listAuditLogs_errorCodeRepeatedParam_concatenates() throws Exception {
+        stubAnyListReturns(auditRepository, List.of());
+
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("error_code", "A,B")
+                        .param("error_code", "C"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
+                any(), any(), eq(List.of("A", "B", "C")), any(), any(), any());
+    }
+
+    @Test
+    void listAuditLogs_errorCodeEmptyAfterTrim_treatedAsAbsent() throws Exception {
+        stubAnyListReturns(auditRepository, List.of());
+
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("error_code", " , , "))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
+                any(), any(), isNull(), any(), any(), any());
+    }
+
+    @Test
+    void listAuditLogs_errorCodeOver25_returns400() throws Exception {
+        StringBuilder over = new StringBuilder();
+        for (int i = 0; i < 26; i++) {
+            if (i > 0) over.append(',');
+            over.append("CODE_").append(i);
+        }
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("error_code", over.toString()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(auditRepository, never()).list(any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), anyInt(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void listAuditLogs_errorCodeExcludeSingle_passesThrough() throws Exception {
+        stubAnyListReturns(auditRepository, List.of());
+
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("error_code_exclude", "INTERNAL_ERROR"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
+                any(), any(), any(), eq(List.of("INTERNAL_ERROR")), any(), any());
+    }
+
+    @Test
+    void listAuditLogs_errorCodeExcludeOver25_returns400() throws Exception {
+        StringBuilder over = new StringBuilder();
+        for (int i = 0; i < 26; i++) {
+            if (i > 0) over.append(',');
+            over.append("CODE_").append(i);
+        }
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("error_code_exclude", over.toString()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void listAuditLogs_statusMinMaxHappyPath_threadsThrough() throws Exception {
+        when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
+                any(), any(), any(), any(), eq(500), eq(599)))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("status_min", "500")
+                        .param("status_max", "599"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
+                any(), any(), any(), any(), eq(500), eq(599));
+    }
+
+    @Test
+    void listAuditLogs_statusMinOnlyEqualityBoundary_treatedAsLowerBound() throws Exception {
+        // Common auditor query: all-failures = status_min=400.
+        stubAnyListReturns(auditRepository, List.of());
+
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("status_min", "400"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
+                any(), any(), any(), any(), eq(400), isNull());
+    }
+
+    @Test
+    void listAuditLogs_statusMinBelow100_returns400() throws Exception {
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("status_min", "99"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void listAuditLogs_statusMinAbove599_returns400() throws Exception {
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("status_min", "600"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void listAuditLogs_statusMaxBelow100_returns400() throws Exception {
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("status_max", "42"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void listAuditLogs_statusMaxAbove599_returns400() throws Exception {
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("status_max", "700"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void listAuditLogs_statusMinGreaterThanMax_returns400() throws Exception {
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("status_min", "500")
+                        .param("status_max", "499"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void listAuditLogs_statusCombinedWithStatusMin_returns400() throws Exception {
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("status", "400")
+                        .param("status_min", "400"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void listAuditLogs_statusCombinedWithStatusMax_returns400() throws Exception {
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("status", "500")
+                        .param("status_max", "599"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void listAuditLogs_operationInList_threadsThrough() throws Exception {
+        stubAnyListReturns(auditRepository, List.of());
+
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("operation", "createBudget,updateBudget"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).list(any(), any(), eq(List.of("createBudget", "updateBudget")),
+                any(), any(), any(), any(), any(), any(), anyInt(),
+                any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void listAuditLogs_resourceTypeInList_threadsThrough() throws Exception {
+        stubAnyListReturns(auditRepository, List.of());
+
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("resource_type", "tenant,budget"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).list(any(), any(), any(), any(),
+                eq(List.of("tenant", "budget")), any(), any(), any(), any(), anyInt(),
+                any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void listAuditLogs_operationSingleValue_stillWorksBackCompat() throws Exception {
+        stubAnyListReturns(auditRepository, List.of());
+
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("operation", "createBudget"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).list(any(), any(), eq(List.of("createBudget")),
+                any(), any(), any(), any(), any(), any(), anyInt(),
+                any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void listAuditLogs_operationOver25_returns400() throws Exception {
+        StringBuilder over = new StringBuilder();
+        for (int i = 0; i < 26; i++) {
+            if (i > 0) over.append(',');
+            over.append("op").append(i);
+        }
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("operation", over.toString()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void listAuditLogs_allNewFiltersCombined_threadsAll() throws Exception {
+        stubAnyListReturns(auditRepository, List.of());
+
+        mockMvc.perform(get("/v1/admin/audit/logs")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("tenant_id", "tenant-1")
+                        .param("operation", "createBudget,updateBudget")
+                        .param("resource_type", "budget")
+                        .param("error_code", "BUDGET_EXCEEDED")
+                        .param("error_code_exclude", "INTERNAL_ERROR")
+                        .param("status_min", "400")
+                        .param("status_max", "499")
+                        .param("search", "quota"))
+                .andExpect(status().isOk());
+
+        verify(auditRepository).list(eq("tenant-1"), any(),
+                eq(List.of("createBudget", "updateBudget")), isNull(),
+                eq(List.of("budget")), any(), any(), any(), any(), anyInt(),
+                any(), eq("quota"),
+                eq(List.of("BUDGET_EXCEEDED")), eq(List.of("INTERNAL_ERROR")),
+                eq(400), eq(499));
     }
 }

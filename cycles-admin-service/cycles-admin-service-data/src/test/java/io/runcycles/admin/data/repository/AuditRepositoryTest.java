@@ -134,7 +134,7 @@ class AuditRepositoryTest {
         when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
         when(jedis.get("audit:log:log_2")).thenReturn(e2Json);
 
-        List<AuditLogEntry> result = repository.list("tenant-1", null, "create", null, null, null, null, null, null, 50);
+        List<AuditLogEntry> result = repository.list("tenant-1", null, List.of("create"), null, null, null, null, null, null, 50);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getOperation()).isEqualTo("create");
@@ -713,7 +713,7 @@ class AuditRepositoryTest {
         when(jedis.get("audit:log:log_a")).thenReturn(aJson);
         when(jedis.get("audit:log:log_b")).thenReturn(bJson);
 
-        List<AuditLogEntry> byType = repository.list("tenant-1", null, null, null, "tenant", null, null, null, null, 50);
+        List<AuditLogEntry> byType = repository.list("tenant-1", null, null, null, List.of("tenant"), null, null, null, null, 50);
         assertThat(byType).extracting(AuditLogEntry::getLogId).containsExactly("log_a");
 
         List<AuditLogEntry> byId = repository.list("tenant-1", null, null, null, null, "budget_1", null, null, null, 50);
@@ -842,7 +842,7 @@ class AuditRepositoryTest {
         when(jedis.get("audit:log:log_1")).thenReturn(aJson);
         when(jedis.get("audit:log:log_2")).thenReturn(bJson);
 
-        List<AuditLogEntry> result = repository.list("tenant-1", null, "create", null, null, null, null, null, null, 50,
+        List<AuditLogEntry> result = repository.list("tenant-1", null, List.of("create"), null, null, null, null, null, null, 50,
             null, "match");
 
         assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_1");
@@ -892,5 +892,410 @@ class AuditRepositoryTest {
         assertThat(page2).extracting(AuditLogEntry::getLogId)
             .containsExactly("log_3")
             .doesNotContainAnyElementsOf(page1.stream().map(AuditLogEntry::getLogId).toList());
+    }
+
+    // ---- v0.1.25.27 audit filter DSL upgrade (spec v0.1.25.24) ----
+
+    @Test
+    void list_operationInList_matchesAnyValue() throws Exception {
+        List<String> ids = List.of("log_1", "log_2", "log_3");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        AuditLogEntry a = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1")
+            .operation("createBudget").status(201).timestamp(Instant.now()).build();
+        AuditLogEntry b = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1")
+            .operation("updateBudget").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry c = AuditLogEntry.builder().logId("log_3").tenantId("tenant-1")
+            .operation("archiveTenant").status(200).timestamp(Instant.now()).build();
+        // @Spy ObjectMapper: hoist writeValueAsString out of when(...).thenReturn(...).
+        String aJson = objectMapper.writeValueAsString(a);
+        String bJson = objectMapper.writeValueAsString(b);
+        String cJson = objectMapper.writeValueAsString(c);
+        when(jedis.get("audit:log:log_1")).thenReturn(aJson);
+        when(jedis.get("audit:log:log_2")).thenReturn(bJson);
+        when(jedis.get("audit:log:log_3")).thenReturn(cJson);
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null,
+            List.of("createBudget", "updateBudget"), null, null, null, null, null, null, 50,
+            null, null, null, null, null, null);
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_1", "log_2");
+    }
+
+    @Test
+    void list_resourceTypeInList_matchesAnyValue() throws Exception {
+        List<String> ids = List.of("log_1", "log_2", "log_3");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        AuditLogEntry a = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1")
+            .operation("op").status(200).resourceType("budget").timestamp(Instant.now()).build();
+        AuditLogEntry b = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1")
+            .operation("op").status(200).resourceType("tenant").timestamp(Instant.now()).build();
+        AuditLogEntry c = AuditLogEntry.builder().logId("log_3").tenantId("tenant-1")
+            .operation("op").status(200).resourceType("webhook").timestamp(Instant.now()).build();
+        String aJson = objectMapper.writeValueAsString(a);
+        String bJson = objectMapper.writeValueAsString(b);
+        String cJson = objectMapper.writeValueAsString(c);
+        when(jedis.get("audit:log:log_1")).thenReturn(aJson);
+        when(jedis.get("audit:log:log_2")).thenReturn(bJson);
+        when(jedis.get("audit:log:log_3")).thenReturn(cJson);
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null,
+            List.of("budget", "tenant"), null, null, null, null, 50,
+            null, null, null, null, null, null);
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_1", "log_2");
+    }
+
+    @Test
+    void list_errorCodeInList_nullErrorCodeNeverMatches() throws Exception {
+        List<String> ids = List.of("log_1", "log_2", "log_3");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        AuditLogEntry success = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1")
+            .operation("op").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry quotaFail = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1")
+            .operation("op").status(429).errorCode("BUDGET_EXCEEDED").timestamp(Instant.now()).build();
+        AuditLogEntry authFail = AuditLogEntry.builder().logId("log_3").tenantId("tenant-1")
+            .operation("op").status(401).errorCode("UNAUTHORIZED").timestamp(Instant.now()).build();
+        String successJson = objectMapper.writeValueAsString(success);
+        String quotaFailJson = objectMapper.writeValueAsString(quotaFail);
+        String authFailJson = objectMapper.writeValueAsString(authFail);
+        when(jedis.get("audit:log:log_1")).thenReturn(successJson);
+        when(jedis.get("audit:log:log_2")).thenReturn(quotaFailJson);
+        when(jedis.get("audit:log:log_3")).thenReturn(authFailJson);
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            null, null, List.of("BUDGET_EXCEEDED", "TENANT_SUSPENDED"), null, null, null);
+
+        // Success (null error_code) excluded; only the BUDGET_EXCEEDED entry matches.
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_2");
+    }
+
+    @Test
+    void list_errorCodeExclude_nullErrorCodeAlwaysPasses() throws Exception {
+        List<String> ids = List.of("log_1", "log_2", "log_3");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        AuditLogEntry success = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1")
+            .operation("op").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry noisy = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1")
+            .operation("op").status(500).errorCode("INTERNAL_ERROR").timestamp(Instant.now()).build();
+        AuditLogEntry interesting = AuditLogEntry.builder().logId("log_3").tenantId("tenant-1")
+            .operation("op").status(429).errorCode("BUDGET_EXCEEDED").timestamp(Instant.now()).build();
+        String successJson = objectMapper.writeValueAsString(success);
+        String noisyJson = objectMapper.writeValueAsString(noisy);
+        String interestingJson = objectMapper.writeValueAsString(interesting);
+        when(jedis.get("audit:log:log_1")).thenReturn(successJson);
+        when(jedis.get("audit:log:log_2")).thenReturn(noisyJson);
+        when(jedis.get("audit:log:log_3")).thenReturn(interestingJson);
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            null, null, null, List.of("INTERNAL_ERROR"), null, null);
+
+        // Noisy INTERNAL_ERROR hidden; success (null) and BUDGET_EXCEEDED pass.
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_1", "log_3");
+    }
+
+    @Test
+    void list_errorCodeAndExcludeCombined_andComposed() throws Exception {
+        List<String> ids = List.of("log_1", "log_2", "log_3");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        AuditLogEntry a = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1")
+            .operation("op").status(429).errorCode("BUDGET_EXCEEDED").timestamp(Instant.now()).build();
+        AuditLogEntry b = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1")
+            .operation("op").status(403).errorCode("TENANT_SUSPENDED").timestamp(Instant.now()).build();
+        AuditLogEntry c = AuditLogEntry.builder().logId("log_3").tenantId("tenant-1")
+            .operation("op").status(401).errorCode("UNAUTHORIZED").timestamp(Instant.now()).build();
+        String aJson = objectMapper.writeValueAsString(a);
+        String bJson = objectMapper.writeValueAsString(b);
+        String cJson = objectMapper.writeValueAsString(c);
+        when(jedis.get("audit:log:log_1")).thenReturn(aJson);
+        when(jedis.get("audit:log:log_2")).thenReturn(bJson);
+        when(jedis.get("audit:log:log_3")).thenReturn(cJson);
+
+        // Narrow to [BUDGET_EXCEEDED, TENANT_SUSPENDED], then exclude TENANT_SUSPENDED.
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            null, null,
+            List.of("BUDGET_EXCEEDED", "TENANT_SUSPENDED"),
+            List.of("TENANT_SUSPENDED"),
+            null, null);
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_1");
+    }
+
+    @Test
+    void list_statusRange_inclusiveBoundaries() throws Exception {
+        List<String> ids = List.of("log_1", "log_2", "log_3", "log_4", "log_5");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        AuditLogEntry a = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1")
+            .operation("op").status(399).timestamp(Instant.now()).build();
+        AuditLogEntry b = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1")
+            .operation("op").status(400).timestamp(Instant.now()).build();
+        AuditLogEntry c = AuditLogEntry.builder().logId("log_3").tenantId("tenant-1")
+            .operation("op").status(450).timestamp(Instant.now()).build();
+        AuditLogEntry d = AuditLogEntry.builder().logId("log_4").tenantId("tenant-1")
+            .operation("op").status(499).timestamp(Instant.now()).build();
+        AuditLogEntry e = AuditLogEntry.builder().logId("log_5").tenantId("tenant-1")
+            .operation("op").status(500).timestamp(Instant.now()).build();
+        String aJson = objectMapper.writeValueAsString(a);
+        String bJson = objectMapper.writeValueAsString(b);
+        String cJson = objectMapper.writeValueAsString(c);
+        String dJson = objectMapper.writeValueAsString(d);
+        String eJson = objectMapper.writeValueAsString(e);
+        when(jedis.get("audit:log:log_1")).thenReturn(aJson);
+        when(jedis.get("audit:log:log_2")).thenReturn(bJson);
+        when(jedis.get("audit:log:log_3")).thenReturn(cJson);
+        when(jedis.get("audit:log:log_4")).thenReturn(dJson);
+        when(jedis.get("audit:log:log_5")).thenReturn(eJson);
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            null, null, null, null, 400, 499);
+
+        // Inclusive on both ends: 400, 450, 499; 399 and 500 excluded.
+        assertThat(result).extracting(AuditLogEntry::getLogId)
+            .containsExactly("log_2", "log_3", "log_4");
+    }
+
+    @Test
+    void list_statusMinOnly_treatsAsLowerBound() throws Exception {
+        List<String> ids = List.of("log_1", "log_2", "log_3");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        AuditLogEntry a = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1")
+            .operation("op").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry b = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1")
+            .operation("op").status(500).timestamp(Instant.now()).build();
+        AuditLogEntry c = AuditLogEntry.builder().logId("log_3").tenantId("tenant-1")
+            .operation("op").status(599).timestamp(Instant.now()).build();
+        String aJson = objectMapper.writeValueAsString(a);
+        String bJson = objectMapper.writeValueAsString(b);
+        String cJson = objectMapper.writeValueAsString(c);
+        when(jedis.get("audit:log:log_1")).thenReturn(aJson);
+        when(jedis.get("audit:log:log_2")).thenReturn(bJson);
+        when(jedis.get("audit:log:log_3")).thenReturn(cJson);
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            null, null, null, null, 500, null);
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_2", "log_3");
+    }
+
+    @Test
+    void list_statusMaxOnly_treatsAsUpperBound() throws Exception {
+        List<String> ids = List.of("log_1", "log_2", "log_3");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        AuditLogEntry a = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1")
+            .operation("op").status(200).timestamp(Instant.now()).build();
+        AuditLogEntry b = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1")
+            .operation("op").status(299).timestamp(Instant.now()).build();
+        AuditLogEntry c = AuditLogEntry.builder().logId("log_3").tenantId("tenant-1")
+            .operation("op").status(300).timestamp(Instant.now()).build();
+        String aJson = objectMapper.writeValueAsString(a);
+        String bJson = objectMapper.writeValueAsString(b);
+        String cJson = objectMapper.writeValueAsString(c);
+        when(jedis.get("audit:log:log_1")).thenReturn(aJson);
+        when(jedis.get("audit:log:log_2")).thenReturn(bJson);
+        when(jedis.get("audit:log:log_3")).thenReturn(cJson);
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            null, null, null, null, null, 299);
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_1", "log_2");
+    }
+
+    @Test
+    void list_statusRange_nullEntryStatus_isExcluded() throws Exception {
+        // Entries with null status cannot satisfy either bound — must not
+        // silently pass the range predicate.
+        List<String> ids = List.of("log_1", "log_2");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        AuditLogEntry nullStatus = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1")
+            .operation("op").timestamp(Instant.now()).build();
+        AuditLogEntry inRange = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1")
+            .operation("op").status(450).timestamp(Instant.now()).build();
+        String nullStatusJson = objectMapper.writeValueAsString(nullStatus);
+        String inRangeJson = objectMapper.writeValueAsString(inRange);
+        when(jedis.get("audit:log:log_1")).thenReturn(nullStatusJson);
+        when(jedis.get("audit:log:log_2")).thenReturn(inRangeJson);
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            null, null, null, null, 400, 499);
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_2");
+    }
+
+    @Test
+    void list_searchMatchesErrorCodeSubstring() throws Exception {
+        // Spec v0.1.25.24: search extended to include error_code. "quota"
+        // case-insensitively would miss BUDGET_EXCEEDED but "budget" matches.
+        List<String> ids = List.of("log_1", "log_2");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        AuditLogEntry a = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1")
+            .operation("op").status(429).errorCode("BUDGET_EXCEEDED")
+            .resourceId("unrelated_A").timestamp(Instant.now()).build();
+        AuditLogEntry b = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1")
+            .operation("op").status(401).errorCode("UNAUTHORIZED")
+            .resourceId("unrelated_B").timestamp(Instant.now()).build();
+        String aJson = objectMapper.writeValueAsString(a);
+        String bJson = objectMapper.writeValueAsString(b);
+        when(jedis.get("audit:log:log_1")).thenReturn(aJson);
+        when(jedis.get("audit:log:log_2")).thenReturn(bJson);
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            null, "budget");
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_1");
+    }
+
+    @Test
+    void list_searchMatchesOperationSubstring() throws Exception {
+        // Spec v0.1.25.24: search extended to include operation.
+        List<String> ids = List.of("log_1", "log_2");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        AuditLogEntry a = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1")
+            .operation("createBudget").status(201)
+            .resourceId("unrelated_A").timestamp(Instant.now()).build();
+        AuditLogEntry b = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1")
+            .operation("archiveTenant").status(200)
+            .resourceId("unrelated_B").timestamp(Instant.now()).build();
+        String aJson = objectMapper.writeValueAsString(a);
+        String bJson = objectMapper.writeValueAsString(b);
+        when(jedis.get("audit:log:log_1")).thenReturn(aJson);
+        when(jedis.get("audit:log:log_2")).thenReturn(bJson);
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            null, "BUDGET");
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_1");
+    }
+
+    @Test
+    void list_allNewFiltersCombined_andComposed() throws Exception {
+        List<String> ids = List.of("log_1", "log_2", "log_3", "log_4");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        // Matches all predicates: operation=createBudget, resource_type=budget,
+        // error_code=BUDGET_EXCEEDED (not in exclude list), status in [400, 499].
+        AuditLogEntry match = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1")
+            .operation("createBudget").status(429).resourceType("budget")
+            .errorCode("BUDGET_EXCEEDED").timestamp(Instant.now()).build();
+        // Fails operation filter.
+        AuditLogEntry wrongOp = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1")
+            .operation("archiveTenant").status(429).resourceType("budget")
+            .errorCode("BUDGET_EXCEEDED").timestamp(Instant.now()).build();
+        // Fails status range.
+        AuditLogEntry wrongStatus = AuditLogEntry.builder().logId("log_3").tenantId("tenant-1")
+            .operation("createBudget").status(500).resourceType("budget")
+            .errorCode("BUDGET_EXCEEDED").timestamp(Instant.now()).build();
+        // Fails error_code exclude.
+        AuditLogEntry excluded = AuditLogEntry.builder().logId("log_4").tenantId("tenant-1")
+            .operation("createBudget").status(429).resourceType("budget")
+            .errorCode("INTERNAL_ERROR").timestamp(Instant.now()).build();
+        String matchJson = objectMapper.writeValueAsString(match);
+        String wrongOpJson = objectMapper.writeValueAsString(wrongOp);
+        String wrongStatusJson = objectMapper.writeValueAsString(wrongStatus);
+        String excludedJson = objectMapper.writeValueAsString(excluded);
+        when(jedis.get("audit:log:log_1")).thenReturn(matchJson);
+        when(jedis.get("audit:log:log_2")).thenReturn(wrongOpJson);
+        when(jedis.get("audit:log:log_3")).thenReturn(wrongStatusJson);
+        when(jedis.get("audit:log:log_4")).thenReturn(excludedJson);
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null,
+            List.of("createBudget", "updateBudget"), null,
+            List.of("budget"), null, null, null, null, 50,
+            null, null,
+            List.of("BUDGET_EXCEEDED", "INTERNAL_ERROR"),
+            List.of("INTERNAL_ERROR"),
+            400, 499);
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_1");
+    }
+
+    @Test
+    void list_newFilterCursorStable_secondPageSkipsFirstPage() throws Exception {
+        // Cursor-stability invariant (v0.1.25.25): predicates applied BEFORE
+        // cursor commit. Paging through a filtered result set must not
+        // repeat page-1 ids on page-2.
+        List<String> page1Ids = List.of("log_1", "log_2");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"),
+            eq(Double.POSITIVE_INFINITY), eq(Double.NEGATIVE_INFINITY),
+            eq(0), anyInt())).thenReturn(page1Ids);
+
+        AuditLogEntry a = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1")
+            .operation("createBudget").status(429).errorCode("BUDGET_EXCEEDED")
+            .timestamp(Instant.ofEpochMilli(3000)).build();
+        AuditLogEntry b = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1")
+            .operation("createBudget").status(429).errorCode("BUDGET_EXCEEDED")
+            .timestamp(Instant.ofEpochMilli(2000)).build();
+        String aJson = objectMapper.writeValueAsString(a);
+        String bJson = objectMapper.writeValueAsString(b);
+        when(jedis.get("audit:log:log_1")).thenReturn(aJson);
+        when(jedis.get("audit:log:log_2")).thenReturn(bJson);
+
+        List<AuditLogEntry> page1 = repository.list("tenant-1", null,
+            List.of("createBudget"), null, null, null, null, null, null, 2,
+            null, null, List.of("BUDGET_EXCEEDED"), null, 400, 499);
+        assertThat(page1).extracting(AuditLogEntry::getLogId).containsExactly("log_1", "log_2");
+
+        // Page 2: cursor score = 2000 → upper bound = 1999, log_3 alone.
+        when(jedis.zscore("audit:logs:tenant-1", "log_2")).thenReturn(2000.0);
+        AuditLogEntry c = AuditLogEntry.builder().logId("log_3").tenantId("tenant-1")
+            .operation("createBudget").status(429).errorCode("BUDGET_EXCEEDED")
+            .timestamp(Instant.ofEpochMilli(1500)).build();
+        String cJson = objectMapper.writeValueAsString(c);
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"),
+            eq(1999.0), eq(Double.NEGATIVE_INFINITY),
+            eq(0), anyInt())).thenReturn(List.of("log_3"));
+        when(jedis.get("audit:log:log_3")).thenReturn(cJson);
+
+        List<AuditLogEntry> page2 = repository.list("tenant-1", null,
+            List.of("createBudget"), null, null, null, null, null, "log_2", 2,
+            null, null, List.of("BUDGET_EXCEEDED"), null, 400, 499);
+
+        assertThat(page2).extracting(AuditLogEntry::getLogId)
+            .containsExactly("log_3")
+            .doesNotContainAnyElementsOf(page1.stream().map(AuditLogEntry::getLogId).toList());
+    }
+
+    @Test
+    void list_emptyErrorCodeList_treatedAsNoFilter() throws Exception {
+        // Empty list should behave identically to null — `!isEmpty()` guard
+        // is exactly this branch. Controller sends `null` for empty input,
+        // but the repository must still behave correctly if an empty list
+        // slips through.
+        List<String> ids = List.of("log_1");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        AuditLogEntry success = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1")
+            .operation("op").status(200).timestamp(Instant.now()).build();
+        String successJson = objectMapper.writeValueAsString(success);
+        when(jedis.get("audit:log:log_1")).thenReturn(successJson);
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            null, null, List.of(), List.of(), null, null);
+
+        // Empty IN-list must not exclude the success entry — otherwise the
+        // controller's empty-normalisation would be load-bearing.
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_1");
     }
 }
