@@ -1,5 +1,6 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
+import io.runcycles.admin.model.shared.SortSpec;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -177,56 +178,190 @@ public class AuditRepository {
     public List<AuditLogEntry> list(String tenantId, String keyId, String operation, Integer status,
                                      String resourceType, String resourceId,
                                      Instant from, Instant to, String cursor, int limit) {
+        return list(tenantId, keyId, operation, status, resourceType, resourceId,
+            from, to, cursor, limit, null);
+    }
+
+    /**
+     * List audit logs with optional sort (spec v0.1.25.20 §V4). Null
+     * SortSpec preserves the legacy timestamp-DESC ZSET walk so auditors'
+     * existing cursor chains keep resolving.
+     *
+     * <p>Three paths mirror {@link EventRepository#list}:
+     * <ul>
+     *   <li>Null SortSpec OR {@code field=timestamp, dir=DESC} → legacy
+     *       {@link Jedis#zrevrangeByScore} walk (unchanged behaviour).
+     *   <li>{@code field=timestamp, dir=ASC} → {@link Jedis#zrangeByScore}
+     *       walk with the cursor's score as the new minScore floor.
+     *   <li>Non-timestamp fields → hydrate up to {@link #SORTED_HYDRATE_CAP}
+     *       IDs from the ZSET window, apply all filters, sort in-memory
+     *       via {@link #auditLogComparator}, then walk log_id cursor.
+     * </ul>
+     * Callers requesting non-timestamp sort on very large windows should
+     * narrow {@code from}/{@code to} to keep hydration bounded.
+     */
+    public List<AuditLogEntry> list(String tenantId, String keyId, String operation, Integer status,
+                                     String resourceType, String resourceId,
+                                     Instant from, Instant to, String cursor, int limit,
+                                     SortSpec sortSpec) {
         if (limit <= 0) {
             return new ArrayList<>();
         }
         try (Jedis jedis = jedisPool.getResource()) {
-            // Determine the time range for the sorted set query
-            double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
-            double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
-            // Use tenant-specific or global index
-            String indexKey = (tenantId != null) ? "audit:logs:" + tenantId : "audit:logs:_all";
+            if (sortSpec == null || isTimestampSort(sortSpec)) {
+                return listByTimestamp(jedis, tenantId, keyId, operation, status,
+                    resourceType, resourceId, from, to, cursor, limit, sortSpec);
+            }
+            return listSortedNonTimestamp(jedis, tenantId, keyId, operation, status,
+                resourceType, resourceId, from, to, cursor, limit, sortSpec);
+        }
+    }
 
-            // If cursor is provided, use its score as the maxScore ceiling to avoid
-            // skipping entries that were filtered out. This is more reliable than
-            // scanning for the cursor ID in the result set.
-            if (cursor != null && !cursor.isBlank()) {
-                Double cursorScore = jedis.zscore(indexKey, cursor);
-                if (cursorScore != null) {
-                    // Use score just below cursor to exclude the cursor entry itself
+    private static boolean isTimestampSort(SortSpec sortSpec) {
+        return "timestamp".equals(sortSpec.field());
+    }
+
+    /**
+     * Upper bound on IDs hydrated for a non-timestamp sort pass. Sorted
+     * walks need to see the full filter-matching population before the
+     * cursor walk; without a ceiling a broad time window would OOM. At
+     * scale, operators should narrow the time window.
+     */
+    private static final int SORTED_HYDRATE_CAP = 2000;
+
+    private List<AuditLogEntry> listByTimestamp(Jedis jedis, String tenantId, String keyId,
+                                                 String operation, Integer status,
+                                                 String resourceType, String resourceId,
+                                                 Instant from, Instant to, String cursor, int limit,
+                                                 SortSpec sortSpec) {
+        double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
+        double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
+        String indexKey = (tenantId != null) ? "audit:logs:" + tenantId : "audit:logs:_all";
+        boolean ascending = sortSpec != null && sortSpec.isAscending();
+
+        if (cursor != null && !cursor.isBlank()) {
+            Double cursorScore = jedis.zscore(indexKey, cursor);
+            if (cursorScore != null) {
+                if (ascending) {
+                    minScore = Math.max(minScore, cursorScore + 1);
+                } else {
                     maxScore = Math.min(maxScore, cursorScore - 1);
                 }
             }
-
-            // Fetch more than needed to account for in-memory filtering
-            List<String> ids = jedis.zrevrangeByScore(indexKey, maxScore, minScore, 0, limit * 3);
-            List<AuditLogEntry> logs = new ArrayList<>();
-            for (String id : ids) {
-                try {
-                    String data = jedis.get("audit:log:" + id);
-                    if (data == null) {
-                        // Expired entry — pointer still in the index but the
-                        // underlying log key has been evicted by its TTL. The
-                        // daily sweep will remove stale pointers eventually;
-                        // read side just skips them transparently.
-                        LOG.debug("Audit log data missing for id: {} (likely TTL-expired)", id);
-                        continue;
-                    }
-                    AuditLogEntry entry = objectMapper.readValue(data, AuditLogEntry.class);
-                    if (keyId != null && !keyId.equals(entry.getKeyId())) continue;
-                    if (operation != null && !operation.equals(entry.getOperation())) continue;
-                    if (status != null && !status.equals(entry.getStatus())) continue;
-                    if (resourceType != null && !resourceType.equals(entry.getResourceType())) continue;
-                    if (resourceId != null && !resourceId.equals(entry.getResourceId())) continue;
-                    logs.add(entry);
-                    if (logs.size() >= limit) break;
-                } catch (Exception e) {
-                    LOG.warn("Failed to parse log: {}", id, e);
-                }
-            }
-            return logs;
         }
+
+        List<String> ids = ascending
+            ? jedis.zrangeByScore(indexKey, minScore, maxScore, 0, limit * 3)
+            : jedis.zrevrangeByScore(indexKey, maxScore, minScore, 0, limit * 3);
+        List<AuditLogEntry> logs = new ArrayList<>();
+        for (String id : ids) {
+            try {
+                String data = jedis.get("audit:log:" + id);
+                if (data == null) {
+                    LOG.debug("Audit log data missing for id: {} (likely TTL-expired)", id);
+                    continue;
+                }
+                AuditLogEntry entry = objectMapper.readValue(data, AuditLogEntry.class);
+                if (!matchesFilters(entry, keyId, operation, status, resourceType, resourceId)) continue;
+                logs.add(entry);
+                if (logs.size() >= limit) break;
+            } catch (Exception e) {
+                LOG.warn("Failed to parse log: {}", id, e);
+            }
+        }
+        return logs;
     }
+
+    private List<AuditLogEntry> listSortedNonTimestamp(Jedis jedis, String tenantId, String keyId,
+                                                        String operation, Integer status,
+                                                        String resourceType, String resourceId,
+                                                        Instant from, Instant to, String cursor, int limit,
+                                                        SortSpec sortSpec) {
+        double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
+        double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
+        String indexKey = (tenantId != null) ? "audit:logs:" + tenantId : "audit:logs:_all";
+        // Hydrate a bounded window — cursor is applied after sort on log_id.
+        List<String> ids = jedis.zrevrangeByScore(indexKey, maxScore, minScore, 0, SORTED_HYDRATE_CAP);
+        List<AuditLogEntry> all = new ArrayList<>();
+        for (String id : ids) {
+            try {
+                String data = jedis.get("audit:log:" + id);
+                if (data == null) continue;
+                AuditLogEntry entry = objectMapper.readValue(data, AuditLogEntry.class);
+                if (!matchesFilters(entry, keyId, operation, status, resourceType, resourceId)) continue;
+                all.add(entry);
+            } catch (Exception e) {
+                LOG.warn("Failed to parse log: {}", id, e);
+            }
+        }
+        all.sort(auditLogComparator(sortSpec));
+        List<AuditLogEntry> results = new ArrayList<>();
+        boolean pastCursor = (cursor == null || cursor.isBlank());
+        for (AuditLogEntry e : all) {
+            if (!pastCursor) {
+                if (cursor.equals(e.getLogId())) pastCursor = true;
+                continue;
+            }
+            results.add(e);
+            if (results.size() >= limit) break;
+        }
+        return results;
+    }
+
+    private boolean matchesFilters(AuditLogEntry entry, String keyId, String operation,
+                                    Integer status, String resourceType, String resourceId) {
+        if (keyId != null && !keyId.equals(entry.getKeyId())) return false;
+        if (operation != null && !operation.equals(entry.getOperation())) return false;
+        if (status != null && !status.equals(entry.getStatus())) return false;
+        if (resourceType != null && !resourceType.equals(entry.getResourceType())) return false;
+        if (resourceId != null && !resourceId.equals(entry.getResourceId())) return false;
+        return true;
+    }
+
+    /**
+     * Null-safe comparator on the whitelisted non-timestamp sort fields.
+     * log_id tie-breaker keeps the order total so cursor resume is
+     * deterministic. Unknown fields fall through to the tie-breaker —
+     * the controller whitelist already rejects those at the edge.
+     */
+    static Comparator<AuditLogEntry> auditLogComparator(SortSpec sortSpec) {
+        String field = sortSpec.field();
+        Comparator<AuditLogEntry> primary;
+        switch (field) {
+            case "operation":
+                primary = Comparator.comparing(AuditLogEntry::getOperation,
+                    Comparator.nullsLast(String::compareTo));
+                break;
+            case "resource_type":
+                primary = Comparator.comparing(AuditLogEntry::getResourceType,
+                    Comparator.nullsLast(String::compareTo));
+                break;
+            case "tenant_id":
+                primary = Comparator.comparing(AuditLogEntry::getTenantId,
+                    Comparator.nullsLast(String::compareTo));
+                break;
+            case "key_id":
+                primary = Comparator.comparing(AuditLogEntry::getKeyId,
+                    Comparator.nullsLast(String::compareTo));
+                break;
+            case "status":
+                primary = Comparator.comparing(AuditLogEntry::getStatus,
+                    Comparator.nullsLast(Comparator.naturalOrder()));
+                break;
+            case "timestamp":
+                primary = Comparator.comparing(AuditLogEntry::getTimestamp,
+                    Comparator.nullsLast(Comparator.naturalOrder()));
+                break;
+            default:
+                primary = Comparator.comparing(AuditLogEntry::getLogId,
+                    Comparator.nullsLast(String::compareTo));
+                break;
+        }
+        Comparator<AuditLogEntry> withTieBreak = primary.thenComparing(
+            AuditLogEntry::getLogId, Comparator.nullsLast(String::compareTo));
+        return sortSpec.isAscending() ? withTieBreak : withTieBreak.reversed();
+    }
+
     public List<AuditLogEntry> list(String tenantId, int limit) {
         return list(tenantId, null, null, null, null, null, null, null, null, limit);
     }

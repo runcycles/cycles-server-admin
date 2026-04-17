@@ -3,6 +3,7 @@ import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.event.Event;
 import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventType;
+import io.runcycles.admin.model.shared.SortSpec;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -77,63 +78,92 @@ public class EventRepository {
 
     public List<Event> list(String tenantId, String eventType, String category, String scope,
                             String correlationId, Instant from, Instant to, String cursor, int limit) {
+        return list(tenantId, eventType, category, scope, correlationId, from, to, cursor, limit, null);
+    }
+
+    /**
+     * List events with optional sort (spec v0.1.25.20 §V4). Null SortSpec
+     * preserves the legacy timestamp-DESC ZSET path and keeps existing
+     * cursor chains stable.
+     *
+     * <p>Three paths:
+     * <ul>
+     *   <li>Null SortSpec OR {@code field=timestamp, dir=DESC} → legacy
+     *       {@link Jedis#zrevrangeByScore} walk (unchanged behaviour).
+     *   <li>{@code field=timestamp, dir=ASC} → {@link Jedis#zrangeByScore}
+     *       walk with the cursor's score as the new minScore floor.
+     *   <li>Non-timestamp fields → hydrate up to {@link #SORTED_HYDRATE_CAP}
+     *       IDs from the ZSET window, apply all filters, sort in-memory by
+     *       {@link #eventComparator}, then walk event_id cursor.
+     * </ul>
+     * Callers requesting non-timestamp sort on very large windows should
+     * pass narrower {@code from}/{@code to} to keep hydration bounded.
+     */
+    public List<Event> list(String tenantId, String eventType, String category, String scope,
+                            String correlationId, Instant from, Instant to, String cursor, int limit,
+                            SortSpec sortSpec) {
         if (limit <= 0) {
             return new ArrayList<>();
         }
         try (Jedis jedis = jedisPool.getResource()) {
-            // If correlationId filter is provided, use the correlation SET instead of ZSET pagination
             if (correlationId != null && !correlationId.isBlank()) {
-                return listByCorrelation(jedis, correlationId, tenantId, eventType, category, scope, limit);
+                List<Event> byCorrelation = listByCorrelation(
+                    jedis, correlationId, tenantId, eventType, category, scope, limit, sortSpec);
+                return byCorrelation;
             }
-
-            double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
-            double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
-            String indexKey = (tenantId != null) ? "events:" + tenantId : "events:_all";
-
-            if (cursor != null && !cursor.isBlank()) {
-                Double cursorScore = jedis.zscore(indexKey, cursor);
-                if (cursorScore != null) {
-                    maxScore = Math.min(maxScore, cursorScore - 1);
-                }
+            if (sortSpec == null || isTimestampSort(sortSpec)) {
+                return listByTimestamp(jedis, tenantId, eventType, category, scope,
+                    from, to, cursor, limit, sortSpec);
             }
-
-            // Fetch more than needed to account for in-memory filtering
-            List<String> ids = jedis.zrevrangeByScore(indexKey, maxScore, minScore, 0, limit * 3);
-            List<Event> events = new ArrayList<>();
-            for (String id : ids) {
-                try {
-                    String data = jedis.get("event:" + id);
-                    if (data == null) {
-                        LOG.warn("Event data missing for id: {}", id);
-                        continue;
-                    }
-                    Event event = objectMapper.readValue(data, Event.class);
-                    if (eventType != null && !eventType.equals(event.getEventType().getValue())) continue;
-                    if (category != null && !category.equals(event.getCategory().getValue())) continue;
-                    if (scope != null && (event.getScope() == null || !event.getScope().startsWith(scope))) continue;
-                    events.add(event);
-                    if (events.size() >= limit) break;
-                } catch (Exception e) {
-                    LOG.warn("Failed to parse event: {}", id, e);
-                }
-            }
-            return events;
+            return listSortedNonTimestamp(jedis, tenantId, eventType, category, scope,
+                from, to, cursor, limit, sortSpec);
         }
     }
 
-    private List<Event> listByCorrelation(Jedis jedis, String correlationId, String tenantId,
-                                          String eventType, String category, String scope, int limit) {
-        Set<String> ids = jedis.smembers("events:correlation:" + correlationId);
+    private static boolean isTimestampSort(SortSpec sortSpec) {
+        return "timestamp".equals(sortSpec.field());
+    }
+
+    /**
+     * Upper bound on IDs hydrated for a non-timestamp sort pass. Sorted
+     * walks need to see the full filter-matching population before the
+     * cursor walk; without a ceiling a broad time window would OOM. At
+     * scale, operators should narrow the time window.
+     */
+    private static final int SORTED_HYDRATE_CAP = 2000;
+
+    private List<Event> listByTimestamp(Jedis jedis, String tenantId, String eventType,
+                                        String category, String scope, Instant from, Instant to,
+                                        String cursor, int limit, SortSpec sortSpec) {
+        double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
+        double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
+        String indexKey = (tenantId != null) ? "events:" + tenantId : "events:_all";
+        boolean ascending = sortSpec != null && sortSpec.isAscending();
+
+        if (cursor != null && !cursor.isBlank()) {
+            Double cursorScore = jedis.zscore(indexKey, cursor);
+            if (cursorScore != null) {
+                if (ascending) {
+                    minScore = Math.max(minScore, cursorScore + 1);
+                } else {
+                    maxScore = Math.min(maxScore, cursorScore - 1);
+                }
+            }
+        }
+
+        List<String> ids = ascending
+            ? jedis.zrangeByScore(indexKey, minScore, maxScore, 0, limit * 3)
+            : jedis.zrevrangeByScore(indexKey, maxScore, minScore, 0, limit * 3);
         List<Event> events = new ArrayList<>();
         for (String id : ids) {
             try {
                 String data = jedis.get("event:" + id);
-                if (data == null) continue;
+                if (data == null) {
+                    LOG.warn("Event data missing for id: {}", id);
+                    continue;
+                }
                 Event event = objectMapper.readValue(data, Event.class);
-                if (tenantId != null && !tenantId.equals(event.getTenantId())) continue;
-                if (eventType != null && !eventType.equals(event.getEventType().getValue())) continue;
-                if (category != null && !category.equals(event.getCategory().getValue())) continue;
-                if (scope != null && (event.getScope() == null || !event.getScope().startsWith(scope))) continue;
+                if (!matchesFilters(event, eventType, category, scope)) continue;
                 events.add(event);
                 if (events.size() >= limit) break;
             } catch (Exception e) {
@@ -141,5 +171,112 @@ public class EventRepository {
             }
         }
         return events;
+    }
+
+    private List<Event> listSortedNonTimestamp(Jedis jedis, String tenantId, String eventType,
+                                                String category, String scope, Instant from, Instant to,
+                                                String cursor, int limit, SortSpec sortSpec) {
+        double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
+        double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
+        String indexKey = (tenantId != null) ? "events:" + tenantId : "events:_all";
+        // Hydrate a bounded window — cursor is applied after sort on event_id.
+        List<String> ids = jedis.zrevrangeByScore(indexKey, maxScore, minScore, 0, SORTED_HYDRATE_CAP);
+        List<Event> all = new ArrayList<>();
+        for (String id : ids) {
+            try {
+                String data = jedis.get("event:" + id);
+                if (data == null) continue;
+                Event event = objectMapper.readValue(data, Event.class);
+                if (!matchesFilters(event, eventType, category, scope)) continue;
+                all.add(event);
+            } catch (Exception e) {
+                LOG.warn("Failed to parse event: {}", id, e);
+            }
+        }
+        all.sort(eventComparator(sortSpec));
+        List<Event> results = new ArrayList<>();
+        boolean pastCursor = (cursor == null || cursor.isBlank());
+        for (Event e : all) {
+            if (!pastCursor) {
+                if (cursor.equals(e.getEventId())) pastCursor = true;
+                continue;
+            }
+            results.add(e);
+            if (results.size() >= limit) break;
+        }
+        return results;
+    }
+
+    private boolean matchesFilters(Event event, String eventType, String category, String scope) {
+        if (eventType != null && !eventType.equals(event.getEventType().getValue())) return false;
+        if (category != null && !category.equals(event.getCategory().getValue())) return false;
+        if (scope != null && (event.getScope() == null || !event.getScope().startsWith(scope))) return false;
+        return true;
+    }
+
+    /**
+     * Null-safe comparator on the whitelisted non-timestamp sort fields.
+     * event_id tie-breaker keeps the order total so cursor resume is
+     * deterministic. Unknown fields fall through to the tie-breaker —
+     * the controller whitelist already rejects those at the edge.
+     */
+    static Comparator<Event> eventComparator(SortSpec sortSpec) {
+        String field = sortSpec.field();
+        Comparator<Event> primary;
+        switch (field) {
+            case "event_type":
+                primary = Comparator.comparing(
+                    e -> e.getEventType() == null ? null : e.getEventType().getValue(),
+                    Comparator.nullsLast(String::compareTo));
+                break;
+            case "category":
+                primary = Comparator.comparing(
+                    e -> e.getCategory() == null ? null : e.getCategory().getValue(),
+                    Comparator.nullsLast(String::compareTo));
+                break;
+            case "scope":
+                primary = Comparator.comparing(Event::getScope,
+                    Comparator.nullsLast(String::compareTo));
+                break;
+            case "tenant_id":
+                primary = Comparator.comparing(Event::getTenantId,
+                    Comparator.nullsLast(String::compareTo));
+                break;
+            case "timestamp":
+                primary = Comparator.comparing(Event::getTimestamp,
+                    Comparator.nullsLast(Comparator.naturalOrder()));
+                break;
+            default:
+                primary = Comparator.comparing(Event::getEventId,
+                    Comparator.nullsLast(String::compareTo));
+                break;
+        }
+        Comparator<Event> withTieBreak = primary.thenComparing(
+            Event::getEventId, Comparator.nullsLast(String::compareTo));
+        return sortSpec.isAscending() ? withTieBreak : withTieBreak.reversed();
+    }
+
+    private List<Event> listByCorrelation(Jedis jedis, String correlationId, String tenantId,
+                                          String eventType, String category, String scope, int limit,
+                                          SortSpec sortSpec) {
+        Set<String> ids = jedis.smembers("events:correlation:" + correlationId);
+        if (ids == null || ids.isEmpty()) return new ArrayList<>();
+        List<Event> events = new ArrayList<>();
+        for (String id : ids) {
+            try {
+                String data = jedis.get("event:" + id);
+                if (data == null) continue;
+                Event event = objectMapper.readValue(data, Event.class);
+                if (tenantId != null && !tenantId.equals(event.getTenantId())) continue;
+                if (!matchesFilters(event, eventType, category, scope)) continue;
+                events.add(event);
+            } catch (Exception e) {
+                LOG.warn("Failed to parse event: {}", id, e);
+            }
+        }
+        if (sortSpec != null) {
+            events.sort(eventComparator(sortSpec));
+        }
+        return events.size() > limit ? events.subList(0, limit) : events;
     }
 }

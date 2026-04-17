@@ -5,6 +5,9 @@ import io.runcycles.admin.data.repository.BudgetListFilters;
 import io.runcycles.admin.data.repository.BudgetRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.budget.*;
+import io.runcycles.admin.model.shared.ErrorCode;
+import io.runcycles.admin.model.shared.SortDirection;
+import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.shared.UnitEnum;
 import io.runcycles.admin.api.config.ScopeFilterUtil;
 import io.runcycles.admin.api.config.ScopeValidator;
@@ -22,9 +25,19 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 @RestController @RequestMapping("/v1/admin/budgets") @Tag(name = "Budgets")
 public class BudgetController {
     private static final Logger LOG = LoggerFactory.getLogger(BudgetController.class);
+    // Per spec v0.1.25.20. "utilization" is a computed field (spent /
+    // allocated, with allocated==0 treated as utilization==0 — see
+    // BudgetListFilters). The repo applies the same formula for sort
+    // so sort/filter are consistent. "debt" sorts on the raw ledger
+    // debt amount, a single long per budget.
+    private static final Set<String> ALLOWED_SORT_FIELDS = Set.of(
+        "tenant_id", "scope", "unit", "status", "commit_overage_policy",
+        "utilization", "debt");
+    private static final String DEFAULT_SORT_FIELD = "utilization";
     @Autowired private BudgetRepository repository;
     @Autowired private AuditRepository auditRepository;
     @Autowired private EventService eventService;
@@ -104,8 +117,11 @@ public class BudgetController {
             @RequestParam(required = false) Double utilization_max,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(required = false) String sort_by,
+            @RequestParam(required = false) String sort_dir,
             HttpServletRequest httpRequest) {
         ScopeFilterUtil.enforceScopeFilter(httpRequest, scope_prefix);
+        SortSpec sortSpec = parseSortSpec(sort_by, sort_dir);
         // Cross-parameter constraint declared normatively in governance spec
         // v0.1.25.18 FILTER SEMANTICS. OpenAPI can't express
         // "utilization_min <= utilization_max" in-schema, so we enforce it
@@ -143,13 +159,13 @@ public class BudgetController {
         boolean crossTenant;
         if (authTenantId != null) {
             crossTenant = false;
-            ledgers = repository.list(authTenantId, filters, cursor, effectiveLimit);
+            ledgers = repository.list(authTenantId, filters, cursor, effectiveLimit, sortSpec);
         } else if (tenant_id != null && !tenant_id.isBlank()) {
             crossTenant = false;
-            ledgers = repository.list(tenant_id, filters, cursor, effectiveLimit);
+            ledgers = repository.list(tenant_id, filters, cursor, effectiveLimit, sortSpec);
         } else {
             crossTenant = true;
-            ledgers = repository.listAllTenants(filters, cursor, effectiveLimit);
+            ledgers = repository.listAllTenants(filters, cursor, effectiveLimit, sortSpec);
         }
         String nextCursor = null;
         if (ledgers.size() >= effectiveLimit) {
@@ -169,6 +185,24 @@ public class BudgetController {
             .build();
         return ResponseEntity.ok(response);
     }
+    /**
+     * Parse sort_by / sort_dir query params into a validated SortSpec.
+     * See TenantController.parseSortSpec for the shared rationale.
+     */
+    private SortSpec parseSortSpec(String sortBy, String sortDir) {
+        SortDirection direction;
+        try {
+            direction = SortDirection.fromWire(sortDir);
+        } catch (IllegalArgumentException e) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
+        }
+        try {
+            return SortSpec.resolve(sortBy, direction, ALLOWED_SORT_FIELDS, DEFAULT_SORT_FIELD);
+        } catch (IllegalArgumentException e) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
+        }
+    }
+
     @GetMapping("/lookup") @Operation(operationId = "lookupBudget")
     public ResponseEntity<BudgetLedger> lookup(
             @RequestParam String scope, @RequestParam UnitEnum unit,

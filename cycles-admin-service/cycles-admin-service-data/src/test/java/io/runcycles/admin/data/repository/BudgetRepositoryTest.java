@@ -8,6 +8,8 @@ import io.runcycles.admin.model.budget.*;
 import io.runcycles.admin.model.budget.FundingOperation;
 import io.runcycles.admin.model.shared.Amount;
 import io.runcycles.admin.model.shared.ErrorCode;
+import io.runcycles.admin.model.shared.SortDirection;
+import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.shared.UnitEnum;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -1299,5 +1301,284 @@ class BudgetRepositoryTest {
                 null, 50);
 
         assertThat(result).extracting(BudgetLedger::getLedgerId).containsExactly("led-b");
+    }
+
+    // --- v0.1.25.24 server-side sort (SortSpec) ---
+
+    private Map<String, String> hashFull(String ledgerId, String scope, String unit,
+                                          long allocated, long spent, long debt, boolean overLimit,
+                                          String tenantId, String status, String policy) {
+        Map<String, String> h = hashWith(ledgerId, scope, unit, allocated, spent, debt, overLimit, tenantId);
+        h.put("status", status);
+        if (policy != null) h.put("commit_overage_policy", policy);
+        return h;
+    }
+
+    @Test
+    void list_sortByScopeAscending_returnsScopeSorted() {
+        when(jedis.smembers("budgets:tenant-1"))
+                .thenReturn(new LinkedHashSet<>(List.of(
+                        "budget:z:USD_MICROCENTS", "budget:a:USD_MICROCENTS",
+                        "budget:m:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:z:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-z", "z", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1"));
+        when(jedis.hgetAll("budget:a:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-a", "a", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1"));
+        when(jedis.hgetAll("budget:m:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-m", "m", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1"));
+
+        SortSpec sort = SortSpec.of("scope", SortDirection.ASC);
+        List<BudgetLedger> result = repository.list(
+                "tenant-1", BudgetListFilters.empty(), null, 50, sort);
+
+        assertThat(result).extracting(BudgetLedger::getLedgerId)
+                .containsExactly("led-a", "led-m", "led-z");
+    }
+
+    @Test
+    void list_sortByUtilizationDescending_usesComputedUtilization() {
+        when(jedis.smembers("budgets:tenant-1"))
+                .thenReturn(new LinkedHashSet<>(List.of(
+                        "budget:low:USD_MICROCENTS", "budget:high:USD_MICROCENTS",
+                        "budget:mid:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:low:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-low", "low", "USD_MICROCENTS", 100, 10, 0, false, "tenant-1"));
+        when(jedis.hgetAll("budget:high:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-high", "high", "USD_MICROCENTS", 100, 90, 0, false, "tenant-1"));
+        when(jedis.hgetAll("budget:mid:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-mid", "mid", "USD_MICROCENTS", 100, 50, 0, false, "tenant-1"));
+
+        SortSpec sort = SortSpec.of("utilization", SortDirection.DESC);
+        List<BudgetLedger> result = repository.list(
+                "tenant-1", BudgetListFilters.empty(), null, 50, sort);
+
+        assertThat(result).extracting(BudgetLedger::getLedgerId)
+                .containsExactly("led-high", "led-mid", "led-low");
+    }
+
+    @Test
+    void list_sortByDebtAscending_nullDebtTreatedAsZero() {
+        when(jedis.smembers("budgets:tenant-1"))
+                .thenReturn(new LinkedHashSet<>(List.of(
+                        "budget:a:USD_MICROCENTS", "budget:b:USD_MICROCENTS",
+                        "budget:c:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:a:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-a", "a", "USD_MICROCENTS", 100, 0, 50, true, "tenant-1"));
+        when(jedis.hgetAll("budget:b:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-b", "b", "USD_MICROCENTS", 100, 0, 10, true, "tenant-1"));
+        when(jedis.hgetAll("budget:c:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-c", "c", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1"));
+
+        SortSpec sort = SortSpec.of("debt", SortDirection.ASC);
+        List<BudgetLedger> result = repository.list(
+                "tenant-1", BudgetListFilters.empty(), null, 50, sort);
+
+        assertThat(result).extracting(BudgetLedger::getLedgerId)
+                .containsExactly("led-c", "led-b", "led-a");
+    }
+
+    @Test
+    void list_sortByStatus_nullCommitPolicyIsNullsLast() {
+        when(jedis.smembers("budgets:tenant-1"))
+                .thenReturn(new LinkedHashSet<>(List.of(
+                        "budget:a:USD_MICROCENTS", "budget:b:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:a:USD_MICROCENTS"))
+                .thenReturn(hashFull("led-a", "a", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1", "FROZEN", null));
+        when(jedis.hgetAll("budget:b:USD_MICROCENTS"))
+                .thenReturn(hashFull("led-b", "b", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1", "ACTIVE", null));
+
+        SortSpec sort = SortSpec.of("status", SortDirection.ASC);
+        List<BudgetLedger> result = repository.list(
+                "tenant-1", BudgetListFilters.empty(), null, 50, sort);
+
+        assertThat(result).extracting(BudgetLedger::getLedgerId)
+                .containsExactly("led-b", "led-a");
+    }
+
+    @Test
+    void list_sortByCommitOveragePolicy_nullsLast() {
+        when(jedis.smembers("budgets:tenant-1"))
+                .thenReturn(new LinkedHashSet<>(List.of(
+                        "budget:a:USD_MICROCENTS", "budget:b:USD_MICROCENTS",
+                        "budget:c:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:a:USD_MICROCENTS"))
+                .thenReturn(hashFull("led-a", "a", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1", "ACTIVE", "ALLOW_IF_AVAILABLE"));
+        when(jedis.hgetAll("budget:b:USD_MICROCENTS"))
+                .thenReturn(hashFull("led-b", "b", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1", "ACTIVE", null));
+        when(jedis.hgetAll("budget:c:USD_MICROCENTS"))
+                .thenReturn(hashFull("led-c", "c", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1", "ACTIVE", "REJECT"));
+
+        SortSpec sort = SortSpec.of("commit_overage_policy", SortDirection.ASC);
+        List<BudgetLedger> result = repository.list(
+                "tenant-1", BudgetListFilters.empty(), null, 50, sort);
+
+        // ALLOW_IF_AVAILABLE < REJECT lexicographically; null last
+        assertThat(result).extracting(BudgetLedger::getLedgerId)
+                .containsExactly("led-a", "led-c", "led-b");
+    }
+
+    @Test
+    void list_sortByUnit_ascending() {
+        when(jedis.smembers("budgets:tenant-1"))
+                .thenReturn(new LinkedHashSet<>(List.of(
+                        "budget:x:USD_MICROCENTS", "budget:y:TOKENS")));
+        when(jedis.hgetAll("budget:x:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-x", "x", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1"));
+        when(jedis.hgetAll("budget:y:TOKENS"))
+                .thenReturn(hashWith("led-y", "y", "TOKENS", 100, 0, 0, false, "tenant-1"));
+
+        SortSpec sort = SortSpec.of("unit", SortDirection.ASC);
+        List<BudgetLedger> result = repository.list(
+                "tenant-1", BudgetListFilters.empty(), null, 50, sort);
+
+        assertThat(result).extracting(BudgetLedger::getLedgerId)
+                .containsExactly("led-y", "led-x"); // TOKENS < USD_MICROCENTS
+    }
+
+    @Test
+    void list_sortWithCursor_resumesInSortedOrder() {
+        when(jedis.smembers("budgets:tenant-1"))
+                .thenReturn(new LinkedHashSet<>(List.of(
+                        "budget:z:USD_MICROCENTS", "budget:a:USD_MICROCENTS",
+                        "budget:m:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:z:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-z", "z", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1"));
+        when(jedis.hgetAll("budget:a:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-a", "a", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1"));
+        when(jedis.hgetAll("budget:m:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-m", "m", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1"));
+
+        SortSpec sort = SortSpec.of("scope", SortDirection.ASC);
+        List<BudgetLedger> page2 = repository.list(
+                "tenant-1", BudgetListFilters.empty(), "led-a", 50, sort);
+
+        assertThat(page2).extracting(BudgetLedger::getLedgerId)
+                .containsExactly("led-m", "led-z");
+    }
+
+    @Test
+    void list_sortUnknownField_fallsBackToLedgerIdTieBreaker() {
+        // resolve() would 400 in the controller, but the repo must stay
+        // total — unknown fields fall through to the ledger_id tie-breaker.
+        SortSpec bogus = SortSpec.of("not_a_real_field", SortDirection.ASC);
+        when(jedis.smembers("budgets:tenant-1"))
+                .thenReturn(new LinkedHashSet<>(List.of(
+                        "budget:z:USD_MICROCENTS", "budget:a:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:z:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-b", "z", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1"));
+        when(jedis.hgetAll("budget:a:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-a", "a", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1"));
+
+        List<BudgetLedger> result = repository.list(
+                "tenant-1", BudgetListFilters.empty(), null, 50, bogus);
+
+        assertThat(result).extracting(BudgetLedger::getLedgerId)
+                .containsExactly("led-a", "led-b");
+    }
+
+    @Test
+    void list_nullSortSpec_usesLegacyKeyPath() {
+        // No sortSpec → legacy cursor-on-raw-key path (collectForTenant).
+        when(jedis.smembers("budgets:tenant-1"))
+                .thenReturn(new LinkedHashSet<>(List.of(
+                        "budget:a:USD_MICROCENTS", "budget:b:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:a:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-a", "a", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1"));
+        when(jedis.hgetAll("budget:b:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-b", "b", "USD_MICROCENTS", 100, 0, 0, false, "tenant-1"));
+
+        List<BudgetLedger> result = repository.list(
+                "tenant-1", BudgetListFilters.empty(), null, 50, null);
+
+        assertThat(result).hasSize(2);
+    }
+
+    @Test
+    void listAllTenants_sortByTenantIdAscending_crossesTenantBoundary() {
+        when(jedis.smembers("tenants"))
+                .thenReturn(new LinkedHashSet<>(List.of("tenant-b", "tenant-a")));
+        when(jedis.smembers("budgets:tenant-a"))
+                .thenReturn(new LinkedHashSet<>(List.of("budget:a1:USD_MICROCENTS")));
+        when(jedis.smembers("budgets:tenant-b"))
+                .thenReturn(new LinkedHashSet<>(List.of("budget:b1:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:a1:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-a1", "a1", "USD_MICROCENTS", 100, 0, 0, false, "tenant-a"));
+        when(jedis.hgetAll("budget:b1:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-b1", "b1", "USD_MICROCENTS", 100, 0, 0, false, "tenant-b"));
+
+        SortSpec sort = SortSpec.of("tenant_id", SortDirection.ASC);
+        List<BudgetLedger> result = repository.listAllTenants(
+                BudgetListFilters.empty(), null, 50, sort);
+
+        assertThat(result).extracting(BudgetLedger::getLedgerId)
+                .containsExactly("led-a1", "led-b1");
+    }
+
+    @Test
+    void listAllTenants_sortedCursor_resumesAtCompositeStrictlyNext() {
+        when(jedis.smembers("tenants"))
+                .thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-b")));
+        when(jedis.smembers("budgets:tenant-a"))
+                .thenReturn(new LinkedHashSet<>(List.of("budget:a1:USD_MICROCENTS")));
+        when(jedis.smembers("budgets:tenant-b"))
+                .thenReturn(new LinkedHashSet<>(List.of("budget:b1:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:a1:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-a1", "a1", "USD_MICROCENTS", 100, 0, 0, false, "tenant-a"));
+        when(jedis.hgetAll("budget:b1:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-b1", "b1", "USD_MICROCENTS", 100, 0, 0, false, "tenant-b"));
+
+        SortSpec sort = SortSpec.of("tenant_id", SortDirection.ASC);
+        List<BudgetLedger> page2 = repository.listAllTenants(
+                BudgetListFilters.empty(), "tenant-a|led-a1", 50, sort);
+
+        assertThat(page2).extracting(BudgetLedger::getLedgerId)
+                .containsExactly("led-b1");
+    }
+
+    @Test
+    void listAllTenants_nullSortSpec_preservesLegacySkipForward() {
+        when(jedis.smembers("tenants"))
+                .thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-c")));
+        when(jedis.smembers("budgets:tenant-c"))
+                .thenReturn(new LinkedHashSet<>(List.of("budget:c1:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:c1:USD_MICROCENTS"))
+                .thenReturn(hashWith("led-c1", "c1", "USD_MICROCENTS", 100, 0, 0, false, "tenant-c"));
+
+        // Cursor tenant-b was deleted between pages; legacy path skips forward.
+        List<BudgetLedger> result = repository.listAllTenants(
+                BudgetListFilters.empty(), "tenant-b|led-b1", 50, null);
+
+        assertThat(result).extracting(BudgetLedger::getLedgerId)
+                .containsExactly("led-c1");
+    }
+
+    @Test
+    void listAllTenants_sorted_stopsAtHydrationCap() {
+        // SORTED_HYDRATE_CAP+10 budgets under one tenant; cross-tenant sorted
+        // path must stop at the cap. We request a 5-row page so it can be
+        // filled from the capped slice regardless of total population.
+        int cap = BudgetRepository.SORTED_HYDRATE_CAP;
+        int total = cap + 10;
+        LinkedHashSet<String> keys = new LinkedHashSet<>();
+        for (int i = 0; i < total; i++) {
+            String ledgerId = String.format("led-%05d", i);
+            String scope = String.format("scope-%05d", i);
+            String key = "budget:" + scope + ":USD_MICROCENTS";
+            keys.add(key);
+            lenient().when(jedis.hgetAll(key))
+                    .thenReturn(hashWith(ledgerId, scope, "USD_MICROCENTS", 100, 0, 0, false, "tenant-a"));
+        }
+        when(jedis.smembers("tenants"))
+                .thenReturn(new LinkedHashSet<>(List.of("tenant-a")));
+        when(jedis.smembers("budgets:tenant-a")).thenReturn(keys);
+
+        SortSpec sort = SortSpec.of("tenant_id", SortDirection.ASC);
+        List<BudgetLedger> result = repository.listAllTenants(
+                BudgetListFilters.empty(), null, 5, sort);
+
+        // Page is filled from the capped slice. Hydration hgetAll is invoked
+        // at most `cap` times on the filtered set — never all `total`.
+        assertThat(result).hasSize(5);
+        verify(jedis, atMost(cap)).hgetAll(anyString());
     }
 }

@@ -119,6 +119,80 @@ class SharedModelTest {
         assertEquals("payment.charge", roundTrip.getQuotaHealth().getTopOffenders().get(0).getActionKind());
     }
 
+    // ---- v0.1.25.20: SortDirection + SortSpec shared types ----
+
+    @Test
+    void sortDirection_fromWire_parsesCaseInsensitive() {
+        assertEquals(SortDirection.ASC, SortDirection.fromWire("asc"));
+        assertEquals(SortDirection.ASC, SortDirection.fromWire("ASC"));
+        assertEquals(SortDirection.ASC, SortDirection.fromWire("Asc"));
+        assertEquals(SortDirection.DESC, SortDirection.fromWire("desc"));
+        assertEquals(SortDirection.DESC, SortDirection.fromWire("DESC"));
+    }
+
+    @Test
+    void sortDirection_fromWire_nullReturnsNull() {
+        assertNull(SortDirection.fromWire(null));
+    }
+
+    @Test
+    void sortDirection_fromWire_invalidThrows() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+            () -> SortDirection.fromWire("sideways"));
+        assertTrue(ex.getMessage().contains("sideways"));
+        assertTrue(ex.getMessage().contains("asc"));
+    }
+
+    @Test
+    void sortDirection_wireValueRoundTrip() throws Exception {
+        ObjectMapper m = new ObjectMapper();
+        assertEquals("\"asc\"", m.writeValueAsString(SortDirection.ASC));
+        assertEquals("\"desc\"", m.writeValueAsString(SortDirection.DESC));
+        assertEquals(SortDirection.ASC, m.readValue("\"asc\"", SortDirection.class));
+        assertEquals(SortDirection.DESC, m.readValue("\"DESC\"", SortDirection.class));
+    }
+
+    @Test
+    void sortSpec_of_buildsRecord() {
+        SortSpec spec = SortSpec.of("created_at", SortDirection.ASC);
+        assertEquals("created_at", spec.field());
+        assertEquals(SortDirection.ASC, spec.direction());
+        assertTrue(spec.isAscending());
+    }
+
+    @Test
+    void sortSpec_resolve_usesDefaultsWhenBlank() {
+        java.util.Set<String> allowed = java.util.Set.of("name", "created_at");
+        SortSpec spec = SortSpec.resolve(null, null, allowed, "created_at");
+        assertEquals("created_at", spec.field());
+        assertEquals(SortDirection.DESC, spec.direction());
+        assertFalse(spec.isAscending());
+    }
+
+    @Test
+    void sortSpec_resolve_usesDefaultOnBlankString() {
+        java.util.Set<String> allowed = java.util.Set.of("name", "created_at");
+        SortSpec spec = SortSpec.resolve("   ", SortDirection.ASC, allowed, "name");
+        assertEquals("name", spec.field());
+        assertEquals(SortDirection.ASC, spec.direction());
+    }
+
+    @Test
+    void sortSpec_resolve_rejectsUnknownField() {
+        java.util.Set<String> allowed = java.util.Set.of("name", "created_at");
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+            () -> SortSpec.resolve("bogus", SortDirection.ASC, allowed, "name"));
+        assertTrue(ex.getMessage().contains("bogus"));
+    }
+
+    @Test
+    void sortSpec_resolve_acceptsExplicitField() {
+        java.util.Set<String> allowed = java.util.Set.of("name", "created_at");
+        SortSpec spec = SortSpec.resolve("name", SortDirection.ASC, allowed, "created_at");
+        assertEquals("name", spec.field());
+        assertTrue(spec.isAscending());
+    }
+
     @Test
     void adminOverviewResponse_v0_1_25_8Fields_omittedWhenNull() throws Exception {
         ObjectMapper m = new ObjectMapper();

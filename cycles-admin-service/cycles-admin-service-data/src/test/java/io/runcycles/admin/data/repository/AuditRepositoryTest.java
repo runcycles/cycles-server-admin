@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.admin.model.audit.AuditLogEntry;
+import io.runcycles.admin.model.shared.SortDirection;
+import io.runcycles.admin.model.shared.SortSpec;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -448,5 +450,319 @@ class AuditRepositoryTest {
 
         // Must not throw — sweep is best-effort.
         repository.sweepStaleIndexEntries();
+    }
+
+    // ---- sort (spec v0.1.25.20 §V4) ----
+
+    private AuditLogEntry log(String id, String tenantId, String keyId, String operation,
+                              String resourceType, Integer status, Instant ts) {
+        return AuditLogEntry.builder()
+            .logId(id).tenantId(tenantId).keyId(keyId).operation(operation)
+            .resourceType(resourceType).status(status).timestamp(ts)
+            .build();
+    }
+
+    private void stubZSet(String indexKey, boolean ascending, List<AuditLogEntry> entries) throws Exception {
+        List<String> ids = new ArrayList<>();
+        List<String> jsons = new ArrayList<>();
+        for (AuditLogEntry e : entries) {
+            ids.add(e.getLogId());
+            jsons.add(objectMapper.writeValueAsString(e));
+        }
+        if (ascending) {
+            when(jedis.zrangeByScore(eq(indexKey), anyDouble(), anyDouble(), eq(0), anyInt()))
+                .thenReturn(ids);
+        } else {
+            when(jedis.zrevrangeByScore(eq(indexKey), anyDouble(), anyDouble(), eq(0), anyInt()))
+                .thenReturn(ids);
+        }
+        for (int i = 0; i < entries.size(); i++) {
+            when(jedis.get("audit:log:" + entries.get(i).getLogId())).thenReturn(jsons.get(i));
+        }
+    }
+
+    @Test
+    void list_sortByTimestampDesc_usesZrevrangeByScore() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        AuditLogEntry a = log("log_a", "tenant-1", "key_1", "createTenant", "tenant", 201, t);
+        AuditLogEntry b = log("log_b", "tenant-1", "key_1", "updateTenant", "tenant", 200, t.plusSeconds(60));
+        stubZSet("audit:logs:tenant-1", false, List.of(b, a));
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            SortSpec.of("timestamp", SortDirection.DESC));
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_b", "log_a");
+        verify(jedis).zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt());
+    }
+
+    @Test
+    void list_sortByTimestampAsc_usesZrangeByScore() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        AuditLogEntry a = log("log_a", "tenant-1", "key_1", "createTenant", "tenant", 201, t);
+        AuditLogEntry b = log("log_b", "tenant-1", "key_1", "updateTenant", "tenant", 200, t.plusSeconds(60));
+        stubZSet("audit:logs:tenant-1", true, List.of(a, b));
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            SortSpec.of("timestamp", SortDirection.ASC));
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_a", "log_b");
+        verify(jedis).zrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt());
+    }
+
+    @Test
+    void list_sortByOperationAsc_hydratesAndReorders() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        AuditLogEntry a = log("log_a", "tenant-1", "key_1", "createTenant", "tenant", 201, t);
+        AuditLogEntry b = log("log_b", "tenant-1", "key_1", "fundBudget", "budget", 200, t.plusSeconds(60));
+        AuditLogEntry c = log("log_c", "tenant-1", "key_1", "archiveTenant", "tenant", 200, t.plusSeconds(120));
+        stubZSet("audit:logs:tenant-1", false, List.of(c, b, a));
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            SortSpec.of("operation", SortDirection.ASC));
+
+        // Lex order: archiveTenant < createTenant < fundBudget
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_c", "log_a", "log_b");
+    }
+
+    @Test
+    void list_sortByTenantIdDesc_withGlobalIndex() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        AuditLogEntry a = log("log_a", "tenant-alpha", "key_1", "op", "tenant", 200, t);
+        AuditLogEntry b = log("log_b", "tenant-zulu", "key_1", "op", "tenant", 200, t);
+        stubZSet("audit:logs:_all", false, List.of(b, a));
+
+        List<AuditLogEntry> result = repository.list(null, null, null, null, null, null, null, null, null, 50,
+            SortSpec.of("tenant_id", SortDirection.DESC));
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_b", "log_a");
+    }
+
+    @Test
+    void list_sortByStatusAsc_numericOrder() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        AuditLogEntry a = log("log_a", "tenant-1", "key_1", "op", "tenant", 500, t);
+        AuditLogEntry b = log("log_b", "tenant-1", "key_1", "op", "tenant", 201, t);
+        AuditLogEntry c = log("log_c", "tenant-1", "key_1", "op", "tenant", 404, t);
+        stubZSet("audit:logs:tenant-1", false, List.of(a, b, c));
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            SortSpec.of("status", SortDirection.ASC));
+
+        // Numeric order, not lexical: 201 < 404 < 500
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_b", "log_c", "log_a");
+    }
+
+    @Test
+    void list_sortByKeyIdAsc_nullKeyIdSortsLast() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        AuditLogEntry a = log("log_a", "tenant-1", null, "op", "tenant", 200, t);
+        AuditLogEntry b = log("log_b", "tenant-1", "key_1", "op", "tenant", 200, t);
+        stubZSet("audit:logs:tenant-1", false, List.of(b, a));
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            SortSpec.of("key_id", SortDirection.ASC));
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_b", "log_a");
+    }
+
+    @Test
+    void list_sortByResourceTypeDesc_tieBreakerByLogId() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        AuditLogEntry a = log("log_a", "tenant-1", "key_1", "op", "tenant", 200, t);
+        AuditLogEntry b = log("log_b", "tenant-1", "key_1", "op", "tenant", 200, t);
+        AuditLogEntry c = log("log_c", "tenant-1", "key_1", "op", "budget", 200, t);
+        stubZSet("audit:logs:tenant-1", false, List.of(c, b, a));
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            SortSpec.of("resource_type", SortDirection.DESC));
+
+        // tenant (log_a, log_b) > budget (log_c); DESC tie-break reverses log_id: log_b, log_a, log_c
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_b", "log_a", "log_c");
+    }
+
+    @Test
+    void list_sortedCursorResumesInSortedOrder() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        AuditLogEntry a = log("log_a", "tenant-1", "key_1", "archiveTenant", "tenant", 200, t);
+        AuditLogEntry b = log("log_b", "tenant-1", "key_1", "createTenant", "tenant", 200, t);
+        AuditLogEntry c = log("log_c", "tenant-1", "key_1", "updateTenant", "tenant", 200, t);
+        stubZSet("audit:logs:tenant-1", false, List.of(c, b, a));
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, "log_a", 50,
+            SortSpec.of("operation", SortDirection.ASC));
+
+        // After log_a (archiveTenant) cursor in ASC sort → log_b (createTenant), log_c (updateTenant)
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_b", "log_c");
+    }
+
+    @Test
+    void list_sortedRespectsLimit() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        AuditLogEntry a = log("log_a", "tenant-1", "key_1", "archiveTenant", "tenant", 200, t);
+        AuditLogEntry b = log("log_b", "tenant-1", "key_1", "createTenant", "tenant", 200, t);
+        AuditLogEntry c = log("log_c", "tenant-1", "key_1", "updateTenant", "tenant", 200, t);
+        stubZSet("audit:logs:tenant-1", false, List.of(c, b, a));
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 2,
+            SortSpec.of("operation", SortDirection.ASC));
+
+        assertThat(result).hasSize(2);
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_a", "log_b");
+    }
+
+    @Test
+    void list_nullSortSpec_preservesLegacyZrevBehaviour() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        AuditLogEntry a = log("log_a", "tenant-1", "key_1", "op", "tenant", 200, t);
+        stubZSet("audit:logs:tenant-1", false, List.of(a));
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50, null);
+
+        assertThat(result).hasSize(1);
+        verify(jedis).zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt());
+    }
+
+    @Test
+    void list_timestampAscCursorAdvancesMinScore() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        AuditLogEntry a = log("log_a", "tenant-1", "key_1", "op", "tenant", 200, t);
+        stubZSet("audit:logs:tenant-1", true, List.of(a));
+        when(jedis.zscore("audit:logs:tenant-1", "log_cursor")).thenReturn(1000.0);
+
+        repository.list("tenant-1", null, null, null, null, null, null, null, "log_cursor", 50,
+            SortSpec.of("timestamp", SortDirection.ASC));
+
+        verify(jedis).zrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt());
+    }
+
+    @Test
+    void list_sortedNonTimestamp_parseFailure_skipsGracefully() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        AuditLogEntry good = log("log_good", "tenant-1", "key_1", "createTenant", "tenant", 200, t);
+        String goodJson = objectMapper.writeValueAsString(good);
+        List<String> ids = List.of("log_bad", "log_good");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+        when(jedis.get("audit:log:log_bad")).thenReturn("{invalid json}");
+        when(jedis.get("audit:log:log_good")).thenReturn(goodJson);
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            SortSpec.of("operation", SortDirection.ASC));
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getLogId()).isEqualTo("log_good");
+    }
+
+    @Test
+    void list_sortedNonTimestamp_fromTo_narrowsScoreWindow() throws Exception {
+        Instant from = Instant.ofEpochMilli(1000);
+        Instant to = Instant.ofEpochMilli(2000);
+        AuditLogEntry a = log("log_a", "tenant-1", "key_1", "createTenant", "tenant", 200, from);
+        String aJson = objectMapper.writeValueAsString(a);
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), eq(2000.0), eq(1000.0), eq(0), anyInt()))
+            .thenReturn(List.of("log_a"));
+        when(jedis.get("audit:log:log_a")).thenReturn(aJson);
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, from, to, null, 50,
+            SortSpec.of("operation", SortDirection.ASC));
+
+        assertThat(result).hasSize(1);
+        verify(jedis).zrevrangeByScore(eq("audit:logs:tenant-1"), eq(2000.0), eq(1000.0), eq(0), anyInt());
+    }
+
+    @Test
+    void list_sortedNonTimestamp_missingData_skipped() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        AuditLogEntry b = log("log_b", "tenant-1", "key_1", "createTenant", "tenant", 200, t);
+        String bJson = objectMapper.writeValueAsString(b);
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(List.of("log_gone", "log_b"));
+        when(jedis.get("audit:log:log_gone")).thenReturn(null);
+        when(jedis.get("audit:log:log_b")).thenReturn(bJson);
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            SortSpec.of("operation", SortDirection.ASC));
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_b");
+    }
+
+    @Test
+    void list_sortedNonTimestamp_cursorNotFoundInHydrated_yieldsEmpty() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        AuditLogEntry a = log("log_a", "tenant-1", "key_1", "op", "tenant", 200, t);
+        stubZSet("audit:logs:tenant-1", false, List.of(a));
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null,
+            "log_nonexistent", 50, SortSpec.of("operation", SortDirection.ASC));
+
+        // Cursor never encountered → pastCursor stays false → nothing emitted.
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    void list_filtersByResourceTypeAndResourceId() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        AuditLogEntry a = log("log_a", "tenant-1", "key_1", "op", "tenant", 200, t);
+        a.setResourceId("tenant_A");
+        AuditLogEntry b = log("log_b", "tenant-1", "key_1", "op", "budget", 200, t);
+        b.setResourceId("budget_1");
+        String aJson = objectMapper.writeValueAsString(a);
+        String bJson = objectMapper.writeValueAsString(b);
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(List.of("log_a", "log_b"));
+        when(jedis.get("audit:log:log_a")).thenReturn(aJson);
+        when(jedis.get("audit:log:log_b")).thenReturn(bJson);
+
+        List<AuditLogEntry> byType = repository.list("tenant-1", null, null, null, "tenant", null, null, null, null, 50);
+        assertThat(byType).extracting(AuditLogEntry::getLogId).containsExactly("log_a");
+
+        List<AuditLogEntry> byId = repository.list("tenant-1", null, null, null, null, "budget_1", null, null, null, 50);
+        assertThat(byId).extracting(AuditLogEntry::getLogId).containsExactly("log_b");
+    }
+
+    @Test
+    void auditLogComparator_timestampField_directInvocation() {
+        // Exercises the timestamp switch case in auditLogComparator. Normal
+        // code path routes timestamp through listByTimestamp, so this case
+        // is defensive only — unit-test it directly.
+        Instant t1 = Instant.parse("2026-04-15T12:00:00Z");
+        Instant t2 = Instant.parse("2026-04-15T13:00:00Z");
+        AuditLogEntry a = AuditLogEntry.builder().logId("log_a").timestamp(t1).build();
+        AuditLogEntry b = AuditLogEntry.builder().logId("log_b").timestamp(t2).build();
+
+        Comparator<AuditLogEntry> asc = AuditRepository.auditLogComparator(
+            SortSpec.of("timestamp", SortDirection.ASC));
+        assertThat(asc.compare(a, b)).isNegative();
+
+        Comparator<AuditLogEntry> desc = AuditRepository.auditLogComparator(
+            SortSpec.of("timestamp", SortDirection.DESC));
+        assertThat(desc.compare(a, b)).isPositive();
+    }
+
+    @Test
+    void auditLogComparator_unknownField_fallsThroughToLogIdTieBreaker() {
+        // Defensive default branch — controller whitelist blocks unknown
+        // fields, but comparator must still be total.
+        AuditLogEntry a = AuditLogEntry.builder().logId("log_a").build();
+        AuditLogEntry b = AuditLogEntry.builder().logId("log_b").build();
+
+        Comparator<AuditLogEntry> cmp = AuditRepository.auditLogComparator(
+            SortSpec.of("nonexistent_field", SortDirection.ASC));
+        assertThat(cmp.compare(a, b)).isNegative();
+    }
+
+    @Test
+    void list_sortComposedWithFilter() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        AuditLogEntry a = log("log_a", "tenant-1", "key_A", "op", "tenant", 200, t);
+        AuditLogEntry b = log("log_b", "tenant-1", "key_B", "op", "tenant", 200, t);
+        AuditLogEntry c = log("log_c", "tenant-1", "key_A", "op", "budget", 200, t);
+        stubZSet("audit:logs:tenant-1", false, List.of(c, b, a));
+
+        // Filter by keyId=key_A → (a, c); sort by resource_type ASC → (budget, tenant)
+        List<AuditLogEntry> result = repository.list("tenant-1", "key_A", null, null, null, null, null, null, null, 50,
+            SortSpec.of("resource_type", SortDirection.ASC));
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_c", "log_a");
     }
 }

@@ -7,6 +7,7 @@ import io.runcycles.admin.data.repository.EventRepository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.event.*;
 import io.runcycles.admin.model.shared.ErrorCode;
+import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.webhook.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -196,8 +197,13 @@ public class WebhookService {
 
     public WebhookListResponse listByTenant(String tenantId, String status, String eventType,
                                              String cursor, int limit) {
+        return listByTenant(tenantId, status, eventType, cursor, limit, null);
+    }
+
+    public WebhookListResponse listByTenant(String tenantId, String status, String eventType,
+                                             String cursor, int limit, SortSpec sortSpec) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
-        List<WebhookSubscription> subs = webhookRepository.listByTenant(tenantId, status, eventType, cursor, effectiveLimit);
+        List<WebhookSubscription> subs = webhookRepository.listByTenant(tenantId, status, eventType, cursor, effectiveLimit, sortSpec);
         subs.forEach(s -> { s.setSigningSecret(null); }); // Mask secrets
         return WebhookListResponse.builder()
             .subscriptions(subs)
@@ -208,11 +214,16 @@ public class WebhookService {
 
     public WebhookListResponse listAll(String tenantId, String status, String eventType,
                                         String cursor, int limit) {
+        return listAll(tenantId, status, eventType, cursor, limit, null);
+    }
+
+    public WebhookListResponse listAll(String tenantId, String status, String eventType,
+                                        String cursor, int limit, SortSpec sortSpec) {
         if (tenantId != null) {
-            return listByTenant(tenantId, status, eventType, cursor, limit);
+            return listByTenant(tenantId, status, eventType, cursor, limit, sortSpec);
         }
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
-        List<WebhookSubscription> subs = webhookRepository.listAll(status, eventType, cursor, effectiveLimit);
+        List<WebhookSubscription> subs = webhookRepository.listAll(status, eventType, cursor, effectiveLimit, sortSpec);
         subs.forEach(s -> { s.setSigningSecret(null); });
         return WebhookListResponse.builder()
             .subscriptions(subs)

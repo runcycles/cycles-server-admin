@@ -1,9 +1,87 @@
-# Complete Budget Governance v0.1.25.23 — Admin Server Audit
+# Complete Budget Governance v0.1.25.24 — Admin Server Audit
 
-**Server version:** 0.1.25.23 (2026-04-16 — BudgetLedger wire-exposes tenant_id)
-**Date:** 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Server version:** 0.1.25.24 (2026-04-16 — server-side sort on six admin list endpoints, spec v0.1.25.20 §V4)
+**Date:** 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.19`; BudgetLedger.tenant_id optional response field; listApiKeys/listBudgets accept `tenant_id` optional for AdminKeyAuth + four budget filter params: `over_limit`, `has_debt`, `utilization_min`, `utilization_max`) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-16 — v0.1.25.24 server-side sort (six admin list endpoints)
+
+Closes dashboard scale-hardening gap **V4** (client-side sort on partial data is misleading — a user paginating through a 10k-tenant list sees "sorted by created_at desc" but rows 5000–6000 are silently absent with no indication). Governance spec v0.1.25.20 (cycles-protocol PR #49) adds `sort_by` + `sort_dir` query params across the six admin list endpoints, each with its own per-endpoint whitelist of sortable fields. This release wires the server side to match.
+
+**Spec-first lineage.** Spec PR #49 was merged before any server work. This release implements exactly that contract — no shape drift, no whitelist drift. The `cycles-governance-admin-v0.1.25.yaml` CHANGELOG entry at `0.1.25.20 (2026-04-16)` describes the normative surface; this section describes only how the server honours it.
+
+**Endpoints + whitelists.** All six admin list endpoints now accept `sort_by` + `sort_dir` optional query params. `sort_dir` ∈ {`asc`, `desc`} (lowercase, wire-encoded via `@JsonValue` on `SortDirection`; `SortDirection.fromWire` is case-insensitive but emits the wire enum for round-tripping). Per-endpoint `sort_by` whitelists are enforced at the controller boundary — unknown fields → 400 `INVALID_REQUEST`. Missing `sort_dir` → DESC (spec default, applied in `SortSpec.resolve`).
+
+| Endpoint | Whitelist | Default |
+|---|---|---|
+| `listTenants` | `tenant_id`, `name`, `status`, `created_at` | `created_at DESC` |
+| `listApiKeys` | `key_id`, `name`, `tenant_id`, `status`, `created_at`, `expires_at` | `created_at DESC` |
+| `listBudgets` | `tenant_id`, `scope`, `unit`, `status`, `commit_overage_policy`, `utilization`, `debt` | `utilization DESC` |
+| `listWebhookSubscriptions` | `url`, `tenant_id`, `status`, `consecutive_failures` | `consecutive_failures DESC` |
+| `listEvents` | `event_type`, `category`, `scope`, `tenant_id`, `timestamp` | `timestamp DESC` |
+| `listAuditLogs` | `timestamp`, `operation`, `resource_type`, `tenant_id`, `key_id`, `status` | `timestamp DESC` |
+
+Non-`created_at` / non-`timestamp` defaults reflect per-endpoint operator ergonomics: `listBudgets` defaults to `utilization DESC` so hot budgets surface first in the dashboard's default view; `listWebhookSubscriptions` defaults to `consecutive_failures DESC` so flaky subscriptions surface first for operators triaging webhook health. Callers that want `created_at DESC` on budgets/webhooks can pass `sort_by=…` explicitly — these defaults are the server's opinion, not a wire constraint.
+
+**Shared sort foundation.** New under `cycles-admin-service-model/.../model/shared/`:
+
+- `SortDirection` enum (`ASC`, `DESC`) with `@JsonValue` wire-form lowercase and `fromWire(String)` factory that throws `IllegalArgumentException` on unknown input. Unknown `sort_dir` → controller catches → 400 `INVALID_REQUEST`.
+- `SortSpec` record (`field`, `direction`) with `resolve(rawField, direction, allowedFields, defaultField)` factory that (1) validates `rawField` against the endpoint whitelist, (2) falls back to `defaultField` when `rawField` is null/blank, and (3) throws `IllegalArgumentException` on whitelist violation. Also exposes `of(field, direction)` for tests and `isAscending()` as a readability helper.
+
+Every controller threads `sort_by`/`sort_dir` through `parseSortSpec(...)` → `SortSpec` → repository. The repository contract is: null `SortSpec` preserves the endpoint's legacy cursor walk verbatim; otherwise branch on `field == <primary timestamp-like field>` vs other whitelisted fields.
+
+**Three repository paths (non-reservations).** For each endpoint, the repository has the same shape:
+
+1. **Null SortSpec OR field == default primary (DESC)** → existing `zrevrangeByScore` walk (Events, Audit) or `SMEMBERS` + in-memory sort (Tenants, ApiKeys, Budgets, Webhooks). Cursor chains unchanged.
+2. **Default primary field, ASC direction** → mirrored walk — `zrangeByScore` for time-indexed, reverse in-memory sort for set-backed — with the cursor's score as the new minScore/maxScore floor so ASC cursor pages chain correctly.
+3. **Non-primary whitelisted fields** → for time-indexed endpoints (Events, Audit), hydrate up to `SORTED_HYDRATE_CAP = 2000` IDs from the filtered time window, apply all filters, sort in-memory by a null-safe `<entity>Comparator(SortSpec)`, then walk the primary-key cursor. For set-backed endpoints (Tenants, ApiKeys, Budgets, Webhooks), hydrate the full filter-matching set, sort, walk. The cap exists because non-timestamp sort needs to see the full filter-matching population before the cursor walk; callers on very large windows should narrow `from`/`to` or add filters.
+
+**Cross-tenant sort hydration cap.** The `listAllTenants` sorted path on `ApiKeyRepository` and `BudgetRepository` (cross-tenant admin-key list modes) also applies `SORTED_HYDRATE_CAP = 2000` to protect the admin pane from memory exhaustion at scale (10k tenants × N keys/budgets each is an unbounded product otherwise). When the cap is hit, hydration stops and a WARN is logged; the cursor page still fills from the capped slice, but rows beyond the cap are not visible in that sort window. Callers that need to see past the cap must narrow the filter (status, tenant_id, utilization range, unit, etc.) until the filter-matching population fits under 2000. Single-tenant `list` sorted paths are not capped because the tenant's key/budget cardinality is inherently bounded.
+
+Per-entity comparators are all null-safe on every whitelisted field, with a primary-key tie-breaker (`tenant_id`, `key_id`, `ledger_id`, `whsub_id`, `event_id`, `log_id`) so cursor resume is total-order deterministic. Unknown fields fall through to the tie-breaker; the controller whitelist already blocks those at the edge.
+
+**Backward compatibility.** Every repository keeps its pre-sort `list(...)` signature as a thin shim that delegates to the new SortSpec-accepting overload with `null` SortSpec — this preserves every repository call site and every existing mock in the test suite without rewrites. Response shape and cursor semantics are unchanged for every endpoint.
+
+Row-order behavioural change to flag for **`listBudgets`** and **`listWebhookSubscriptions`** only: because both controllers always pass a non-null resolved `SortSpec` (never `null`) into the repository, and their new server defaults are `utilization DESC` and `consecutive_failures DESC` respectively (not `created_at DESC`), the default row order for these two endpoints changes versus pre-0.1.25.24 when the caller omits `sort_by`/`sort_dir`. Callers that had pinned to the prior order must pass `sort_by=created_at&sort_dir=desc` explicitly on these two endpoints. The other four endpoints (`listTenants`, `listApiKeys`, `listEvents`, `listAuditLogs`) keep their legacy default row order verbatim because their defaults (`created_at DESC` / `timestamp DESC`) route through the repository's legacy walk path unchanged.
+
+**Why per-endpoint whitelist instead of a global enum.** Different endpoints expose different sortable columns — `listBudgets` sorts on `utilization` (derived), `listEvents` sorts on `event_type` / `category` (enums), `listAuditLogs` sorts on `resource_type`. A global enum would either inflate to 20+ fields (most invalid on any given endpoint) or drop unique fields per endpoint. Per-endpoint `Set<String> ALLOWED_SORT_FIELDS` + `SortSpec.resolve(...)` keeps every endpoint's contract explicit and the error message specific ("sort_by must be one of […]").
+
+**Tests.** Sort-related tests added across one new shared-model test class plus the six existing repository + controller test classes:
+
+- `cycles-admin-service-model/.../SharedModelTest` — +16 @Test methods covering `SortDirection.fromWire` (null input returns null, valid case-insensitive parse, unknown throws `IllegalArgumentException`), `SortSpec.resolve` (null/blank `rawField` falls back to `defaultField`, unknown `rawField` throws, whitelisted `rawField` round-trips, null `rawDirection` resolves to DESC), and `SortSpec.isAscending` / `of` / accessor helpers.
+- `TenantRepositoryTest` +11 sort tests; `TenantControllerTest` +5 contract tests (default, valid, all whitelist, unknown sort_by → 400, unknown sort_dir → 400).
+- `ApiKeyRepositoryTest` +11 sort tests; `ApiKeyControllerTest` +5 contract tests.
+- `BudgetRepositoryTest` +11 sort tests (including `utilization` derived-field sort + `debt` raw-long sort); `BudgetControllerTest` +5 contract tests.
+- `WebhookRepositoryTest` +11 sort tests; `WebhookAdminControllerTest` +5 contract tests.
+- `EventRepositoryTest` +14 tests (11 sort + 3 comparator / parse-failure coverage).
+- `EventAdminControllerTest` +5 contract tests.
+- `AuditRepositoryTest` +18 sort tests (11 sort + 7 comparator / parse-failure / edge-case coverage).
+- `AuditControllerTest` +5 contract tests.
+
+Existing service-layer mocks migrated to new repository signatures (`EventServiceTest` 9-arg → 10-arg; `WebhookServiceTest` `listByTenant`/`listAll` 5-arg → 6-arg) — the new SortSpec position uses `any()` since the service layer does not validate sort (validation happens in the controller). Full admin-service build: 607/607 tests green; all JaCoCo coverage gates met (data ≥95%, api ≥93%); spec coverage 43/43.
+
+**Dashboard wire-up.** Not in this release. The dashboard's `useSort` composable still sorts client-side; pushing the sort spec to the server (gap V4 follow-through) lands in a separate PR against `cycles-dashboard`. Until then, the server accepts the new query params but no dashboard view sends them — behaviour for existing callers is unchanged.
+
+**AUDIT trail.**
+
+- `cycles-admin-service/pom.xml` → `<revision>0.1.25.24</revision>`.
+- `cycles-admin-service-model/.../model/shared/SortDirection.java` — NEW enum (`@JsonValue` wire-form, `@JsonCreator fromWire` case-insensitive parse).
+- `cycles-admin-service-model/.../model/shared/SortSpec.java` — NEW record (`resolve(rawField, rawDirection, allowedFields, defaultField)` + `of` + `isAscending`).
+- `cycles-admin-service-model/src/test/java/io/runcycles/admin/model/SharedModelTest.java` — +16 tests covering both new primitives.
+- `cycles-admin-service-api/.../controller/TenantController.java` — `sort_by`/`sort_dir` params + `parseSortSpec` helper.
+- `cycles-admin-service-api/.../controller/ApiKeyController.java` — same.
+- `cycles-admin-service-api/.../controller/BudgetController.java` — same.
+- `cycles-admin-service-api/.../controller/WebhookAdminController.java` — same.
+- `cycles-admin-service-api/.../controller/EventAdminController.java` — same.
+- `cycles-admin-service-api/.../controller/AuditController.java` — same.
+- `cycles-admin-service-data/.../repository/TenantRepository.java` — SortSpec-accepting overload + legacy shim + `tenantComparator(SortSpec)`.
+- `cycles-admin-service-data/.../repository/ApiKeyRepository.java` — same pattern, `apiKeyComparator(SortSpec)`.
+- `cycles-admin-service-data/.../repository/BudgetRepository.java` — same pattern, `budgetComparator(SortSpec)` with utilization-derived sort.
+- `cycles-admin-service-data/.../repository/WebhookRepository.java` — same pattern, `webhookComparator(SortSpec)`.
+- `cycles-admin-service-data/.../repository/EventRepository.java` — three-path sort (null / timestamp-ASC / non-timestamp) + `eventComparator(SortSpec)` + correlation re-sort.
+- `cycles-admin-service-data/.../repository/AuditRepository.java` — three-path sort + `auditLogComparator(SortSpec)`.
+- Test files: every `*RepositoryTest.java` + `*ControllerTest.java` updated with mock-signature migrations + new sort/contract tests.
 
 ### 2026-04-16 — v0.1.25.23 BudgetLedger exposes `tenant_id` on the wire
 
