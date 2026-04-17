@@ -212,7 +212,7 @@ class WebhookServiceTest {
     @Test
     void listByTenant_delegatesAndMasksSecrets() {
         WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
-        when(webhookRepository.listByTenant("tenant-1", null, null, null, 50))
+        when(webhookRepository.listByTenant(eq("tenant-1"), isNull(), isNull(), isNull(), eq(50), any()))
             .thenReturn(List.of(sub));
 
         WebhookListResponse response = webhookService.listByTenant("tenant-1", null, null, null, 50);
@@ -224,22 +224,22 @@ class WebhookServiceTest {
     @Test
     void listAll_withTenantId_delegatesToListByTenant() {
         WebhookSubscription sub1 = buildSubscription("whsub_1", "tenant-1");
-        when(webhookRepository.listByTenant("tenant-1", null, null, null, 50))
+        when(webhookRepository.listByTenant(eq("tenant-1"), isNull(), isNull(), isNull(), eq(50), any()))
             .thenReturn(List.of(sub1));
 
         WebhookListResponse response = webhookService.listAll("tenant-1", null, null, null, 50);
 
         assertThat(response.getSubscriptions()).hasSize(1);
         assertThat(response.getSubscriptions().get(0).getTenantId()).isEqualTo("tenant-1");
-        verify(webhookRepository).listByTenant("tenant-1", null, null, null, 50);
-        verify(webhookRepository, never()).listAll(any(), any(), any(), anyInt());
+        verify(webhookRepository).listByTenant(eq("tenant-1"), isNull(), isNull(), isNull(), eq(50), any());
+        verify(webhookRepository, never()).listAll(any(), any(), any(), anyInt(), any());
     }
 
     @Test
     void listAll_noTenantFilter_returnsAll() {
         WebhookSubscription sub1 = buildSubscription("whsub_1", "tenant-1");
         WebhookSubscription sub2 = buildSubscription("whsub_2", "tenant-2");
-        when(webhookRepository.listAll(null, null, null, 50))
+        when(webhookRepository.listAll(isNull(), isNull(), isNull(), eq(50), any()))
             .thenReturn(List.of(sub1, sub2));
 
         WebhookListResponse response = webhookService.listAll(null, null, null, null, 50);
@@ -528,7 +528,7 @@ class WebhookServiceTest {
         // so hasMore and nextCursor reflect tenant-scoped pagination
         WebhookSubscription sub1 = buildSubscription("whsub_1", "tenant-1");
         WebhookSubscription sub2 = buildSubscription("whsub_2", "tenant-1");
-        when(webhookRepository.listByTenant("tenant-1", null, null, null, 2))
+        when(webhookRepository.listByTenant(eq("tenant-1"), isNull(), isNull(), isNull(), eq(2), any()))
             .thenReturn(List.of(sub1, sub2));
 
         WebhookListResponse response = webhookService.listAll("tenant-1", null, null, null, 2);
@@ -536,7 +536,7 @@ class WebhookServiceTest {
         assertThat(response.getSubscriptions()).hasSize(2);
         assertThat(response.isHasMore()).isTrue();
         assertThat(response.getNextCursor()).isEqualTo("whsub_2");
-        verify(webhookRepository, never()).listAll(any(), any(), any(), anyInt());
+        verify(webhookRepository, never()).listAll(any(), any(), any(), anyInt(), any());
     }
 
     // ========== classifyDeliveryError ==========

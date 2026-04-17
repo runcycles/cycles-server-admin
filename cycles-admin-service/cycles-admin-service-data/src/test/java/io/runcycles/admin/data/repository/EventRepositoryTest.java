@@ -733,4 +733,74 @@ class EventRepositoryTest {
         // tenant.created > api_key.created under DESC
         assertThat(result).extracting(Event::getEventId).containsExactly("evt_b", "evt_a");
     }
+
+    // ---- eventComparator direct invocation (coverage of timestamp + default branches) ----
+
+    @Test
+    void eventComparator_timestampField_directInvocation() {
+        Instant t0 = Instant.parse("2026-04-15T12:00:00Z");
+        Event older = ev("evt_older", "tenant-1", EventType.TENANT_CREATED, "org", t0);
+        Event newer = ev("evt_newer", "tenant-1", EventType.TENANT_CREATED, "org", t0.plusSeconds(60));
+
+        Comparator<Event> asc = EventRepository.eventComparator(
+            SortSpec.of("timestamp", SortDirection.ASC));
+        List<Event> ascSorted = new ArrayList<>(List.of(newer, older));
+        ascSorted.sort(asc);
+        assertThat(ascSorted).extracting(Event::getEventId).containsExactly("evt_older", "evt_newer");
+
+        Comparator<Event> desc = EventRepository.eventComparator(
+            SortSpec.of("timestamp", SortDirection.DESC));
+        List<Event> descSorted = new ArrayList<>(List.of(older, newer));
+        descSorted.sort(desc);
+        assertThat(descSorted).extracting(Event::getEventId).containsExactly("evt_newer", "evt_older");
+    }
+
+    @Test
+    void eventComparator_unknownField_fallsThroughToEventIdTieBreaker() {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        Event a = ev("evt_a", "tenant-1", EventType.TENANT_CREATED, "org", t);
+        Event b = ev("evt_b", "tenant-1", EventType.TENANT_CREATED, "org", t);
+
+        Comparator<Event> asc = EventRepository.eventComparator(
+            SortSpec.of("nonexistent_field", SortDirection.ASC));
+        List<Event> sorted = new ArrayList<>(List.of(b, a));
+        sorted.sort(asc);
+        // Default case sorts by event_id ascending (tie-breaker becomes primary).
+        assertThat(sorted).extracting(Event::getEventId).containsExactly("evt_a", "evt_b");
+    }
+
+    // ---- parseFailure catch-block coverage (listSortedNonTimestamp + listByCorrelation) ----
+
+    @Test
+    void list_sortedNonTimestamp_parseFailure_skipsGracefully() throws Exception {
+        Instant t = Instant.parse("2026-04-15T12:00:00Z");
+        Event good = ev("evt_good", "tenant-1", EventType.BUDGET_CREATED, "org", t);
+        String goodJson = objectMapper.writeValueAsString(good);
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(List.of("evt_bad", "evt_good"));
+        when(jedis.get("event:evt_bad")).thenReturn("{invalid json");
+        when(jedis.get("event:evt_good")).thenReturn(goodJson);
+
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, null, 50,
+            SortSpec.of("event_type", SortDirection.ASC));
+
+        assertThat(result).extracting(Event::getEventId).containsExactly("evt_good");
+    }
+
+    @Test
+    void list_byCorrelation_parseFailure_skipsGracefully() throws Exception {
+        Event good = Event.builder().eventId("evt_good").tenantId("tenant-1")
+            .eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT)
+            .source("s").timestamp(Instant.now()).build();
+        String goodJson = objectMapper.writeValueAsString(good);
+        LinkedHashSet<String> ids = new LinkedHashSet<>(List.of("evt_bad", "evt_good"));
+        when(jedis.smembers("events:correlation:corr_abc")).thenReturn(ids);
+        when(jedis.get("event:evt_bad")).thenReturn("{invalid json");
+        when(jedis.get("event:evt_good")).thenReturn(goodJson);
+
+        List<Event> result = repository.list(null, null, null, null, "corr_abc", null, null, null, 50);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getEventId()).isEqualTo("evt_good");
+    }
 }
