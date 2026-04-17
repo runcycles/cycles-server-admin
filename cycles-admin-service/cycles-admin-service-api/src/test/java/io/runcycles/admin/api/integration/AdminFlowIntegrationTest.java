@@ -289,5 +289,97 @@ class AdminFlowIntegrationTest extends BaseIntegrationTest {
         // the new failure entries (single-write invariant preserved).
         assertThat(logs).anyMatch(e ->
                 Integer.valueOf(201).equals(e.get("status")));
+
+        // --- 26. v0.1.25.27: audit filter DSL end-to-end ---
+        // Exercise the new listAuditLogs filter DSL through real Redis.
+        // Contract interceptor validates every response shape against
+        // the pinned spec (v0.1.25.24); assertions below confirm the
+        // new predicates actually filter entries correctly in the full
+        // stack — not just the MockMvc controller tests.
+
+        // 26a. error_code IN-list — seeded entries include UNAUTHORIZED,
+        // INVALID_REQUEST, TENANT_NOT_FOUND. Request two codes; response
+        // MUST contain both and MUST NOT contain success (null-error_code)
+        // rows. NULL-semantic: IN-list rejects null error_code.
+        ResponseEntity<Map> errorCodeIn = adminGet(
+                "/v1/admin/audit/logs?error_code=UNAUTHORIZED,TENANT_NOT_FOUND&limit=200");
+        assertThat(errorCodeIn.getStatusCode()).isEqualTo(HttpStatus.OK);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> inLogs = (List<Map<String, Object>>) errorCodeIn.getBody().get("logs");
+        assertThat(inLogs).isNotEmpty();
+        assertThat(inLogs).allMatch(e -> {
+            Object code = e.get("error_code");
+            return "UNAUTHORIZED".equals(code) || "TENANT_NOT_FOUND".equals(code);
+        });
+        assertThat(inLogs).anyMatch(e -> "UNAUTHORIZED".equals(e.get("error_code")));
+        assertThat(inLogs).anyMatch(e -> "TENANT_NOT_FOUND".equals(e.get("error_code")));
+
+        // 26b. error_code_exclude — hiding UNAUTHORIZED must not silently
+        // hide success rows (NULL-error_code asymmetry). Response MUST
+        // contain 201 success rows AND other error codes, but no
+        // UNAUTHORIZED entries.
+        ResponseEntity<Map> errorCodeEx = adminGet(
+                "/v1/admin/audit/logs?error_code_exclude=UNAUTHORIZED&limit=200");
+        assertThat(errorCodeEx.getStatusCode()).isEqualTo(HttpStatus.OK);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> exLogs = (List<Map<String, Object>>) errorCodeEx.getBody().get("logs");
+        assertThat(exLogs).noneMatch(e -> "UNAUTHORIZED".equals(e.get("error_code")));
+        assertThat(exLogs).anyMatch(e -> Integer.valueOf(201).equals(e.get("status")));
+
+        // 26c. status range 400..499 — must include the 400 malformed-JSON
+        // entry and the 404 not-found entry, must exclude the 401 and
+        // any 2xx success rows.
+        ResponseEntity<Map> range4xx = adminGet(
+                "/v1/admin/audit/logs?status_min=400&status_max=499&limit=200");
+        assertThat(range4xx.getStatusCode()).isEqualTo(HttpStatus.OK);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> rangeLogs = (List<Map<String, Object>>) range4xx.getBody().get("logs");
+        assertThat(rangeLogs).isNotEmpty();
+        assertThat(rangeLogs).allMatch(e -> {
+            Integer st = (Integer) e.get("status");
+            return st != null && st >= 400 && st <= 499;
+        });
+        assertThat(rangeLogs).anyMatch(e -> Integer.valueOf(400).equals(e.get("status")));
+        assertThat(rangeLogs).anyMatch(e -> Integer.valueOf(404).equals(e.get("status")));
+        assertThat(rangeLogs).noneMatch(e -> Integer.valueOf(401).equals(e.get("status")));
+
+        // 26d. operation IN-list (promoted scalar→array). Pass two
+        // seeded operations as a comma-separated list; response MUST
+        // contain entries for both and no others.
+        ResponseEntity<Map> opIn = adminGet(
+                "/v1/admin/audit/logs?operation=GET:/v1/admin/tenants,POST:/v1/admin/tenants&limit=200");
+        assertThat(opIn.getStatusCode()).isEqualTo(HttpStatus.OK);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> opLogs = (List<Map<String, Object>>) opIn.getBody().get("logs");
+        assertThat(opLogs).isNotEmpty();
+        assertThat(opLogs).allMatch(e -> {
+            Object op = e.get("operation");
+            return "GET:/v1/admin/tenants".equals(op) || "POST:/v1/admin/tenants".equals(op);
+        });
+
+        // 26e. search match-set extension — v0.1.25.27 extends search
+        // to error_code + operation. ?search=UNAUTHORIZED must find the
+        // 401 entry via error_code substring (was unreachable pre-.27).
+        ResponseEntity<Map> searchErrorCode = adminGet(
+                "/v1/admin/audit/logs?search=UNAUTHORIZED&limit=200");
+        assertThat(searchErrorCode.getStatusCode()).isEqualTo(HttpStatus.OK);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> searchLogs = (List<Map<String, Object>>) searchErrorCode.getBody().get("logs");
+        assertThat(searchLogs).anyMatch(e -> "UNAUTHORIZED".equals(e.get("error_code")));
+
+        // 26f. Validation — status exact + status_min is mutex. Must 400.
+        HttpHeaders admin = adminHeaders();
+        ResponseEntity<Map> badMutex = restTemplate.exchange(
+                baseUrl() + "/v1/admin/audit/logs?status=400&status_min=400",
+                HttpMethod.GET, new HttpEntity<>(admin), Map.class);
+        assertThat(badMutex.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(badMutex.getBody().get("error")).isEqualTo("INVALID_REQUEST");
+
+        // 26g. Validation — status_min > status_max. Must 400.
+        ResponseEntity<Map> badRange = restTemplate.exchange(
+                baseUrl() + "/v1/admin/audit/logs?status_min=500&status_max=400",
+                HttpMethod.GET, new HttpEntity<>(admin), Map.class);
+        assertThat(badRange.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(badRange.getBody().get("error")).isEqualTo("INVALID_REQUEST");
     }
 }

@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.contract;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
 import org.openapitools.openapidiff.core.OpenApiCompare;
@@ -15,11 +17,15 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import redis.clients.jedis.JedisPool;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -124,6 +130,82 @@ class OpenApiContractDiffTest {
                 () -> assertTrue(breakingOps.isEmpty(),
                         "Operations with BREAKING signature divergence (spec requires X, server does Y): " + formatChanged(breakingOps))
         );
+    }
+
+    /**
+     * v0.1.25.27 contract spot-check. The {@code COMPATIBLE}-level filter in
+     * the structural diff above lets through parameter-count drift on
+     * existing operations (a server missing an optional query param is a
+     * non-breaking diff). That's the hole this test closes for the specific
+     * params the v0.1.25.24 spec added to {@code listAuditLogs}: if a
+     * future refactor drops an {@code @RequestParam} annotation, the
+     * structural diff stays green but this test goes red.
+     *
+     * <p>Asserts the SpringDoc {@code /api-docs} output lists every new
+     * query parameter (plus the promoted scalar→array types) on
+     * {@code GET /v1/admin/audit/logs}.
+     */
+    @Test
+    @EnabledIf(value = "io.runcycles.admin.api.contract.ContractValidationConfig#validationEnabled",
+               disabledReason = "contract.validation.enabled=false — skipping api-docs param check")
+    void listAuditLogs_exposesAllV25_27FilterParams_onApiDocs() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        JsonNode root = mapper.readTree(fetchApiDocs());
+        JsonNode listAuditLogs = root.path("paths").path("/v1/admin/audit/logs").path("get");
+        assertNotNull(listAuditLogs, "listAuditLogs operation missing from /api-docs");
+        assertEquals("listAuditLogs", listAuditLogs.path("operationId").asText(),
+                "operationId drift on /v1/admin/audit/logs GET");
+
+        JsonNode paramsNode = listAuditLogs.path("parameters");
+        assertTrue(paramsNode.isArray() && paramsNode.size() > 0,
+                "listAuditLogs exposes no parameters in /api-docs");
+
+        Set<String> declaredNames = new HashSet<>();
+        List<JsonNode> paramList = new ArrayList<>();
+        paramsNode.forEach(p -> {
+            declaredNames.add(p.path("name").asText());
+            paramList.add(p);
+        });
+
+        // The four new filter params introduced in v0.1.25.24.
+        Set<String> required = Set.of(
+                "error_code", "error_code_exclude", "status_min", "status_max");
+        List<String> missing = required.stream()
+                .filter(name -> !declaredNames.contains(name))
+                .collect(Collectors.toList());
+        assertTrue(missing.isEmpty(),
+                "listAuditLogs missing v0.1.25.24 query params on /api-docs: " + missing);
+
+        // operation and resource_type were promoted scalar→array; confirm
+        // SpringDoc reflects the array shape so consumers regenerating
+        // clients from /api-docs get List<String> signatures.
+        assertEquals("array", paramTypeOf(paramList, "operation"),
+                "operation param must be array (promoted scalar→array in v0.1.25.24)");
+        assertEquals("array", paramTypeOf(paramList, "resource_type"),
+                "resource_type param must be array (promoted scalar→array in v0.1.25.24)");
+
+        // status_min / status_max MUST be integer with [100, 599] bounds.
+        assertIntegerWithBounds(paramList, "status_min");
+        assertIntegerWithBounds(paramList, "status_max");
+    }
+
+    private static String paramTypeOf(List<JsonNode> params, String name) {
+        return params.stream()
+                .filter(p -> name.equals(p.path("name").asText()))
+                .findFirst()
+                .map(p -> p.path("schema").path("type").asText())
+                .orElseThrow(() -> new AssertionError(name + " param missing on listAuditLogs"));
+    }
+
+    private static void assertIntegerWithBounds(List<JsonNode> params, String name) {
+        JsonNode schema = params.stream()
+                .filter(p -> name.equals(p.path("name").asText()))
+                .findFirst()
+                .map(p -> p.path("schema"))
+                .orElseThrow(() -> new AssertionError(name + " missing on listAuditLogs"));
+        assertEquals("integer", schema.path("type").asText(), name + " must be integer");
+        assertEquals(100, schema.path("minimum").asInt(), name + " minimum must be 100");
+        assertEquals(599, schema.path("maximum").asInt(), name + " maximum must be 599");
     }
 
     private String fetchApiDocs() throws Exception {

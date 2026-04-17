@@ -7,6 +7,7 @@ import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.shared.SortSpec;
 import io.swagger.v3.oas.annotations.*;
+import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -51,7 +52,9 @@ public class AuditController {
             @RequestParam(required = false) String sort_dir,
             @RequestParam(required = false) List<String> error_code,
             @RequestParam(required = false) List<String> error_code_exclude,
+            @Parameter(schema = @Schema(type = "integer", minimum = "100", maximum = "599"))
             @RequestParam(required = false) Integer status_min,
+            @Parameter(schema = @Schema(type = "integer", minimum = "100", maximum = "599"))
             @RequestParam(required = false) Integer status_max) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         SortSpec sortSpec = parseSortSpec(sort_by, sort_dir);
