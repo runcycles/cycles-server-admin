@@ -11,16 +11,18 @@ Closes dashboard scale-hardening gap **V4** (client-side sort on partial data is
 
 **Spec-first lineage.** Spec PR #49 was merged before any server work. This release implements exactly that contract — no shape drift, no whitelist drift. The `cycles-governance-admin-v0.1.25.yaml` CHANGELOG entry at `0.1.25.20 (2026-04-16)` describes the normative surface; this section describes only how the server honours it.
 
-**Endpoints + whitelists.** All six admin list endpoints now accept `sort_by` + `sort_dir` optional query params. `sort_dir` ∈ {`asc`, `desc`} (lowercase, wire-encoded via `@JsonValue` on `SortDirection`). Per-endpoint `sort_by` whitelists are enforced at the controller boundary — unknown fields → 400 `INVALID_REQUEST`.
+**Endpoints + whitelists.** All six admin list endpoints now accept `sort_by` + `sort_dir` optional query params. `sort_dir` ∈ {`asc`, `desc`} (lowercase, wire-encoded via `@JsonValue` on `SortDirection`; `SortDirection.fromWire` is case-insensitive but emits the wire enum for round-tripping). Per-endpoint `sort_by` whitelists are enforced at the controller boundary — unknown fields → 400 `INVALID_REQUEST`. Missing `sort_dir` → DESC (spec default, applied in `SortSpec.resolve`).
 
 | Endpoint | Whitelist | Default |
 |---|---|---|
-| `listTenants` | `created_at`, `updated_at`, `display_name`, `tenant_id`, `status` | `created_at DESC` |
-| `listApiKeys` | `created_at`, `last_used_at`, `name`, `status`, `tenant_id` | `created_at DESC` |
-| `listBudgets` | `created_at`, `updated_at`, `allocated`, `spent`, `utilization`, `scope`, `tenant_id`, `unit`, `status` | `created_at DESC` |
-| `listWebhookSubscriptions` | `created_at`, `url`, `tenant_id`, `status` | `created_at DESC` |
+| `listTenants` | `tenant_id`, `name`, `status`, `created_at` | `created_at DESC` |
+| `listApiKeys` | `key_id`, `name`, `tenant_id`, `status`, `created_at`, `expires_at` | `created_at DESC` |
+| `listBudgets` | `tenant_id`, `scope`, `unit`, `status`, `commit_overage_policy`, `utilization`, `debt` | `utilization DESC` |
+| `listWebhookSubscriptions` | `url`, `tenant_id`, `status`, `consecutive_failures` | `consecutive_failures DESC` |
 | `listEvents` | `event_type`, `category`, `scope`, `tenant_id`, `timestamp` | `timestamp DESC` |
 | `listAuditLogs` | `timestamp`, `operation`, `resource_type`, `tenant_id`, `key_id`, `status` | `timestamp DESC` |
+
+Non-`created_at` / non-`timestamp` defaults reflect per-endpoint operator ergonomics: `listBudgets` defaults to `utilization DESC` so hot budgets surface first in the dashboard's default view; `listWebhookSubscriptions` defaults to `consecutive_failures DESC` so flaky subscriptions surface first for operators triaging webhook health. Callers that want `created_at DESC` on budgets/webhooks can pass `sort_by=…` explicitly — these defaults are the server's opinion, not a wire constraint.
 
 **Shared sort foundation.** New under `cycles-admin-service-model/.../model/shared/`:
 
@@ -37,31 +39,34 @@ Every controller threads `sort_by`/`sort_dir` through `parseSortSpec(...)` → `
 
 Per-entity comparators are all null-safe on every whitelisted field, with a primary-key tie-breaker (`tenant_id`, `key_id`, `ledger_id`, `whsub_id`, `event_id`, `log_id`) so cursor resume is total-order deterministic. Unknown fields fall through to the tie-breaker; the controller whitelist already blocks those at the edge.
 
-**Backward compatibility.** Every repository keeps its pre-sort `list(...)` signature as a thin shim that delegates to the new SortSpec-accepting overload with `null` SortSpec. This preserves every existing controller/service call site and every mock in the test suite without rewrites. Callers that opt into sort migrate to the new signature at their own pace; callers that don't see zero behavioural change.
+**Backward compatibility.** Every repository keeps its pre-sort `list(...)` signature as a thin shim that delegates to the new SortSpec-accepting overload with `null` SortSpec — this preserves every repository call site and every existing mock in the test suite without rewrites. Response shape and cursor semantics are unchanged for every endpoint.
+
+Row-order behavioural change to flag for **`listBudgets`** and **`listWebhookSubscriptions`** only: because both controllers always pass a non-null resolved `SortSpec` (never `null`) into the repository, and their new server defaults are `utilization DESC` and `consecutive_failures DESC` respectively (not `created_at DESC`), the default row order for these two endpoints changes versus pre-0.1.25.24 when the caller omits `sort_by`/`sort_dir`. Callers that had pinned to the prior order must pass `sort_by=created_at&sort_dir=desc` explicitly on these two endpoints. The other four endpoints (`listTenants`, `listApiKeys`, `listEvents`, `listAuditLogs`) keep their legacy default row order verbatim because their defaults (`created_at DESC` / `timestamp DESC`) route through the repository's legacy walk path unchanged.
 
 **Why per-endpoint whitelist instead of a global enum.** Different endpoints expose different sortable columns — `listBudgets` sorts on `utilization` (derived), `listEvents` sorts on `event_type` / `category` (enums), `listAuditLogs` sorts on `resource_type`. A global enum would either inflate to 20+ fields (most invalid on any given endpoint) or drop unique fields per endpoint. Per-endpoint `Set<String> ALLOWED_SORT_FIELDS` + `SortSpec.resolve(...)` keeps every endpoint's contract explicit and the error message specific ("sort_by must be one of […]").
 
-**Tests.** +67 unit tests across six endpoints plus shared-model coverage:
+**Tests.** Sort-related tests added across one new shared-model test class plus the six existing repository + controller test classes:
 
-- `SortDirectionTest` (7 tests) + `SortSpecTest` (10 tests) — enum wire-form, resolve whitelist + default fallback, factory errors.
-- `TenantRepositoryTest` +11 sort tests; `TenantControllerTest` +5 contract tests.
+- `cycles-admin-service-model/.../SharedModelTest` — +16 @Test methods covering `SortDirection.fromWire` (null input returns null, valid case-insensitive parse, unknown throws `IllegalArgumentException`), `SortSpec.resolve` (null/blank `rawField` falls back to `defaultField`, unknown `rawField` throws, whitelisted `rawField` round-trips, null `rawDirection` resolves to DESC), and `SortSpec.isAscending` / `of` / accessor helpers.
+- `TenantRepositoryTest` +11 sort tests; `TenantControllerTest` +5 contract tests (default, valid, all whitelist, unknown sort_by → 400, unknown sort_dir → 400).
 - `ApiKeyRepositoryTest` +11 sort tests; `ApiKeyControllerTest` +5 contract tests.
-- `BudgetRepositoryTest` +11 sort tests (including utilization derived-field sort); `BudgetControllerTest` +5 contract tests.
+- `BudgetRepositoryTest` +11 sort tests (including `utilization` derived-field sort + `debt` raw-long sort); `BudgetControllerTest` +5 contract tests.
 - `WebhookRepositoryTest` +11 sort tests; `WebhookAdminControllerTest` +5 contract tests.
-- `EventRepositoryTest` +14 tests (11 sort + 3 comparator/parse-failure coverage); `EventAdminControllerTest` +5 contract tests.
-- `AuditRepositoryTest` +18 sort tests; `AuditControllerTest` +5 contract tests.
+- `EventRepositoryTest` +14 tests (11 sort + 3 comparator / parse-failure coverage).
+- `EventAdminControllerTest` +5 contract tests.
+- `AuditRepositoryTest` +18 sort tests (11 sort + 7 comparator / parse-failure / edge-case coverage).
+- `AuditControllerTest` +5 contract tests.
 
-Existing mocks migrated to new repository signatures (10-arg → 11-arg where SortSpec was added). Full admin-service build: 607/607 tests green; all JaCoCo coverage gates met (data ≥95%, api ≥93%); spec coverage 43/43.
+Existing service-layer mocks migrated to new repository signatures (`EventServiceTest` 9-arg → 10-arg; `WebhookServiceTest` `listByTenant`/`listAll` 5-arg → 6-arg) — the new SortSpec position uses `any()` since the service layer does not validate sort (validation happens in the controller). Full admin-service build: 607/607 tests green; all JaCoCo coverage gates met (data ≥95%, api ≥93%); spec coverage 43/43.
 
 **Dashboard wire-up.** Not in this release. The dashboard's `useSort` composable still sorts client-side; pushing the sort spec to the server (gap V4 follow-through) lands in a separate PR against `cycles-dashboard`. Until then, the server accepts the new query params but no dashboard view sends them — behaviour for existing callers is unchanged.
 
 **AUDIT trail.**
 
 - `cycles-admin-service/pom.xml` → `<revision>0.1.25.24</revision>`.
-- `cycles-admin-service-model/.../model/shared/SortDirection.java` — NEW enum.
-- `cycles-admin-service-model/.../model/shared/SortSpec.java` — NEW record.
-- `cycles-admin-service-model/.../model/shared/SortDirectionTest.java` — NEW (7 tests).
-- `cycles-admin-service-model/.../model/shared/SortSpecTest.java` — NEW (10 tests).
+- `cycles-admin-service-model/.../model/shared/SortDirection.java` — NEW enum (`@JsonValue` wire-form, `@JsonCreator fromWire` case-insensitive parse).
+- `cycles-admin-service-model/.../model/shared/SortSpec.java` — NEW record (`resolve(rawField, rawDirection, allowedFields, defaultField)` + `of` + `isAscending`).
+- `cycles-admin-service-model/src/test/java/io/runcycles/admin/model/SharedModelTest.java` — +16 tests covering both new primitives.
 - `cycles-admin-service-api/.../controller/TenantController.java` — `sort_by`/`sort_dir` params + `parseSortSpec` helper.
 - `cycles-admin-service-api/.../controller/ApiKeyController.java` — same.
 - `cycles-admin-service-api/.../controller/BudgetController.java` — same.

@@ -25,14 +25,23 @@ new optional request fields) are **not** considered breaking.
   `listAuditLogs`. Per-endpoint whitelists (`sort_by` values) are
   enforced at the controller boundary; `sort_dir` ∈ {`asc`, `desc`}.
   Unknown `sort_by` or `sort_dir` → 400 `INVALID_REQUEST`.
-- **Per-endpoint sort defaults.** Absent `sort_by` preserves each
-  endpoint's pre-0.1.25.24 cursor chain verbatim:
-  - `listTenants`, `listApiKeys`, `listBudgets`, `listWebhookSubscriptions` → `created_at DESC`
-  - `listEvents`, `listAuditLogs` → `timestamp DESC`
+- **Per-endpoint sort defaults:**
+  - `listTenants`, `listApiKeys` → `created_at DESC` (matches pre-0.1.25.24 ordering)
+  - `listBudgets` → `utilization DESC` (operator-ergonomics default; **changes default row order** vs. pre-0.1.25.24 — callers that relied on the prior `SMEMBERS` set-iteration order must pass `sort_by=created_at&sort_dir=desc` to restore it)
+  - `listWebhookSubscriptions` → `consecutive_failures DESC` (operator-ergonomics default; **changes default row order** vs. pre-0.1.25.24 — same migration note as `listBudgets`)
+  - `listEvents`, `listAuditLogs` → `timestamp DESC` (matches pre-0.1.25.24 ordering)
+  - Absent `sort_dir` → DESC (spec default).
 - **Total-order cursor under sort.** Each endpoint's comparator is
   null-safe on every whitelisted field with a primary-key tie-breaker
   (`tenant_id`, `key_id`, `ledger_id`, `whsub_id`, `event_id`,
   `log_id`), so cursor resume under any sort is deterministic.
+- **Per-endpoint whitelists.** Spec v0.1.25.20 §V4 enums:
+  - `listTenants` — `tenant_id`, `name`, `status`, `created_at`
+  - `listApiKeys` — `key_id`, `name`, `tenant_id`, `status`, `created_at`, `expires_at`
+  - `listBudgets` — `tenant_id`, `scope`, `unit`, `status`, `commit_overage_policy`, `utilization`, `debt`
+  - `listWebhookSubscriptions` — `url`, `tenant_id`, `status`, `consecutive_failures`
+  - `listEvents` — `event_type`, `category`, `scope`, `tenant_id`, `timestamp`
+  - `listAuditLogs` — `timestamp`, `operation`, `resource_type`, `tenant_id`, `key_id`, `status`
 
 ### Changed
 
@@ -47,11 +56,18 @@ new optional request fields) are **not** considered breaking.
   applying the in-memory sort, so a broad time window with a
   non-timestamp sort will cap at 2000 rows per page after filtering.
 
+### Migration note
+
+For callers that pin to pre-0.1.25.24 default row order on `listBudgets`
+or `listWebhookSubscriptions`, pass `sort_by=created_at&sort_dir=desc`
+explicitly. The other four list endpoints (`listTenants`, `listApiKeys`,
+`listEvents`, `listAuditLogs`) keep the pre-0.1.25.24 default row order
+unchanged when `sort_by`/`sort_dir` are both omitted.
+
 ### Unchanged
 
-- Every caller that doesn't pass `sort_by`/`sort_dir` sees zero
-  behaviour change: cursor chains, response shapes, and default row
-  order all match pre-0.1.25.24.
+- Response shape and cursor-chain semantics on all six endpoints —
+  `has_more`, `next_cursor`, pagination over `limit` rows.
 - No dashboard wire-up in this release — the `cycles-dashboard`
   `useSort` composable still sorts client-side; a follow-up PR against
   the dashboard repo will push sort specs to the server.
