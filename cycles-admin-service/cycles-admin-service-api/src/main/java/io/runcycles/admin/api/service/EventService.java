@@ -131,15 +131,21 @@ public class EventService {
     public EventListResponse list(String tenantId, String eventType, String category,
                                    String scope, String correlationId, Instant from, Instant to,
                                    String cursor, int limit) {
-        return list(tenantId, eventType, category, scope, correlationId, from, to, cursor, limit, null);
+        return list(tenantId, eventType, category, scope, correlationId, from, to, cursor, limit, null, null);
     }
 
     public EventListResponse list(String tenantId, String eventType, String category,
                                    String scope, String correlationId, Instant from, Instant to,
                                    String cursor, int limit, SortSpec sortSpec) {
+        return list(tenantId, eventType, category, scope, correlationId, from, to, cursor, limit, sortSpec, null);
+    }
+
+    public EventListResponse list(String tenantId, String eventType, String category,
+                                   String scope, String correlationId, Instant from, Instant to,
+                                   String cursor, int limit, SortSpec sortSpec, String search) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         List<Event> events = eventRepository.list(tenantId, eventType, category, scope,
-            correlationId, from, to, cursor, effectiveLimit, sortSpec);
+            correlationId, from, to, cursor, effectiveLimit, sortSpec, search);
         return EventListResponse.builder()
             .events(events)
             .hasMore(events.size() >= effectiveLimit)

@@ -5,6 +5,7 @@ import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.auth.*;
 import io.runcycles.admin.model.shared.ErrorCode;
+import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.api.service.EventService;
@@ -66,12 +67,14 @@ public class ApiKeyController {
     public ResponseEntity<ApiKeyListResponse> list(
             @RequestParam(required = false) String tenant_id,
             @RequestParam(required = false) ApiKeyStatus status,
+            @RequestParam(required = false) String search,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit,
             @RequestParam(required = false) String sort_by,
             @RequestParam(required = false) String sort_dir) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         SortSpec sortSpec = parseSortSpec(sort_by, sort_dir);
+        String searchNorm = parseSearch(search);
         // Per governance spec v0.1.25.18: `tenant_id` is now optional under
         // AdminKeyAuth. When absent, list keys across every tenant; the
         // cursor carries "{tenantId}|{keyId}" so a follow-up page resumes
@@ -80,10 +83,10 @@ public class ApiKeyController {
         boolean crossTenant;
         if (tenant_id != null && !tenant_id.isBlank()) {
             crossTenant = false;
-            keys = repository.list(tenant_id, status, cursor, effectiveLimit, sortSpec);
+            keys = repository.list(tenant_id, status, cursor, effectiveLimit, sortSpec, searchNorm);
         } else {
             crossTenant = true;
-            keys = repository.listAllTenants(status, cursor, effectiveLimit, sortSpec);
+            keys = repository.listAllTenants(status, cursor, effectiveLimit, sortSpec, searchNorm);
         }
         var responses = keys.stream().map(ApiKeyResponse::from).collect(Collectors.toList());
         String nextCursor = null;
@@ -116,6 +119,14 @@ public class ApiKeyController {
         }
         try {
             return SortSpec.resolve(sortBy, direction, ALLOWED_SORT_FIELDS, DEFAULT_SORT_FIELD);
+        } catch (IllegalArgumentException e) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
+        }
+    }
+
+    private String parseSearch(String raw) {
+        try {
+            return SearchSpec.resolve(raw);
         } catch (IllegalArgumentException e) {
             throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
         }

@@ -2,17 +2,22 @@ package io.runcycles.admin.data.repository;
 
 import io.runcycles.admin.model.budget.BudgetLedger;
 import io.runcycles.admin.model.budget.BudgetStatus;
+import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.UnitEnum;
 
 /**
  * Composable filter set for listBudgets, introduced in governance spec
- * v0.1.25.18. All fields are optional; null = no filter on that
- * dimension. Filter semantics per spec:
+ * v0.1.25.18 and extended in v0.1.25.21 with {@code search}. All fields
+ * are optional; null = no filter on that dimension. Filter semantics per
+ * spec:
  *
  *   - AND combination across fields.
  *   - Applied before cursor traversal so pagination is stable.
  *   - Budgets with allocated == 0 are treated as utilization == 0
  *     for the utilization_min / utilization_max bounds.
+ *   - Search matches {@code tenant_id} or {@code scope} as a case-
+ *     insensitive substring (OR within the search filter, AND with
+ *     other filter params).
  *
  * The utilization_min > utilization_max cross-parameter constraint
  * is validated at the controller boundary so the 400 is symmetrical
@@ -25,10 +30,21 @@ public record BudgetListFilters(
         Boolean overLimit,
         Boolean hasDebt,
         Double utilizationMin,
-        Double utilizationMax) {
+        Double utilizationMax,
+        String search) {
 
     public static BudgetListFilters empty() {
-        return new BudgetListFilters(null, null, null, null, null, null, null);
+        return new BudgetListFilters(null, null, null, null, null, null, null, null);
+    }
+
+    /**
+     * Backward-compatible constructor without {@code search} — preserved
+     * so existing call sites and tests compile without mass rewrites.
+     */
+    public BudgetListFilters(String scopePrefix, UnitEnum unit, BudgetStatus status,
+                              Boolean overLimit, Boolean hasDebt,
+                              Double utilizationMin, Double utilizationMax) {
+        this(scopePrefix, unit, status, overLimit, hasDebt, utilizationMin, utilizationMax, null);
     }
 
     public boolean matches(BudgetLedger ledger) {
@@ -48,6 +64,12 @@ public record BudgetListFilters(
             double util = computeUtilization(ledger);
             if (utilizationMin != null && util < utilizationMin) return false;
             if (utilizationMax != null && util > utilizationMax) return false;
+        }
+        if (search != null) {
+            if (!SearchSpec.matches(ledger.getTenantId(), search)
+                    && !SearchSpec.matches(ledger.getScope(), search)) {
+                return false;
+            }
         }
         return true;
     }

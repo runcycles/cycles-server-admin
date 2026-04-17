@@ -3,6 +3,7 @@ import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.model.audit.AuditLogListResponse;
 import io.runcycles.admin.model.shared.ErrorCode;
+import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.shared.SortSpec;
 import io.swagger.v3.oas.annotations.*;
@@ -30,14 +31,16 @@ public class AuditController {
             @RequestParam(required = false) String resource_id,
             @RequestParam(required = false) Instant from,
             @RequestParam(required = false) Instant to,
+            @RequestParam(required = false) String search,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit,
             @RequestParam(required = false) String sort_by,
             @RequestParam(required = false) String sort_dir) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         SortSpec sortSpec = parseSortSpec(sort_by, sort_dir);
+        String searchNorm = parseSearch(search);
         var logs = repository.list(tenant_id, key_id, operation, status, resource_type, resource_id,
-            from, to, cursor, effectiveLimit, sortSpec);
+            from, to, cursor, effectiveLimit, sortSpec, searchNorm);
         AuditLogListResponse response = AuditLogListResponse.builder()
             .logs(logs)
             .hasMore(logs.size() >= effectiveLimit)
@@ -59,6 +62,14 @@ public class AuditController {
         }
         try {
             return SortSpec.resolve(sortBy, direction, ALLOWED_SORT_FIELDS, DEFAULT_SORT_FIELD);
+        } catch (IllegalArgumentException e) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
+        }
+    }
+
+    private String parseSearch(String raw) {
+        try {
+            return SearchSpec.resolve(raw);
         } catch (IllegalArgumentException e) {
             throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
         }

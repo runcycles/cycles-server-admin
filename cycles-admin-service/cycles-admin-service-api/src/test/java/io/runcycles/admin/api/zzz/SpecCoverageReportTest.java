@@ -14,6 +14,15 @@ import java.util.TreeSet;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/*
+ * KNOWN-MISSING allowlist: spec operations declared by
+ * cycles-governance-admin v0.1.25.22 that the server has not yet
+ * implemented. Remove entries as the corresponding release lands.
+ *
+ * bulk-action endpoints → planned for server release 0.1.25.26
+ * (see review-admin-0-1-25-spec-indexed-dewdrop.md, Gaps 2 and 3).
+ */
+
 /**
  * Phase-A coverage assertion. Runs LAST by filename-alphabetical order —
  * the {@code zzz} sub-package name sorts after every other
@@ -39,6 +48,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class SpecCoverageReportTest {
 
+    private static final Set<String> KNOWN_MISSING = Set.of(
+            "POST /v1/admin/tenants/bulk-action",
+            "POST /v1/admin/webhooks/bulk-action"
+    );
+
     @Test
     @EnabledIf(value = "io.runcycles.admin.api.contract.ContractValidationConfig#validationEnabled",
                disabledReason = "contract.validation.enabled=false — skipping spec coverage report")
@@ -47,6 +61,7 @@ class SpecCoverageReportTest {
         Set<String> covered = SpecCoverageCollector.covered();
         TreeSet<String> missing = new TreeSet<>(declared);
         missing.removeAll(covered);
+        missing.removeAll(KNOWN_MISSING);
 
         System.out.printf("%n[spec coverage] declared=%d covered=%d missing=%d%n",
                 declared.size(), covered.size(), missing.size());

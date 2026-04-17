@@ -1,5 +1,6 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
+import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortSpec;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.*;
@@ -179,13 +180,22 @@ public class AuditRepository {
                                      String resourceType, String resourceId,
                                      Instant from, Instant to, String cursor, int limit) {
         return list(tenantId, keyId, operation, status, resourceType, resourceId,
-            from, to, cursor, limit, null);
+            from, to, cursor, limit, null, null);
+    }
+
+    public List<AuditLogEntry> list(String tenantId, String keyId, String operation, Integer status,
+                                     String resourceType, String resourceId,
+                                     Instant from, Instant to, String cursor, int limit,
+                                     SortSpec sortSpec) {
+        return list(tenantId, keyId, operation, status, resourceType, resourceId,
+            from, to, cursor, limit, sortSpec, null);
     }
 
     /**
-     * List audit logs with optional sort (spec v0.1.25.20 §V4). Null
-     * SortSpec preserves the legacy timestamp-DESC ZSET walk so auditors'
-     * existing cursor chains keep resolving.
+     * List audit logs with optional sort (spec v0.1.25.20 §V4) and optional
+     * search (spec v0.1.25.21). Search is case-insensitive substring match on
+     * {@code resource_id} OR {@code log_id}, AND-combined with other filters,
+     * applied before cursor traversal.
      *
      * <p>Three paths mirror {@link EventRepository#list}:
      * <ul>
@@ -203,17 +213,17 @@ public class AuditRepository {
     public List<AuditLogEntry> list(String tenantId, String keyId, String operation, Integer status,
                                      String resourceType, String resourceId,
                                      Instant from, Instant to, String cursor, int limit,
-                                     SortSpec sortSpec) {
+                                     SortSpec sortSpec, String search) {
         if (limit <= 0) {
             return new ArrayList<>();
         }
         try (Jedis jedis = jedisPool.getResource()) {
             if (sortSpec == null || isTimestampSort(sortSpec)) {
                 return listByTimestamp(jedis, tenantId, keyId, operation, status,
-                    resourceType, resourceId, from, to, cursor, limit, sortSpec);
+                    resourceType, resourceId, from, to, cursor, limit, sortSpec, search);
             }
             return listSortedNonTimestamp(jedis, tenantId, keyId, operation, status,
-                resourceType, resourceId, from, to, cursor, limit, sortSpec);
+                resourceType, resourceId, from, to, cursor, limit, sortSpec, search);
         }
     }
 
@@ -233,7 +243,7 @@ public class AuditRepository {
                                                  String operation, Integer status,
                                                  String resourceType, String resourceId,
                                                  Instant from, Instant to, String cursor, int limit,
-                                                 SortSpec sortSpec) {
+                                                 SortSpec sortSpec, String search) {
         double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
         double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
         String indexKey = (tenantId != null) ? "audit:logs:" + tenantId : "audit:logs:_all";
@@ -263,6 +273,7 @@ public class AuditRepository {
                 }
                 AuditLogEntry entry = objectMapper.readValue(data, AuditLogEntry.class);
                 if (!matchesFilters(entry, keyId, operation, status, resourceType, resourceId)) continue;
+                if (!matchesSearch(entry, search)) continue;
                 logs.add(entry);
                 if (logs.size() >= limit) break;
             } catch (Exception e) {
@@ -276,7 +287,7 @@ public class AuditRepository {
                                                         String operation, Integer status,
                                                         String resourceType, String resourceId,
                                                         Instant from, Instant to, String cursor, int limit,
-                                                        SortSpec sortSpec) {
+                                                        SortSpec sortSpec, String search) {
         double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
         double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
         String indexKey = (tenantId != null) ? "audit:logs:" + tenantId : "audit:logs:_all";
@@ -289,6 +300,7 @@ public class AuditRepository {
                 if (data == null) continue;
                 AuditLogEntry entry = objectMapper.readValue(data, AuditLogEntry.class);
                 if (!matchesFilters(entry, keyId, operation, status, resourceType, resourceId)) continue;
+                if (!matchesSearch(entry, search)) continue;
                 all.add(entry);
             } catch (Exception e) {
                 LOG.warn("Failed to parse log: {}", id, e);
@@ -316,6 +328,17 @@ public class AuditRepository {
         if (resourceType != null && !resourceType.equals(entry.getResourceType())) return false;
         if (resourceId != null && !resourceId.equals(entry.getResourceId())) return false;
         return true;
+    }
+
+    /**
+     * Spec v0.1.25.21: listAuditLogs search matches {@code resource_id}
+     * OR {@code log_id} as a case-insensitive substring. Null search =
+     * no filter.
+     */
+    private static boolean matchesSearch(AuditLogEntry entry, String search) {
+        if (search == null) return true;
+        return SearchSpec.matches(entry.getResourceId(), search)
+            || SearchSpec.matches(entry.getLogId(), search);
     }
 
     /**

@@ -1662,4 +1662,17 @@ class BudgetControllerTest {
         org.assertj.core.api.Assertions.assertThat(captured.field()).isEqualTo("tenant_id");
         org.assertj.core.api.Assertions.assertThat(captured.direction()).isEqualTo(SortDirection.ASC);
     }
+
+    @Test
+    void listBudgets_searchOver128Chars_returns400() throws Exception {
+        String over = "x".repeat(129);
+        mockMvc.perform(get("/v1/admin/budgets")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .param("search", over))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(budgetRepository, never()).list(any(), any(BudgetListFilters.class), any(), anyInt(), any());
+        verify(budgetRepository, never()).listAllTenants(any(BudgetListFilters.class), any(), anyInt(), any());
+    }
 }

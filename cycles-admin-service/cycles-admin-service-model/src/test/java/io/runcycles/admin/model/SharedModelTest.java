@@ -193,6 +193,75 @@ class SharedModelTest {
         assertTrue(spec.isAscending());
     }
 
+    // ---- v0.1.25.21: SearchSpec normalizer ----
+
+    @Test
+    void searchSpec_resolve_nullReturnsNull() {
+        assertNull(SearchSpec.resolve(null));
+    }
+
+    @Test
+    void searchSpec_resolve_emptyStringTreatedAsAbsent() {
+        assertNull(SearchSpec.resolve(""));
+    }
+
+    @Test
+    void searchSpec_resolve_whitespaceOnlyTreatedAsAbsent() {
+        assertNull(SearchSpec.resolve("   "));
+        assertNull(SearchSpec.resolve("\t\n "));
+    }
+
+    @Test
+    void searchSpec_resolve_trimsInput() {
+        assertEquals("acme", SearchSpec.resolve("  acme  "));
+        assertEquals("acme", SearchSpec.resolve("acme\n"));
+    }
+
+    @Test
+    void searchSpec_resolve_acceptsMaxLength() {
+        String atCap = "x".repeat(SearchSpec.MAX_LENGTH);
+        assertEquals(atCap, SearchSpec.resolve(atCap));
+    }
+
+    @Test
+    void searchSpec_resolve_rejectsOverMaxLength() {
+        String overCap = "x".repeat(SearchSpec.MAX_LENGTH + 1);
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+            () -> SearchSpec.resolve(overCap));
+        assertTrue(ex.getMessage().contains("maxLength"));
+        assertTrue(ex.getMessage().contains("128"));
+    }
+
+    @Test
+    void searchSpec_resolve_lengthCheckAppliesAfterTrim() {
+        // Verifies validator order: trim → empty-check → length-check.
+        // Trailing whitespace MUST NOT bypass the 128-char cap by
+        // inflating wire-level length: the trimmed value is 129, which
+        // exceeds the cap even though the raw string was 132.
+        String trimmedTo129 = "x".repeat(129) + "   ";
+        assertThrows(IllegalArgumentException.class,
+            () -> SearchSpec.resolve(trimmedTo129));
+
+        // Conversely, raw length 132 but trimmed length 128 MUST pass.
+        String trimmedTo128 = "x".repeat(128) + "   ";
+        assertEquals("x".repeat(128), SearchSpec.resolve(trimmedTo128));
+    }
+
+    @Test
+    void searchSpec_matches_caseInsensitiveSubstring() {
+        assertTrue(SearchSpec.matches("acme-prod", "ACME"));
+        assertTrue(SearchSpec.matches("ACME-PROD", "acme"));
+        assertTrue(SearchSpec.matches("tenant:acme/ws:1", "acme"));
+        assertFalse(SearchSpec.matches("foo", "bar"));
+    }
+
+    @Test
+    void searchSpec_matches_nullSafe() {
+        assertFalse(SearchSpec.matches(null, "acme"));
+        assertFalse(SearchSpec.matches("acme", null));
+        assertFalse(SearchSpec.matches(null, null));
+    }
+
     @Test
     void adminOverviewResponse_v0_1_25_8Fields_omittedWhenNull() throws Exception {
         ObjectMapper m = new ObjectMapper();

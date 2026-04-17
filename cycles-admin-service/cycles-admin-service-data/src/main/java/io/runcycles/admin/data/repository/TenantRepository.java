@@ -2,6 +2,7 @@ package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.model.shared.CommitOveragePolicy;
+import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.tenant.Tenant;
 import io.runcycles.admin.model.tenant.TenantCreateRequest;
@@ -96,29 +97,29 @@ public class TenantRepository {
         }
     }
     public List<Tenant> list(TenantStatus status, String parentTenantId, String cursor, int limit) {
-        return list(status, parentTenantId, cursor, limit, null);
+        return list(status, parentTenantId, null, cursor, limit, null);
+    }
+
+    public List<Tenant> list(TenantStatus status, String parentTenantId, String cursor, int limit, SortSpec sortSpec) {
+        return list(status, parentTenantId, null, cursor, limit, sortSpec);
     }
 
     /**
-     * Sort-aware list (spec v0.1.25.20). When sortSpec is null, falls
-     * back to the pre-sort tenant_id-lexicographic order for wire-compat
-     * with older callers that haven't opted in.
+     * Search-aware list (spec v0.1.25.21). When {@code search} is non-null,
+     * the tenant set is narrowed to rows whose {@code tenant_id} or
+     * {@code name} contains the search value as a case-insensitive
+     * substring. The filter is applied BEFORE cursor pagination so cursor
+     * traversal is stable under a given (filters, sort, search) tuple.
      *
-     * With a sortSpec, the implementation hydrates the full filtered set
-     * in memory, applies the Comparator, then walks past `cursor` and
-     * takes `limit`. The SMEMBERS set is bounded (set of tenant IDs),
-     * so worst-case memory is one Tenant record per active tenant —
-     * acceptable for the admin pane's cardinality envelope.
+     * When {@code sortSpec} is null, falls back to the pre-sort tenant_id-
+     * lexicographic order for wire-compat with older callers that haven't
+     * opted in. Search applies in both the sort-aware and legacy paths.
      */
-    public List<Tenant> list(TenantStatus status, String parentTenantId, String cursor, int limit, SortSpec sortSpec) {
+    public List<Tenant> list(TenantStatus status, String parentTenantId, String search,
+                              String cursor, int limit, SortSpec sortSpec) {
         try (Jedis jedis = jedisPool.getResource()) {
-            // Null SortSpec preserves the pre-v0.1.25.20 cursor semantics:
-            // the cursor is matched against the raw tenant_id set (before
-            // hydration), so a cursor pointing at a since-deleted tenant
-            // still advances past it. Callers who opt in with a SortSpec
-            // get the sort-aware path below.
             if (sortSpec == null) {
-                return listLegacy(jedis, status, parentTenantId, cursor, limit);
+                return listLegacy(jedis, status, parentTenantId, search, cursor, limit);
             }
             Set<String> ids = jedis.smembers("tenants");
             List<Tenant> hydrated = new ArrayList<>();
@@ -130,8 +131,7 @@ public class TenantRepository {
                         continue;
                     }
                     Tenant t = objectMapper.readValue(data, Tenant.class);
-                    if (status != null && t.getStatus() != status) continue;
-                    if (parentTenantId != null && !parentTenantId.equals(t.getParentTenantId())) continue;
+                    if (!matchesFilters(t, status, parentTenantId, search)) continue;
                     hydrated.add(t);
                 } catch (Exception e) {
                     LOG.warn("Failed to load tenant: {}", id, e);
@@ -153,7 +153,7 @@ public class TenantRepository {
     }
 
     private List<Tenant> listLegacy(Jedis jedis, TenantStatus status, String parentTenantId,
-                                     String cursor, int limit) {
+                                     String search, String cursor, int limit) {
         Set<String> ids = jedis.smembers("tenants");
         List<String> sortedIds = new ArrayList<>(ids);
         Collections.sort(sortedIds);
@@ -171,8 +171,7 @@ public class TenantRepository {
                     continue;
                 }
                 Tenant t = objectMapper.readValue(data, Tenant.class);
-                if (status != null && t.getStatus() != status) continue;
-                if (parentTenantId != null && !parentTenantId.equals(t.getParentTenantId())) continue;
+                if (!matchesFilters(t, status, parentTenantId, search)) continue;
                 tenants.add(t);
                 if (tenants.size() >= limit) break;
             } catch (Exception e) {
@@ -180,6 +179,20 @@ public class TenantRepository {
             }
         }
         return tenants;
+    }
+
+    private static boolean matchesFilters(Tenant t, TenantStatus status, String parentTenantId, String search) {
+        if (status != null && t.getStatus() != status) return false;
+        if (parentTenantId != null && !parentTenantId.equals(t.getParentTenantId())) return false;
+        if (search != null) {
+            // Per spec v0.1.25.21: search matches tenant_id OR name (OR semantics
+            // within the search filter, AND with other filter params).
+            if (!SearchSpec.matches(t.getTenantId(), search)
+                    && !SearchSpec.matches(t.getName(), search)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

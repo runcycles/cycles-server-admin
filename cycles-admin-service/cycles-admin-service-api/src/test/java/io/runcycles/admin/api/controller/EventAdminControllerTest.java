@@ -42,7 +42,7 @@ class EventAdminControllerTest {
     void listEvents_returns200() throws Exception {
         EventListResponse response = EventListResponse.builder()
             .events(List.of()).hasMore(false).build();
-        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any()))
+        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any(), any()))
             .thenReturn(response);
 
         mockMvc.perform(get("/v1/admin/events")
@@ -57,7 +57,7 @@ class EventAdminControllerTest {
         EventListResponse response = EventListResponse.builder()
             .events(List.of()).hasMore(false).build();
         when(eventService.list(eq("tenant-1"), eq("budget.created"), eq("budget"), eq("org/team1"),
-                eq("corr_1"), any(), any(), any(), anyInt(), any()))
+                eq("corr_1"), any(), any(), any(), anyInt(), any(), any()))
             .thenReturn(response);
 
         mockMvc.perform(get("/v1/admin/events")
@@ -95,7 +95,7 @@ class EventAdminControllerTest {
     void listEvents_clampsLimitTo100() throws Exception {
         EventListResponse response = EventListResponse.builder()
             .events(List.of()).hasMore(false).build();
-        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(100), any()))
+        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(100), any(), any()))
             .thenReturn(response);
 
         mockMvc.perform(get("/v1/admin/events")
@@ -103,7 +103,7 @@ class EventAdminControllerTest {
                         .param("limit", "999"))
                 .andExpect(status().isOk());
 
-        verify(eventService).list(any(), any(), any(), any(), any(), any(), any(), any(), eq(100), any());
+        verify(eventService).list(any(), any(), any(), any(), any(), any(), any(), any(), eq(100), any(), any());
     }
 
     @Test
@@ -123,7 +123,7 @@ class EventAdminControllerTest {
     void listEvents_defaultsToTimestampDesc() throws Exception {
         EventListResponse response = EventListResponse.builder()
             .events(List.of()).hasMore(false).build();
-        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any()))
+        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any(), any()))
             .thenReturn(response);
 
         mockMvc.perform(get("/v1/admin/events")
@@ -131,7 +131,7 @@ class EventAdminControllerTest {
                 .andExpect(status().isOk());
 
         ArgumentCaptor<SortSpec> captor = ArgumentCaptor.forClass(SortSpec.class);
-        verify(eventService).list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), captor.capture());
+        verify(eventService).list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), captor.capture(), any());
         SortSpec sort = captor.getValue();
         org.junit.jupiter.api.Assertions.assertEquals("timestamp", sort.field());
         org.junit.jupiter.api.Assertions.assertEquals(SortDirection.DESC, sort.direction());
@@ -141,7 +141,7 @@ class EventAdminControllerTest {
     void listEvents_acceptsValidSortByAndDir() throws Exception {
         EventListResponse response = EventListResponse.builder()
             .events(List.of()).hasMore(false).build();
-        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any()))
+        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any(), any()))
             .thenReturn(response);
 
         mockMvc.perform(get("/v1/admin/events")
@@ -151,7 +151,7 @@ class EventAdminControllerTest {
                 .andExpect(status().isOk());
 
         ArgumentCaptor<SortSpec> captor = ArgumentCaptor.forClass(SortSpec.class);
-        verify(eventService).list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), captor.capture());
+        verify(eventService).list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), captor.capture(), any());
         SortSpec sort = captor.getValue();
         org.junit.jupiter.api.Assertions.assertEquals("event_type", sort.field());
         org.junit.jupiter.api.Assertions.assertEquals(SortDirection.ASC, sort.direction());
@@ -161,7 +161,7 @@ class EventAdminControllerTest {
     void listEvents_acceptsAllWhitelistedFields() throws Exception {
         EventListResponse response = EventListResponse.builder()
             .events(List.of()).hasMore(false).build();
-        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any()))
+        when(eventService.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any(), any()))
             .thenReturn(response);
 
         for (String field : List.of("event_type", "category", "scope", "tenant_id", "timestamp")) {
@@ -189,5 +189,18 @@ class EventAdminControllerTest {
                         .param("sort_dir", "sideways"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void listEvents_searchOver128Chars_returns400() throws Exception {
+        String over = "x".repeat(129);
+        mockMvc.perform(get("/v1/admin/events")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("search", over))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(eventService, never()).list(any(), any(), any(), any(), any(), any(),
+                any(), any(), anyInt(), any(), any());
     }
 }

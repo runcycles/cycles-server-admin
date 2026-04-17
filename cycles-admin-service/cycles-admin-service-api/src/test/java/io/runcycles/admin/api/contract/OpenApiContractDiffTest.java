@@ -16,6 +16,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import redis.clients.jedis.JedisPool;
 
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -60,6 +61,19 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 })
 class OpenApiContractDiffTest {
 
+    /*
+     * KNOWN-MISSING allowlist: spec operations declared by v0.1.25.22 but
+     * not yet implemented on the server. Remove entries as the
+     * corresponding release lands. See SpecCoverageReportTest for the
+     * mirrored list.
+     *
+     * bulk-action endpoints → planned for server release 0.1.25.26.
+     */
+    private static final Set<String> KNOWN_MISSING = Set.of(
+            "POST /v1/admin/tenants/bulk-action",
+            "POST /v1/admin/webhooks/bulk-action"
+    );
+
     @Autowired private MockMvc mockMvc;
     @MockitoBean private JedisPool jedisPool;
 
@@ -74,7 +88,9 @@ class OpenApiContractDiffTest {
         String specYaml = ContractSpecLoader.loadSpec();
         ChangedOpenApi diff = OpenApiCompare.fromContents(specYaml, serverJson);
 
-        List<Endpoint> missing = diff.getMissingEndpoints();
+        List<Endpoint> missing = diff.getMissingEndpoints().stream()
+                .filter(e -> !KNOWN_MISSING.contains(e.getMethod() + " " + e.getPathUrl()))
+                .collect(Collectors.toList());
         List<Endpoint> extra = diff.getNewEndpoints();
         // Only fail on INCOMPATIBLE (spec-breaking) operation-level changes. SpringDoc's
         // auto-generated OpenAPI doesn't exactly match the hand-written spec at deep

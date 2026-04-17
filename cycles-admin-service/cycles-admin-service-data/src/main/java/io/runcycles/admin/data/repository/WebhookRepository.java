@@ -2,6 +2,7 @@ package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.service.CryptoService;
 import io.runcycles.admin.model.event.EventType;
+import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.webhook.WebhookStatus;
 import io.runcycles.admin.model.webhook.WebhookSubscription;
@@ -162,20 +163,30 @@ public class WebhookRepository {
 
     public List<WebhookSubscription> listByTenant(String tenantId, String status, String eventType,
                                                    String cursor, int limit) {
-        return listFromSet("webhooks:" + tenantId, status, eventType, cursor, limit, null);
+        return listFromSet("webhooks:" + tenantId, status, eventType, cursor, limit, null, null);
     }
 
     public List<WebhookSubscription> listByTenant(String tenantId, String status, String eventType,
                                                    String cursor, int limit, SortSpec sortSpec) {
-        return listFromSet("webhooks:" + tenantId, status, eventType, cursor, limit, sortSpec);
+        return listFromSet("webhooks:" + tenantId, status, eventType, cursor, limit, sortSpec, null);
+    }
+
+    public List<WebhookSubscription> listByTenant(String tenantId, String status, String eventType,
+                                                   String cursor, int limit, SortSpec sortSpec, String search) {
+        return listFromSet("webhooks:" + tenantId, status, eventType, cursor, limit, sortSpec, search);
     }
 
     public List<WebhookSubscription> listAll(String status, String eventType, String cursor, int limit) {
-        return listFromSet("webhooks:_all", status, eventType, cursor, limit, null);
+        return listFromSet("webhooks:_all", status, eventType, cursor, limit, null, null);
     }
 
     public List<WebhookSubscription> listAll(String status, String eventType, String cursor, int limit, SortSpec sortSpec) {
-        return listFromSet("webhooks:_all", status, eventType, cursor, limit, sortSpec);
+        return listFromSet("webhooks:_all", status, eventType, cursor, limit, sortSpec, null);
+    }
+
+    public List<WebhookSubscription> listAll(String status, String eventType, String cursor, int limit,
+                                              SortSpec sortSpec, String search) {
+        return listFromSet("webhooks:_all", status, eventType, cursor, limit, sortSpec, search);
     }
 
     public List<WebhookSubscription> findMatchingSubscriptions(String tenantId, EventType eventType, String scope) {
@@ -230,7 +241,7 @@ public class WebhookRepository {
     }
 
     private List<WebhookSubscription> listFromSet(String setKey, String status, String eventType,
-                                                   String cursor, int limit, SortSpec sortSpec) {
+                                                   String cursor, int limit, SortSpec sortSpec, String search) {
         if (limit <= 0) {
             return new ArrayList<>();
         }
@@ -240,14 +251,14 @@ public class WebhookRepository {
                 return new ArrayList<>();
             }
             if (sortSpec == null) {
-                return listLegacy(jedis, ids, status, eventType, cursor, limit);
+                return listLegacy(jedis, ids, status, eventType, cursor, limit, search);
             }
-            return listSorted(jedis, ids, status, eventType, cursor, limit, sortSpec);
+            return listSorted(jedis, ids, status, eventType, cursor, limit, sortSpec, search);
         }
     }
 
     private List<WebhookSubscription> listLegacy(Jedis jedis, Set<String> ids, String status,
-                                                  String eventType, String cursor, int limit) {
+                                                  String eventType, String cursor, int limit, String search) {
         // Sort IDs lexicographically for deterministic pagination (pre-v0.1.25.20
         // behaviour). Preserved when caller passes no SortSpec so existing cursor
         // chains don't break.
@@ -267,6 +278,7 @@ public class WebhookRepository {
             WebhookSubscription sub = tryHydrate(jedis, sortedIds.get(i));
             if (sub == null) continue;
             if (!matchesStatusAndEventType(sub, status, eventType)) continue;
+            if (!matchesSearch(sub, search)) continue;
             results.add(sub);
         }
         return results;
@@ -274,7 +286,7 @@ public class WebhookRepository {
 
     private List<WebhookSubscription> listSorted(Jedis jedis, Set<String> ids, String status,
                                                   String eventType, String cursor, int limit,
-                                                  SortSpec sortSpec) {
+                                                  SortSpec sortSpec, String search) {
         // Sorted path: hydrate all, filter, sort, walk cursor strictly-after.
         // Cursor remains the subscription_id (wire-compat); caller must pass the
         // same sortSpec on follow-up pages for stable traversal.
@@ -283,6 +295,7 @@ public class WebhookRepository {
             WebhookSubscription sub = tryHydrate(jedis, id);
             if (sub == null) continue;
             if (!matchesStatusAndEventType(sub, status, eventType)) continue;
+            if (!matchesSearch(sub, search)) continue;
             all.add(sub);
         }
         all.sort(webhookComparator(sortSpec));
@@ -321,6 +334,17 @@ public class WebhookRepository {
             }
         }
         return true;
+    }
+
+    /**
+     * Spec v0.1.25.21: listWebhookSubscriptions search matches
+     * {@code subscription_id} OR {@code url} as a case-insensitive
+     * substring. Null search = no filter.
+     */
+    private static boolean matchesSearch(WebhookSubscription sub, String search) {
+        if (search == null) return true;
+        return SearchSpec.matches(sub.getSubscriptionId(), search)
+            || SearchSpec.matches(sub.getUrl(), search);
     }
 
     /**
