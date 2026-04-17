@@ -326,9 +326,10 @@ class AdminFlowIntegrationTest extends BaseIntegrationTest {
         assertThat(exLogs).noneMatch(e -> "UNAUTHORIZED".equals(e.get("error_code")));
         assertThat(exLogs).anyMatch(e -> Integer.valueOf(201).equals(e.get("status")));
 
-        // 26c. status range 400..499 — must include the 400 malformed-JSON
-        // entry and the 404 not-found entry, must exclude the 401 and
-        // any 2xx success rows.
+        // 26c. status range 400..499 — must include all 4xx seeded entries
+        // (400 malformed, 401 unauthorized, 404 not-found) and exclude any
+        // 2xx success rows. Narrow-range slicing (e.g. 401..401) belongs
+        // in AuditControllerTest, not the full-stack pass.
         ResponseEntity<Map> range4xx = adminGet(
                 "/v1/admin/audit/logs?status_min=400&status_max=499&limit=200");
         assertThat(range4xx.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -341,7 +342,6 @@ class AdminFlowIntegrationTest extends BaseIntegrationTest {
         });
         assertThat(rangeLogs).anyMatch(e -> Integer.valueOf(400).equals(e.get("status")));
         assertThat(rangeLogs).anyMatch(e -> Integer.valueOf(404).equals(e.get("status")));
-        assertThat(rangeLogs).noneMatch(e -> Integer.valueOf(401).equals(e.get("status")));
 
         // 26d. operation IN-list (promoted scalar→array). Pass two
         // seeded operations as a comma-separated list; response MUST
