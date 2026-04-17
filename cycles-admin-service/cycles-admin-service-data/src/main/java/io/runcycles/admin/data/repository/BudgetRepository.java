@@ -20,6 +20,16 @@ import java.util.*;
 public class BudgetRepository {
     private static final Logger LOG = LoggerFactory.getLogger(BudgetRepository.class);
 
+    // Cross-tenant sorted list must hydrate every tenant's budgets before the
+    // in-memory sort, which is unbounded in the naive case (10k tenants *
+    // 50 budgets = 500k hydrations). Cap at 2000 total ledgers across all
+    // tenants so the admin pane cannot exhaust heap on a cross-tenant sort +
+    // broad filter. Callers that need to see beyond the cap should narrow
+    // the filter (status, unit, tenant_id, utilization_min/max) to fit
+    // under it. Log at WARN when hit so operators can see that the sort
+    // window was truncated.
+    static final int SORTED_HYDRATE_CAP = 2000;
+
     /**
      * Normalize scope values to lowercase to match the runtime server's
      * ScopeDerivationService which lowercases all scope segments.
@@ -572,9 +582,12 @@ public class BudgetRepository {
         Set<String> tenantIds = jedis.smembers("tenants");
         List<BudgetLedger> all = new ArrayList<>();
         BudgetListFilters effective = filters != null ? filters : BudgetListFilters.empty();
+        boolean capped = false;
+        outer:
         for (String tenantId : tenantIds) {
             Set<String> budgetKeys = jedis.smembers("budgets:" + tenantId);
             for (String key : budgetKeys) {
+                if (all.size() >= SORTED_HYDRATE_CAP) { capped = true; break outer; }
                 try {
                     Map<String, String> hash = jedis.hgetAll(key);
                     if (hash.isEmpty()) continue;
@@ -585,6 +598,9 @@ public class BudgetRepository {
                     LOG.warn("Failed to parse budget: {}", key, e);
                 }
             }
+        }
+        if (capped) {
+            LOG.warn("listAllTenants sort hydration capped at {} budgets; narrow filters to see beyond the cap", SORTED_HYDRATE_CAP);
         }
         all.sort(budgetComparator(sortSpec));
         List<BudgetLedger> result = new ArrayList<>();

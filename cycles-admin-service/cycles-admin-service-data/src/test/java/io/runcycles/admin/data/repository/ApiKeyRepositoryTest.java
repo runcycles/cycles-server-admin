@@ -1220,4 +1220,37 @@ class ApiKeyRepositoryTest {
 
         assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_c1");
     }
+
+    @Test
+    void listAllTenants_sorted_stopsAtHydrationCap() throws Exception {
+        // Hydrate SORTED_HYDRATE_CAP+10 keys under a single tenant; the sorted
+        // cross-tenant path must stop hydrating at the cap and still return a
+        // valid sorted page from the capped window. Page size 5 ensures the
+        // page fills from the capped slice regardless of global population.
+        int cap = ApiKeyRepository.SORTED_HYDRATE_CAP;
+        int total = cap + 10;
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        LinkedHashSet<String> keyIds = new LinkedHashSet<>();
+        Map<String, String> jsonById = new LinkedHashMap<>();
+        for (int i = 0; i < total; i++) {
+            String id = String.format("key_%05d", i);
+            keyIds.add(id);
+            ApiKey k = buildKeySorted("tenant-a", id, "Name-" + i, ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
+            // Serialize before stubbing so the spy isn't invoked inside a when() clause
+            jsonById.put(id, objectMapper.writeValueAsString(k));
+        }
+        for (var e : jsonById.entrySet()) {
+            lenient().when(jedis.get("apikey:" + e.getKey())).thenReturn(e.getValue());
+        }
+        when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-a")));
+        when(jedis.smembers("apikeys:tenant-a")).thenReturn(keyIds);
+
+        List<ApiKey> result = repository.listAllTenants(null, null, 5,
+                SortSpec.of("key_id", SortDirection.ASC));
+
+        // We never observe more than `cap` hydrations, so `jedis.get` is called at most `cap` times.
+        // Page requested is 5 rows, delivered from the capped slice.
+        assertThat(result).hasSize(5);
+        verify(jedis, atMost(cap)).get(anyString());
+    }
 }

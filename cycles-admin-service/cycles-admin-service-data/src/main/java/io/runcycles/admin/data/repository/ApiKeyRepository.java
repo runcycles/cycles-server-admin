@@ -20,6 +20,15 @@ public class ApiKeyRepository {
     private static final List<String> DEFAULT_PERMISSIONS = List.of(
         "reservations:create", "reservations:commit", "reservations:release",
         "reservations:extend", "reservations:list", "balances:read");
+
+    // Cross-tenant sorted list must hydrate every tenant's keys before the
+    // in-memory sort, which is unbounded in the naive case (10k tenants *
+    // 50 keys = 500k hydrations). Cap at 2000 total keys across all tenants
+    // so the admin pane cannot exhaust heap on a cross-tenant sort + broad
+    // filter. Callers that need to see beyond the cap should narrow the
+    // filter (status, tenant_id) to fit under it. Log at WARN when hit so
+    // operators can see that the sort window was truncated.
+    static final int SORTED_HYDRATE_CAP = 2000;
     // Lua script for atomic API key creation with tenant validation.
     // Validates tenant exists and is ACTIVE atomically, then creates key + index + lookup.
     // KEYS[1] = apikey:<keyId>, KEYS[2] = apikeys:<tenantId>, KEYS[3] = apikey:lookup:<prefix>,
@@ -310,9 +319,12 @@ public class ApiKeyRepository {
     private List<ApiKey> listAllTenantsSorted(Jedis jedis, ApiKeyStatus statusFilter, String cursor, int limit, SortSpec sortSpec) {
         Set<String> tenantIds = jedis.smembers("tenants");
         List<ApiKey> all = new ArrayList<>();
+        boolean capped = false;
+        outer:
         for (String tenantId : tenantIds) {
             Set<String> keyIds = jedis.smembers("apikeys:" + tenantId);
             for (String keyId : keyIds) {
+                if (all.size() >= SORTED_HYDRATE_CAP) { capped = true; break outer; }
                 try {
                     String data = jedis.get("apikey:" + keyId);
                     if (data == null) continue;
@@ -323,6 +335,9 @@ public class ApiKeyRepository {
                     LOG.warn("Failed to parse key: {}", keyId, e);
                 }
             }
+        }
+        if (capped) {
+            LOG.warn("listAllTenants sort hydration capped at {} keys; narrow filters to see beyond the cap", SORTED_HYDRATE_CAP);
         }
         all.sort(apiKeyComparator(sortSpec));
         List<ApiKey> result = new ArrayList<>();

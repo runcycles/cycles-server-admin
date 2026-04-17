@@ -1551,4 +1551,34 @@ class BudgetRepositoryTest {
         assertThat(result).extracting(BudgetLedger::getLedgerId)
                 .containsExactly("led-c1");
     }
+
+    @Test
+    void listAllTenants_sorted_stopsAtHydrationCap() {
+        // SORTED_HYDRATE_CAP+10 budgets under one tenant; cross-tenant sorted
+        // path must stop at the cap. We request a 5-row page so it can be
+        // filled from the capped slice regardless of total population.
+        int cap = BudgetRepository.SORTED_HYDRATE_CAP;
+        int total = cap + 10;
+        LinkedHashSet<String> keys = new LinkedHashSet<>();
+        for (int i = 0; i < total; i++) {
+            String ledgerId = String.format("led-%05d", i);
+            String scope = String.format("scope-%05d", i);
+            String key = "budget:" + scope + ":USD_MICROCENTS";
+            keys.add(key);
+            lenient().when(jedis.hgetAll(key))
+                    .thenReturn(hashWith(ledgerId, scope, "USD_MICROCENTS", 100, 0, 0, false, "tenant-a"));
+        }
+        when(jedis.smembers("tenants"))
+                .thenReturn(new LinkedHashSet<>(List.of("tenant-a")));
+        when(jedis.smembers("budgets:tenant-a")).thenReturn(keys);
+
+        SortSpec sort = SortSpec.of("tenant_id", SortDirection.ASC);
+        List<BudgetLedger> result = repository.listAllTenants(
+                BudgetListFilters.empty(), null, 5, sort);
+
+        // Page is filled from the capped slice. Hydration hgetAll is invoked
+        // at most `cap` times on the filtered set — never all `total`.
+        assertThat(result).hasSize(5);
+        verify(jedis, atMost(cap)).hgetAll(anyString());
+    }
 }
