@@ -71,7 +71,7 @@ class ApiKeyControllerTest {
                 .keyId("key_1").tenantId("tenant-1").keyPrefix("gov_pre")
                 .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(86400)).build();
-        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), anyInt(), any())).thenReturn(List.of(key));
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), anyInt(), any(), any())).thenReturn(List.of(key));
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -153,7 +153,7 @@ class ApiKeyControllerTest {
 
     @Test
     void listApiKeys_emptyResult_hasMoreFalseAndNoCursor() throws Exception {
-        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), anyInt(), any())).thenReturn(List.of());
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), anyInt(), any(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -166,7 +166,7 @@ class ApiKeyControllerTest {
 
     @Test
     void listApiKeys_limitClampedToMax100() throws Exception {
-        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(100), any())).thenReturn(List.of());
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(100), any(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -174,12 +174,12 @@ class ApiKeyControllerTest {
                         .param("limit", "500"))
                 .andExpect(status().isOk());
 
-        verify(apiKeyRepository).list(eq("tenant-1"), any(), any(), eq(100), any());
+        verify(apiKeyRepository).list(eq("tenant-1"), any(), any(), eq(100), any(), any());
     }
 
     @Test
     void listApiKeys_limitClampedToMin1() throws Exception {
-        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(1), any())).thenReturn(List.of());
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(1), any(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -187,7 +187,7 @@ class ApiKeyControllerTest {
                         .param("limit", "0"))
                 .andExpect(status().isOk());
 
-        verify(apiKeyRepository).list(eq("tenant-1"), any(), any(), eq(1), any());
+        verify(apiKeyRepository).list(eq("tenant-1"), any(), any(), eq(1), any(), any());
     }
 
     @Test
@@ -255,7 +255,7 @@ class ApiKeyControllerTest {
 
     @Test
     void listApiKeys_withStatusFilter_passesToRepository() throws Exception {
-        when(apiKeyRepository.list(eq("tenant-1"), eq(ApiKeyStatus.REVOKED), any(), anyInt(), any())).thenReturn(List.of());
+        when(apiKeyRepository.list(eq("tenant-1"), eq(ApiKeyStatus.REVOKED), any(), anyInt(), any(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -263,12 +263,12 @@ class ApiKeyControllerTest {
                         .param("status", "REVOKED"))
                 .andExpect(status().isOk());
 
-        verify(apiKeyRepository).list(eq("tenant-1"), eq(ApiKeyStatus.REVOKED), any(), anyInt(), any());
+        verify(apiKeyRepository).list(eq("tenant-1"), eq(ApiKeyStatus.REVOKED), any(), anyInt(), any(), any());
     }
 
     @Test
     void listApiKeys_withCursorParam_passesToRepository() throws Exception {
-        when(apiKeyRepository.list(eq("tenant-1"), any(), eq("key_abc"), anyInt(), any())).thenReturn(List.of());
+        when(apiKeyRepository.list(eq("tenant-1"), any(), eq("key_abc"), anyInt(), any(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -276,7 +276,7 @@ class ApiKeyControllerTest {
                         .param("cursor", "key_abc"))
                 .andExpect(status().isOk());
 
-        verify(apiKeyRepository).list(eq("tenant-1"), any(), eq("key_abc"), anyInt(), any());
+        verify(apiKeyRepository).list(eq("tenant-1"), any(), eq("key_abc"), anyInt(), any(), any());
     }
 
     @Test
@@ -289,7 +289,7 @@ class ApiKeyControllerTest {
                 .keyId("key_2").tenantId("tenant-1").keyPrefix("gov_pre2")
                 .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(86400)).build();
-        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(2), any())).thenReturn(List.of(k1, k2));
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(2), any(), any())).thenReturn(List.of(k1, k2));
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -449,7 +449,7 @@ class ApiKeyControllerTest {
                 .keyId("key_b").tenantId("tenant-b").keyPrefix("cyc_live_bb")
                 .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(86400)).build();
-        when(apiKeyRepository.listAllTenants(any(), any(), anyInt(), any()))
+        when(apiKeyRepository.listAllTenants(any(), any(), anyInt(), any(), any()))
                 .thenReturn(List.of(keyA, keyB));
 
         mockMvc.perform(get("/v1/admin/api-keys")
@@ -459,7 +459,7 @@ class ApiKeyControllerTest {
                 .andExpect(jsonPath("$.keys[0].key_id").value("key_a"))
                 .andExpect(jsonPath("$.keys[1].key_id").value("key_b"));
 
-        verify(apiKeyRepository).listAllTenants(isNull(), isNull(), eq(50), any());
+        verify(apiKeyRepository).listAllTenants(isNull(), isNull(), eq(50), any(), any());
         verify(apiKeyRepository, never()).list(anyString(), any(), any(), anyInt());
     }
 
@@ -474,7 +474,7 @@ class ApiKeyControllerTest {
                     .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
                     .expiresAt(Instant.now().plusSeconds(86400)).build());
         }
-        when(apiKeyRepository.listAllTenants(any(), any(), anyInt(), any())).thenReturn(fullPage);
+        when(apiKeyRepository.listAllTenants(any(), any(), anyInt(), any(), any())).thenReturn(fullPage);
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY))
@@ -492,7 +492,7 @@ class ApiKeyControllerTest {
                     .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
                     .expiresAt(Instant.now().plusSeconds(86400)).build());
         }
-        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), anyInt(), any())).thenReturn(fullPage);
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), anyInt(), any(), any())).thenReturn(fullPage);
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -506,7 +506,7 @@ class ApiKeyControllerTest {
 
     @Test
     void listApiKeys_crossTenant_passesStatusAndCursor() throws Exception {
-        when(apiKeyRepository.listAllTenants(eq(ApiKeyStatus.REVOKED), eq("tenant-9|key_abc"), eq(25), any()))
+        when(apiKeyRepository.listAllTenants(eq(ApiKeyStatus.REVOKED), eq("tenant-9|key_abc"), eq(25), any(), any()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
@@ -516,14 +516,14 @@ class ApiKeyControllerTest {
                         .param("limit", "25"))
                 .andExpect(status().isOk());
 
-        verify(apiKeyRepository).listAllTenants(eq(ApiKeyStatus.REVOKED), eq("tenant-9|key_abc"), eq(25), any());
+        verify(apiKeyRepository).listAllTenants(eq(ApiKeyStatus.REVOKED), eq("tenant-9|key_abc"), eq(25), any(), any());
     }
 
     // --- v0.1.25.24 sort support ---
 
     @org.junit.jupiter.api.Test
     void listApiKeys_withValidSortByAndSortDir_delegatesToRepository() throws Exception {
-        when(apiKeyRepository.listAllTenants(any(), any(), anyInt(), any())).thenReturn(List.of());
+        when(apiKeyRepository.listAllTenants(any(), any(), anyInt(), any(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -533,7 +533,7 @@ class ApiKeyControllerTest {
 
         org.mockito.ArgumentCaptor<io.runcycles.admin.model.shared.SortSpec> captor =
                 org.mockito.ArgumentCaptor.forClass(io.runcycles.admin.model.shared.SortSpec.class);
-        verify(apiKeyRepository).listAllTenants(any(), any(), anyInt(), captor.capture());
+        verify(apiKeyRepository).listAllTenants(any(), any(), anyInt(), captor.capture(), any());
         org.junit.jupiter.api.Assertions.assertEquals("name", captor.getValue().field());
         org.junit.jupiter.api.Assertions.assertEquals(
                 io.runcycles.admin.model.shared.SortDirection.ASC, captor.getValue().direction());
@@ -541,7 +541,7 @@ class ApiKeyControllerTest {
 
     @org.junit.jupiter.api.Test
     void listApiKeys_defaultsToCreatedAtDescending() throws Exception {
-        when(apiKeyRepository.listAllTenants(any(), any(), anyInt(), any())).thenReturn(List.of());
+        when(apiKeyRepository.listAllTenants(any(), any(), anyInt(), any(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY))
@@ -549,7 +549,7 @@ class ApiKeyControllerTest {
 
         org.mockito.ArgumentCaptor<io.runcycles.admin.model.shared.SortSpec> captor =
                 org.mockito.ArgumentCaptor.forClass(io.runcycles.admin.model.shared.SortSpec.class);
-        verify(apiKeyRepository).listAllTenants(any(), any(), anyInt(), captor.capture());
+        verify(apiKeyRepository).listAllTenants(any(), any(), anyInt(), captor.capture(), any());
         org.junit.jupiter.api.Assertions.assertEquals("created_at", captor.getValue().field());
         org.junit.jupiter.api.Assertions.assertEquals(
                 io.runcycles.admin.model.shared.SortDirection.DESC, captor.getValue().direction());
@@ -573,7 +573,7 @@ class ApiKeyControllerTest {
 
     @org.junit.jupiter.api.Test
     void listApiKeys_acceptsAllWhitelistedSortFields() throws Exception {
-        when(apiKeyRepository.listAllTenants(any(), any(), anyInt(), any())).thenReturn(List.of());
+        when(apiKeyRepository.listAllTenants(any(), any(), anyInt(), any(), any())).thenReturn(List.of());
 
         for (String field : List.of("key_id", "name", "tenant_id", "status", "created_at", "expires_at")) {
             mockMvc.perform(get("/v1/admin/api-keys")
@@ -581,5 +581,18 @@ class ApiKeyControllerTest {
                             .param("sort_by", field))
                     .andExpect(status().isOk());
         }
+    }
+
+    @Test
+    void listApiKeys_searchOver128Chars_returns400() throws Exception {
+        String over = "x".repeat(129);
+        mockMvc.perform(get("/v1/admin/api-keys")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("search", over))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(apiKeyRepository, never()).list(any(), any(), any(), anyInt(), any(), any());
+        verify(apiKeyRepository, never()).listAllTenants(any(), any(), anyInt(), any(), any());
     }
 }

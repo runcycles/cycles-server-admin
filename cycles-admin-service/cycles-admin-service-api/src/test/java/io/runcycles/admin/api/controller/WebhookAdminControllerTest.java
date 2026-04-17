@@ -78,7 +78,7 @@ class WebhookAdminControllerTest {
     void listWebhooks_returns200() throws Exception {
         WebhookListResponse response = WebhookListResponse.builder()
             .subscriptions(List.of()).hasMore(false).build();
-        when(webhookService.listAll(any(), any(), any(), any(), anyInt(), any())).thenReturn(response);
+        when(webhookService.listAll(any(), any(), any(), any(), anyInt(), any(), any())).thenReturn(response);
 
         mockMvc.perform(get("/v1/admin/webhooks")
                         .header("X-Admin-API-Key", ADMIN_KEY))
@@ -183,14 +183,14 @@ class WebhookAdminControllerTest {
     void listWebhooks_clampsLimitTo100() throws Exception {
         WebhookListResponse response = WebhookListResponse.builder()
             .subscriptions(List.of()).hasMore(false).build();
-        when(webhookService.listAll(any(), any(), any(), any(), eq(100), any())).thenReturn(response);
+        when(webhookService.listAll(any(), any(), any(), any(), eq(100), any(), any())).thenReturn(response);
 
         mockMvc.perform(get("/v1/admin/webhooks")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .param("limit", "999"))
                 .andExpect(status().isOk());
 
-        verify(webhookService).listAll(any(), any(), any(), any(), eq(100), any());
+        verify(webhookService).listAll(any(), any(), any(), any(), eq(100), any(), any());
     }
 
     @Test
@@ -233,14 +233,14 @@ class WebhookAdminControllerTest {
     void listWebhooks_defaultsToConsecutiveFailuresDesc() throws Exception {
         WebhookListResponse response = WebhookListResponse.builder()
             .subscriptions(List.of()).hasMore(false).build();
-        when(webhookService.listAll(any(), any(), any(), any(), anyInt(), any())).thenReturn(response);
+        when(webhookService.listAll(any(), any(), any(), any(), anyInt(), any(), any())).thenReturn(response);
 
         mockMvc.perform(get("/v1/admin/webhooks")
                         .header("X-Admin-API-Key", ADMIN_KEY))
                 .andExpect(status().isOk());
 
         ArgumentCaptor<SortSpec> captor = ArgumentCaptor.forClass(SortSpec.class);
-        verify(webhookService).listAll(any(), any(), any(), any(), anyInt(), captor.capture());
+        verify(webhookService).listAll(any(), any(), any(), any(), anyInt(), captor.capture(), any());
         SortSpec sort = captor.getValue();
         org.junit.jupiter.api.Assertions.assertEquals("consecutive_failures", sort.field());
         org.junit.jupiter.api.Assertions.assertEquals(SortDirection.DESC, sort.direction());
@@ -250,7 +250,7 @@ class WebhookAdminControllerTest {
     void listWebhooks_acceptsValidSortByAndDir() throws Exception {
         WebhookListResponse response = WebhookListResponse.builder()
             .subscriptions(List.of()).hasMore(false).build();
-        when(webhookService.listAll(any(), any(), any(), any(), anyInt(), any())).thenReturn(response);
+        when(webhookService.listAll(any(), any(), any(), any(), anyInt(), any(), any())).thenReturn(response);
 
         mockMvc.perform(get("/v1/admin/webhooks")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -259,7 +259,7 @@ class WebhookAdminControllerTest {
                 .andExpect(status().isOk());
 
         ArgumentCaptor<SortSpec> captor = ArgumentCaptor.forClass(SortSpec.class);
-        verify(webhookService).listAll(any(), any(), any(), any(), anyInt(), captor.capture());
+        verify(webhookService).listAll(any(), any(), any(), any(), anyInt(), captor.capture(), any());
         SortSpec sort = captor.getValue();
         org.junit.jupiter.api.Assertions.assertEquals("url", sort.field());
         org.junit.jupiter.api.Assertions.assertEquals(SortDirection.ASC, sort.direction());
@@ -269,7 +269,7 @@ class WebhookAdminControllerTest {
     void listWebhooks_acceptsAllWhitelistedFields() throws Exception {
         WebhookListResponse response = WebhookListResponse.builder()
             .subscriptions(List.of()).hasMore(false).build();
-        when(webhookService.listAll(any(), any(), any(), any(), anyInt(), any())).thenReturn(response);
+        when(webhookService.listAll(any(), any(), any(), any(), anyInt(), any(), any())).thenReturn(response);
 
         for (String field : List.of("url", "tenant_id", "status", "consecutive_failures")) {
             mockMvc.perform(get("/v1/admin/webhooks")
@@ -303,7 +303,7 @@ class WebhookAdminControllerTest {
         // Spec v0.1.25.20: omitted sort_dir → DESC (newest/worst first).
         WebhookListResponse response = WebhookListResponse.builder()
             .subscriptions(List.of()).hasMore(false).build();
-        when(webhookService.listAll(any(), any(), any(), any(), anyInt(), any())).thenReturn(response);
+        when(webhookService.listAll(any(), any(), any(), any(), anyInt(), any(), any())).thenReturn(response);
 
         mockMvc.perform(get("/v1/admin/webhooks")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -311,7 +311,19 @@ class WebhookAdminControllerTest {
                 .andExpect(status().isOk());
 
         ArgumentCaptor<SortSpec> captor = ArgumentCaptor.forClass(SortSpec.class);
-        verify(webhookService).listAll(any(), any(), any(), any(), anyInt(), captor.capture());
+        verify(webhookService).listAll(any(), any(), any(), any(), anyInt(), captor.capture(), any());
         org.junit.jupiter.api.Assertions.assertEquals(SortDirection.DESC, captor.getValue().direction());
+    }
+
+    @Test
+    void listWebhookSubscriptions_searchOver128Chars_returns400() throws Exception {
+        String over = "x".repeat(129);
+        mockMvc.perform(get("/v1/admin/webhooks")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("search", over))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(webhookService, never()).listAll(any(), any(), any(), any(), anyInt(), any(), any());
     }
 }

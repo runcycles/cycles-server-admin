@@ -803,4 +803,147 @@ class EventRepositoryTest {
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getEventId()).isEqualTo("evt_good");
     }
+
+    // ---- spec v0.1.25.21 search filter ----
+
+    /*
+     * Watch-item #1 from review-admin-0-1-25-spec-indexed-dewdrop.md:
+     * cursor stability under `search` on the time-indexed hydrate path.
+     * The two tests below cover the default (no sortSpec) timestamp-DESC
+     * path; the non-primary-sort hydrate path shares the same matchesSearch
+     * predicate, so coverage there is asserted via the per-controller
+     * cursor stability tests.
+     */
+
+    @Test
+    void list_searchOnCorrelationId_returnsOnlyMatchingEvents() throws Exception {
+        List<String> ids = List.of("evt_1", "evt_2", "evt_3");
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1")
+            .eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT)
+            .source("s").correlationId("CorrABC").timestamp(Instant.now()).build();
+        Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1")
+            .eventType(EventType.TENANT_UPDATED).category(EventCategory.TENANT)
+            .source("s").correlationId("other").timestamp(Instant.now()).build();
+        Event e3 = Event.builder().eventId("evt_3").tenantId("tenant-1")
+            .eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET)
+            .source("s").correlationId("corrXYZ").timestamp(Instant.now()).build();
+        // Hoist spy invocations out of the when(...).thenReturn(...)
+        // expression — otherwise Mockito's last-invocation tracker sees
+        // the spy call mid-stubbing and raises UnfinishedStubbing.
+        String e1Json = objectMapper.writeValueAsString(e1);
+        String e2Json = objectMapper.writeValueAsString(e2);
+        String e3Json = objectMapper.writeValueAsString(e3);
+        when(jedis.get("event:evt_1")).thenReturn(e1Json);
+        when(jedis.get("event:evt_2")).thenReturn(e2Json);
+        when(jedis.get("event:evt_3")).thenReturn(e3Json);
+
+        // Case-insensitive substring on correlation_id — "corr" matches
+        // "CorrABC" and "corrXYZ" but not "other".
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, null, 50,
+            null, "corr");
+
+        assertThat(result).extracting(Event::getEventId).containsExactly("evt_1", "evt_3");
+    }
+
+    @Test
+    void list_searchOnScope_caseInsensitive_andOredWithCorrelationId() throws Exception {
+        List<String> ids = List.of("evt_1", "evt_2");
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1")
+            .eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET)
+            .source("s").scope("org/ENG").correlationId("unrelated")
+            .timestamp(Instant.now()).build();
+        Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1")
+            .eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET)
+            .source("s").scope("org/sales").correlationId("unrelated")
+            .timestamp(Instant.now()).build();
+        String e1Json = objectMapper.writeValueAsString(e1);
+        String e2Json = objectMapper.writeValueAsString(e2);
+        when(jedis.get("event:evt_1")).thenReturn(e1Json);
+        when(jedis.get("event:evt_2")).thenReturn(e2Json);
+
+        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, null, 50,
+            null, "eng");
+
+        assertThat(result).extracting(Event::getEventId).containsExactly("evt_1");
+    }
+
+    @Test
+    void list_searchAndOtherFilters_combineAsAnd() throws Exception {
+        List<String> ids = List.of("evt_1", "evt_2");
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        // Both have matching correlationId; only evt_1 passes category=budget.
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1")
+            .eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET)
+            .source("s").correlationId("corr_match").timestamp(Instant.now()).build();
+        Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1")
+            .eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT)
+            .source("s").correlationId("corr_match").timestamp(Instant.now()).build();
+        String e1Json = objectMapper.writeValueAsString(e1);
+        String e2Json = objectMapper.writeValueAsString(e2);
+        when(jedis.get("event:evt_1")).thenReturn(e1Json);
+        when(jedis.get("event:evt_2")).thenReturn(e2Json);
+
+        List<Event> result = repository.list("tenant-1", null, "budget", null, null, null, null, null, 50,
+            null, "corr");
+
+        assertThat(result).extracting(Event::getEventId).containsExactly("evt_1");
+    }
+
+    @Test
+    void list_searchCursorStable_secondPageSkipsFirstPageIds() throws Exception {
+        // Watch-item #1: cursor stability under search on the
+        // zrevrangeByScore walk. First page returns evt_1 + evt_2;
+        // second page cursor = evt_2 score must resume strictly after.
+
+        // Page 1: search matches evt_1, evt_2 (limit 2).
+        List<String> page1Ids = List.of("evt_1", "evt_2");
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"),
+            eq(Double.POSITIVE_INFINITY), eq(Double.NEGATIVE_INFINITY),
+            eq(0), anyInt())).thenReturn(page1Ids);
+
+        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1")
+            .eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT)
+            .source("s").correlationId("corr_match_1")
+            .timestamp(Instant.ofEpochMilli(3000)).build();
+        Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1")
+            .eventType(EventType.TENANT_UPDATED).category(EventCategory.TENANT)
+            .source("s").correlationId("corr_match_2")
+            .timestamp(Instant.ofEpochMilli(2000)).build();
+        String e1Json = objectMapper.writeValueAsString(e1);
+        String e2Json = objectMapper.writeValueAsString(e2);
+        when(jedis.get("event:evt_1")).thenReturn(e1Json);
+        when(jedis.get("event:evt_2")).thenReturn(e2Json);
+
+        List<Event> page1 = repository.list("tenant-1", null, null, null, null, null, null, null, 2,
+            null, "corr_match");
+        assertThat(page1).extracting(Event::getEventId).containsExactly("evt_1", "evt_2");
+
+        // Page 2: cursor = evt_2 (score 2000). Next page upper bound is
+        // score - 1 = 1999 so evt_1 (3000) and evt_2 (2000) are both
+        // excluded regardless of the search value.
+        when(jedis.zscore("events:tenant-1", "evt_2")).thenReturn(2000.0);
+        Event e3 = Event.builder().eventId("evt_3").tenantId("tenant-1")
+            .eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET)
+            .source("s").correlationId("corr_match_3")
+            .timestamp(Instant.ofEpochMilli(1500)).build();
+        String e3Json = objectMapper.writeValueAsString(e3);
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"),
+            eq(1999.0), eq(Double.NEGATIVE_INFINITY),
+            eq(0), anyInt())).thenReturn(List.of("evt_3"));
+        when(jedis.get("event:evt_3")).thenReturn(e3Json);
+
+        List<Event> page2 = repository.list("tenant-1", null, null, null, null, null, null, "evt_2", 2,
+            null, "corr_match");
+        assertThat(page2).extracting(Event::getEventId)
+            .containsExactly("evt_3")
+            .doesNotContainAnyElementsOf(page1.stream().map(Event::getEventId).toList());
+    }
 }

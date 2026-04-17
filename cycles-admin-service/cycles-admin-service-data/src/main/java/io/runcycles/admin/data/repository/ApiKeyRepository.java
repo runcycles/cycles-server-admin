@@ -3,6 +3,7 @@ import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.service.KeyService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.model.auth.*;
+import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortSpec;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -120,28 +121,30 @@ public class ApiKeyRepository {
         }
     }
     public List<ApiKey> list(String tenantId, ApiKeyStatus statusFilter, String cursor, int limit) {
-        return list(tenantId, statusFilter, cursor, limit, null);
+        return list(tenantId, statusFilter, cursor, limit, null, null);
+    }
+
+    public List<ApiKey> list(String tenantId, ApiKeyStatus statusFilter, String cursor, int limit, SortSpec sortSpec) {
+        return list(tenantId, statusFilter, cursor, limit, sortSpec, null);
     }
 
     /**
-     * Single-tenant list with optional sort (spec v0.1.25.20). When sortSpec is
-     * null, preserves the pre-v0.1.25.20 cursor-on-raw-keyId semantics so old
-     * clients see no behavior change. When present, hydrates all keys for the
-     * tenant, applies the status filter, sorts via {@link #apiKeyComparator},
-     * then walks the cursor (strictly-after match) and takes limit. The cursor
-     * remains a bare keyId — stable pagination depends on the caller passing
-     * the same sortSpec on follow-up pages.
+     * Single-tenant list with optional sort (spec v0.1.25.20) and optional
+     * search (spec v0.1.25.21). Search is a case-insensitive substring match
+     * on key_id OR name, applied before cursor traversal so pagination is
+     * stable. When sortSpec is null, preserves the pre-v0.1.25.20 cursor-on-
+     * raw-keyId semantics so old clients see no behavior change.
      */
-    public List<ApiKey> list(String tenantId, ApiKeyStatus statusFilter, String cursor, int limit, SortSpec sortSpec) {
+    public List<ApiKey> list(String tenantId, ApiKeyStatus statusFilter, String cursor, int limit, SortSpec sortSpec, String search) {
         try (Jedis jedis = jedisPool.getResource()) {
             if (sortSpec == null) {
-                return listLegacy(jedis, tenantId, statusFilter, cursor, limit);
+                return listLegacy(jedis, tenantId, statusFilter, cursor, limit, search);
             }
-            return listSorted(jedis, tenantId, statusFilter, cursor, limit, sortSpec);
+            return listSorted(jedis, tenantId, statusFilter, cursor, limit, sortSpec, search);
         }
     }
 
-    private List<ApiKey> listLegacy(Jedis jedis, String tenantId, ApiKeyStatus statusFilter, String cursor, int limit) {
+    private List<ApiKey> listLegacy(Jedis jedis, String tenantId, ApiKeyStatus statusFilter, String cursor, int limit, String search) {
         Set<String> ids = jedis.smembers("apikeys:" + tenantId);
         List<String> sortedIds = new ArrayList<>(ids);
         Collections.sort(sortedIds);
@@ -160,6 +163,7 @@ public class ApiKeyRepository {
                 }
                 ApiKey key = objectMapper.readValue(data, ApiKey.class);
                 if (statusFilter != null && key.getStatus() != statusFilter) continue;
+                if (!matchesSearch(key, search)) continue;
                 keys.add(key);
                 if (keys.size() >= limit) break;
             } catch (Exception e) {
@@ -169,7 +173,7 @@ public class ApiKeyRepository {
         return keys;
     }
 
-    private List<ApiKey> listSorted(Jedis jedis, String tenantId, ApiKeyStatus statusFilter, String cursor, int limit, SortSpec sortSpec) {
+    private List<ApiKey> listSorted(Jedis jedis, String tenantId, ApiKeyStatus statusFilter, String cursor, int limit, SortSpec sortSpec, String search) {
         Set<String> ids = jedis.smembers("apikeys:" + tenantId);
         List<ApiKey> all = new ArrayList<>();
         for (String id : ids) {
@@ -178,6 +182,7 @@ public class ApiKeyRepository {
                 if (data == null) continue;
                 ApiKey key = objectMapper.readValue(data, ApiKey.class);
                 if (statusFilter != null && key.getStatus() != statusFilter) continue;
+                if (!matchesSearch(key, search)) continue;
                 all.add(key);
             } catch (Exception e) {
                 LOG.warn("Failed to parse key: {}", id, e);
@@ -257,29 +262,28 @@ public class ApiKeyRepository {
      *     and the client would incorrectly infer end-of-data.
      */
     public List<ApiKey> listAllTenants(ApiKeyStatus statusFilter, String cursor, int limit) {
-        return listAllTenants(statusFilter, cursor, limit, null);
+        return listAllTenants(statusFilter, cursor, limit, null, null);
+    }
+
+    public List<ApiKey> listAllTenants(ApiKeyStatus statusFilter, String cursor, int limit, SortSpec sortSpec) {
+        return listAllTenants(statusFilter, cursor, limit, sortSpec, null);
     }
 
     /**
-     * Cross-tenant list with optional sort (spec v0.1.25.20). When sortSpec is
-     * null, preserves the v0.1.25.18 per-tenant walk (stable cursor = per-tenant
-     * keyId, tenants iterated in id order, skip-forward when cursor tenant
-     * deleted). When present, hydrates every tenant's keys, applies the filter,
-     * sorts globally via {@link #apiKeyComparator}, then walks the composite
-     * "{tenantId}|{keyId}" cursor to the strictly-next entry and takes limit.
-     * The cross-tenant cursor format is unchanged — callers keep passing the
-     * same sortSpec on follow-up pages for stability.
+     * Cross-tenant list with optional sort (spec v0.1.25.20) and optional
+     * search (spec v0.1.25.21). Search is case-insensitive substring match on
+     * key_id OR name, applied before cursor traversal so pagination is stable.
      */
-    public List<ApiKey> listAllTenants(ApiKeyStatus statusFilter, String cursor, int limit, SortSpec sortSpec) {
+    public List<ApiKey> listAllTenants(ApiKeyStatus statusFilter, String cursor, int limit, SortSpec sortSpec, String search) {
         try (Jedis jedis = jedisPool.getResource()) {
             if (sortSpec == null) {
-                return listAllTenantsLegacy(jedis, statusFilter, cursor, limit);
+                return listAllTenantsLegacy(jedis, statusFilter, cursor, limit, search);
             }
-            return listAllTenantsSorted(jedis, statusFilter, cursor, limit, sortSpec);
+            return listAllTenantsSorted(jedis, statusFilter, cursor, limit, sortSpec, search);
         }
     }
 
-    private List<ApiKey> listAllTenantsLegacy(Jedis jedis, ApiKeyStatus statusFilter, String cursor, int limit) {
+    private List<ApiKey> listAllTenantsLegacy(Jedis jedis, ApiKeyStatus statusFilter, String cursor, int limit, String search) {
         String cursorTenantId = null;
         String cursorKeyId = null;
         if (cursor != null && !cursor.isBlank()) {
@@ -310,13 +314,13 @@ public class ApiKeyRepository {
             }
             int remaining = limit - collected.size();
             if (remaining <= 0) break;
-            collected.addAll(collectForTenant(jedis, tenantId, statusFilter, innerCursor, remaining));
+            collected.addAll(collectForTenant(jedis, tenantId, statusFilter, innerCursor, remaining, search));
             if (collected.size() >= limit) break;
         }
         return collected;
     }
 
-    private List<ApiKey> listAllTenantsSorted(Jedis jedis, ApiKeyStatus statusFilter, String cursor, int limit, SortSpec sortSpec) {
+    private List<ApiKey> listAllTenantsSorted(Jedis jedis, ApiKeyStatus statusFilter, String cursor, int limit, SortSpec sortSpec, String search) {
         Set<String> tenantIds = jedis.smembers("tenants");
         List<ApiKey> all = new ArrayList<>();
         boolean capped = false;
@@ -330,6 +334,7 @@ public class ApiKeyRepository {
                     if (data == null) continue;
                     ApiKey key = objectMapper.readValue(data, ApiKey.class);
                     if (statusFilter != null && key.getStatus() != statusFilter) continue;
+                    if (!matchesSearch(key, search)) continue;
                     all.add(key);
                 } catch (Exception e) {
                     LOG.warn("Failed to parse key: {}", keyId, e);
@@ -366,7 +371,7 @@ public class ApiKeyRepository {
         return result;
     }
 
-    private List<ApiKey> collectForTenant(Jedis jedis, String tenantId, ApiKeyStatus statusFilter, String cursor, int limit) {
+    private List<ApiKey> collectForTenant(Jedis jedis, String tenantId, ApiKeyStatus statusFilter, String cursor, int limit, String search) {
         Set<String> ids = jedis.smembers("apikeys:" + tenantId);
         List<String> sortedIds = new ArrayList<>(ids);
         Collections.sort(sortedIds);
@@ -385,6 +390,7 @@ public class ApiKeyRepository {
                 }
                 ApiKey key = objectMapper.readValue(data, ApiKey.class);
                 if (statusFilter != null && key.getStatus() != statusFilter) continue;
+                if (!matchesSearch(key, search)) continue;
                 keys.add(key);
                 if (keys.size() >= limit) break;
             } catch (Exception e) {
@@ -392,6 +398,17 @@ public class ApiKeyRepository {
             }
         }
         return keys;
+    }
+
+    /**
+     * Spec v0.1.25.21: listApiKeys search matches {@code key_id} OR
+     * {@code name} as a case-insensitive substring. Null search =
+     * no filter.
+     */
+    private static boolean matchesSearch(ApiKey key, String search) {
+        if (search == null) return true;
+        return SearchSpec.matches(key.getKeyId(), search)
+            || SearchSpec.matches(key.getName(), search);
     }
     /**
      * Update mutable fields on an API key. Uses Jackson for serialization

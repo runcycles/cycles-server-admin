@@ -197,13 +197,18 @@ public class WebhookService {
 
     public WebhookListResponse listByTenant(String tenantId, String status, String eventType,
                                              String cursor, int limit) {
-        return listByTenant(tenantId, status, eventType, cursor, limit, null);
+        return listByTenant(tenantId, status, eventType, cursor, limit, null, null);
     }
 
     public WebhookListResponse listByTenant(String tenantId, String status, String eventType,
                                              String cursor, int limit, SortSpec sortSpec) {
+        return listByTenant(tenantId, status, eventType, cursor, limit, sortSpec, null);
+    }
+
+    public WebhookListResponse listByTenant(String tenantId, String status, String eventType,
+                                             String cursor, int limit, SortSpec sortSpec, String search) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
-        List<WebhookSubscription> subs = webhookRepository.listByTenant(tenantId, status, eventType, cursor, effectiveLimit, sortSpec);
+        List<WebhookSubscription> subs = webhookRepository.listByTenant(tenantId, status, eventType, cursor, effectiveLimit, sortSpec, search);
         subs.forEach(s -> { s.setSigningSecret(null); }); // Mask secrets
         return WebhookListResponse.builder()
             .subscriptions(subs)
@@ -214,16 +219,21 @@ public class WebhookService {
 
     public WebhookListResponse listAll(String tenantId, String status, String eventType,
                                         String cursor, int limit) {
-        return listAll(tenantId, status, eventType, cursor, limit, null);
+        return listAll(tenantId, status, eventType, cursor, limit, null, null);
     }
 
     public WebhookListResponse listAll(String tenantId, String status, String eventType,
                                         String cursor, int limit, SortSpec sortSpec) {
+        return listAll(tenantId, status, eventType, cursor, limit, sortSpec, null);
+    }
+
+    public WebhookListResponse listAll(String tenantId, String status, String eventType,
+                                        String cursor, int limit, SortSpec sortSpec, String search) {
         if (tenantId != null) {
-            return listByTenant(tenantId, status, eventType, cursor, limit, sortSpec);
+            return listByTenant(tenantId, status, eventType, cursor, limit, sortSpec, search);
         }
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
-        List<WebhookSubscription> subs = webhookRepository.listAll(status, eventType, cursor, effectiveLimit, sortSpec);
+        List<WebhookSubscription> subs = webhookRepository.listAll(status, eventType, cursor, effectiveLimit, sortSpec, search);
         subs.forEach(s -> { s.setSigningSecret(null); });
         return WebhookListResponse.builder()
             .subscriptions(subs)

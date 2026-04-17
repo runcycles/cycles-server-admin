@@ -1,9 +1,56 @@
-# Complete Budget Governance v0.1.25.24 — Admin Server Audit
+# Complete Budget Governance v0.1.25.25 — Admin Server Audit
 
-**Server version:** 0.1.25.24 (2026-04-16 — server-side sort on six admin list endpoints, spec v0.1.25.20 §V4)
-**Date:** 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
-**Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.19`; BudgetLedger.tenant_id optional response field; listApiKeys/listBudgets accept `tenant_id` optional for AdminKeyAuth + four budget filter params: `over_limit`, `has_debt`, `utilization_min`, `utilization_max`) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
+**Server version:** 0.1.25.25 (2026-04-17 — free-text `search` on six admin list endpoints, spec v0.1.25.21 first bullet)
+**Date:** 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.22`; free-text `search` query param on six admin list endpoints — case-insensitive substring, ≤128 chars, AND-combined with other filters) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-17 — v0.1.25.25 free-text `search` on six admin list endpoints (spec v0.1.25.21 first bullet)
+
+Closes the first bullet of governance spec v0.1.25.21: every admin list endpoint now accepts an optional `search` query param — case-insensitive substring match, ≤128 characters, AND-combined with every other filter. The remaining bullet of v0.1.25.21 (bulk-action endpoints) is deferred to v0.1.25.26 per the `review-admin-0-1-25-spec-indexed-dewdrop.md` two-release sequencing.
+
+**Spec-first lineage.** Spec content was finalized at v0.1.25.21 (2026-04-17 cycles-protocol); v0.1.25.22 is editorial-only cleanup of impl-version markers. Target `info.version` for this release is `0.1.25.22` — the current authoritative spec version — though the normative `search` content lives in the v0.1.25.21 CHANGELOG entry.
+
+**Endpoints + per-endpoint match fields.** All six list endpoints route `search` through the shared `SearchSpec.resolve(String)` validator then thread it into the repository as a typed-optional argument. Match fields are **OR**-combined within an endpoint, and the whole `search` predicate is **AND**-combined with every other filter on that endpoint.
+
+| Endpoint | Match fields (OR) |
+|---|---|
+| `listTenants` | `tenant_id`, `name` |
+| `listBudgets` | `tenant_id`, `scope` |
+| `listApiKeys` | `key_id`, `name` |
+| `listAuditLogs` | `resource_id`, `log_id` |
+| `listWebhookSubscriptions` | `subscription_id`, `url` |
+| `listEvents` | `correlation_id`, `scope` |
+
+**Shared validator.** New under `cycles-admin-service-model/.../model/shared/`:
+
+- `SearchSpec` — holds `MAX_LENGTH = 128` and two static helpers: `resolve(String raw)` applies the validator in a **fixed order of `trim → empty-check → length-check`** so trailing/leading whitespace cannot bypass the 128-char cap, and `matches(String haystack, String needle)` runs the case-insensitive substring match used by every repository. Null raw input returns null (absent); empty-post-trim returns null (treated as absent); over-cap post-trim throws `IllegalArgumentException("search exceeds maxLength 128")` which the controller maps to 400 `INVALID_REQUEST`.
+
+Every controller calls `SearchSpec.resolve(request.getSearch())` at the edge and passes the normalized value (or null) to the repository. The validator contract is locked down by `SearchSpecTest` (watch-item #3) so a reordering regression — length-check before trim — is caught before merge.
+
+**Three repository paths.** The implementation mirrors the v0.1.25.24 sort shape, piggy-backing on the infrastructure that release introduced:
+
+1. **Time-indexed (Events, Audit).** `search` folds into the existing `SORTED_HYDRATE_CAP = 2000` hydrate path introduced in v0.1.25.20 for non-primary sort. In the common default-sort (timestamp DESC) path, the repository iterates the `zrevrangeByScore` stream, applies `matchesSearch(entry, search)` per hydrated entry, and stops at the limit — filter happens **before** cursor-position is committed so cursor chains stay stable across pages with the same `search`.
+2. **Set-backed single-tenant (Tenants, ApiKeys single-tenant, Webhooks single-tenant).** `search` bolts onto the existing in-memory filter composition. Filter runs on the hydrated candidate set, then the legacy `SortSpec`-or-default sort and cursor walk proceed.
+3. **Cross-tenant (ApiKeys cross-tenant, Budgets cross-tenant).** `search` applies inside the `SORTED_HYDRATE_CAP`-capped cross-tenant hydration path added in v0.1.25.24. When the cap is hit, the warning log already in place still fires; `search` does not change hydration ordering.
+
+`BudgetRepository.list(...)` uses a typed `BudgetListFilters` record for its filter grouping — `search` is added as a new field on that record, so the repository signature stayed 5-arg and no existing mock in `BudgetRepositoryTest` / `BudgetControllerTest` needed arg-count edits.
+
+**Cursor stability under `search`.** Watch-item #1 of the review plan: the repository applies the `search` predicate **before** cursor evaluation on every path. A second page with the same `search` value returns the strict suffix of the first; a second page with a different `search` value is a new logical query and chains correctly off the same cursor (the cursor encodes a position in the underlying time-indexed or set-backed source, not in the `search`-filtered view). Tested explicitly in `EventRepositoryTest.list_searchCursorStable_secondPageSkipsFirstPageIds` and `AuditRepositoryTest.list_searchCursorStable_secondPageSkipsFirstPageIds` — both walk a 3-row fixture across two pages and assert `page2` contains no `page1` IDs.
+
+**Backward compatibility.** Every repository keeps its pre-search `list(...)` signature as a thin shim that delegates to the new search-accepting overload with `null` search. Response shape and cursor semantics are unchanged for every endpoint when `search` is absent. Callers omitting `search` see byte-identical wire output to v0.1.25.24.
+
+**Tests.** Coverage added across model, data, and api modules:
+
+- `cycles-admin-service-model/.../SearchSpecTest` (NEW) — 9 test methods covering `resolve` null/empty/whitespace/trim/at-cap/over-cap/validator-ordering and `matches` case-insensitive + null-safety semantics. The validator-ordering test `resolve_lengthCheckRunsAfterTrim_trailingWhitespaceCannotBypassCap` is watch-item #3's regression lock.
+- `cycles-admin-service-data` — cursor-stability watch-item tests added to `EventRepositoryTest` (+4) and `AuditRepositoryTest` (+4). Per-repository search happy-path (correlation_id / scope for events, resource_id / log_id for audit), case-insensitive confirmation, AND-composition with other filters, and the page1→page2 cursor walk.
+- Per-controller mock signature updates: Mockito strict stubbing flagged every `verify(...).list(...)` call after the repository signatures grew by one arg; all six controller test classes updated with the correct arg-position insertion (position 3 for `TenantController`, end-of-args for the others; `BudgetController` unchanged because it packs filters into a record).
+- Per-controller `searchOver128Chars_returns400` behavioural test (6 total — one per controller): sends `search=<129 chars>` to each list endpoint and asserts HTTP 400 `INVALID_REQUEST` plus `verify(repo/service, never()).list(...)` so a future regression that drops `parseSearch` or mis-threads `searchNorm` through to the repository is caught at the controller layer (not just the validator layer).
+- `SpecCoverageReportTest` + `OpenApiContractDiffTest` — both gain a `KNOWN_MISSING` allowlist for the two bulk-action endpoints (tenants/webhooks) that spec v0.1.25.22 declares but won't ship server-side until v0.1.25.26. Entries include a pointer to the release plan so reviewers know why they're present and when to remove them.
+
+**JaCoCo ≥95% LINE coverage gate.** Both `data` and `api` modules inherit the parent pom BUNDLE rule `<minimum>0.95</minimum>`; the `model` module skips the check because it's DTO-only. The gate is green for this release.
+
+**Dashboard alignment.** No dashboard wire-up is part of this release. The dashboard's client-side filter today continues to work; a follow-up track against `cycles-dashboard` will wire the six list views onto `?search=…` the same way the v0.1.25.24 sort alignment was handled.
 
 ### 2026-04-16 — v0.1.25.24 server-side sort (six admin list endpoints)
 

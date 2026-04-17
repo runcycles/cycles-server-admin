@@ -6,6 +6,7 @@ import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.shared.ErrorCode;
+import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.webhook.*;
@@ -49,13 +50,15 @@ public class WebhookAdminController {
             @RequestParam(required = false) String tenant_id,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) String event_type,
+            @RequestParam(required = false) String search,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit,
             @RequestParam(required = false) String sort_by,
             @RequestParam(required = false) String sort_dir) {
         limit = Math.max(1, Math.min(limit, 100));
         SortSpec sortSpec = parseSortSpec(sort_by, sort_dir);
-        return ResponseEntity.ok(webhookService.listAll(tenant_id, status, event_type, cursor, limit, sortSpec));
+        String searchNorm = parseSearch(search);
+        return ResponseEntity.ok(webhookService.listAll(tenant_id, status, event_type, cursor, limit, sortSpec, searchNorm));
     }
 
     /**
@@ -71,6 +74,14 @@ public class WebhookAdminController {
         }
         try {
             return SortSpec.resolve(sortBy, direction, ALLOWED_SORT_FIELDS, DEFAULT_SORT_FIELD);
+        } catch (IllegalArgumentException e) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
+        }
+    }
+
+    private String parseSearch(String raw) {
+        try {
+            return SearchSpec.resolve(raw);
         } catch (IllegalArgumentException e) {
             throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
         }

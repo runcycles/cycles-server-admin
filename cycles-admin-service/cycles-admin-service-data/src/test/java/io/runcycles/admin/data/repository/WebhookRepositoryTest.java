@@ -826,4 +826,104 @@ class WebhookRepositoryTest {
         assertThat(result).extracting(WebhookSubscription::getSubscriptionId)
             .containsExactly("whsub_3", "whsub_2");
     }
+
+    // ---- search overloads (spec v0.1.25.21) ----
+
+    @Test
+    void listByTenant_withSearch_filtersBySubscriptionIdOrUrl() throws Exception {
+        WebhookSubscription a = WebhookSubscription.builder()
+            .subscriptionId("whsub_prod_1").tenantId("tenant-1").url("https://one.com/hook")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).consecutiveFailures(0).build();
+        WebhookSubscription b = WebhookSubscription.builder()
+            .subscriptionId("whsub_dev_2").tenantId("tenant-1").url("https://two.com/hook")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).consecutiveFailures(0).build();
+        stubSet("webhooks:tenant-1", a, b);
+
+        List<WebhookSubscription> bySubId = repository.listByTenant(
+            "tenant-1", null, null, null, 50, null, "prod");
+        assertThat(bySubId).extracting(WebhookSubscription::getSubscriptionId).containsExactly("whsub_prod_1");
+
+        List<WebhookSubscription> byUrl = repository.listByTenant(
+            "tenant-1", null, null, null, 50, null, "two.com");
+        assertThat(byUrl).extracting(WebhookSubscription::getSubscriptionId).containsExactly("whsub_dev_2");
+    }
+
+    @Test
+    void listAll_withSearch_filtersAcrossTenants() throws Exception {
+        WebhookSubscription a = WebhookSubscription.builder()
+            .subscriptionId("whsub_a").tenantId("tenant-1").url("https://alpha.example.com/hook")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).consecutiveFailures(0).build();
+        WebhookSubscription b = WebhookSubscription.builder()
+            .subscriptionId("whsub_b").tenantId("tenant-2").url("https://beta.example.com/hook")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).consecutiveFailures(0).build();
+        stubSet("webhooks:_all", a, b);
+
+        List<WebhookSubscription> result = repository.listAll(null, null, null, 50, null, "alpha");
+
+        assertThat(result).extracting(WebhookSubscription::getSubscriptionId).containsExactly("whsub_a");
+    }
+
+    // ---- update signing-secret rotation ----
+
+    @Test
+    void update_withNewSigningSecret_encryptsAndPersists() throws Exception {
+        WebhookSubscription updated = WebhookSubscription.builder()
+            .subscriptionId("whsub_rotate").tenantId("tenant-1").url("https://a.com/hook")
+            .status(WebhookStatus.ACTIVE).signingSecret("rotated-secret-value")
+            .createdAt(Instant.now()).consecutiveFailures(0).build();
+
+        repository.update("whsub_rotate", updated);
+
+        verify(jedis).set(eq("webhook:secret:whsub_rotate"), anyString());
+    }
+
+    // ---- replay lock ----
+
+    @Test
+    void acquireReplayLock_redisOk_returnsTrue() {
+        when(jedis.set(eq("replay:lock:whsub_1"), eq("replay_123"), any(redis.clients.jedis.params.SetParams.class)))
+            .thenReturn("OK");
+
+        boolean acquired = repository.acquireReplayLock("whsub_1", "replay_123");
+
+        assertThat(acquired).isTrue();
+    }
+
+    @Test
+    void acquireReplayLock_redisNull_returnsFalse() {
+        when(jedis.set(eq("replay:lock:whsub_1"), eq("replay_123"), any(redis.clients.jedis.params.SetParams.class)))
+            .thenReturn(null);
+
+        boolean acquired = repository.acquireReplayLock("whsub_1", "replay_123");
+
+        assertThat(acquired).isFalse();
+    }
+
+    @Test
+    void releaseReplayLock_delegatesToEvalWithOwnershipCheck() {
+        repository.releaseReplayLock("whsub_1", "replay_owner");
+
+        verify(jedis).eval(anyString(),
+            argThat((List<String> keys) -> keys.size() == 1 && "replay:lock:whsub_1".equals(keys.get(0))),
+            argThat((List<String> args) -> args.size() == 1 && "replay_owner".equals(args.get(0))));
+    }
+
+    // ---- tryHydrate deserialization failure ----
+
+    @Test
+    void list_hydrationFailureOnMalformedJson_skipsAndContinues() throws Exception {
+        WebhookSubscription good = WebhookSubscription.builder()
+            .subscriptionId("whsub_good").tenantId("tenant-1").url("https://ok.com")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).consecutiveFailures(0).build();
+        String goodJson = objectMapper.writeValueAsString(good);
+        when(jedis.smembers("webhooks:tenant-1"))
+            .thenReturn(new LinkedHashSet<>(List.of("whsub_bad", "whsub_good")));
+        when(jedis.get("webhook:whsub_bad")).thenReturn("{not valid json");
+        when(jedis.get("webhook:whsub_good")).thenReturn(goodJson);
+
+        List<WebhookSubscription> result = repository.listByTenant("tenant-1", null, null, null, 50);
+
+        assertThat(result).extracting(WebhookSubscription::getSubscriptionId)
+            .containsExactly("whsub_good");
+    }
 }

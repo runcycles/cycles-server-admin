@@ -765,4 +765,132 @@ class AuditRepositoryTest {
 
         assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_c", "log_a");
     }
+
+    // ---- search (spec v0.1.25.21) ----
+    /*
+     * Watch-item #1 from review-admin-0-1-25-spec-indexed-dewdrop.md:
+     * cursor stability under `search` on the time-indexed hydrate path.
+     * Spec says search matches resource_id OR log_id case-insensitively.
+     */
+
+    @Test
+    void list_searchOnResourceId_returnsOnlyMatchingEntries() throws Exception {
+        List<String> ids = List.of("log_1", "log_2", "log_3");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        AuditLogEntry a = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1")
+            .operation("op").status(200).resourceId("tenant_ABC").timestamp(Instant.now()).build();
+        AuditLogEntry b = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1")
+            .operation("op").status(200).resourceId("budget_1").timestamp(Instant.now()).build();
+        AuditLogEntry c = AuditLogEntry.builder().logId("log_3").tenantId("tenant-1")
+            .operation("op").status(200).resourceId("tenant_XYZ").timestamp(Instant.now()).build();
+        // Hoist spy invocations out of when(...).thenReturn(...) to avoid
+        // Mockito UnfinishedStubbing on @Spy ObjectMapper.
+        String aJson = objectMapper.writeValueAsString(a);
+        String bJson = objectMapper.writeValueAsString(b);
+        String cJson = objectMapper.writeValueAsString(c);
+        when(jedis.get("audit:log:log_1")).thenReturn(aJson);
+        when(jedis.get("audit:log:log_2")).thenReturn(bJson);
+        when(jedis.get("audit:log:log_3")).thenReturn(cJson);
+
+        // Case-insensitive substring on resource_id — "tenant_" matches
+        // "tenant_ABC" and "tenant_XYZ" but not "budget_1".
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            null, "tenant_");
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_1", "log_3");
+    }
+
+    @Test
+    void list_searchOnLogId_caseInsensitive_andOredWithResourceId() throws Exception {
+        List<String> ids = List.of("LOG_XYZ1", "log_other");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        AuditLogEntry a = AuditLogEntry.builder().logId("LOG_XYZ1").tenantId("tenant-1")
+            .operation("op").status(200).resourceId("unrelated_A").timestamp(Instant.now()).build();
+        AuditLogEntry b = AuditLogEntry.builder().logId("log_other").tenantId("tenant-1")
+            .operation("op").status(200).resourceId("unrelated_B").timestamp(Instant.now()).build();
+        String aJson = objectMapper.writeValueAsString(a);
+        String bJson = objectMapper.writeValueAsString(b);
+        when(jedis.get("audit:log:LOG_XYZ1")).thenReturn(aJson);
+        when(jedis.get("audit:log:log_other")).thenReturn(bJson);
+
+        // "xyz" case-insensitively matches "LOG_XYZ1" log_id, not resource_id.
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, null, 50,
+            null, "xyz");
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("LOG_XYZ1");
+    }
+
+    @Test
+    void list_searchAndOtherFilters_combineAsAnd() throws Exception {
+        List<String> ids = List.of("log_1", "log_2");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+            .thenReturn(ids);
+
+        // Both share resource_id prefix; only log_1 passes operation=create.
+        AuditLogEntry a = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1")
+            .keyId("key_1").operation("create").status(201)
+            .resourceId("match_res").timestamp(Instant.now()).build();
+        AuditLogEntry b = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1")
+            .keyId("key_1").operation("update").status(200)
+            .resourceId("match_res_other").timestamp(Instant.now()).build();
+        String aJson = objectMapper.writeValueAsString(a);
+        String bJson = objectMapper.writeValueAsString(b);
+        when(jedis.get("audit:log:log_1")).thenReturn(aJson);
+        when(jedis.get("audit:log:log_2")).thenReturn(bJson);
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, "create", null, null, null, null, null, null, 50,
+            null, "match");
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_1");
+    }
+
+    @Test
+    void list_searchCursorStable_secondPageSkipsFirstPageIds() throws Exception {
+        // Watch-item #1: cursor stability under search on the
+        // zrevrangeByScore walk. First page returns log_1 + log_2;
+        // second page cursor = log_2 score must resume strictly after.
+
+        List<String> page1Ids = List.of("log_1", "log_2");
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"),
+            eq(Double.POSITIVE_INFINITY), eq(Double.NEGATIVE_INFINITY),
+            eq(0), anyInt())).thenReturn(page1Ids);
+
+        AuditLogEntry a = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1")
+            .operation("op").status(200).resourceId("match_res_1")
+            .timestamp(Instant.ofEpochMilli(3000)).build();
+        AuditLogEntry b = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1")
+            .operation("op").status(200).resourceId("match_res_2")
+            .timestamp(Instant.ofEpochMilli(2000)).build();
+        String aJson = objectMapper.writeValueAsString(a);
+        String bJson = objectMapper.writeValueAsString(b);
+        when(jedis.get("audit:log:log_1")).thenReturn(aJson);
+        when(jedis.get("audit:log:log_2")).thenReturn(bJson);
+
+        List<AuditLogEntry> page1 = repository.list("tenant-1", null, null, null, null, null, null, null, null, 2,
+            null, "match");
+        assertThat(page1).extracting(AuditLogEntry::getLogId).containsExactly("log_1", "log_2");
+
+        // Page 2: cursor = log_2 (score 2000). Next page upper bound is
+        // score - 1 = 1999 so log_1 (3000) and log_2 (2000) are excluded
+        // regardless of search value.
+        when(jedis.zscore("audit:logs:tenant-1", "log_2")).thenReturn(2000.0);
+        AuditLogEntry c = AuditLogEntry.builder().logId("log_3").tenantId("tenant-1")
+            .operation("op").status(200).resourceId("match_res_3")
+            .timestamp(Instant.ofEpochMilli(1500)).build();
+        String cJson = objectMapper.writeValueAsString(c);
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"),
+            eq(1999.0), eq(Double.NEGATIVE_INFINITY),
+            eq(0), anyInt())).thenReturn(List.of("log_3"));
+        when(jedis.get("audit:log:log_3")).thenReturn(cJson);
+
+        List<AuditLogEntry> page2 = repository.list("tenant-1", null, null, null, null, null, null, null, "log_2", 2,
+            null, "match");
+        assertThat(page2).extracting(AuditLogEntry::getLogId)
+            .containsExactly("log_3")
+            .doesNotContainAnyElementsOf(page1.stream().map(AuditLogEntry::getLogId).toList());
+    }
 }

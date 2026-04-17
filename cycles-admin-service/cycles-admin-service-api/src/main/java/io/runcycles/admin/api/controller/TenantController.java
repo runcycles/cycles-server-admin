@@ -4,6 +4,7 @@ import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.TenantRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.shared.ErrorCode;
+import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.tenant.Tenant;
@@ -67,13 +68,15 @@ public class TenantController {
             @RequestParam(required = false) String parent_tenant_id,
             // v0.1.25.8: accepted and ignored. v0.1.26+ servers with observe_mode extension will wire this up.
             @SuppressWarnings("unused") @RequestParam(required = false) String observe_mode,
+            @RequestParam(required = false) String search,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit,
             @RequestParam(required = false) String sort_by,
             @RequestParam(required = false) String sort_dir) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         SortSpec sortSpec = parseSortSpec(sort_by, sort_dir);
-        var tenants = repository.list(status, parent_tenant_id, cursor, effectiveLimit, sortSpec);
+        String searchNorm = parseSearch(search);
+        var tenants = repository.list(status, parent_tenant_id, searchNorm, cursor, effectiveLimit, sortSpec);
         TenantListResponse response = TenantListResponse.builder()
             .tenants(tenants)
             .hasMore(tenants.size() >= effectiveLimit)
@@ -145,6 +148,14 @@ public class TenantController {
         }
         try {
             return SortSpec.resolve(sortBy, direction, ALLOWED_SORT_FIELDS, DEFAULT_SORT_FIELD);
+        } catch (IllegalArgumentException e) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
+        }
+    }
+
+    private String parseSearch(String raw) {
+        try {
+            return SearchSpec.resolve(raw);
         } catch (IllegalArgumentException e) {
             throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
         }

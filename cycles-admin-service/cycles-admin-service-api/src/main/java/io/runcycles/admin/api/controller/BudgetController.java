@@ -6,6 +6,7 @@ import io.runcycles.admin.data.repository.BudgetRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.budget.*;
 import io.runcycles.admin.model.shared.ErrorCode;
+import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.shared.UnitEnum;
@@ -115,6 +116,7 @@ public class BudgetController {
             @RequestParam(required = false) Boolean has_debt,
             @RequestParam(required = false) Double utilization_min,
             @RequestParam(required = false) Double utilization_max,
+            @RequestParam(required = false) String search,
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit,
             @RequestParam(required = false) String sort_by,
@@ -153,8 +155,9 @@ public class BudgetController {
         //   - AdminKeyAuth + tenant_id provided: per-tenant listing.
         //   - AdminKeyAuth + tenant_id absent: cross-tenant listing.
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
+        String searchNorm = parseSearch(search);
         BudgetListFilters filters = new BudgetListFilters(
-            scope_prefix, unit, status, over_limit, has_debt, utilization_min, utilization_max);
+            scope_prefix, unit, status, over_limit, has_debt, utilization_min, utilization_max, searchNorm);
         List<BudgetLedger> ledgers;
         boolean crossTenant;
         if (authTenantId != null) {
@@ -198,6 +201,14 @@ public class BudgetController {
         }
         try {
             return SortSpec.resolve(sortBy, direction, ALLOWED_SORT_FIELDS, DEFAULT_SORT_FIELD);
+        } catch (IllegalArgumentException e) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
+        }
+    }
+
+    private String parseSearch(String raw) {
+        try {
+            return SearchSpec.resolve(raw);
         } catch (IllegalArgumentException e) {
             throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
         }
