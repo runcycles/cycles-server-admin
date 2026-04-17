@@ -48,10 +48,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class SpecCoverageReportTest {
 
-    private static final Set<String> KNOWN_MISSING = Set.of(
-            "POST /v1/admin/tenants/bulk-action",
-            "POST /v1/admin/webhooks/bulk-action"
-    );
+    private static final Set<String> KNOWN_MISSING = Set.of();
 
     @Test
     @EnabledIf(value = "io.runcycles.admin.api.contract.ContractValidationConfig#validationEnabled",

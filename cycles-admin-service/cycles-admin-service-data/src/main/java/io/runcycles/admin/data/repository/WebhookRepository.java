@@ -189,6 +189,42 @@ public class WebhookRepository {
         return listFromSet("webhooks:_all", status, eventType, cursor, limit, sortSpec, search);
     }
 
+    /**
+     * Bulk-action match phase (spec v0.1.25.21). Returns every subscription
+     * matching the filter (tenant_id / status / event_type / search) up to
+     * {@code cap}+1 entries. Size {@code cap+1} on return signals the caller
+     * to reject with HTTP 400 LIMIT_EXCEEDED.
+     *
+     * <p>Set-scan is {@code webhooks:{tenantId}} when tenantId is present,
+     * else the global {@code webhooks:_all} index. Status is matched against
+     * the enum name; eventType against each subscription's {@code eventTypes}
+     * wire value — same semantics as the list endpoint's string-keyed
+     * matcher.
+     */
+    public List<WebhookSubscription> matchForBulk(String tenantId, WebhookStatus status,
+                                                   EventType eventType, String search, int cap) {
+        String setKey = (tenantId != null && !tenantId.isBlank())
+            ? "webhooks:" + tenantId
+            : "webhooks:_all";
+        String statusStr = status != null ? status.name() : null;
+        String eventTypeStr = eventType != null ? eventType.getValue() : null;
+        try (Jedis jedis = jedisPool.getResource()) {
+            Set<String> ids = jedis.smembers(setKey);
+            if (ids == null || ids.isEmpty()) return new ArrayList<>();
+            List<WebhookSubscription> matches = new ArrayList<>();
+            int ceiling = cap + 1;
+            for (String id : ids) {
+                WebhookSubscription sub = tryHydrate(jedis, id);
+                if (sub == null) continue;
+                if (!matchesStatusAndEventType(sub, statusStr, eventTypeStr)) continue;
+                if (!matchesSearch(sub, search)) continue;
+                matches.add(sub);
+                if (matches.size() >= ceiling) break;
+            }
+            return matches;
+        }
+    }
+
     public List<WebhookSubscription> findMatchingSubscriptions(String tenantId, EventType eventType, String scope) {
         try (Jedis jedis = jedisPool.getResource()) {
             List<WebhookSubscription> matching = new ArrayList<>();

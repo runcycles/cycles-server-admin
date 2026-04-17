@@ -67,12 +67,9 @@ class OpenApiContractDiffTest {
      * corresponding release lands. See SpecCoverageReportTest for the
      * mirrored list.
      *
-     * bulk-action endpoints → planned for server release 0.1.25.26.
+     * v0.1.25.26 closed the bulk-action gap — allowlist is now empty.
      */
-    private static final Set<String> KNOWN_MISSING = Set.of(
-            "POST /v1/admin/tenants/bulk-action",
-            "POST /v1/admin/webhooks/bulk-action"
-    );
+    private static final Set<String> KNOWN_MISSING = Set.of();
 
     @Autowired private MockMvc mockMvc;
     @MockitoBean private JedisPool jedisPool;

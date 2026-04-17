@@ -3,8 +3,10 @@ package io.runcycles.admin.api.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.api.service.WebhookService;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.idempotency.IdempotencyStore;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
+import io.runcycles.admin.data.repository.WebhookRepository;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.shared.SortSpec;
@@ -36,9 +38,11 @@ class WebhookAdminControllerTest {
     @Autowired private MockMvc mockMvc;
     @Autowired private ObjectMapper objectMapper;
     @MockitoBean private WebhookService webhookService;
+    @MockitoBean private WebhookRepository webhookRepository;
     @MockitoBean private AuditRepository auditRepository;
     @MockitoBean private ApiKeyRepository apiKeyRepository;
     @MockitoBean private JedisPool jedisPool;
+    @MockitoBean private IdempotencyStore idempotencyStore;
 
     private static final String ADMIN_KEY = "test-admin-key";
 
@@ -325,5 +329,339 @@ class WebhookAdminControllerTest {
                 .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
 
         verify(webhookService, never()).listAll(any(), any(), any(), any(), anyInt(), any(), any());
+    }
+
+    // --- Bulk-action contract tests (spec v0.1.25.21) ---
+
+    private static WebhookSubscription webhookRow(String id, WebhookStatus status) {
+        return WebhookSubscription.builder()
+                .subscriptionId(id).tenantId("tenant-1")
+                .url("https://example.com/" + id)
+                .status(status).createdAt(Instant.now()).build();
+    }
+
+    @Test
+    void bulkActionWebhooks_pause_happyPath_returns200() throws Exception {
+        when(idempotencyStore.lookup(eq("webhooks-bulk"), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(isNull(), eq(WebhookStatus.ACTIVE), isNull(), isNull(), eq(500)))
+                .thenReturn(List.of(webhookRow("w1", WebhookStatus.ACTIVE), webhookRow("w2", WebhookStatus.ACTIVE)));
+        when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.ACTIVE));
+        when(webhookRepository.findById("w2")).thenReturn(webhookRow("w2", WebhookStatus.ACTIVE));
+        when(webhookService.update(anyString(), any())).thenReturn(webhookRow("w1", WebhookStatus.PAUSED));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"PAUSE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.action").value("PAUSE"))
+                .andExpect(jsonPath("$.total_matched").value(2))
+                .andExpect(jsonPath("$.succeeded.length()").value(2))
+                .andExpect(jsonPath("$.failed.length()").value(0))
+                .andExpect(jsonPath("$.skipped.length()").value(0))
+                .andExpect(jsonPath("$.idempotency_key").value("k1"));
+
+        verify(webhookService, times(2)).update(anyString(), any());
+        verify(idempotencyStore).store(eq("webhooks-bulk"), eq("k1"), any(WebhookBulkActionResponse.class));
+    }
+
+    @Test
+    void bulkActionWebhooks_emptyFilter_returns400() throws Exception {
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{},\"action\":\"PAUSE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(webhookRepository, never()).matchForBulk(any(), any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void bulkActionWebhooks_searchOver128Chars_returns400() throws Exception {
+        String over = "x".repeat(129);
+        String body = "{\"filter\":{\"search\":\"" + over + "\"},\"action\":\"PAUSE\",\"idempotency_key\":\"k1\"}";
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(webhookRepository, never()).matchForBulk(any(), any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void bulkActionWebhooks_expectedCountMismatch_returns409_noWrites() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(webhookRow("w1", WebhookStatus.ACTIVE), webhookRow("w2", WebhookStatus.ACTIVE)));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"PAUSE\","
+                                + "\"expected_count\":5,\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("COUNT_MISMATCH"))
+                .andExpect(jsonPath("$.details.total_matched").value(2));
+
+        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).delete(anyString());
+    }
+
+    @Test
+    void bulkActionWebhooks_over500Matches_returns400_limitExceeded() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        List<WebhookSubscription> oversized = new java.util.ArrayList<>();
+        for (int i = 0; i < 501; i++) oversized.add(webhookRow("w" + i, WebhookStatus.ACTIVE));
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500))).thenReturn(oversized);
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"PAUSE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("LIMIT_EXCEEDED"))
+                .andExpect(jsonPath("$.details.total_matched").value(501));
+
+        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).delete(anyString());
+    }
+
+    @Test
+    void bulkActionWebhooks_idempotencyReplay_returnsCachedEnvelope_noWrites() throws Exception {
+        WebhookBulkActionResponse cached = WebhookBulkActionResponse.builder()
+                .action(WebhookBulkAction.PAUSE)
+                .totalMatched(3)
+                .succeeded(List.of())
+                .failed(List.of())
+                .skipped(List.of())
+                .idempotencyKey("k1")
+                .build();
+        when(idempotencyStore.lookup(eq("webhooks-bulk"), eq("k1"), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.of(cached));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"PAUSE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total_matched").value(3));
+
+        verify(webhookRepository, never()).matchForBulk(any(), any(), any(), any(), anyInt());
+        verify(webhookService, never()).update(anyString(), any());
+        verify(idempotencyStore, never()).store(anyString(), anyString(), any());
+    }
+
+    @Test
+    void bulkActionWebhooks_resume_fromDisabled_landsInFailed() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(webhookRow("w1", WebhookStatus.DISABLED)));
+        when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.DISABLED));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"DISABLED\"},\"action\":\"RESUME\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.failed.length()").value(1))
+                .andExpect(jsonPath("$.failed[0].id").value("w1"))
+                .andExpect(jsonPath("$.failed[0].error_code").value("INVALID_TRANSITION"));
+
+        verify(webhookService, never()).update(anyString(), any());
+    }
+
+    @Test
+    void bulkActionWebhooks_pause_alreadyPaused_landsInSkipped() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(webhookRow("w1", WebhookStatus.PAUSED)));
+        when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.PAUSED));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"PAUSED\"},\"action\":\"PAUSE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.skipped.length()").value(1))
+                .andExpect(jsonPath("$.skipped[0].id").value("w1"))
+                .andExpect(jsonPath("$.skipped[0].reason").value("ALREADY_IN_TARGET_STATE"))
+                .andExpect(jsonPath("$.succeeded.length()").value(0));
+
+        verify(webhookService, never()).update(anyString(), any());
+    }
+
+    @Test
+    void bulkActionWebhooks_delete_missingRow_landsInSkipped() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(webhookRow("w1", WebhookStatus.ACTIVE)));
+        // Concurrent delete between match and apply — service now 404s.
+        doThrow(GovernanceException.webhookNotFound("w1"))
+                .when(webhookService).delete("w1");
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"tenant_id\":\"tenant-1\"},\"action\":\"DELETE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.skipped.length()").value(1))
+                .andExpect(jsonPath("$.skipped[0].id").value("w1"))
+                .andExpect(jsonPath("$.skipped[0].reason").value("ALREADY_DELETED"))
+                .andExpect(jsonPath("$.succeeded.length()").value(0));
+    }
+
+    @Test
+    void bulkActionWebhooks_delete_happyPath_succeeds() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(webhookRow("w1", WebhookStatus.ACTIVE)));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"tenant_id\":\"tenant-1\"},\"action\":\"DELETE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.action").value("DELETE"))
+                .andExpect(jsonPath("$.succeeded[0].id").value("w1"))
+                .andExpect(jsonPath("$.failed.length()").value(0))
+                .andExpect(jsonPath("$.skipped.length()").value(0));
+
+        verify(webhookService).delete("w1");
+    }
+
+    @Test
+    void bulkActionWebhooks_missingIdempotencyKey_returns400() throws Exception {
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"PAUSE\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void bulkActionWebhooks_noAdminKey_returns401() throws Exception {
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"PAUSE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isUnauthorized());
+
+        verify(webhookRepository, never()).matchForBulk(any(), any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void bulkActionWebhooks_resumeFromPaused_happyPath_succeeds() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(webhookRow("whsub_1", WebhookStatus.PAUSED)));
+        when(webhookRepository.findById("whsub_1"))
+                .thenReturn(webhookRow("whsub_1", WebhookStatus.PAUSED));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"PAUSED\"},\"action\":\"RESUME\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.succeeded[0].id").value("whsub_1"));
+
+        ArgumentCaptor<WebhookUpdateRequest> captor = ArgumentCaptor.forClass(WebhookUpdateRequest.class);
+        verify(webhookService).update(eq("whsub_1"), captor.capture());
+        assert captor.getValue().getStatus() == WebhookStatus.ACTIVE;
+    }
+
+    @Test
+    void bulkActionWebhooks_resumeAlreadyActive_landsInSkipped() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(webhookRow("whsub_1", WebhookStatus.ACTIVE)));
+        when(webhookRepository.findById("whsub_1"))
+                .thenReturn(webhookRow("whsub_1", WebhookStatus.ACTIVE));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"RESUME\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.skipped[0].id").value("whsub_1"))
+                .andExpect(jsonPath("$.skipped[0].reason").value("ALREADY_IN_TARGET_STATE"));
+
+        verify(webhookService, never()).update(anyString(), any());
+    }
+
+    @Test
+    void bulkActionWebhooks_concurrentDeleteDuringPause_landsInSkipped() throws Exception {
+        // findById throws GovernanceException — concurrent delete between
+        // matchForBulk and apply. Spec: lands in skipped[] ALREADY_DELETED.
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(webhookRow("whsub_1", WebhookStatus.ACTIVE)));
+        when(webhookRepository.findById("whsub_1"))
+                .thenThrow(new GovernanceException(
+                        io.runcycles.admin.model.shared.ErrorCode.WEBHOOK_NOT_FOUND,
+                        "gone", 404));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"PAUSE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.skipped[0].id").value("whsub_1"))
+                .andExpect(jsonPath("$.skipped[0].reason").value("ALREADY_DELETED"));
+
+        verify(webhookService, never()).update(anyString(), any());
+    }
+
+    @Test
+    void bulkActionWebhooks_deleteNonNotFoundGovernanceException_landsInFailed() throws Exception {
+        // DELETE path where the service rejects with a non-NOT_FOUND error —
+        // rethrown up to the outer GovernanceException catch.
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(webhookRow("whsub_1", WebhookStatus.ACTIVE)));
+        doThrow(new GovernanceException(
+                        io.runcycles.admin.model.shared.ErrorCode.INSUFFICIENT_PERMISSIONS,
+                        "nope", 403))
+                .when(webhookService).delete("whsub_1");
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"DELETE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.failed[0].id").value("whsub_1"))
+                .andExpect(jsonPath("$.failed[0].error_code").value("PERMISSION_DENIED"));
+    }
+
+    @Test
+    void bulkActionWebhooks_genericException_classifiedAsInternalError() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(webhookRow("whsub_1", WebhookStatus.ACTIVE)));
+        when(webhookRepository.findById("whsub_1"))
+                .thenReturn(webhookRow("whsub_1", WebhookStatus.ACTIVE));
+        doThrow(new RuntimeException("redis-down"))
+                .when(webhookService).update(eq("whsub_1"), any());
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"PAUSE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.failed[0].error_code").value("INTERNAL_ERROR"));
     }
 }

@@ -3,8 +3,11 @@ package io.runcycles.admin.api.controller;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.api.service.WebhookService;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.idempotency.IdempotencyStore;
 import io.runcycles.admin.data.repository.AuditRepository;
+import io.runcycles.admin.data.repository.WebhookRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
+import io.runcycles.admin.model.shared.BulkActionRowOutcome;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortDirection;
@@ -14,21 +17,34 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 @RestController @RequestMapping("/v1/admin/webhooks") @Tag(name = "Webhooks")
 public class WebhookAdminController {
+    private static final Logger LOG = LoggerFactory.getLogger(WebhookAdminController.class);
     // Per spec v0.1.25.20. consecutive_failures is the default — operators
     // monitoring webhook health want flaky subscriptions surfaced first.
     private static final Set<String> ALLOWED_SORT_FIELDS = Set.of(
         "url", "tenant_id", "status", "consecutive_failures");
     private static final String DEFAULT_SORT_FIELD = "consecutive_failures";
+    // Bulk-action (spec v0.1.25.21): same 500-row cap + 15-minute idempotency
+    // replay window as the tenants bulk-action. Separate endpoint tag keeps
+    // the idempotency namespace partitioned from tenants-bulk.
+    private static final int BULK_ACTION_LIMIT = 500;
+    private static final String BULK_IDEMPOTENCY_ENDPOINT = "webhooks-bulk";
     @Autowired private WebhookService webhookService;
+    @Autowired private WebhookRepository webhookRepository;
     @Autowired private AuditRepository auditRepository;
+    @Autowired private IdempotencyStore idempotencyStore;
 
     @PostMapping @Operation(operationId = "createWebhookSubscription")
     public ResponseEntity<WebhookCreateResponse> create(
@@ -173,5 +189,176 @@ public class WebhookAdminController {
             .requestId(request.getAttribute("requestId") != null ? request.getAttribute("requestId").toString() : null)
             .sourceIp(request.getRemoteAddr())
             .userAgent(request.getHeader("User-Agent"));
+    }
+
+    /**
+     * Bulk webhook lifecycle action (spec v0.1.25.21). PAUSE / RESUME /
+     * DELETE across every subscription matching the filter, same safety
+     * gates as {@link TenantController#bulkAction}: empty filter → 400,
+     * >{@value #BULK_ACTION_LIMIT} matches → 400 LIMIT_EXCEEDED with
+     * {@code total_matched}, expected_count mismatch → 409 COUNT_MISMATCH,
+     * 15-min idempotency replay. AdminKeyAuth only.
+     */
+    @PostMapping("/bulk-action") @Operation(operationId = "bulkActionWebhooks")
+    public ResponseEntity<WebhookBulkActionResponse> bulkAction(
+            @Valid @RequestBody WebhookBulkActionRequest request, HttpServletRequest httpRequest) {
+        if (request.getFilter() == null || request.getFilter().isEmpty()) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                "filter must contain at least one property", 400);
+        }
+        String searchNorm = parseSearch(request.getFilter().getSearch());
+
+        var cached = idempotencyStore.lookup(
+            BULK_IDEMPOTENCY_ENDPOINT, request.getIdempotencyKey(),
+            WebhookBulkActionResponse.class);
+        if (cached.isPresent()) {
+            return ResponseEntity.ok(cached.get());
+        }
+
+        List<WebhookSubscription> matched = webhookRepository.matchForBulk(
+            request.getFilter().getTenantId(),
+            request.getFilter().getStatus(),
+            request.getFilter().getEventType(),
+            searchNorm,
+            BULK_ACTION_LIMIT);
+        if (matched.size() > BULK_ACTION_LIMIT) {
+            throw new GovernanceException(ErrorCode.LIMIT_EXCEEDED,
+                "filter matches more than " + BULK_ACTION_LIMIT
+                    + " subscriptions; narrow the filter and retry",
+                400,
+                Map.of("total_matched", matched.size()));
+        }
+        if (request.getExpectedCount() != null && request.getExpectedCount() != matched.size()) {
+            throw new GovernanceException(ErrorCode.COUNT_MISMATCH,
+                "expected_count " + request.getExpectedCount()
+                    + " differs from server-counted matches " + matched.size(),
+                409,
+                Map.of("total_matched", matched.size()));
+        }
+
+        List<BulkActionRowOutcome> succeeded = new ArrayList<>();
+        List<BulkActionRowOutcome> failed = new ArrayList<>();
+        List<BulkActionRowOutcome> skipped = new ArrayList<>();
+        for (WebhookSubscription sub : matched) {
+            applyWebhookAction(sub, request.getAction(), succeeded, failed, skipped);
+        }
+
+        WebhookBulkActionResponse response = WebhookBulkActionResponse.builder()
+            .action(request.getAction())
+            .totalMatched(matched.size())
+            .succeeded(succeeded)
+            .failed(failed)
+            .skipped(skipped)
+            .idempotencyKey(request.getIdempotencyKey())
+            .build();
+
+        idempotencyStore.store(BULK_IDEMPOTENCY_ENDPOINT, request.getIdempotencyKey(), response);
+
+        Map<String, Object> auditMeta = new java.util.LinkedHashMap<>();
+        auditMeta.put("action", request.getAction().name());
+        auditMeta.put("total_matched", matched.size());
+        auditMeta.put("succeeded", succeeded.size());
+        auditMeta.put("failed", failed.size());
+        auditMeta.put("skipped", skipped.size());
+        auditMeta.put("idempotency_key", request.getIdempotencyKey());
+        auditRepository.log(buildAuditEntry(httpRequest)
+            .resourceType("webhook").resourceId("bulk-action")
+            .operation("bulkActionWebhooks").status(200)
+            .metadata(auditMeta)
+            .build());
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Apply one row of the webhook bulk-action and bucket the outcome.
+     * Reads live status at apply time to stay correct under concurrent
+     * mutation; a row deleted between the match and the apply lands in
+     * {@code skipped[]} with ALREADY_DELETED rather than a lost-update
+     * error.
+     */
+    private void applyWebhookAction(WebhookSubscription matched, WebhookBulkAction action,
+                                     List<BulkActionRowOutcome> succeeded,
+                                     List<BulkActionRowOutcome> failed,
+                                     List<BulkActionRowOutcome> skipped) {
+        String id = matched.getSubscriptionId();
+        try {
+            if (action == WebhookBulkAction.DELETE) {
+                try {
+                    webhookService.delete(id);
+                    succeeded.add(BulkActionRowOutcome.builder().id(id).build());
+                } catch (GovernanceException e) {
+                    if (e.getErrorCode() == ErrorCode.WEBHOOK_NOT_FOUND
+                            || e.getErrorCode() == ErrorCode.NOT_FOUND) {
+                        skipped.add(BulkActionRowOutcome.builder()
+                            .id(id).reason("ALREADY_DELETED").build());
+                    } else {
+                        throw e;
+                    }
+                }
+                return;
+            }
+            WebhookSubscription live;
+            try {
+                live = webhookRepository.findById(id);
+            } catch (GovernanceException e) {
+                // Concurrent delete between match and apply.
+                skipped.add(BulkActionRowOutcome.builder()
+                    .id(id).reason("ALREADY_DELETED").build());
+                return;
+            }
+            WebhookStatus current = live.getStatus() != null ? live.getStatus() : WebhookStatus.ACTIVE;
+            if (action == WebhookBulkAction.PAUSE) {
+                if (current == WebhookStatus.PAUSED || current == WebhookStatus.DISABLED) {
+                    skipped.add(BulkActionRowOutcome.builder()
+                        .id(id).reason("ALREADY_IN_TARGET_STATE").build());
+                    return;
+                }
+                WebhookUpdateRequest update = WebhookUpdateRequest.builder()
+                    .status(WebhookStatus.PAUSED).build();
+                webhookService.update(id, update);
+                succeeded.add(BulkActionRowOutcome.builder().id(id).build());
+                return;
+            }
+            // action == RESUME
+            if (current == WebhookStatus.ACTIVE) {
+                skipped.add(BulkActionRowOutcome.builder()
+                    .id(id).reason("ALREADY_IN_TARGET_STATE").build());
+                return;
+            }
+            if (current == WebhookStatus.DISABLED) {
+                failed.add(BulkActionRowOutcome.builder()
+                    .id(id).errorCode("INVALID_TRANSITION")
+                    .message("Cannot resume DISABLED subscription").build());
+                return;
+            }
+            WebhookUpdateRequest update = WebhookUpdateRequest.builder()
+                .status(WebhookStatus.ACTIVE).build();
+            webhookService.update(id, update);
+            succeeded.add(BulkActionRowOutcome.builder().id(id).build());
+        } catch (GovernanceException e) {
+            failed.add(BulkActionRowOutcome.builder()
+                .id(id)
+                .errorCode(classifyFailureCode(e))
+                .message(e.getMessage()).build());
+        } catch (Exception e) {
+            LOG.warn("Bulk-action row failed for subscription {}: {}", id, e.getMessage());
+            failed.add(BulkActionRowOutcome.builder()
+                .id(id).errorCode("INTERNAL_ERROR").message("Internal error").build());
+        }
+    }
+
+    private static String classifyFailureCode(GovernanceException e) {
+        switch (e.getErrorCode()) {
+            case WEBHOOK_NOT_FOUND:
+            case NOT_FOUND:
+                return "NOT_FOUND";
+            case FORBIDDEN:
+            case INSUFFICIENT_PERMISSIONS:
+                return "PERMISSION_DENIED";
+            case INVALID_REQUEST:
+                return "INVALID_TRANSITION";
+            default:
+                return "INTERNAL_ERROR";
+        }
     }
 }
