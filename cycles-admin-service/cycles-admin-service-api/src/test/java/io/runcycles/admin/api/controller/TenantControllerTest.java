@@ -3,6 +3,7 @@ package io.runcycles.admin.api.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.idempotency.IdempotencyStore;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.data.repository.TenantRepository;
@@ -41,6 +42,7 @@ class TenantControllerTest {
     @MockitoBean private ApiKeyRepository apiKeyRepository;
     @MockitoBean private JedisPool jedisPool;
     @MockitoBean private EventService eventService;
+    @MockitoBean private IdempotencyStore idempotencyStore;
 
     private static final String ADMIN_KEY = "test-admin-key";
 
@@ -639,5 +641,307 @@ class TenantControllerTest {
                 .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
 
         verify(tenantRepository, never()).list(any(), any(), any(), any(), anyInt(), any());
+    }
+
+    // --- Bulk-action contract tests (spec v0.1.25.21) ---
+
+    private static Tenant tenantRow(String id, TenantStatus status) {
+        return Tenant.builder()
+                .tenantId(id).name(id + " Corp").status(status)
+                .createdAt(Instant.now()).build();
+    }
+
+    @Test
+    void bulkActionTenants_suspend_happyPath_returns200() throws Exception {
+        when(idempotencyStore.lookup(eq("tenants-bulk"), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(eq(TenantStatus.ACTIVE), isNull(), isNull(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.ACTIVE), tenantRow("t2", TenantStatus.ACTIVE)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.ACTIVE));
+        when(tenantRepository.get("t2")).thenReturn(tenantRow("t2", TenantStatus.ACTIVE));
+        when(tenantRepository.update(anyString(), any())).thenReturn(tenantRow("t1", TenantStatus.SUSPENDED));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.action").value("SUSPEND"))
+                .andExpect(jsonPath("$.total_matched").value(2))
+                .andExpect(jsonPath("$.succeeded.length()").value(2))
+                .andExpect(jsonPath("$.failed.length()").value(0))
+                .andExpect(jsonPath("$.skipped.length()").value(0))
+                .andExpect(jsonPath("$.idempotency_key").value("k1"));
+
+        verify(tenantRepository, times(2)).update(anyString(), any());
+        verify(idempotencyStore).store(eq("tenants-bulk"), eq("k1"), any(TenantBulkActionResponse.class));
+    }
+
+    @Test
+    void bulkActionTenants_emptyFilter_returns400() throws Exception {
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(tenantRepository, never()).matchForBulk(any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void bulkActionTenants_searchOver128Chars_returns400() throws Exception {
+        String over = "x".repeat(129);
+        String body = "{\"filter\":{\"search\":\"" + over + "\"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}";
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(tenantRepository, never()).matchForBulk(any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void bulkActionTenants_expectedCountMismatch_returns409_noWrites() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.ACTIVE), tenantRow("t2", TenantStatus.ACTIVE)));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"SUSPEND\","
+                                + "\"expected_count\":5,\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("COUNT_MISMATCH"))
+                .andExpect(jsonPath("$.details.total_matched").value(2));
+
+        verify(tenantRepository, never()).update(anyString(), any());
+    }
+
+    @Test
+    void bulkActionTenants_over500Matches_returns400_limitExceeded() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        List<Tenant> oversized = new java.util.ArrayList<>();
+        for (int i = 0; i < 501; i++) oversized.add(tenantRow("t" + i, TenantStatus.ACTIVE));
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500))).thenReturn(oversized);
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("LIMIT_EXCEEDED"))
+                .andExpect(jsonPath("$.details.total_matched").value(501));
+
+        verify(tenantRepository, never()).update(anyString(), any());
+    }
+
+    @Test
+    void bulkActionTenants_idempotencyReplay_returnsCachedEnvelope_noWrites() throws Exception {
+        TenantBulkActionResponse cached = TenantBulkActionResponse.builder()
+                .action(TenantBulkAction.SUSPEND)
+                .totalMatched(3)
+                .succeeded(List.of())
+                .failed(List.of())
+                .skipped(List.of())
+                .idempotencyKey("k1")
+                .build();
+        when(idempotencyStore.lookup(eq("tenants-bulk"), eq("k1"), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.of(cached));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total_matched").value(3));
+
+        verify(tenantRepository, never()).matchForBulk(any(), any(), any(), anyInt());
+        verify(tenantRepository, never()).update(anyString(), any());
+        verify(idempotencyStore, never()).store(anyString(), anyString(), any());
+    }
+
+    @Test
+    void bulkActionTenants_alreadyInTargetState_lisInSkipped() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.SUSPENDED)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.SUSPENDED));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"SUSPENDED\"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.skipped.length()").value(1))
+                .andExpect(jsonPath("$.skipped[0].id").value("t1"))
+                .andExpect(jsonPath("$.skipped[0].reason").value("ALREADY_IN_TARGET_STATE"))
+                .andExpect(jsonPath("$.succeeded.length()").value(0));
+
+        verify(tenantRepository, never()).update(anyString(), any());
+    }
+
+    @Test
+    void bulkActionTenants_closedTenantSuspendAttempt_landsInFailed() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.CLOSED)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.CLOSED));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"parent_tenant_id\":\"p1\"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.failed.length()").value(1))
+                .andExpect(jsonPath("$.failed[0].id").value("t1"))
+                .andExpect(jsonPath("$.failed[0].error_code").value("INVALID_TRANSITION"));
+
+        verify(tenantRepository, never()).update(anyString(), any());
+    }
+
+    @Test
+    void bulkActionTenants_missingIdempotencyKey_returns400() throws Exception {
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"SUSPEND\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void bulkActionTenants_noAdminKey_returns401() throws Exception {
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isUnauthorized());
+
+        verify(tenantRepository, never()).matchForBulk(any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void bulkActionTenants_close_fromActive_succeeds() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.ACTIVE)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.ACTIVE));
+        when(tenantRepository.update(eq("t1"), any())).thenReturn(tenantRow("t1", TenantStatus.CLOSED));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"CLOSE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.action").value("CLOSE"))
+                .andExpect(jsonPath("$.succeeded[0].id").value("t1"));
+    }
+
+    @Test
+    void bulkActionTenants_reactivateFromClosed_landsInFailed() throws Exception {
+        // REACTIVATE → target ACTIVE; CLOSED tenant with action != CLOSE hits
+        // the INVALID_TRANSITION branch of applyTenantAction.
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.CLOSED)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.CLOSED));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"CLOSED\"},\"action\":\"REACTIVATE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.failed[0].id").value("t1"))
+                .andExpect(jsonPath("$.failed[0].error_code").value("INVALID_TRANSITION"));
+
+        verify(tenantRepository, never()).update(anyString(), any());
+    }
+
+    @Test
+    void bulkActionTenants_governanceException_classifiedByErrorCode() throws Exception {
+        // Update throws GovernanceException with INSUFFICIENT_PERMISSIONS →
+        // classifyFailureCode → PERMISSION_DENIED in failed[].
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.ACTIVE)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.ACTIVE));
+        when(tenantRepository.update(eq("t1"), any()))
+                .thenThrow(new GovernanceException(ErrorCode.INSUFFICIENT_PERMISSIONS,
+                        "denied", 403));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.failed[0].id").value("t1"))
+                .andExpect(jsonPath("$.failed[0].error_code").value("PERMISSION_DENIED"));
+    }
+
+    @Test
+    void bulkActionTenants_governanceException_invalidRequest_classifiedAsInvalidTransition() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.ACTIVE)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.ACTIVE));
+        when(tenantRepository.update(eq("t1"), any()))
+                .thenThrow(new GovernanceException(ErrorCode.INVALID_REQUEST,
+                        "bad", 400));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.failed[0].error_code").value("INVALID_TRANSITION"));
+    }
+
+    @Test
+    void bulkActionTenants_governanceException_tenantNotFound_classifiedAsNotFound() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.ACTIVE)));
+        when(tenantRepository.get("t1"))
+                .thenThrow(new GovernanceException(ErrorCode.TENANT_NOT_FOUND,
+                        "gone", 404));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.failed[0].error_code").value("NOT_FOUND"));
+    }
+
+    @Test
+    void bulkActionTenants_genericException_classifiedAsInternalError() throws Exception {
+        // Non-GovernanceException falls into the generic Exception catch,
+        // logged and reported as INTERNAL_ERROR.
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.ACTIVE)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.ACTIVE));
+        when(tenantRepository.update(eq("t1"), any()))
+                .thenThrow(new RuntimeException("redis-down"));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.failed[0].error_code").value("INTERNAL_ERROR"));
     }
 }

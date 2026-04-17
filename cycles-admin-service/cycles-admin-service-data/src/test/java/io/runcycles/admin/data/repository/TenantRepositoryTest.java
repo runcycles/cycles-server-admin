@@ -591,4 +591,127 @@ class TenantRepositoryTest {
                 .isInstanceOf(RuntimeException.class)
                 .hasCauseInstanceOf(RuntimeException.class);
     }
+
+    // ---- matchForBulk (spec v0.1.25.21) ----
+
+    private Tenant tenantRow(String id, String name, TenantStatus status, String parent) {
+        return Tenant.builder()
+                .tenantId(id).name(name).status(status).parentTenantId(parent)
+                .createdAt(Instant.now()).build();
+    }
+
+    @Test
+    void matchForBulk_noFilters_returnsAllTenants() throws Exception {
+        String j1 = objectMapper.writeValueAsString(tenantRow("t-1", "Alpha", TenantStatus.ACTIVE, null));
+        String j2 = objectMapper.writeValueAsString(tenantRow("t-2", "Beta", TenantStatus.SUSPENDED, null));
+        when(jedis.smembers("tenants"))
+            .thenReturn(new LinkedHashSet<>(List.of("t-1", "t-2")));
+        when(jedis.get("tenant:t-1")).thenReturn(j1);
+        when(jedis.get("tenant:t-2")).thenReturn(j2);
+
+        List<Tenant> result = repository.matchForBulk(null, null, null, 500);
+
+        assertThat(result).extracting(Tenant::getTenantId).containsExactlyInAnyOrder("t-1", "t-2");
+    }
+
+    @Test
+    void matchForBulk_statusFilter_excludesNonMatching() throws Exception {
+        String j1 = objectMapper.writeValueAsString(tenantRow("t-1", "Alpha", TenantStatus.ACTIVE, null));
+        String j2 = objectMapper.writeValueAsString(tenantRow("t-2", "Beta", TenantStatus.SUSPENDED, null));
+        when(jedis.smembers("tenants"))
+            .thenReturn(new LinkedHashSet<>(List.of("t-1", "t-2")));
+        when(jedis.get("tenant:t-1")).thenReturn(j1);
+        when(jedis.get("tenant:t-2")).thenReturn(j2);
+
+        List<Tenant> result = repository.matchForBulk(TenantStatus.ACTIVE, null, null, 500);
+
+        assertThat(result).extracting(Tenant::getTenantId).containsExactly("t-1");
+    }
+
+    @Test
+    void matchForBulk_parentTenantIdFilter_excludesNonMatching() throws Exception {
+        String j1 = objectMapper.writeValueAsString(tenantRow("t-1", "Alpha", TenantStatus.ACTIVE, "parent-x"));
+        String j2 = objectMapper.writeValueAsString(tenantRow("t-2", "Beta", TenantStatus.ACTIVE, "parent-y"));
+        when(jedis.smembers("tenants"))
+            .thenReturn(new LinkedHashSet<>(List.of("t-1", "t-2")));
+        when(jedis.get("tenant:t-1")).thenReturn(j1);
+        when(jedis.get("tenant:t-2")).thenReturn(j2);
+
+        List<Tenant> result = repository.matchForBulk(null, "parent-x", null, 500);
+
+        assertThat(result).extracting(Tenant::getTenantId).containsExactly("t-1");
+    }
+
+    @Test
+    void matchForBulk_searchMatchesNameSubstring() throws Exception {
+        String j1 = objectMapper.writeValueAsString(tenantRow("t-1", "Acme Corp", TenantStatus.ACTIVE, null));
+        String j2 = objectMapper.writeValueAsString(tenantRow("t-2", "Globex", TenantStatus.ACTIVE, null));
+        when(jedis.smembers("tenants"))
+            .thenReturn(new LinkedHashSet<>(List.of("t-1", "t-2")));
+        when(jedis.get("tenant:t-1")).thenReturn(j1);
+        when(jedis.get("tenant:t-2")).thenReturn(j2);
+
+        List<Tenant> result = repository.matchForBulk(null, null, "acme", 500);
+
+        assertThat(result).extracting(Tenant::getTenantId).containsExactly("t-1");
+    }
+
+    @Test
+    void matchForBulk_searchMatchesTenantIdSubstring() throws Exception {
+        String j1 = objectMapper.writeValueAsString(tenantRow("acme-1", "A", TenantStatus.ACTIVE, null));
+        String j2 = objectMapper.writeValueAsString(tenantRow("other-2", "B", TenantStatus.ACTIVE, null));
+        when(jedis.smembers("tenants"))
+            .thenReturn(new LinkedHashSet<>(List.of("acme-1", "other-2")));
+        when(jedis.get("tenant:acme-1")).thenReturn(j1);
+        when(jedis.get("tenant:other-2")).thenReturn(j2);
+
+        List<Tenant> result = repository.matchForBulk(null, null, "acme", 500);
+
+        assertThat(result).extracting(Tenant::getTenantId).containsExactly("acme-1");
+    }
+
+    @Test
+    void matchForBulk_missingTenantJson_isSkipped() throws Exception {
+        String j1 = objectMapper.writeValueAsString(tenantRow("t-1", "A", TenantStatus.ACTIVE, null));
+        when(jedis.smembers("tenants"))
+            .thenReturn(new LinkedHashSet<>(List.of("t-1", "t-gone")));
+        when(jedis.get("tenant:t-1")).thenReturn(j1);
+        when(jedis.get("tenant:t-gone")).thenReturn(null);
+
+        List<Tenant> result = repository.matchForBulk(null, null, null, 500);
+
+        assertThat(result).extracting(Tenant::getTenantId).containsExactly("t-1");
+    }
+
+    @Test
+    void matchForBulk_corruptJson_isSkippedAndLoopContinues() throws Exception {
+        String ok = objectMapper.writeValueAsString(tenantRow("t-ok", "OK", TenantStatus.ACTIVE, null));
+        when(jedis.smembers("tenants"))
+            .thenReturn(new LinkedHashSet<>(List.of("t-bad", "t-ok")));
+        when(jedis.get("tenant:t-bad")).thenReturn("{not-json");
+        when(jedis.get("tenant:t-ok")).thenReturn(ok);
+
+        List<Tenant> result = repository.matchForBulk(null, null, null, 500);
+
+        assertThat(result).extracting(Tenant::getTenantId).containsExactly("t-ok");
+    }
+
+    @Test
+    void matchForBulk_capPlusOneSentinel_stopsIteration() throws Exception {
+        LinkedHashSet<String> ids = new LinkedHashSet<>(List.of("t-1", "t-2", "t-3", "t-4", "t-5"));
+        when(jedis.smembers("tenants")).thenReturn(ids);
+        // cap=3 → ceiling 4 → loop breaks after 4 matches, never touching t-5.
+        // Only stub rows the loop actually hydrates; Mockito strict mode
+        // would flag an unused stub on t-5 otherwise.
+        for (int i = 1; i <= 4; i++) {
+            String j = objectMapper.writeValueAsString(
+                tenantRow("t-" + i, "n-" + i, TenantStatus.ACTIVE, null));
+            when(jedis.get("tenant:t-" + i)).thenReturn(j);
+        }
+
+        List<Tenant> result = repository.matchForBulk(null, null, null, 3);
+
+        assertThat(result).hasSize(4);
+        verify(jedis, never()).get("tenant:t-5");
+    }
 }

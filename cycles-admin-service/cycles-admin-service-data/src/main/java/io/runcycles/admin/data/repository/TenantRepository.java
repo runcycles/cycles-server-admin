@@ -232,6 +232,39 @@ public class TenantRepository {
         Comparator<Tenant> directed = sortSpec.isAscending() ? primary : primary.reversed();
         return directed.thenComparing(tid);
     }
+    /**
+     * Bulk-action match phase (spec v0.1.25.21). Returns every tenant
+     * matching the filter (status / parent_tenant_id / search) up to
+     * {@code cap}+1 entries; a returned list of size {@code cap+1}
+     * signals the caller to reject with HTTP 400 LIMIT_EXCEEDED without
+     * ever hydrating the remainder.
+     *
+     * <p>No cursor, no sort — this path feeds a synchronous write loop,
+     * not a paged wire response. Candidates are scanned in the tenant
+     * set's natural iteration order, which is fine because the caller
+     * treats the return as a set (IDs are written individually).
+     */
+    public List<Tenant> matchForBulk(TenantStatus status, String parentTenantId, String search, int cap) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            Set<String> ids = jedis.smembers("tenants");
+            List<Tenant> matches = new ArrayList<>();
+            int ceiling = cap + 1;
+            for (String id : ids) {
+                try {
+                    String data = jedis.get("tenant:" + id);
+                    if (data == null) continue;
+                    Tenant t = objectMapper.readValue(data, Tenant.class);
+                    if (!matchesFilters(t, status, parentTenantId, search)) continue;
+                    matches.add(t);
+                    if (matches.size() >= ceiling) break;
+                } catch (Exception e) {
+                    LOG.warn("Failed to load tenant: {}", id, e);
+                }
+            }
+            return matches;
+        }
+    }
+
     public Tenant update(String tenantId, TenantUpdateRequest request) {
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "tenant:" + tenantId;

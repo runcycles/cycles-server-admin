@@ -926,4 +926,176 @@ class WebhookRepositoryTest {
         assertThat(result).extracting(WebhookSubscription::getSubscriptionId)
             .containsExactly("whsub_good");
     }
+
+    // ---- matchForBulk (spec v0.1.25.21) ----
+
+    private WebhookSubscription webhookRow(String id, String tenantId, String url,
+                                           WebhookStatus status, EventType type) {
+        return WebhookSubscription.builder()
+            .subscriptionId(id).tenantId(tenantId).url(url).status(status)
+            .eventTypes(List.of(type)).consecutiveFailures(0).createdAt(Instant.now()).build();
+    }
+
+    @Test
+    void matchForBulk_tenantScoped_scansTenantSet() throws Exception {
+        String json = objectMapper.writeValueAsString(
+            webhookRow("whsub_1", "tenant-1", "https://a/", WebhookStatus.ACTIVE, EventType.TENANT_CREATED));
+        when(jedis.smembers("webhooks:tenant-1"))
+            .thenReturn(new LinkedHashSet<>(List.of("whsub_1")));
+        when(jedis.get("webhook:whsub_1")).thenReturn(json);
+
+        List<WebhookSubscription> result =
+            repository.matchForBulk("tenant-1", null, null, null, 500);
+
+        assertThat(result).extracting(WebhookSubscription::getSubscriptionId)
+            .containsExactly("whsub_1");
+        verify(jedis).smembers("webhooks:tenant-1");
+        verify(jedis, never()).smembers("webhooks:_all");
+    }
+
+    @Test
+    void matchForBulk_globalScope_scansAllSet() throws Exception {
+        String json = objectMapper.writeValueAsString(
+            webhookRow("whsub_a", "tenant-x", "https://a/", WebhookStatus.ACTIVE, EventType.TENANT_CREATED));
+        when(jedis.smembers("webhooks:_all"))
+            .thenReturn(new LinkedHashSet<>(List.of("whsub_a")));
+        when(jedis.get("webhook:whsub_a")).thenReturn(json);
+
+        List<WebhookSubscription> result =
+            repository.matchForBulk(null, null, null, null, 500);
+
+        assertThat(result).extracting(WebhookSubscription::getSubscriptionId)
+            .containsExactly("whsub_a");
+        verify(jedis).smembers("webhooks:_all");
+    }
+
+    @Test
+    void matchForBulk_blankTenantId_fallsBackToAllSet() throws Exception {
+        String json = objectMapper.writeValueAsString(
+            webhookRow("whsub_b", "tenant-x", "https://b/", WebhookStatus.ACTIVE, EventType.TENANT_CREATED));
+        when(jedis.smembers("webhooks:_all"))
+            .thenReturn(new LinkedHashSet<>(List.of("whsub_b")));
+        when(jedis.get("webhook:whsub_b")).thenReturn(json);
+
+        List<WebhookSubscription> result =
+            repository.matchForBulk("   ", null, null, null, 500);
+
+        assertThat(result).hasSize(1);
+        verify(jedis).smembers("webhooks:_all");
+    }
+
+    @Test
+    void matchForBulk_emptyIdSet_returnsEmpty() {
+        when(jedis.smembers("webhooks:_all")).thenReturn(Collections.emptySet());
+
+        List<WebhookSubscription> result =
+            repository.matchForBulk(null, null, null, null, 500);
+
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    void matchForBulk_nullIdSet_returnsEmpty() {
+        when(jedis.smembers("webhooks:_all")).thenReturn(null);
+
+        List<WebhookSubscription> result =
+            repository.matchForBulk(null, null, null, null, 500);
+
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    void matchForBulk_statusFilter_excludesNonMatching() throws Exception {
+        String json1 = objectMapper.writeValueAsString(
+            webhookRow("whsub_1", "t", "https://a/", WebhookStatus.ACTIVE, EventType.TENANT_CREATED));
+        String json2 = objectMapper.writeValueAsString(
+            webhookRow("whsub_2", "t", "https://b/", WebhookStatus.PAUSED, EventType.TENANT_CREATED));
+        when(jedis.smembers("webhooks:_all"))
+            .thenReturn(new LinkedHashSet<>(List.of("whsub_1", "whsub_2")));
+        when(jedis.get("webhook:whsub_1")).thenReturn(json1);
+        when(jedis.get("webhook:whsub_2")).thenReturn(json2);
+
+        List<WebhookSubscription> result =
+            repository.matchForBulk(null, WebhookStatus.ACTIVE, null, null, 500);
+
+        assertThat(result).extracting(WebhookSubscription::getSubscriptionId)
+            .containsExactly("whsub_1");
+    }
+
+    @Test
+    void matchForBulk_eventTypeFilter_excludesNonMatching() throws Exception {
+        String json1 = objectMapper.writeValueAsString(
+            webhookRow("whsub_1", "t", "https://a/", WebhookStatus.ACTIVE, EventType.TENANT_CREATED));
+        String json2 = objectMapper.writeValueAsString(
+            webhookRow("whsub_2", "t", "https://b/", WebhookStatus.ACTIVE, EventType.BUDGET_CREATED));
+        when(jedis.smembers("webhooks:_all"))
+            .thenReturn(new LinkedHashSet<>(List.of("whsub_1", "whsub_2")));
+        when(jedis.get("webhook:whsub_1")).thenReturn(json1);
+        when(jedis.get("webhook:whsub_2")).thenReturn(json2);
+
+        List<WebhookSubscription> result =
+            repository.matchForBulk(null, null, EventType.TENANT_CREATED, null, 500);
+
+        assertThat(result).extracting(WebhookSubscription::getSubscriptionId)
+            .containsExactly("whsub_1");
+    }
+
+    @Test
+    void matchForBulk_searchMatchesUrlOrSubscriptionId() throws Exception {
+        String acme = objectMapper.writeValueAsString(
+            webhookRow("whsub_acme", "t", "https://partner.com/", WebhookStatus.ACTIVE, EventType.TENANT_CREATED));
+        String other = objectMapper.writeValueAsString(
+            webhookRow("whsub_other", "t", "https://elsewhere.io/", WebhookStatus.ACTIVE, EventType.TENANT_CREATED));
+        when(jedis.smembers("webhooks:_all"))
+            .thenReturn(new LinkedHashSet<>(List.of("whsub_acme", "whsub_other")));
+        when(jedis.get("webhook:whsub_acme")).thenReturn(acme);
+        when(jedis.get("webhook:whsub_other")).thenReturn(other);
+
+        List<WebhookSubscription> byId =
+            repository.matchForBulk(null, null, null, "acme", 500);
+        assertThat(byId).extracting(WebhookSubscription::getSubscriptionId)
+            .containsExactly("whsub_acme");
+
+        List<WebhookSubscription> byUrl =
+            repository.matchForBulk(null, null, null, "elsewhere", 500);
+        assertThat(byUrl).extracting(WebhookSubscription::getSubscriptionId)
+            .containsExactly("whsub_other");
+    }
+
+    @Test
+    void matchForBulk_hydrationFailure_isSkipped() throws Exception {
+        String okJson = objectMapper.writeValueAsString(
+            webhookRow("whsub_ok", "t", "https://ok/", WebhookStatus.ACTIVE, EventType.TENANT_CREATED));
+        when(jedis.smembers("webhooks:_all"))
+            .thenReturn(new LinkedHashSet<>(List.of("whsub_bad", "whsub_ok")));
+        when(jedis.get("webhook:whsub_bad")).thenReturn("{not-json");
+        when(jedis.get("webhook:whsub_ok")).thenReturn(okJson);
+
+        List<WebhookSubscription> result =
+            repository.matchForBulk(null, null, null, null, 500);
+
+        assertThat(result).extracting(WebhookSubscription::getSubscriptionId)
+            .containsExactly("whsub_ok");
+    }
+
+    @Test
+    void matchForBulk_capPlusOneSentinel_stopsIteration() throws Exception {
+        LinkedHashSet<String> ids =
+            new LinkedHashSet<>(List.of("whsub_1", "whsub_2", "whsub_3", "whsub_4", "whsub_5"));
+        when(jedis.smembers("webhooks:_all")).thenReturn(ids);
+        // cap=3 → ceiling 4 → fifth row never hydrated. Only stub what
+        // the loop will actually call; Mockito strict mode flags unused stubs.
+        for (int i = 1; i <= 4; i++) {
+            String j = objectMapper.writeValueAsString(
+                webhookRow("whsub_" + i, "t", "https://" + i + "/",
+                    WebhookStatus.ACTIVE, EventType.TENANT_CREATED));
+            when(jedis.get("webhook:whsub_" + i)).thenReturn(j);
+        }
+
+        List<WebhookSubscription> result =
+            repository.matchForBulk(null, null, null, null, 3);
+
+        assertThat(result).hasSize(4);
+        verify(jedis, never()).get("webhook:whsub_5");
+    }
 }
