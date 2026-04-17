@@ -176,26 +176,55 @@ public class AuditRepository {
         }
     }
 
-    public List<AuditLogEntry> list(String tenantId, String keyId, String operation, Integer status,
-                                     String resourceType, String resourceId,
+    public List<AuditLogEntry> list(String tenantId, String keyId, List<String> operation, Integer status,
+                                     List<String> resourceType, String resourceId,
                                      Instant from, Instant to, String cursor, int limit) {
         return list(tenantId, keyId, operation, status, resourceType, resourceId,
-            from, to, cursor, limit, null, null);
+            from, to, cursor, limit, null, null, null, null, null, null);
     }
 
-    public List<AuditLogEntry> list(String tenantId, String keyId, String operation, Integer status,
-                                     String resourceType, String resourceId,
+    public List<AuditLogEntry> list(String tenantId, String keyId, List<String> operation, Integer status,
+                                     List<String> resourceType, String resourceId,
                                      Instant from, Instant to, String cursor, int limit,
                                      SortSpec sortSpec) {
         return list(tenantId, keyId, operation, status, resourceType, resourceId,
-            from, to, cursor, limit, sortSpec, null);
+            from, to, cursor, limit, sortSpec, null, null, null, null, null);
+    }
+
+    public List<AuditLogEntry> list(String tenantId, String keyId, List<String> operation, Integer status,
+                                     List<String> resourceType, String resourceId,
+                                     Instant from, Instant to, String cursor, int limit,
+                                     SortSpec sortSpec, String search) {
+        return list(tenantId, keyId, operation, status, resourceType, resourceId,
+            from, to, cursor, limit, sortSpec, search, null, null, null, null);
     }
 
     /**
-     * List audit logs with optional sort (spec v0.1.25.20 §V4) and optional
-     * search (spec v0.1.25.21). Search is case-insensitive substring match on
-     * {@code resource_id} OR {@code log_id}, AND-combined with other filters,
-     * applied before cursor traversal.
+     * List audit logs with optional sort (spec v0.1.25.20 §V4), optional
+     * search (spec v0.1.25.21), and — as of spec v0.1.25.24 — optional
+     * IN-list filters on {@code operation} / {@code resource_type} /
+     * {@code error_code}, an exclusion list on {@code error_code}, and a
+     * numeric range on {@code status}. All predicates AND-compose; within
+     * one IN-list predicate the match is OR.
+     *
+     * <p>NULL-semantics on {@code error_code}:
+     * <ul>
+     *   <li>IN-list ({@code errorCodes}) — entries with null {@code error_code}
+     *       never match (success entries are excluded when the auditor asks
+     *       "show me failures of type X").
+     *   <li>NOT-IN-list ({@code errorCodeExcludes}) — entries with null
+     *       {@code error_code} always pass (hiding noisy codes shouldn't
+     *       hide successes).
+     * </ul>
+     *
+     * <p>{@code search} is case-insensitive substring match on
+     * {@code resource_id} OR {@code log_id} OR {@code error_code} OR
+     * {@code operation} (spec v0.1.25.24 extends the match set to cover
+     * error-code/operation free-text lookups).
+     *
+     * <p>All filter and search predicates are applied BEFORE cursor
+     * commitment — the v0.1.25.25 cursor-stability invariant is preserved
+     * end-to-end through the new predicates too.
      *
      * <p>Three paths mirror {@link EventRepository#list}:
      * <ul>
@@ -210,20 +239,24 @@ public class AuditRepository {
      * Callers requesting non-timestamp sort on very large windows should
      * narrow {@code from}/{@code to} to keep hydration bounded.
      */
-    public List<AuditLogEntry> list(String tenantId, String keyId, String operation, Integer status,
-                                     String resourceType, String resourceId,
+    public List<AuditLogEntry> list(String tenantId, String keyId, List<String> operation, Integer status,
+                                     List<String> resourceType, String resourceId,
                                      Instant from, Instant to, String cursor, int limit,
-                                     SortSpec sortSpec, String search) {
+                                     SortSpec sortSpec, String search,
+                                     List<String> errorCodes, List<String> errorCodeExcludes,
+                                     Integer statusMin, Integer statusMax) {
         if (limit <= 0) {
             return new ArrayList<>();
         }
         try (Jedis jedis = jedisPool.getResource()) {
             if (sortSpec == null || isTimestampSort(sortSpec)) {
                 return listByTimestamp(jedis, tenantId, keyId, operation, status,
-                    resourceType, resourceId, from, to, cursor, limit, sortSpec, search);
+                    resourceType, resourceId, from, to, cursor, limit, sortSpec, search,
+                    errorCodes, errorCodeExcludes, statusMin, statusMax);
             }
             return listSortedNonTimestamp(jedis, tenantId, keyId, operation, status,
-                resourceType, resourceId, from, to, cursor, limit, sortSpec, search);
+                resourceType, resourceId, from, to, cursor, limit, sortSpec, search,
+                errorCodes, errorCodeExcludes, statusMin, statusMax);
         }
     }
 
@@ -240,10 +273,12 @@ public class AuditRepository {
     private static final int SORTED_HYDRATE_CAP = 2000;
 
     private List<AuditLogEntry> listByTimestamp(Jedis jedis, String tenantId, String keyId,
-                                                 String operation, Integer status,
-                                                 String resourceType, String resourceId,
+                                                 List<String> operations, Integer status,
+                                                 List<String> resourceTypes, String resourceId,
                                                  Instant from, Instant to, String cursor, int limit,
-                                                 SortSpec sortSpec, String search) {
+                                                 SortSpec sortSpec, String search,
+                                                 List<String> errorCodes, List<String> errorCodeExcludes,
+                                                 Integer statusMin, Integer statusMax) {
         double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
         double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
         String indexKey = (tenantId != null) ? "audit:logs:" + tenantId : "audit:logs:_all";
@@ -272,7 +307,8 @@ public class AuditRepository {
                     continue;
                 }
                 AuditLogEntry entry = objectMapper.readValue(data, AuditLogEntry.class);
-                if (!matchesFilters(entry, keyId, operation, status, resourceType, resourceId)) continue;
+                if (!matchesFilters(entry, keyId, operations, status, resourceTypes, resourceId,
+                        errorCodes, errorCodeExcludes, statusMin, statusMax)) continue;
                 if (!matchesSearch(entry, search)) continue;
                 logs.add(entry);
                 if (logs.size() >= limit) break;
@@ -284,10 +320,12 @@ public class AuditRepository {
     }
 
     private List<AuditLogEntry> listSortedNonTimestamp(Jedis jedis, String tenantId, String keyId,
-                                                        String operation, Integer status,
-                                                        String resourceType, String resourceId,
+                                                        List<String> operations, Integer status,
+                                                        List<String> resourceTypes, String resourceId,
                                                         Instant from, Instant to, String cursor, int limit,
-                                                        SortSpec sortSpec, String search) {
+                                                        SortSpec sortSpec, String search,
+                                                        List<String> errorCodes, List<String> errorCodeExcludes,
+                                                        Integer statusMin, Integer statusMax) {
         double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
         double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
         String indexKey = (tenantId != null) ? "audit:logs:" + tenantId : "audit:logs:_all";
@@ -299,7 +337,8 @@ public class AuditRepository {
                 String data = jedis.get("audit:log:" + id);
                 if (data == null) continue;
                 AuditLogEntry entry = objectMapper.readValue(data, AuditLogEntry.class);
-                if (!matchesFilters(entry, keyId, operation, status, resourceType, resourceId)) continue;
+                if (!matchesFilters(entry, keyId, operations, status, resourceTypes, resourceId,
+                        errorCodes, errorCodeExcludes, statusMin, statusMax)) continue;
                 if (!matchesSearch(entry, search)) continue;
                 all.add(entry);
             } catch (Exception e) {
@@ -320,25 +359,50 @@ public class AuditRepository {
         return results;
     }
 
-    private boolean matchesFilters(AuditLogEntry entry, String keyId, String operation,
-                                    Integer status, String resourceType, String resourceId) {
+    private boolean matchesFilters(AuditLogEntry entry, String keyId, List<String> operations,
+                                    Integer status, List<String> resourceTypes, String resourceId,
+                                    List<String> errorCodes, List<String> errorCodeExcludes,
+                                    Integer statusMin, Integer statusMax) {
         if (keyId != null && !keyId.equals(entry.getKeyId())) return false;
-        if (operation != null && !operation.equals(entry.getOperation())) return false;
+        if (operations != null && !operations.isEmpty() && !operations.contains(entry.getOperation())) return false;
         if (status != null && !status.equals(entry.getStatus())) return false;
-        if (resourceType != null && !resourceType.equals(entry.getResourceType())) return false;
+        // Numeric range on status. A null entry.status cannot satisfy a bound —
+        // treat it as out-of-range so the predicate rejects rather than silently
+        // passing bounds-holding entries as matches.
+        if (statusMin != null && (entry.getStatus() == null || entry.getStatus() < statusMin)) return false;
+        if (statusMax != null && (entry.getStatus() == null || entry.getStatus() > statusMax)) return false;
+        if (resourceTypes != null && !resourceTypes.isEmpty()
+                && !resourceTypes.contains(entry.getResourceType())) return false;
         if (resourceId != null && !resourceId.equals(entry.getResourceId())) return false;
+        // IN-list on error_code: null entry.errorCode (success entries) never
+        // matches — auditor asking "show me error X" never wants success rows.
+        if (errorCodes != null && !errorCodes.isEmpty()) {
+            if (entry.getErrorCode() == null) return false;
+            if (!errorCodes.contains(entry.getErrorCode())) return false;
+        }
+        // NOT-IN-list on error_code: null entry.errorCode always passes —
+        // hiding noisy codes shouldn't also hide successes.
+        if (errorCodeExcludes != null && !errorCodeExcludes.isEmpty()
+                && entry.getErrorCode() != null
+                && errorCodeExcludes.contains(entry.getErrorCode())) {
+            return false;
+        }
         return true;
     }
 
     /**
-     * Spec v0.1.25.21: listAuditLogs search matches {@code resource_id}
-     * OR {@code log_id} as a case-insensitive substring. Null search =
-     * no filter.
+     * listAuditLogs search matches {@code resource_id} OR {@code log_id}
+     * OR {@code error_code} OR {@code operation} as a case-insensitive
+     * substring. Null search = no filter. The error_code/operation match
+     * fields were added in spec v0.1.25.24 so free-text "quota" finds
+     * BUDGET_EXCEEDED without the auditor knowing the exact enum name.
      */
     private static boolean matchesSearch(AuditLogEntry entry, String search) {
         if (search == null) return true;
         return SearchSpec.matches(entry.getResourceId(), search)
-            || SearchSpec.matches(entry.getLogId(), search);
+            || SearchSpec.matches(entry.getLogId(), search)
+            || SearchSpec.matches(entry.getErrorCode(), search)
+            || SearchSpec.matches(entry.getOperation(), search);
     }
 
     /**
@@ -386,6 +450,7 @@ public class AuditRepository {
     }
 
     public List<AuditLogEntry> list(String tenantId, int limit) {
-        return list(tenantId, null, null, null, null, null, null, null, null, limit);
+        return list(tenantId, null, (List<String>) null, null, (List<String>) null, null,
+            null, null, null, limit);
     }
 }

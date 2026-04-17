@@ -635,7 +635,7 @@ class RedisIntegrationTest {
                 .build();
         auditRepository.log(entry);
 
-        List<AuditLogEntry> logs = auditRepository.list("integ-tenant", null, "createTenant", null, null, null, null, null, null, 50);
+        List<AuditLogEntry> logs = auditRepository.list("integ-tenant", null, List.of("createTenant"), null, null, null, null, null, null, 50);
         assertThat(logs).allSatisfy(l -> assertThat(l.getOperation()).isEqualTo("createTenant"));
     }
 }

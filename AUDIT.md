@@ -1,9 +1,83 @@
-# Complete Budget Governance v0.1.25.26 — Admin Server Audit
+# Complete Budget Governance v0.1.25.27 — Admin Server Audit
 
-**Server version:** 0.1.25.26 (2026-04-17 — filter-driven bulk-action on tenants + webhooks, spec v0.1.25.21 second bullet)
-**Date:** 2026-04-17 (v0.1.25.26 bulk-action endpoints), 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
-**Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.23`; bulk-action endpoints on `/v1/admin/tenants/bulk-action` + `/v1/admin/webhooks/bulk-action` with COUNT_MISMATCH / LIMIT_EXCEEDED safety gates) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
+**Server version:** 0.1.25.27 (2026-04-17 — audit filter DSL upgrade: error_code IN/NOT-IN lists, status range, operation/resource_type IN-lists, search extension, spec v0.1.25.24)
+**Date:** 2026-04-17 (v0.1.25.27 audit filter DSL upgrade), 2026-04-17 (v0.1.25.26 bulk-action endpoints), 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.24`; `listAuditLogs` gains `error_code` / `error_code_exclude` IN/NOT-IN arrays, `status_min` / `status_max` numeric range; `operation` / `resource_type` promoted scalar → array, all maxItems 25) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-17 — v0.1.25.27 audit filter DSL upgrade (spec v0.1.25.24)
+
+Ops auditors cannot slice `listAuditLogs` the way their work demands today — `error_code` is unfilterable, `operation` / `resource_type` accept only exact match, there is no status range, and `search` misses the two fields auditors most want to grep (error codes and operation IDs). This release lands a consistent filter DSL on `GET /v1/admin/audit/logs`: the **promoted string filters** (`operation`, `resource_type`, `error_code`, `error_code_exclude`) are exact-or-IN-list, and the `status` filter is exact-or-range; filters AND-compose, and within one filter an IN-list is OR. `tenant_id`, `key_id`, and `resource_id` remain exact-match this revision (see Not-promoted block below).
+
+**Concrete auditor flows this release unblocks:**
+
+| Question | Before | After |
+|---|---|---|
+| "All BUDGET_EXCEEDED + TENANT_SUSPENDED in last hour" | Two passes, client-side merge | `?error_code=BUDGET_EXCEEDED,TENANT_SUSPENDED&from=…` |
+| "All 5xx yesterday" | Page everything, filter client-side | `?status_min=500&status_max=599&from=…` |
+| "All failures except noisy INTERNAL_ERROR" | Not possible | `?error_code_exclude=INTERNAL_ERROR&status_min=400` |
+| "All createBudget + updateBudget on tenant X" | Two passes | `?operation=createBudget,updateBudget&tenant_id=X` |
+| "Find entries mentioning 'budget'" | Missed error_code / operation | `?search=budget` now matches both fields too |
+
+**Per-param semantics** (`AuditController.list`, spec `listAuditLogs`):
+
+| Param | Shape | Semantics |
+|---|---|---|
+| `error_code` | `array<string>`, maxItems 25, `explode=false` | Exact-or-IN-list. Case-sensitive. **NULL `entry.error_code` never matches** — auditor asking "show me code X" never wants success rows. Unknown codes match nothing (forward-compat: a newer client sending a newly-added enum value doesn't 400 against an older server). |
+| `error_code_exclude` | `array<string>`, maxItems 25, `explode=false` | NOT-IN-list. **NULL `entry.error_code` always passes** — hiding noisy codes shouldn't also hide successes. May combine with `error_code` (AND-composed: "narrow to set A, minus subset B"). |
+| `status_min` | `integer`, 100..599 | Inclusive lower bound. Mutex with exact `status`. NULL `entry.status` is treated as out-of-range (does not silently pass). |
+| `status_max` | `integer`, 100..599 | Inclusive upper bound. Mutex with exact `status`. `status_min <= status_max` enforced. |
+| `operation` | `array<string>`, maxItems 25, `explode=false` | Promoted from `string`. Formal wire contract is the `explode=false` comma-separated form; a single scalar `?operation=createBudget` still parses as a one-element list (byte-identical back-compat for scalar-sending clients). Spring's `@RequestParam List<String>` binding additionally accepts the repeated form `?p=a&p=b` as an implementation convenience, but the spec documents this as a `MAY` — clients MUST NOT rely on repeated form for portability. |
+| `resource_type` | `array<string>`, maxItems 25, `explode=false` | Same promotion + same scalar-back-compat / repeated-form-MAY story as `operation`. |
+| `search` | `string`, ≤128 chars (unchanged) | Case-insensitive substring — now matches `resource_id` OR `log_id` OR `error_code` OR `operation` (was only the first two). |
+
+**Not promoted** (scope discipline): `tenant_id` / `key_id` (natural keys with cursor-stability implications), `resource_id` (high-cardinality, IN-list has little auditor value). Left exact-match.
+
+**Validation (controller edge, uniform 400 `INVALID_REQUEST` shape).** Cross-param constraints OpenAPI can't express:
+
+- `status` exact MUST NOT combine with `status_min` or `status_max` → 400.
+- `status_min` and `status_max` each in `[100, 599]` → else 400.
+- `status_min <= status_max` when both present → else 400.
+- Each IN-list param normalised via the shared `parseCodeList(List<String>, String paramName)` helper: flatten (comma-splits each element) → trim → drop empties → dedupe via `LinkedHashSet` (first-seen wins) → cap at `MAX_LIST_PARAM_VALUES = 25` → else 400 with `"<param> exceeds maxItems 25 (got <N>)"`. Single try/catch wraps all four `parseCodeList` calls into `GovernanceException(INVALID_REQUEST, ..., 400)` to mirror `parseSortSpec` / `parseSearch` / `BudgetController.listBudgets` shape.
+
+**NULL-semantics contract (lives in `AuditRepository.matchesFilters` javadoc).** The IN-list vs NOT-IN asymmetry is deliberate and asymmetric:
+
+- `errorCodes` (IN-list): null `entry.errorCode` → reject. Success entries excluded when filter asks "show me failure X".
+- `errorCodeExcludes` (NOT-IN-list): null `entry.errorCode` → accept. Hiding noisy codes never silently hides successes.
+- `statusMin` / `statusMax`: null `entry.status` → reject. A null can't satisfy either bound; silently passing bounds-holding entries through would break the auditor mental model.
+
+**Cursor-stability invariant preserved (v0.1.25.25).** All new predicates are applied **before** cursor commitment on both paths:
+
+1. Time-indexed (`listByTimestamp`) — the `zrevrangeByScore` / `zrangeByScore` walk hydrates each ID, runs `matchesFilters(entry, keyId, operations, status, resourceTypes, resourceId, errorCodes, errorCodeExcludes, statusMin, statusMax)` then `matchesSearch`, and only then appends to the result list. Cursor resumption continues to use the score-based `minScore / maxScore` boundary — so a second page with the same filter set returns the strict suffix of the first.
+2. Non-timestamp sort (`listSortedNonTimestamp`) — filters applied inside the `SORTED_HYDRATE_CAP = 2000` hydrate loop, before the in-memory sort and `log_id` cursor walk. Same stability guarantee.
+
+Verified by `AuditRepositoryTest.list_newFilterCursorStable_secondPageSkipsFirstPage`: walks a 3-row filtered fixture across two pages (`operation=createBudget` + `error_code=BUDGET_EXCEEDED` + `status_min=400 max=499`), asserts `page2` contains no `page1` IDs.
+
+**Forward-compat typing.** `error_code` / `error_code_exclude` deliberately declared as `array<string>` rather than `$ref: ErrorCode` in the spec. A newer spec release that extends the `ErrorCode` enum must not cause a pre-enum server to reject the request at the OpenAPI validator layer — unknown codes match nothing at the filter layer, which is the contract cross-version clients need. `ErrorCodeConstants` stays as the canonical authoritative set for audit entries the server itself writes.
+
+**Back-compat (type promotion of `operation` / `resource_type`).** Repository keeps three shorter overloads (`list(...)` with 10, 11, 12 args) that forward to the new 16-arg canonical with trailing nulls — same pattern used for v0.1.25.20 `SortSpec` and v0.1.25.21 `search`. Single-value URL form (`?operation=createBudget`) still parses into a one-element list at the Spring binding layer, so existing dashboard URLs work unchanged.
+
+**Tests.** Coverage added in both modules:
+
+- `AuditRepositoryTest` (+13 behavioural tests): IN-list matches for `operation` / `resource_type`; `errorCodes` rejecting null; `errorCodeExcludes` passing null; combined IN-and-exclude AND-composition; `status` range inclusive boundaries (399/400/450/499/500 fixture asserting `[log_2, log_3, log_4]`); `status_min` only / `status_max` only as half-open ranges; null `entry.status` rejected by the range; `search` matches `error_code` substring; `search` matches `operation` substring; all-filters-combined happy path; cursor stability under the new filter set; empty-list sentinel behaves identically to null. Three mechanical type-promotion updates (`"create"` → `List.of("create")`, `"tenant"` → `List.of("tenant")`).
+- `AuditControllerTest` (rewritten to 16-arg matchers + ~21 new behavioural tests): single-value / comma-separated / repeated-param parse paths for `error_code` and `error_code_exclude`; empty-after-trim → treated as absent; over-cap (26 values) → 400; `status_min` / `status_max` happy path threading; each bound out-of-range (<100, >599) → 400; `status_min > status_max` → 400; exact `status` combined with `status_min` → 400; exact `status` combined with `status_max` → 400; `operation` / `resource_type` IN-list threading; single-value back-compat still threads; over-cap on list params → 400; combined-filter happy path threads all sixteen repository args. A `stubAnyListReturns(repo, List<AuditLogEntry>)` helper collapses the boilerplate where the controller test doesn't care about the exact thread-through values.
+- `RedisIntegrationTest` (one mechanical update — `"createTenant"` → `List.of("createTenant")` at line 638).
+
+**Verification.** Local `mvn clean verify` (`-Dtest='!*IntegrationTest' -Dsurefire.failIfNoSpecifiedTests=false`): **667 tests pass, 0 failures, 0 errors** across all three modules. JaCoCo LINE coverage rule met on both `cycles-admin-service-data` and `cycles-admin-service-api` at **≥95%**. Build SUCCESS. `SpecCoverageReportTest` reports `declared=45 covered=45 missing=0` against the current-main spec; post spec-PR merge the four new query params land on the existing `listAuditLogs` operation (same `operationId`, no new operations added — the op stays covered).
+
+Cloud CI verification requires the cycles-protocol spec PR (bumping spec `info.version` to `0.1.25.24`) to merge to `main` first — the `ContractSpecLoader` fetches from `main`. Local contract-test iteration uses `-Dcontract.spec.url=file:///…` against a locally-patched spec, same flow as v0.1.25.26.
+
+**Future work (Tier 2 — NOT in this release).** The DSL locked in by this release is the contract the following Tier 2 endpoint reuses verbatim. Naming it here so a future reviewer doesn't re-invent the query shape:
+
+```
+GET /v1/admin/audit/logs/facets?group_by={error_code|status|operation|resource_type}
+    &from=…&to=…
+    [all Tier 1 filter params may be passed — they narrow the base set]
+```
+
+Returns per-bucket counts (top-N errors today, 5xx rate by operation) without paging entries. **Explicit reuse guarantee:** `error_code`, `error_code_exclude`, `status_min`, `status_max`, `operation`, `resource_type`, `from`, `to`, `search` work identically on `/facets` — same parser, same validation, same NULL semantics. That promise is the main reason the Tier 1 DSL was designed the way it was, instead of a one-off `error_code` flag. Deferred from this release because (a) dashboard aggregation UI isn't committed yet and (b) the underlying sorted-set walk would want a streaming count primitive rather than the `SORTED_HYDRATE_CAP` bounded hydrate — separate performance work.
+
+**Tier 3 — flagged, not designed.** `error_category` enum (QUOTA / AUTH / UPSTREAM / INVALID_INPUT / INFRA) server-derived from `error_code` — needs ops to name categories first + parity with cycles-server. CSV export (`Accept: text/csv`) for compliance audits. Saved audit queries. Not worth inventing unilaterally.
 
 ### 2026-04-17 — v0.1.25.26 bulk-action endpoints on tenants + webhooks (spec v0.1.25.21 second bullet)
 

@@ -12,6 +12,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 @RestController @RequestMapping("/v1/admin/audit") @Tag(name = "Audit")
 public class AuditController {
@@ -20,14 +23,24 @@ public class AuditController {
     private static final Set<String> ALLOWED_SORT_FIELDS = Set.of(
         "timestamp", "operation", "resource_type", "tenant_id", "key_id", "status");
     private static final String DEFAULT_SORT_FIELD = "timestamp";
+
+    // Spec v0.1.25.24: per-list-param cap. Wider than the current ErrorCode
+    // enum (23 values) with headroom; tight enough to keep request bodies
+    // bounded and the O(n) contains() in the matcher cheap.
+    private static final int MAX_LIST_PARAM_VALUES = 25;
+
+    // Spec v0.1.25.24: HTTP status range bounds for status_min / status_max.
+    private static final int MIN_HTTP_STATUS = 100;
+    private static final int MAX_HTTP_STATUS = 599;
+
     @Autowired private AuditRepository repository;
     @GetMapping("/logs") @Operation(operationId = "listAuditLogs")
     public ResponseEntity<AuditLogListResponse> list(
             @RequestParam(required = false) String tenant_id,
             @RequestParam(required = false) String key_id,
-            @RequestParam(required = false) String operation,
+            @RequestParam(required = false) List<String> operation,
             @RequestParam(required = false) Integer status,
-            @RequestParam(required = false) String resource_type,
+            @RequestParam(required = false) List<String> resource_type,
             @RequestParam(required = false) String resource_id,
             @RequestParam(required = false) Instant from,
             @RequestParam(required = false) Instant to,
@@ -35,12 +48,51 @@ public class AuditController {
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit,
             @RequestParam(required = false) String sort_by,
-            @RequestParam(required = false) String sort_dir) {
+            @RequestParam(required = false) String sort_dir,
+            @RequestParam(required = false) List<String> error_code,
+            @RequestParam(required = false) List<String> error_code_exclude,
+            @RequestParam(required = false) Integer status_min,
+            @RequestParam(required = false) Integer status_max) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         SortSpec sortSpec = parseSortSpec(sort_by, sort_dir);
         String searchNorm = parseSearch(search);
-        var logs = repository.list(tenant_id, key_id, operation, status, resource_type, resource_id,
-            from, to, cursor, effectiveLimit, sortSpec, searchNorm);
+
+        // Spec v0.1.25.24 validation. OpenAPI can't express the cross-param
+        // constraints (status vs status_min/max mutex, status_min <= status_max),
+        // so enforce at the controller edge and fail fast with INVALID_REQUEST.
+        if (status != null && (status_min != null || status_max != null)) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                "status cannot be combined with status_min or status_max", 400);
+        }
+        if (status_min != null && (status_min < MIN_HTTP_STATUS || status_min > MAX_HTTP_STATUS)) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                "status_min must be in [" + MIN_HTTP_STATUS + ", " + MAX_HTTP_STATUS + "]", 400);
+        }
+        if (status_max != null && (status_max < MIN_HTTP_STATUS || status_max > MAX_HTTP_STATUS)) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                "status_max must be in [" + MIN_HTTP_STATUS + ", " + MAX_HTTP_STATUS + "]", 400);
+        }
+        if (status_min != null && status_max != null && status_min > status_max) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                "status_min must be <= status_max", 400);
+        }
+
+        List<String> operations;
+        List<String> resourceTypes;
+        List<String> errorCodes;
+        List<String> errorCodeExcludes;
+        try {
+            operations = parseCodeList(operation, "operation");
+            resourceTypes = parseCodeList(resource_type, "resource_type");
+            errorCodes = parseCodeList(error_code, "error_code");
+            errorCodeExcludes = parseCodeList(error_code_exclude, "error_code_exclude");
+        } catch (IllegalArgumentException e) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
+        }
+
+        var logs = repository.list(tenant_id, key_id, operations, status, resourceTypes, resource_id,
+            from, to, cursor, effectiveLimit, sortSpec, searchNorm,
+            errorCodes, errorCodeExcludes, status_min, status_max);
         AuditLogListResponse response = AuditLogListResponse.builder()
             .logs(logs)
             .hasMore(logs.size() >= effectiveLimit)
@@ -73,5 +125,46 @@ public class AuditController {
         } catch (IllegalArgumentException e) {
             throw new GovernanceException(ErrorCode.INVALID_REQUEST, e.getMessage(), 400);
         }
+    }
+
+    /**
+     * Normalise an IN-list query param (spec v0.1.25.24). Spring binds
+     * {@code List<String>} from both comma-separated ({@code ?p=a,b})
+     * and repeated ({@code ?p=a&p=b}) forms; this helper collapses either
+     * shape into a trimmed, deduplicated, size-capped list.
+     *
+     * <p>Steps: flatten each element by splitting on comma → trim →
+     * drop empties → dedupe (LinkedHashSet preserves first-seen order) →
+     * cap at {@link #MAX_LIST_PARAM_VALUES}.
+     *
+     * <p>Values are NOT validated against any enum — unknown codes match
+     * nothing at the filter layer, which is the forward-compat contract
+     * for cross-version clients (a newer client sending a newly-added
+     * ErrorCode value won't 400 against an older server).
+     *
+     * @return normalised list, or {@code null} if the input is null/empty
+     *         after normalisation (repository treats null as "no filter")
+     * @throws IllegalArgumentException if the normalised list exceeds the
+     *         per-param cap
+     */
+    private static List<String> parseCodeList(List<String> raw, String paramName) {
+        if (raw == null || raw.isEmpty()) return null;
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        for (String element : raw) {
+            if (element == null) continue;
+            for (String piece : element.split(",")) {
+                String trimmed = piece.trim();
+                if (!trimmed.isEmpty()) {
+                    seen.add(trimmed);
+                }
+            }
+        }
+        if (seen.isEmpty()) return null;
+        if (seen.size() > MAX_LIST_PARAM_VALUES) {
+            throw new IllegalArgumentException(
+                paramName + " exceeds maxItems " + MAX_LIST_PARAM_VALUES
+                + " (got " + seen.size() + ")");
+        }
+        return new ArrayList<>(seen);
     }
 }

@@ -14,6 +14,153 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.27] — 2026-04-17
+
+### Added
+
+- **Audit log filter DSL upgrade on `GET /v1/admin/audit/logs`.** Aligns
+  with spec `cycles-governance-admin-v0.1.25.yaml` info.version
+  `0.1.25.24`. Adds four new query parameters and promotes two
+  existing parameters from scalar to array so ops auditors can slice
+  the audit trail without client-side merging:
+  - `error_code` (`array<string>`, maxItems 25, `explode=false`) —
+    exact-or-IN-list on `AuditLogEntry.error_code`. Case-sensitive.
+    NULL entry `error_code` (success rows) MUST NOT match. Unknown
+    codes match nothing (forward-compat: newer clients sending a
+    newly-added enum value MUST NOT cause a 400 against an older
+    server).
+  - `error_code_exclude` (`array<string>`, maxItems 25, `explode=false`)
+    — NOT-IN-list. NULL entry `error_code` MUST always pass (hiding
+    noisy codes MUST NOT silently hide successes). MAY combine with
+    `error_code` (AND-composed: "narrow to set A, minus subset B").
+  - `status_min`, `status_max` (integer, 100..599 inclusive) — range
+    predicate on entry `status`. Mutex with exact `status` (server
+    returns 400 `INVALID_REQUEST` on the combination). `status_min >
+    status_max` returns 400. NULL entry `status` does not silently
+    pass the range.
+  - `operation`, `resource_type` — promoted from `string` to
+    `array<string>` with `explode=false`. Formal wire contract is the
+    `explode=false` comma-separated form (`?p=a,b`); a single scalar
+    `?p=a` still parses as a one-element list (byte-identical
+    back-compat). Spring's `@RequestParam List<String>` also accepts
+    the repeated form `?p=a&p=b` as an implementation convenience —
+    documented in the spec as a server `MAY`, clients MUST NOT rely
+    on it.
+- **`search` match set extended** on `listAuditLogs`. Previously
+  matched `resource_id` OR `log_id`; now also matches `error_code` OR
+  `operation` (case-insensitive substring, unchanged 128-char cap).
+  Closes the free-text gap where `?search=BUDGET` missed
+  `BUDGET_EXCEEDED` and `?search=createBudget` missed the
+  operation field.
+
+### Changed
+
+- `AuditRepository.list(...)` gains five trailing parameters
+  (`operations`, `resourceTypes`, `errorCodes`, `errorCodeExcludes`,
+  `statusMin`, `statusMax`). Pre-0.1.25.27 shorter overloads are
+  preserved as thin shims that delegate with trailing `null`s, so
+  every pre-existing caller and test mock keeps working unchanged.
+- Controller enforces the cross-parameter constraints OpenAPI can't
+  express (mutex, bounds, `min <= max`, per-list-param maxItems 25)
+  and returns 400 `INVALID_REQUEST` with a specific diagnostic
+  message on violation.
+
+### Unchanged
+
+- Cursor-stability invariant (v0.1.25.25): all filter and search
+  predicates applied **before** cursor commitment, so a second page
+  with the same filter set returns the strict suffix of the first.
+- Response shape, `has_more` / `next_cursor` semantics, 128-char
+  `search` cap, and the existing time-indexed sort path. Callers
+  omitting all new params see byte-identical wire output to
+  v0.1.25.26.
+
+## [0.1.25.26] — 2026-04-17
+
+### Added
+
+- **Filter-driven bulk lifecycle actions on tenants and webhooks.**
+  Closes the remaining bullet of governance spec v0.1.25.21. Two
+  new admin-only endpoints:
+  - `POST /v1/admin/tenants/bulk-action` — actions `SUSPEND`,
+    `REACTIVATE`, `CLOSE`; filter fields `status`,
+    `parent_tenant_id`, `observe_mode`, `search`.
+  - `POST /v1/admin/webhooks/bulk-action` — actions `PAUSE`,
+    `RESUME`, `DELETE`; filter fields `tenant_id`, `status`,
+    `event_type`, `search`.
+  Request: `{ filter, action, expected_count?, idempotency_key }`.
+  Response: `{ action, total_matched, succeeded[], failed[],
+  skipped[], idempotency_key }` where each `BulkActionRowOutcome` is
+  `{ id, error_code?, message?, reason? }`. Per-row failures never
+  abort the batch — response is HTTP 200 with `succeeded.size +
+  failed.size + skipped.size == total_matched`.
+- **Four safety gates** on both endpoints: (1) empty filter → 400
+  `INVALID_REQUEST`; (2) idempotency replay returns cached envelope
+  (15-min TTL, keyed by `(endpoint, idempotency_key)`); (3) >500
+  matches → 400 `LIMIT_EXCEEDED` with `details.total_matched`; (4)
+  `expected_count` mismatch → 409 `COUNT_MISMATCH` with
+  `details.total_matched` — preview→submit anti-footgun.
+- **New shared `IdempotencyStore` primitive** for bulk-action.
+  Redis-backed, corrupt / unparseable entries degrade to
+  `Optional.empty()` (can't brick the endpoint), store-failure is
+  logged not thrown (mutation already succeeded; losing the
+  idempotency entry is degraded-experience, not a correctness bug).
+  `BudgetController.fund` idempotency remains Lua-atomic and was
+  intentionally NOT migrated onto the shared store — externalizing
+  the idempotency check would split the atomicity with the balance
+  mutation. See `IdempotencyStore.java` javadoc for the rationale.
+- Spec lineage: paired with cycles-protocol PR #51 (spec v0.1.25.23)
+  which adds `COUNT_MISMATCH` and `LIMIT_EXCEEDED` to the `ErrorCode`
+  enum. The v0.1.25.21 prose already REQUIRED these codes; PR #51
+  was the enum-consistency fix so response validators don't reject
+  the spec-compliant server.
+
+### Unchanged
+
+- Response shape, auth model, and idempotency semantics for every
+  pre-0.1.25.26 endpoint. No wire changes on existing surfaces.
+
+## [0.1.25.25] — 2026-04-17
+
+### Added
+
+- **Free-text `search` on six admin list endpoints.** Closes the
+  first bullet of governance spec v0.1.25.21. Optional `search`
+  query parameter on `listTenants`, `listBudgets`, `listApiKeys`,
+  `listAuditLogs`, `listWebhookSubscriptions`, `listEvents`.
+  Case-insensitive substring match; `maxLength: 128`; empty string
+  MUST be treated as absent; combines with every other filter using
+  AND. Per-endpoint match fields (OR-combined within an endpoint):
+  - `listTenants` — `tenant_id`, `name`
+  - `listBudgets` — `tenant_id`, `scope`
+  - `listApiKeys` — `key_id`, `name`
+  - `listAuditLogs` — `resource_id`, `log_id`
+  - `listWebhookSubscriptions` — `subscription_id`, `url`
+  - `listEvents` — `correlation_id`, `scope`
+  Closes the dashboard workflow gap where "find tenant matching
+  'acme'" required client-side filtering over a truncated page-1
+  slice of the full list (silent false negatives at scale).
+- **Shared `SearchSpec` validator** (`cycles-admin-service-model`)
+  locking the `trim → empty-check → length-check` ordering so
+  trailing whitespace cannot bypass the 128-char cap.
+- **Cursor-stability invariant** (watch-item #1): every repository
+  applies the `search` predicate before cursor commitment. A second
+  page with the same `search` value returns the strict suffix of
+  the first. Asserted explicitly in `EventRepositoryTest` and
+  `AuditRepositoryTest` cursor-walk tests.
+
+### Changed
+
+- Repository interfaces gain an optional `search` overload.
+  Pre-0.1.25.25 signatures are preserved as thin shims delegating
+  with `search = null`. Existing mocks and call sites unchanged.
+
+### Unchanged
+
+- Response shape, cursor chain, and default row order on all six
+  endpoints. Callers omitting `search` see byte-identical output to
+  v0.1.25.24.
+
 ## [0.1.25.24] — 2026-04-16
 
 ### Added
@@ -503,6 +650,12 @@ should switch to treating 409 as success-equivalent.
 - Multiple spec-compliance hardening fixes across controllers and error
   contracts (see `AUDIT.md` for the full list).
 
+[0.1.25.27]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.27
+[0.1.25.26]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.26
+[0.1.25.25]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.25
+[0.1.25.24]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.24
+[0.1.25.23]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.23
+[0.1.25.22]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.22
 [0.1.25.21]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.21
 [0.1.25.20]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.20
 [0.1.25.19]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.19
