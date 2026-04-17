@@ -14,6 +14,48 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.24] — 2026-04-16
+
+### Added
+
+- **`sort_by` + `sort_dir` on six admin list endpoints.** Aligns with
+  spec `cycles-governance-admin-v0.1.25.yaml` info.version `0.1.25.20`,
+  which adds §V4 server-side sort to `listTenants`, `listApiKeys`,
+  `listBudgets`, `listWebhookSubscriptions`, `listEvents`, and
+  `listAuditLogs`. Per-endpoint whitelists (`sort_by` values) are
+  enforced at the controller boundary; `sort_dir` ∈ {`asc`, `desc`}.
+  Unknown `sort_by` or `sort_dir` → 400 `INVALID_REQUEST`.
+- **Per-endpoint sort defaults.** Absent `sort_by` preserves each
+  endpoint's pre-0.1.25.24 cursor chain verbatim:
+  - `listTenants`, `listApiKeys`, `listBudgets`, `listWebhookSubscriptions` → `created_at DESC`
+  - `listEvents`, `listAuditLogs` → `timestamp DESC`
+- **Total-order cursor under sort.** Each endpoint's comparator is
+  null-safe on every whitelisted field with a primary-key tie-breaker
+  (`tenant_id`, `key_id`, `ledger_id`, `whsub_id`, `event_id`,
+  `log_id`), so cursor resume under any sort is deterministic.
+
+### Changed
+
+- Repository interfaces for the six affected endpoints gained an
+  optional `SortSpec` overload. Pre-0.1.25.24 signatures are preserved
+  as thin shims that delegate with `SortSpec = null`, so every
+  pre-existing caller and test mock keeps working unchanged.
+- Callers requesting non-default sort on time-indexed endpoints
+  (`listEvents`, `listAuditLogs`) should narrow `from`/`to` when
+  hitting very large windows — the server hydrates up to
+  `SORTED_HYDRATE_CAP = 2000` IDs from the filter-matching set before
+  applying the in-memory sort, so a broad time window with a
+  non-timestamp sort will cap at 2000 rows per page after filtering.
+
+### Unchanged
+
+- Every caller that doesn't pass `sort_by`/`sort_dir` sees zero
+  behaviour change: cursor chains, response shapes, and default row
+  order all match pre-0.1.25.24.
+- No dashboard wire-up in this release — the `cycles-dashboard`
+  `useSort` composable still sorts client-side; a follow-up PR against
+  the dashboard repo will push sort specs to the server.
+
 ## [0.1.25.23] — 2026-04-16
 
 ### Added
