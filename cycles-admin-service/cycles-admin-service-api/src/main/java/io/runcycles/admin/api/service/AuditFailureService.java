@@ -3,6 +3,7 @@ package io.runcycles.admin.api.service;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.runcycles.admin.api.filter.RequestIdFilter;
+import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.shared.ErrorCode;
@@ -160,6 +161,7 @@ public class AuditFailureService {
                     .sourceIp(request != null ? request.getRemoteAddr() : null)
                     .operation(operation)
                     .requestId(resolveRequestId(request))
+                    .traceId(resolveTraceId(request))
                     .status(status)
                     .errorCode(code != null ? code.name() : null)
                     .metadata(metadata)
@@ -198,6 +200,11 @@ public class AuditFailureService {
     private String resolveRequestId(HttpServletRequest request) {
         Object attr = resolveAttrRaw(request, RequestIdFilter.REQUEST_ID_ATTRIBUTE);
         return attr != null ? attr.toString() : UUID.randomUUID().toString();
+    }
+
+    private String resolveTraceId(HttpServletRequest request) {
+        Object attr = resolveAttrRaw(request, TraceContextFilter.TRACE_ID_ATTRIBUTE);
+        return attr != null ? attr.toString() : null;
     }
 
     private String resolveAttr(HttpServletRequest request, String name) {

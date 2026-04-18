@@ -132,29 +132,29 @@ class EventServiceTest {
 
     @Test
     void list_clampsLimitToMax100() {
-        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(100), any(), any()))
+        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(100), any(), any(), any(), any()))
             .thenReturn(List.of());
 
         eventService.list(null, null, null, null, null, null, null, null, 500);
 
-        verify(eventRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), eq(100), any(), any());
+        verify(eventRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), eq(100), any(), any(), any(), any());
     }
 
     @Test
     void list_clampsLimitToMin1() {
-        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(1), any(), any()))
+        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(1), any(), any(), any(), any()))
             .thenReturn(List.of());
 
         eventService.list(null, null, null, null, null, null, null, null, 0);
 
-        verify(eventRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), eq(1), any(), any());
+        verify(eventRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), eq(1), any(), any(), any(), any());
     }
 
     @Test
     void list_returnsHasMoreTrueWhenResultCountEqualsLimit() {
         Event e1 = Event.builder().eventId("evt_1").build();
         Event e2 = Event.builder().eventId("evt_2").build();
-        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(2), any(), any()))
+        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(2), any(), any(), any(), any()))
             .thenReturn(List.of(e1, e2));
 
         EventListResponse response = eventService.list(null, null, null, null, null, null, null, null, 2);
@@ -166,7 +166,7 @@ class EventServiceTest {
     @Test
     void list_returnsHasMoreFalseWhenResultCountLessThanLimit() {
         Event e1 = Event.builder().eventId("evt_1").build();
-        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any()))
+        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any(), any(), any()))
             .thenReturn(List.of(e1));
 
         EventListResponse response = eventService.list(null, null, null, null, null, null, null, null, 50);
@@ -177,7 +177,7 @@ class EventServiceTest {
 
     @Test
     void list_emptyResult_returnsNoEvents() {
-        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any(), any()))
+        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any(), any(), any(), any()))
             .thenReturn(List.of());
 
         EventListResponse response = eventService.list(null, null, null, null, null, null, null, null, 50);

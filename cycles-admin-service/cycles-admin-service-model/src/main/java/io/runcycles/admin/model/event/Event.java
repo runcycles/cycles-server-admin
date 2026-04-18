@@ -56,6 +56,10 @@ public class Event {
     private String requestId;
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonProperty("trace_id")
+    private String traceId;
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     @JsonProperty("metadata")
     private Map<String, Object> metadata;
 }

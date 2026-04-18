@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.controller;
 
+import io.runcycles.admin.api.filter.RequestIdFilter;
+import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.WebhookSecurityConfigRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
@@ -26,7 +28,8 @@ public class WebhookSecurityConfigController {
     public ResponseEntity<WebhookSecurityConfig> update(@Valid @RequestBody WebhookSecurityConfig config, HttpServletRequest httpRequest) {
         repository.save(config);
         auditRepository.log(AuditLogEntry.builder()
-            .requestId(httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null)
+            .requestId(attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE))
+            .traceId(attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE))
             .sourceIp(httpRequest.getRemoteAddr())
             .userAgent(httpRequest.getHeader("User-Agent"))
             .resourceType("config").resourceId("webhook-security")
@@ -35,6 +38,11 @@ public class WebhookSecurityConfigController {
             .metadata(buildConfigMeta(config))
             .build());
         return ResponseEntity.ok(repository.get());
+    }
+
+    private static String attr(HttpServletRequest request, String name) {
+        Object v = request.getAttribute(name);
+        return v != null ? v.toString() : null;
     }
 
     private java.util.Map<String, Object> buildConfigMeta(WebhookSecurityConfig config) {

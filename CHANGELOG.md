@@ -14,6 +14,62 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.31] — 2026-04-18
+
+### Added
+
+- **W3C Trace Context cross-surface correlation** — server impl of
+  spec v0.1.25.28 (cycles-protocol PRs #56 + #58). Adds a third
+  correlation tier on top of the existing `request_id` /
+  `correlation_id`, spanning an HTTP request, every event it emits,
+  the audit entry it produces, and any outbound webhook delivery. The
+  v0.1.25.28 spec patch adds `trace_id` / `trace_flags` /
+  `traceparent_inbound_valid` to the `WebhookDelivery` schema so this
+  server's webhook-delivery payloads conform cleanly against the
+  strict admin spec.
+
+  **`trace_id`** (optional, `^[0-9a-f]{32}$`) on response bodies:
+
+  - `ErrorResponse.trace_id` — populated on every error response.
+  - `AuditLogEntry.trace_id` — populated on every audit entry written
+    for an HTTP-originated operation.
+  - `Event.trace_id` — populated on every event emitted inside a
+    servlet request (auto-propagated from `RequestContextHolder`, so
+    none of the 13 existing `emit(...)` call sites changed signature).
+
+  **`X-Cycles-Trace-Id` response header** — emitted on every response
+  (2xx, 4xx, 5xx). Clients ignore unknown response headers per HTTP
+  contract so this is non-breaking.
+
+  **Inbound precedence** on `traceparent` → `X-Cycles-Trace-Id` →
+  server-generate. Malformed inbound correlation headers are tolerated
+  (fall through to next rule); the server never rejects a request on a
+  bad correlation header. Valid W3C `traceparent` trace-flags are
+  captured for outbound preservation on webhook delivery.
+
+  **New query params** on `GET /v1/admin/audit/logs` and
+  `GET /v1/admin/events`:
+
+  | Param | Type | Purpose |
+  |---|---|---|
+  | `trace_id` | 32-hex string | Exact-match JOIN on W3C trace id. |
+  | `request_id` | string | Exact-match JOIN on the per-HTTP-request id. |
+
+  Post-hydration predicate, null-safe — entries with null field values
+  (historical writes, off-request emissions, internal sweeper work)
+  cannot satisfy a supplied filter value.
+
+  **Outbound webhook delivery** — `WebhookDelivery` now persists
+  `trace_id` + `trace_flags` + `traceparent_inbound_valid` so the
+  separate `cycles-server-events` sidecar can construct an outbound
+  `traceparent` header preserving inbound trace-flags when the inbound
+  `traceparent` was valid, defaulting to `01` (sampled) otherwise.
+
+  **Spec:** `cycles-governance-admin-v0.1.25.yaml` info.version bumps
+  to `0.1.25.27`. Fully additive — no field removals, no type changes,
+  no required-field additions. Historical entries without `trace_id`
+  continue to round-trip through strict Jackson.
+
 ## [0.1.25.30] — 2026-04-18
 
 ### Changed

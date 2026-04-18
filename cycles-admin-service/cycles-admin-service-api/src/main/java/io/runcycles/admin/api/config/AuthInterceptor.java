@@ -16,6 +16,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 import io.runcycles.admin.api.filter.RequestIdFilter;
+import io.runcycles.admin.api.filter.TraceContextFilter;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -348,10 +349,12 @@ public class AuthInterceptor implements HandlerInterceptor {
         response.setStatus(status);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         Object reqId = request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE);
+        Object traceId = request.getAttribute(TraceContextFilter.TRACE_ID_ATTRIBUTE);
         ErrorResponse error = ErrorResponse.builder()
             .error(code)
             .message(message)
             .requestId(reqId != null ? reqId.toString() : UUID.randomUUID().toString())
+            .traceId(traceId != null ? traceId.toString() : null)
             .build();
         response.getWriter().write(objectMapper.writeValueAsString(error));
     }

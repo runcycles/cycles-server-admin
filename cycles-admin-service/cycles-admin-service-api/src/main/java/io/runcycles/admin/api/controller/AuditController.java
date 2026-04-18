@@ -55,7 +55,11 @@ public class AuditController {
             @Parameter(schema = @Schema(type = "integer", minimum = "100", maximum = "599"))
             @RequestParam(required = false) Integer status_min,
             @Parameter(schema = @Schema(type = "integer", minimum = "100", maximum = "599"))
-            @RequestParam(required = false) Integer status_max) {
+            @RequestParam(required = false) Integer status_max,
+            @Parameter(description = "Filter by W3C trace id (32 lowercase hex chars)",
+                schema = @Schema(pattern = "^[0-9a-f]{32}$"))
+            @RequestParam(required = false) String trace_id,
+            @RequestParam(required = false) String request_id) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         SortSpec sortSpec = parseSortSpec(sort_by, sort_dir);
         String searchNorm = parseSearch(search);
@@ -95,7 +99,7 @@ public class AuditController {
 
         var logs = repository.list(tenant_id, key_id, operations, status, resourceTypes, resource_id,
             from, to, cursor, effectiveLimit, sortSpec, searchNorm,
-            errorCodes, errorCodeExcludes, status_min, status_max);
+            errorCodes, errorCodeExcludes, status_min, status_max, trace_id, request_id);
         AuditLogListResponse response = AuditLogListResponse.builder()
             .logs(logs)
             .hasMore(logs.size() >= effectiveLimit)

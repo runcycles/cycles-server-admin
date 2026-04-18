@@ -1,6 +1,7 @@
 package io.runcycles.admin.api.exception;
 
 import io.runcycles.admin.api.filter.RequestIdFilter;
+import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.api.service.AuditFailureService;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.shared.ErrorCode;
@@ -32,12 +33,23 @@ public class GlobalExceptionHandler {
         return attr != null ? attr.toString() : UUID.randomUUID().toString();
     }
 
+    private String resolveTraceId(HttpServletRequest request) {
+        Object attr = request != null ? request.getAttribute(TraceContextFilter.TRACE_ID_ATTRIBUTE) : null;
+        return attr != null ? attr.toString() : null;
+    }
+
+    private ErrorResponse.ErrorResponseBuilder errorBuilder(HttpServletRequest request) {
+        return ErrorResponse.builder()
+                .requestId(resolveRequestId(request))
+                .traceId(resolveTraceId(request));
+    }
+
     @ExceptionHandler(GovernanceException.class)
     public ResponseEntity<ErrorResponse> handleGovernanceException(GovernanceException ex, HttpServletRequest request) {
         LOG.info("Landed in governance exception handler: clazz={}", ex.getClass());
         auditFailure.logFailure(request, ex.getHttpStatus(), ex.getErrorCode(), ex.getMessage(), null);
-        return ResponseEntity.status(ex.getHttpStatus()).body(ErrorResponse.builder()
-            .error(ex.getErrorCode()).message(ex.getMessage()).requestId(resolveRequestId(request)).details(ex.getDetails()).build());
+        return ResponseEntity.status(ex.getHttpStatus()).body(errorBuilder(request)
+            .error(ex.getErrorCode()).message(ex.getMessage()).details(ex.getDetails()).build());
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -48,7 +60,7 @@ public class GlobalExceptionHandler {
         String fullMessage = "Validation failed: " + message;
         auditFailure.logFailure(request, HttpStatus.BAD_REQUEST.value(), ErrorCode.INVALID_REQUEST, fullMessage, null);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-            .body(ErrorResponse.builder().error(ErrorCode.INVALID_REQUEST).message(fullMessage).requestId(resolveRequestId(request)).build());
+            .body(errorBuilder(request).error(ErrorCode.INVALID_REQUEST).message(fullMessage).build());
     }
 
     @ExceptionHandler(ConstraintViolationException.class)
@@ -63,7 +75,7 @@ public class GlobalExceptionHandler {
         String fullMessage = "Validation failed: " + message;
         auditFailure.logFailure(request, HttpStatus.BAD_REQUEST.value(), ErrorCode.INVALID_REQUEST, fullMessage, null);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-            .body(ErrorResponse.builder().error(ErrorCode.INVALID_REQUEST).message(fullMessage).requestId(resolveRequestId(request)).build());
+            .body(errorBuilder(request).error(ErrorCode.INVALID_REQUEST).message(fullMessage).build());
     }
 
     @ExceptionHandler(MissingServletRequestParameterException.class)
@@ -71,7 +83,7 @@ public class GlobalExceptionHandler {
         String message = "Missing required parameter: " + ex.getParameterName();
         auditFailure.logFailure(request, HttpStatus.BAD_REQUEST.value(), ErrorCode.INVALID_REQUEST, message, null);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-            .body(ErrorResponse.builder().error(ErrorCode.INVALID_REQUEST).message(message).requestId(resolveRequestId(request)).build());
+            .body(errorBuilder(request).error(ErrorCode.INVALID_REQUEST).message(message).build());
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
@@ -79,14 +91,14 @@ public class GlobalExceptionHandler {
         String message = "Invalid value for parameter '" + ex.getName() + "': " + ex.getValue();
         auditFailure.logFailure(request, HttpStatus.BAD_REQUEST.value(), ErrorCode.INVALID_REQUEST, message, null);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-            .body(ErrorResponse.builder().error(ErrorCode.INVALID_REQUEST).message(message).requestId(resolveRequestId(request)).build());
+            .body(errorBuilder(request).error(ErrorCode.INVALID_REQUEST).message(message).build());
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<ErrorResponse> handleMalformedJson(HttpMessageNotReadableException ex, HttpServletRequest request) {
         auditFailure.logFailure(request, HttpStatus.BAD_REQUEST.value(), ErrorCode.INVALID_REQUEST, "Malformed request body", null);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-            .body(ErrorResponse.builder().error(ErrorCode.INVALID_REQUEST).message("Malformed request body").requestId(resolveRequestId(request)).build());
+            .body(errorBuilder(request).error(ErrorCode.INVALID_REQUEST).message("Malformed request body").build());
     }
 
     @ExceptionHandler(Exception.class)
@@ -108,10 +120,9 @@ public class GlobalExceptionHandler {
         auditFailure.logFailure(request, HttpStatus.INTERNAL_SERVER_ERROR.value(),
                 ErrorCode.INTERNAL_ERROR, ex.getMessage(), extras);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-            .body(ErrorResponse.builder()
+            .body(errorBuilder(request)
                 .error(ErrorCode.INTERNAL_ERROR)
                 .message("Internal error")
-                .requestId(resolveRequestId(request))
                 .build());
     }
 }

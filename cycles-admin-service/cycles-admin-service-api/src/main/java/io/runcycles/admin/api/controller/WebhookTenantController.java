@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.controller;
 
+import io.runcycles.admin.api.filter.RequestIdFilter;
+import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.api.service.WebhookService;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
@@ -196,9 +198,15 @@ public class WebhookTenantController {
      */
     private AuditLogEntry.AuditLogEntryBuilder buildAuditEntry(HttpServletRequest request) {
         return AuditLogEntry.builder()
-            .requestId(request.getAttribute("requestId") != null ? request.getAttribute("requestId").toString() : null)
+            .requestId(attr(request, RequestIdFilter.REQUEST_ID_ATTRIBUTE))
+            .traceId(attr(request, TraceContextFilter.TRACE_ID_ATTRIBUTE))
             .sourceIp(request.getRemoteAddr())
             .userAgent(request.getHeader("User-Agent"));
+    }
+
+    private static String attr(HttpServletRequest request, String name) {
+        Object v = request.getAttribute(name);
+        return v != null ? v.toString() : null;
     }
 
     private void validateTenantEventTypes(List<EventType> eventTypes) {

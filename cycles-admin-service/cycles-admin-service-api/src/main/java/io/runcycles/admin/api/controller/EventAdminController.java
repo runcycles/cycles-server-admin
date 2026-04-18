@@ -9,6 +9,8 @@ import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.shared.SortSpec;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -38,12 +40,16 @@ public class EventAdminController {
             @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "50") int limit,
             @RequestParam(required = false) String sort_by,
-            @RequestParam(required = false) String sort_dir) {
+            @RequestParam(required = false) String sort_dir,
+            @Parameter(description = "Filter by W3C trace id (32 lowercase hex chars)",
+                schema = @Schema(pattern = "^[0-9a-f]{32}$"))
+            @RequestParam(required = false) String trace_id,
+            @RequestParam(required = false) String request_id) {
         limit = Math.max(1, Math.min(limit, 100));
         SortSpec sortSpec = parseSortSpec(sort_by, sort_dir);
         String searchNorm = parseSearch(search);
         return ResponseEntity.ok(eventService.list(tenant_id, event_type, category, scope,
-            correlation_id, from, to, cursor, limit, sortSpec, searchNorm));
+            correlation_id, from, to, cursor, limit, sortSpec, searchNorm, trace_id, request_id));
     }
 
     /**

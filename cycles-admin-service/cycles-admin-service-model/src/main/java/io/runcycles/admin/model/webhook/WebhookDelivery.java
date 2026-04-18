@@ -18,4 +18,18 @@ public class WebhookDelivery {
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("response_time_ms") private Integer responseTimeMs;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("error_message") private String errorMessage;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("next_retry_at") private Instant nextRetryAt;
+
+    /**
+     * W3C Trace Context trace-id captured at dispatch time from the originating event.
+     * The cycles-server-events sidecar uses this (plus {@link #traceFlags} and
+     * {@link #traceparentInboundValid}) to construct an outbound {@code traceparent}
+     * header with a fresh span-id on HTTP delivery.
+     * <p>Inbound trace-flags are preserved when {@code traceparentInboundValid=true};
+     * otherwise the sidecar defaults to {@code 01} per
+     * cycles-protocol-v0 §CORRELATION AND TRACING.
+     * @since 0.1.25.31
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("trace_id") private String traceId;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("trace_flags") private String traceFlags;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("traceparent_inbound_valid") private Boolean traceparentInboundValid;
 }

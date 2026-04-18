@@ -35,13 +35,14 @@ class AuditControllerTest {
 
     private static final String ADMIN_KEY = "test-admin-key";
 
-    // 16-arg canonical matcher suite per spec v0.1.25.24:
+    // 18-arg canonical matcher suite per spec v0.1.25.27:
     // tenantId, keyId, operations, status, resourceTypes, resourceId,
     // from, to, cursor, limit, sortSpec, search,
-    // errorCodes, errorCodeExcludes, statusMin, statusMax.
+    // errorCodes, errorCodeExcludes, statusMin, statusMax,
+    // traceId, requestId.
     private static void stubAnyListReturns(AuditRepository repo, List<AuditLogEntry> out) {
         when(repo.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
-                any(), any(), any(), any(), any(), any()))
+                any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(out);
     }
 
@@ -96,7 +97,7 @@ class AuditControllerTest {
     @Test
     void listAuditLogs_limitClampedToMax100() throws Exception {
         when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(100),
-                any(), any(), any(), any(), any(), any()))
+                any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -105,13 +106,13 @@ class AuditControllerTest {
                 .andExpect(status().isOk());
 
         verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(100),
-                any(), any(), any(), any(), any(), any());
+                any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
     void listAuditLogs_limitClampedToMin1() throws Exception {
         when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(1),
-                any(), any(), any(), any(), any(), any()))
+                any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -120,7 +121,7 @@ class AuditControllerTest {
                 .andExpect(status().isOk());
 
         verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(1),
-                any(), any(), any(), any(), any(), any());
+                any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -142,7 +143,7 @@ class AuditControllerTest {
                 .logId("log_2").tenantId("tenant-1").operation("updateTenant")
                 .status(200).timestamp(Instant.now()).build();
         when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(2),
-                any(), any(), any(), any(), any(), any()))
+                any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(List.of(e1, e2));
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -169,7 +170,8 @@ class AuditControllerTest {
                 .andExpect(jsonPath("$.logs").isEmpty());
 
         verify(auditRepository).list(isNull(), isNull(), isNull(), isNull(), isNull(), isNull(),
-                eq(from), eq(to), isNull(), eq(50), any(), any(), isNull(), isNull(), isNull(), isNull());
+                eq(from), eq(to), isNull(), eq(50), any(), any(), isNull(), isNull(), isNull(), isNull(),
+                isNull(), isNull());
     }
 
     // --- Sort contract tests (spec v0.1.25.20 §V4) ---
@@ -184,7 +186,7 @@ class AuditControllerTest {
 
         ArgumentCaptor<SortSpec> captor = ArgumentCaptor.forClass(SortSpec.class);
         verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
-                captor.capture(), any(), any(), any(), any(), any());
+                captor.capture(), any(), any(), any(), any(), any(), any(), any());
         SortSpec sort = captor.getValue();
         org.junit.jupiter.api.Assertions.assertEquals("timestamp", sort.field());
         org.junit.jupiter.api.Assertions.assertEquals(SortDirection.DESC, sort.direction());
@@ -202,7 +204,7 @@ class AuditControllerTest {
 
         ArgumentCaptor<SortSpec> captor = ArgumentCaptor.forClass(SortSpec.class);
         verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
-                captor.capture(), any(), any(), any(), any(), any());
+                captor.capture(), any(), any(), any(), any(), any(), any(), any());
         SortSpec sort = captor.getValue();
         org.junit.jupiter.api.Assertions.assertEquals("operation", sort.field());
         org.junit.jupiter.api.Assertions.assertEquals(SortDirection.ASC, sort.direction());
@@ -249,7 +251,7 @@ class AuditControllerTest {
                 .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
 
         verify(auditRepository, never()).list(any(), any(), any(), any(), any(), any(),
-                any(), any(), any(), anyInt(), any(), any(), any(), any(), any(), any());
+                any(), any(), any(), anyInt(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     // --- v0.1.25.24 filter DSL upgrade: error_code IN-list, error_code_exclude,
@@ -258,7 +260,7 @@ class AuditControllerTest {
     @Test
     void listAuditLogs_errorCodeSingle_passesThroughAsList() throws Exception {
         when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
-                any(), any(), eq(List.of("BUDGET_EXCEEDED")), any(), any(), any()))
+                any(), any(), eq(List.of("BUDGET_EXCEEDED")), any(), any(), any(), any(), any()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -267,7 +269,7 @@ class AuditControllerTest {
                 .andExpect(status().isOk());
 
         verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
-                any(), any(), eq(List.of("BUDGET_EXCEEDED")), any(), any(), any());
+                any(), any(), eq(List.of("BUDGET_EXCEEDED")), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -282,7 +284,7 @@ class AuditControllerTest {
                 .andExpect(status().isOk());
 
         verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
-                any(), any(), eq(List.of("BUDGET_EXCEEDED", "TENANT_SUSPENDED")), any(), any(), any());
+                any(), any(), eq(List.of("BUDGET_EXCEEDED", "TENANT_SUSPENDED")), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -296,7 +298,7 @@ class AuditControllerTest {
                 .andExpect(status().isOk());
 
         verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
-                any(), any(), eq(List.of("A", "B", "C")), any(), any(), any());
+                any(), any(), eq(List.of("A", "B", "C")), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -309,7 +311,7 @@ class AuditControllerTest {
                 .andExpect(status().isOk());
 
         verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
-                any(), any(), isNull(), any(), any(), any());
+                any(), any(), isNull(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -326,7 +328,7 @@ class AuditControllerTest {
                 .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
 
         verify(auditRepository, never()).list(any(), any(), any(), any(), any(), any(),
-                any(), any(), any(), anyInt(), any(), any(), any(), any(), any(), any());
+                any(), any(), any(), anyInt(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -339,7 +341,7 @@ class AuditControllerTest {
                 .andExpect(status().isOk());
 
         verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
-                any(), any(), any(), eq(List.of("INTERNAL_ERROR")), any(), any());
+                any(), any(), any(), eq(List.of("INTERNAL_ERROR")), any(), any(), any(), any());
     }
 
     @Test
@@ -359,7 +361,7 @@ class AuditControllerTest {
     @Test
     void listAuditLogs_statusMinMaxHappyPath_threadsThrough() throws Exception {
         when(auditRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
-                any(), any(), any(), any(), eq(500), eq(599)))
+                any(), any(), any(), any(), eq(500), eq(599), any(), any()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/audit/logs")
@@ -369,7 +371,7 @@ class AuditControllerTest {
                 .andExpect(status().isOk());
 
         verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
-                any(), any(), any(), any(), eq(500), eq(599));
+                any(), any(), any(), any(), eq(500), eq(599), any(), any());
     }
 
     @Test
@@ -383,7 +385,7 @@ class AuditControllerTest {
                 .andExpect(status().isOk());
 
         verify(auditRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
-                any(), any(), any(), any(), eq(400), isNull());
+                any(), any(), any(), any(), eq(400), isNull(), any(), any());
     }
 
     @Test
@@ -463,7 +465,7 @@ class AuditControllerTest {
 
         verify(auditRepository).list(any(), any(), eq(List.of("createBudget", "updateBudget")),
                 any(), any(), any(), any(), any(), any(), anyInt(),
-                any(), any(), any(), any(), any(), any());
+                any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -477,7 +479,7 @@ class AuditControllerTest {
 
         verify(auditRepository).list(any(), any(), any(), any(),
                 eq(List.of("tenant", "budget")), any(), any(), any(), any(), anyInt(),
-                any(), any(), any(), any(), any(), any());
+                any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -491,7 +493,7 @@ class AuditControllerTest {
 
         verify(auditRepository).list(any(), any(), eq(List.of("createBudget")),
                 any(), any(), any(), any(), any(), any(), anyInt(),
-                any(), any(), any(), any(), any(), any());
+                any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -529,6 +531,6 @@ class AuditControllerTest {
                 eq(List.of("budget")), any(), any(), any(), any(), anyInt(),
                 any(), eq("quota"),
                 eq(List.of("BUDGET_EXCEEDED")), eq(List.of("INTERNAL_ERROR")),
-                eq(400), eq(499));
+                eq(400), eq(499), any(), any());
     }
 }
