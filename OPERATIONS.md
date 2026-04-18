@@ -18,6 +18,7 @@ Alerts for the two planes should be routed separately.
 ## Table of contents
 
 1. [Audit coverage](#audit-coverage)
+   - [Cross-surface correlation (trace_id)](#cross-surface-correlation-trace_id)
    - [Bulk-action audit triage](#bulk-action-audit-triage)
 2. [Metrics inventory](#metrics-inventory)
 3. [Alerts worth paging on](#alerts-worth-paging-on)
@@ -87,9 +88,42 @@ GET /v1/admin/audit/logs?status=401&from=<iso8601>
 # All budget-plane failures by a specific tenant.
 GET /v1/admin/audit/logs?tenant_id=tenant-1&operation=POST:/v1/admin/budgets
 
-# Single-request trace — pairs the audit entry with the server log by request_id.
-GET /v1/admin/audit/logs  # then filter client-side by request_id
+# Single-request JOIN (v0.1.25.31+): audit entry + every event the same
+# request emitted, by request_id.
+GET /v1/admin/audit/logs?request_id=req_abc123
+GET /v1/admin/events?request_id=req_abc123
+
+# Cross-surface JOIN (v0.1.25.31+): audit + events + webhook deliveries
+# for one logical operation, by W3C trace_id. Useful for bulk-action
+# fan-outs (one trace_id → one audit entry + N events + M deliveries)
+# and for multi-request operator sessions that share a client-supplied
+# traceparent.
+GET /v1/admin/audit/logs?trace_id=0af7651916cd43dd8448eb211c80319c
+GET /v1/admin/events?trace_id=0af7651916cd43dd8448eb211c80319c
 ```
+
+### Cross-surface correlation (trace_id)
+
+Since v0.1.25.31 every response on every admin endpoint carries an
+`X-Cycles-Trace-Id` header. Operators and clients can reuse that value
+as a server-side filter on both `listAuditLogs` and `listEvents` to join
+everything caused by one logical operation.
+
+**Capture the trace id from any response:**
+
+```bash
+curl -sD - -H "X-Admin-API-Key: $KEY" http://admin.cycles.internal/v1/admin/tenants \
+  | grep -i '^x-cycles-trace-id:'
+# x-cycles-trace-id: 0af7651916cd43dd8448eb211c80319c
+```
+
+**Inbound precedence the server honors** (first match wins):
+
+1. `traceparent` header (W3C Trace Context §3.2, version `00`, non-all-zero trace-id + span-id) — OpenTelemetry-native clients get their distributed trace preserved.
+2. `X-Cycles-Trace-Id` header (32 lowercase hex) — simple correlation without an OTel SDK.
+3. Server-generated (16 random bytes → 32 lowercase hex; all-zero re-rolled per W3C §3.2.2.3).
+
+A malformed inbound header is treated as absent (falls through to the next rule); the server never rejects a request on a bad correlation header. Valid inbound trace-flags are preserved on outbound webhook delivery so an upstream `sampled=0` opt-out is respected rather than silently re-enabled.
 
 ### Bulk-action audit triage
 
