@@ -926,6 +926,39 @@ class TenantControllerTest {
     }
 
     @Test
+    void bulkActionTenants_auditMetadata_carriesV030EnrichmentKeys() throws Exception {
+        // v0.1.25.30: audit metadata now carries per-row outcomes + filter
+        // echo + duration so post-incident triage needs only the audit log.
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(eq(TenantStatus.ACTIVE), isNull(), isNull(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.ACTIVE)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.ACTIVE));
+        when(tenantRepository.update(eq("t1"), any()))
+                .thenReturn(tenantRow("t1", TenantStatus.SUSPENDED));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk());
+
+        org.mockito.ArgumentCaptor<io.runcycles.admin.model.audit.AuditLogEntry> auditArg =
+                org.mockito.ArgumentCaptor.forClass(io.runcycles.admin.model.audit.AuditLogEntry.class);
+        verify(auditRepository).log(auditArg.capture());
+        java.util.Map<String, Object> meta = auditArg.getValue().getMetadata();
+        assertEquals("bulkActionTenants", auditArg.getValue().getOperation());
+        assertEquals("SUSPEND", meta.get("action"));
+        assertEquals(1, meta.get("total_matched"));
+        assertEquals(List.of("t1"), meta.get("succeeded_ids"));
+        assertEquals(List.of(), meta.get("failed_rows"));
+        assertEquals(List.of(), meta.get("skipped_rows"));
+        assertEquals("k1", meta.get("idempotency_key"));
+        org.assertj.core.api.Assertions.assertThat(meta).containsKey("filter");
+        org.assertj.core.api.Assertions.assertThat((Long) meta.get("duration_ms")).isGreaterThanOrEqualTo(0L);
+    }
+
+    @Test
     void bulkActionTenants_genericException_classifiedAsInternalError() throws Exception {
         // Non-GovernanceException falls into the generic Exception catch,
         // logged and reported as INTERNAL_ERROR.

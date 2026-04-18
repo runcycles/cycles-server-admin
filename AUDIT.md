@@ -1,9 +1,67 @@
-# Complete Budget Governance v0.1.25.29 — Admin Server Audit
+# Complete Budget Governance v0.1.25.30 — Admin Server Audit
 
-**Server version:** 0.1.25.29 (2026-04-18 — budget bulk-action endpoint, spec v0.1.25.26)
-**Date:** 2026-04-18 (v0.1.25.29 budget bulk-action), 2026-04-17 (v0.1.25.28 audit sentinel split), 2026-04-17 (v0.1.25.27 audit filter DSL upgrade), 2026-04-17 (v0.1.25.26 bulk-action endpoints), 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Server version:** 0.1.25.30 (2026-04-18 — bulk-action audit metadata enrichment; spec v0.1.25.26, no spec bump)
+**Date:** 2026-04-18 (v0.1.25.30 bulk-action audit enrichment), 2026-04-18 (v0.1.25.29 budget bulk-action), 2026-04-17 (v0.1.25.28 audit sentinel split), 2026-04-17 (v0.1.25.27 audit filter DSL upgrade), 2026-04-17 (v0.1.25.26 bulk-action endpoints), 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.26`; adds `POST /v1/admin/budgets/bulk-action` — fifth bulk-action endpoint, mirrors the tenant/webhook envelope) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-18 — v0.1.25.30 bulk-action audit metadata enrichment (no spec bump)
+
+**Motivation — triage gap.** Prior to v0.1.25.30 the single `AuditLogEntry` emitted per bulk-action invocation (tenant / webhook / budget) carried only the five bucket counts + `idempotency_key` in its `metadata` map. Post-incident triage of a failed bulk-op required either the operator's own copy of the synchronous response envelope (which they may not have preserved) or re-running the op (not acceptable for destructive actions like DELETE / DEBIT). The audit log was a **dead end** for "which rows actually failed and why?"
+
+**Scope.** All three bulk-action endpoints — `bulkActionTenants`, `bulkActionWebhooks`, `bulkActionBudgets` — now emit the full per-row outcome arrays plus surrounding context. Unified through one shared helper so the three controllers cannot drift.
+
+**New metadata keys (additive — existing keys unchanged):**
+
+| Key | Type | Purpose |
+|---|---|---|
+| `succeeded_ids` | `List<String>` | Per-row ids of successful operations — paper trail for compliance. |
+| `failed_rows` | `List<BulkActionRowOutcome>` | Full `id + error_code + message` per failure — replaces the "re-run to see what broke" workflow. |
+| `skipped_rows` | `List<BulkActionRowOutcome>` | Full `id + reason` per skip — distinguishes `ALREADY_IN_TARGET_STATE` from `ALREADY_DELETED`. |
+| `filter` | Object | The normalized filter echoed as-is. Reconstructs operator intent from the audit log alone. |
+| `duration_ms` | `long` | Handler-entry → audit-emit wall-clock — SLO triage without needing trace sampling. |
+
+**Bounding.** The existing 500-row bulk-action cap bounds worst-case metadata size to ~40 KB (500 × ~80 bytes per outcome + filter echo + fixed keys), well within Redis value-size comfort range. No new limits required.
+
+**Ordering.** The helper uses `LinkedHashMap` so JSON serialization preserves the documented key order — aids human scannability in log viewers and pins the contract for downstream dashboards.
+
+**What changed:**
+
+- New `BulkActionAuditMetadataBuilder` utility (`cycles-admin-service-api/src/main/java/.../api/service/`). Single static `build(...)` method taking the inputs every bulk-action controller already has in scope: `actionName`, `totalMatched`, the three outcome lists, `idempotencyKey`, `filter`, and `startTimeNanos` captured at handler entry.
+- `TenantController.bulkAction` / `WebhookAdminController.bulkAction` / `BudgetController.bulkAction` — each replaced the 6-line inline `auditMeta.put(...)` block with one call to the helper. Also capture `long startNanos = System.nanoTime()` as the first statement of each handler so `duration_ms` measures match/apply time end-to-end.
+
+**What did NOT change:**
+
+- No spec bump. `AuditLogEntry.metadata` is already typed as a free-form `object` with `additionalProperties: true` in the OpenAPI spec. Adding keys is additive per the spec's compatibility contract. The `OpenApiContractDiffTest` / `SpecCoverageReportTest` gates remain green against spec v0.1.25.26 with no changes needed on the cycles-protocol side.
+- No request / response shape changes. The synchronous bulk-action response envelope continues to be the record of truth for callers; this enrichment only adds parallel detail to the audit persistence path.
+- No new ErrorCode values, no new HTTP status codes.
+
+**Why a single helper, not controller-local blocks.** The three bulk-action handlers have been drifting slightly on `metadata` since v0.1.25.26 shipped (one used `new LinkedHashMap<>()`, another used `HashMap`, the ordering guarantee was not explicit). Consolidating the builder pins key order and key set for every future bulk-action endpoint we add.
+
+**Verification.**
+
+```bash
+# Targeted
+mvn-proxy -B test --file cycles-admin-service/pom.xml \
+  -pl cycles-admin-service-api \
+  -Dtest=BulkActionAuditMetadataBuilderTest,TenantControllerTest,WebhookAdminControllerTest,BudgetControllerBulkActionTest
+
+# Full verify (no Docker)
+mvn-proxy -B verify --file cycles-admin-service/pom.xml \
+  -Dtest='!*IntegrationTest' -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+**Tests added / extended:**
+
+- `BulkActionAuditMetadataBuilderTest` (new, 5 tests): covers every key the helper emits, pins the documented ordering contract (`containsExactly`), exercises the empty-buckets case, null-filter passthrough, `duration_ms` non-negative, and `succeeded_ids` ordering mirrors the input list.
+- `BudgetControllerBulkActionTest.bulkAction_emitsAuditLogEntryWithMetadataKeys` — extended to assert the five new keys on the happy-path envelope.
+- `TenantControllerTest.bulkActionTenants_auditMetadata_carriesV030EnrichmentKeys` (new): smoke-asserts the wiring against a real controller handler — proves the helper is called and `startNanos` is threaded correctly.
+- `WebhookAdminControllerTest.bulkActionWebhooks_auditMetadata_carriesV030EnrichmentKeys` (new): same pattern for the webhook endpoint.
+
+**Release versions bumped:**
+
+- `cycles-admin-service/pom.xml` — `0.1.25.29` → `0.1.25.30`
+- `docker-compose.prod.yml` / `docker-compose.full-stack.prod.yml` — image tag to `0.1.25.30`
 
 ### 2026-04-18 — v0.1.25.28.1 test fix: nightly soak AS4 must include `__admin__` sentinel
 

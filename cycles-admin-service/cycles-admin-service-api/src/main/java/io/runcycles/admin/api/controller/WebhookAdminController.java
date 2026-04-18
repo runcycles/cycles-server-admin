@@ -1,5 +1,6 @@
 package io.runcycles.admin.api.controller;
 
+import io.runcycles.admin.api.service.BulkActionAuditMetadataBuilder;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.api.service.WebhookService;
 import io.runcycles.admin.data.exception.GovernanceException;
@@ -202,6 +203,7 @@ public class WebhookAdminController {
     @PostMapping("/bulk-action") @Operation(operationId = "bulkActionWebhooks")
     public ResponseEntity<WebhookBulkActionResponse> bulkAction(
             @Valid @RequestBody WebhookBulkActionRequest request, HttpServletRequest httpRequest) {
+        long startNanos = System.nanoTime();
         if (request.getFilter() == null || request.getFilter().isEmpty()) {
             throw new GovernanceException(ErrorCode.INVALID_REQUEST,
                 "filter must contain at least one property", 400);
@@ -254,13 +256,10 @@ public class WebhookAdminController {
 
         idempotencyStore.store(BULK_IDEMPOTENCY_ENDPOINT, request.getIdempotencyKey(), response);
 
-        Map<String, Object> auditMeta = new java.util.LinkedHashMap<>();
-        auditMeta.put("action", request.getAction().name());
-        auditMeta.put("total_matched", matched.size());
-        auditMeta.put("succeeded", succeeded.size());
-        auditMeta.put("failed", failed.size());
-        auditMeta.put("skipped", skipped.size());
-        auditMeta.put("idempotency_key", request.getIdempotencyKey());
+        Map<String, Object> auditMeta = BulkActionAuditMetadataBuilder.build(
+            request.getAction().name(), matched.size(),
+            succeeded, failed, skipped,
+            request.getIdempotencyKey(), request.getFilter(), startNanos);
         auditRepository.log(buildAuditEntry(httpRequest)
             .resourceType("webhook").resourceId("bulk-action")
             .operation("bulkActionWebhooks").status(200)
