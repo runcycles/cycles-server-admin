@@ -199,7 +199,7 @@ public class AuditRepository {
                                      List<String> resourceType, String resourceId,
                                      Instant from, Instant to, String cursor, int limit) {
         return list(tenantId, keyId, operation, status, resourceType, resourceId,
-            from, to, cursor, limit, null, null, null, null, null, null);
+            from, to, cursor, limit, null, null, null, null, null, null, null, null);
     }
 
     public List<AuditLogEntry> list(String tenantId, String keyId, List<String> operation, Integer status,
@@ -207,7 +207,7 @@ public class AuditRepository {
                                      Instant from, Instant to, String cursor, int limit,
                                      SortSpec sortSpec) {
         return list(tenantId, keyId, operation, status, resourceType, resourceId,
-            from, to, cursor, limit, sortSpec, null, null, null, null, null);
+            from, to, cursor, limit, sortSpec, null, null, null, null, null, null, null);
     }
 
     public List<AuditLogEntry> list(String tenantId, String keyId, List<String> operation, Integer status,
@@ -215,7 +215,18 @@ public class AuditRepository {
                                      Instant from, Instant to, String cursor, int limit,
                                      SortSpec sortSpec, String search) {
         return list(tenantId, keyId, operation, status, resourceType, resourceId,
-            from, to, cursor, limit, sortSpec, search, null, null, null, null);
+            from, to, cursor, limit, sortSpec, search, null, null, null, null, null, null);
+    }
+
+    public List<AuditLogEntry> list(String tenantId, String keyId, List<String> operation, Integer status,
+                                     List<String> resourceType, String resourceId,
+                                     Instant from, Instant to, String cursor, int limit,
+                                     SortSpec sortSpec, String search,
+                                     List<String> errorCodes, List<String> errorCodeExcludes,
+                                     Integer statusMin, Integer statusMax) {
+        return list(tenantId, keyId, operation, status, resourceType, resourceId,
+            from, to, cursor, limit, sortSpec, search,
+            errorCodes, errorCodeExcludes, statusMin, statusMax, null, null);
     }
 
     /**
@@ -263,7 +274,8 @@ public class AuditRepository {
                                      Instant from, Instant to, String cursor, int limit,
                                      SortSpec sortSpec, String search,
                                      List<String> errorCodes, List<String> errorCodeExcludes,
-                                     Integer statusMin, Integer statusMax) {
+                                     Integer statusMin, Integer statusMax,
+                                     String traceId, String requestId) {
         if (limit <= 0) {
             return new ArrayList<>();
         }
@@ -271,11 +283,11 @@ public class AuditRepository {
             if (sortSpec == null || isTimestampSort(sortSpec)) {
                 return listByTimestamp(jedis, tenantId, keyId, operation, status,
                     resourceType, resourceId, from, to, cursor, limit, sortSpec, search,
-                    errorCodes, errorCodeExcludes, statusMin, statusMax);
+                    errorCodes, errorCodeExcludes, statusMin, statusMax, traceId, requestId);
             }
             return listSortedNonTimestamp(jedis, tenantId, keyId, operation, status,
                 resourceType, resourceId, from, to, cursor, limit, sortSpec, search,
-                errorCodes, errorCodeExcludes, statusMin, statusMax);
+                errorCodes, errorCodeExcludes, statusMin, statusMax, traceId, requestId);
         }
     }
 
@@ -297,7 +309,8 @@ public class AuditRepository {
                                                  Instant from, Instant to, String cursor, int limit,
                                                  SortSpec sortSpec, String search,
                                                  List<String> errorCodes, List<String> errorCodeExcludes,
-                                                 Integer statusMin, Integer statusMax) {
+                                                 Integer statusMin, Integer statusMax,
+                                                 String traceId, String requestId) {
         double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
         double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
         String indexKey = (tenantId != null) ? "audit:logs:" + tenantId : "audit:logs:_all";
@@ -327,7 +340,7 @@ public class AuditRepository {
                 }
                 AuditLogEntry entry = objectMapper.readValue(data, AuditLogEntry.class);
                 if (!matchesFilters(entry, keyId, operations, status, resourceTypes, resourceId,
-                        errorCodes, errorCodeExcludes, statusMin, statusMax)) continue;
+                        errorCodes, errorCodeExcludes, statusMin, statusMax, traceId, requestId)) continue;
                 if (!matchesSearch(entry, search)) continue;
                 logs.add(entry);
                 if (logs.size() >= limit) break;
@@ -344,7 +357,8 @@ public class AuditRepository {
                                                         Instant from, Instant to, String cursor, int limit,
                                                         SortSpec sortSpec, String search,
                                                         List<String> errorCodes, List<String> errorCodeExcludes,
-                                                        Integer statusMin, Integer statusMax) {
+                                                        Integer statusMin, Integer statusMax,
+                                                        String traceId, String requestId) {
         double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
         double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
         String indexKey = (tenantId != null) ? "audit:logs:" + tenantId : "audit:logs:_all";
@@ -357,7 +371,7 @@ public class AuditRepository {
                 if (data == null) continue;
                 AuditLogEntry entry = objectMapper.readValue(data, AuditLogEntry.class);
                 if (!matchesFilters(entry, keyId, operations, status, resourceTypes, resourceId,
-                        errorCodes, errorCodeExcludes, statusMin, statusMax)) continue;
+                        errorCodes, errorCodeExcludes, statusMin, statusMax, traceId, requestId)) continue;
                 if (!matchesSearch(entry, search)) continue;
                 all.add(entry);
             } catch (Exception e) {
@@ -381,7 +395,8 @@ public class AuditRepository {
     private boolean matchesFilters(AuditLogEntry entry, String keyId, List<String> operations,
                                     Integer status, List<String> resourceTypes, String resourceId,
                                     List<String> errorCodes, List<String> errorCodeExcludes,
-                                    Integer statusMin, Integer statusMax) {
+                                    Integer statusMin, Integer statusMax,
+                                    String traceId, String requestId) {
         if (keyId != null && !keyId.equals(entry.getKeyId())) return false;
         if (operations != null && !operations.isEmpty() && !operations.contains(entry.getOperation())) return false;
         if (status != null && !status.equals(entry.getStatus())) return false;
@@ -406,6 +421,13 @@ public class AuditRepository {
                 && errorCodeExcludes.contains(entry.getErrorCode())) {
             return false;
         }
+        // v0.1.25.31: exact-match on trace_id / request_id for cross-surface
+        // correlation JOINs. Null-field entries (historical writes before the
+        // v0.1.25.31 upgrade, or internal sweeper-emitted entries) cannot
+        // match a supplied filter value — they're excluded rather than
+        // silently returned.
+        if (traceId != null && !traceId.equals(entry.getTraceId())) return false;
+        if (requestId != null && !requestId.equals(entry.getRequestId())) return false;
         return true;
     }
 

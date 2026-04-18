@@ -688,6 +688,7 @@ public class BudgetController {
     private AuditLogEntry.AuditLogEntryBuilder buildAuditEntry(HttpServletRequest request) {
         return AuditLogEntry.builder()
             .requestId(request.getAttribute("requestId") != null ? request.getAttribute("requestId").toString() : null)
+            .traceId(request.getAttribute("traceId") != null ? request.getAttribute("traceId").toString() : null)
             .sourceIp(request.getRemoteAddr())
             .userAgent(request.getHeader("User-Agent"));
     }

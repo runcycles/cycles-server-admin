@@ -12,5 +12,6 @@ public class ErrorResponse {
     @NotNull @JsonProperty("error") private ErrorCode error;
     @NotNull @JsonProperty("message") private String message;
     @NotNull @JsonProperty("request_id") private String requestId;
+    @JsonProperty("trace_id") private String traceId;
     @JsonProperty("details") private Map<String, Object> details;
 }

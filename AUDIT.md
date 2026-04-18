@@ -1,9 +1,47 @@
-# Complete Budget Governance v0.1.25.30 — Admin Server Audit
+# Complete Budget Governance v0.1.25.31 — Admin Server Audit
 
-**Server version:** 0.1.25.30 (2026-04-18 — bulk-action audit metadata enrichment; spec v0.1.25.26, no spec bump)
-**Date:** 2026-04-18 (v0.1.25.30 bulk-action audit enrichment), 2026-04-18 (v0.1.25.29 budget bulk-action), 2026-04-17 (v0.1.25.28 audit sentinel split), 2026-04-17 (v0.1.25.27 audit filter DSL upgrade), 2026-04-17 (v0.1.25.26 bulk-action endpoints), 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
-**Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.26`; adds `POST /v1/admin/budgets/bulk-action` — fifth bulk-action endpoint, mirrors the tenant/webhook envelope) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
+**Server version:** 0.1.25.31 (2026-04-18 — W3C Trace Context cross-surface correlation; spec v0.1.25.27)
+**Date:** 2026-04-18 (v0.1.25.31 trace_id cross-surface correlation), 2026-04-18 (v0.1.25.30 bulk-action audit enrichment), 2026-04-18 (v0.1.25.29 budget bulk-action), 2026-04-17 (v0.1.25.28 audit sentinel split), 2026-04-17 (v0.1.25.27 audit filter DSL upgrade), 2026-04-17 (v0.1.25.26 bulk-action endpoints), 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.27`; adds `trace_id` W3C Trace Context correlation field on `Event` / `AuditLogEntry` / `ErrorResponse`, `X-Cycles-Trace-Id` response header, and `trace_id` / `request_id` filter params on `listAuditLogs` / `listEvents`) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-18 — v0.1.25.31 W3C Trace Context cross-surface correlation (spec v0.1.25.27)
+
+**Motivation — JOIN gap.** Prior to v0.1.25.31 each surface had partial correlation: `request_id` spanned one HTTP request (on `ErrorResponse`, `AuditLogEntry`, `Event`), and `correlation_id` (on `Event` only) spanned an event-stream cluster. What was missing: a **logical-operation identifier** that joins an HTTP request, the events it emits, the audit entry it produces, and any sibling requests that share the same user-intent — plus a way to propagate that identity into subscriber distributed traces.
+
+**What changed — server impl of spec v0.1.25.27 (cycles-protocol PR #56):**
+
+- **`TraceContextFilter`** (new, `cycles-admin-service-api/.../api/filter/`). Servlet filter `@Order(2)` running before the existing `CorrelationIdFilter`. Extracts `trace_id` with inbound precedence:
+  1. `traceparent` header — parsed per W3C Trace Context §3.2 (version `00`, non-all-zero trace-id, non-all-zero span-id); inbound trace-flags captured for outbound preservation.
+  2. `X-Cycles-Trace-Id` — validated against `^[0-9a-f]{32}$`, not all-zero.
+  3. Otherwise server-generates 16 random bytes → 32 lowercase hex (all-zero re-rolled per §3.2.2.3).
+  Sets request attributes `traceId` / `traceFlags` / `traceparentInboundValid` and emits `X-Cycles-Trace-Id` on every response. Malformed inbound headers are tolerated (fall through to next rule); server never rejects on a bad correlation header.
+- **Model fields** — `trace_id` added to `AuditLogEntry`, `Event`, `ErrorResponse` (all `@JsonInclude(NON_NULL)`; strict `additionalProperties: false` preserved by declared property). `WebhookDelivery` also carries `trace_id` + `traceFlags` + `traceparentInboundValid` so the separate `cycles-server-events` sidecar can construct the outbound `traceparent` with the correct inbound-flags-preservation behaviour on HTTP delivery.
+- **Wire-up** — controller audit paths (`ApiKey`, `Budget`, `Policy`, `Tenant`, `WebhookAdmin`, `WebhookTenant`, `WebhookSecurityConfig`) all thread the request-scoped `traceId` attribute onto the `AuditLogEntry` builder next to `requestId`. `GlobalExceptionHandler` and `AuthInterceptor` populate `ErrorResponse.trace_id`. `AuditFailureService` mirrors.
+- **Event emission** — `EventService.emit(...)` auto-populates `event.traceId` from `RequestContextHolder` when inside a servlet request, so none of the 13 existing `emit(...)` call sites change signature. Off-request emissions (future scheduled work) leave `trace_id` null, which the spec permits.
+- **Webhook dispatch** — `WebhookDispatchService.createDelivery(...)` captures `trace_id` / `traceFlags` / `traceparentInboundValid` on every outbound delivery row so the sidecar can emit the correct `traceparent` header (preserving inbound trace-flags when the inbound `traceparent` was valid, defaulting to `01` sampled otherwise).
+- **New list-endpoint filters** — `listAuditLogs` and `listEvents` gain `trace_id` + `request_id` query params. Exact-match, post-hydration predicate, null-safe (null-field entries never match a supplied filter value so historical rows aren't silently returned).
+
+**Non-breaking by design:**
+
+- All new wire fields are optional; historical rows persisted before this upgrade continue to round-trip through strict Jackson (`JsonIgnoreProperties(ignoreUnknown = false)` is satisfied because the fields ARE declared, just `NON_NULL`).
+- Inbound headers are additive; old clients don't send them.
+- Outbound `X-Cycles-Trace-Id` is additive; clients accepting unknown response headers (all of them, per HTTP contract) are unaffected.
+- Query-param additions follow the spec's additive-parameter guarantee — older servers that don't implement them MUST ignore; this server implements them.
+
+**What this enables.**
+
+- JOIN an audit entry with every event it caused (same `trace_id`).
+- JOIN N related API calls from one user intent (same client-supplied `traceparent`).
+- Propagate Cycles operations into the subscriber's OpenTelemetry distributed trace on outbound webhook.
+- Dashboard filter: "show all events/audits for trace X" → one query each against `listEvents` / `listAuditLogs`.
+
+**Verification.**
+
+```bash
+mvn-proxy -B verify --file cycles-admin-service/pom.xml \
+  -Dtest='!*IntegrationTest' -Dsurefire.failIfNoSpecifiedTests=false
+```
 
 ### 2026-04-18 — v0.1.25.30 bulk-action audit metadata enrichment (no spec bump)
 

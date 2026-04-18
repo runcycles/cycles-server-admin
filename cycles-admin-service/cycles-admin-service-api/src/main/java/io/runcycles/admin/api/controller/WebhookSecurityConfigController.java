@@ -27,6 +27,7 @@ public class WebhookSecurityConfigController {
         repository.save(config);
         auditRepository.log(AuditLogEntry.builder()
             .requestId(httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null)
+            .traceId(httpRequest.getAttribute("traceId") != null ? httpRequest.getAttribute("traceId").toString() : null)
             .sourceIp(httpRequest.getRemoteAddr())
             .userAgent(httpRequest.getHeader("User-Agent"))
             .resourceType("config").resourceId("webhook-security")

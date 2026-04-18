@@ -2,6 +2,7 @@ package io.runcycles.admin.api.service;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.data.repository.WebhookDeliveryRepository;
 import io.runcycles.admin.data.repository.WebhookRepository;
 import io.runcycles.admin.model.event.Event;
@@ -11,6 +12,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.web.context.request.RequestAttributes;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 
@@ -81,6 +85,7 @@ public class WebhookDispatchService {
     }
 
     private void createDelivery(Event event, WebhookSubscription sub) {
+        TraceSnapshot trace = currentTraceSnapshot(event);
         WebhookDelivery delivery = WebhookDelivery.builder()
             .deliveryId("del_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16))
             .subscriptionId(sub.getSubscriptionId())
@@ -89,6 +94,9 @@ public class WebhookDispatchService {
             .status(DeliveryStatus.PENDING)
             .attemptedAt(Instant.now())
             .attempts(0)
+            .traceId(trace.traceId)
+            .traceFlags(trace.traceFlags)
+            .traceparentInboundValid(trace.traceparentInboundValid)
             .build();
         deliveryRepository.save(delivery);
         // Enqueue for cycles-server-events to pick up via BRPOP
@@ -98,6 +106,33 @@ public class WebhookDispatchService {
             LOG.warn("Failed to enqueue delivery {} to dispatch:pending: {}", delivery.getDeliveryId(), e.getMessage());
         }
     }
+
+    /**
+     * Captures the inbound trace context for outbound webhook delivery. Prefers
+     * the current request's attributes (set by {@link TraceContextFilter}) so
+     * trace-flags preservation works per cycles-protocol-v0 §CORRELATION AND
+     * TRACING. Falls back to {@code event.trace_id} when the emit happened
+     * off-request — in that case the sidecar defaults trace-flags to {@code 01}.
+     */
+    private TraceSnapshot currentTraceSnapshot(Event event) {
+        try {
+            RequestAttributes attrs = RequestContextHolder.getRequestAttributes();
+            if (attrs instanceof ServletRequestAttributes sra) {
+                Object traceId = sra.getRequest().getAttribute(TraceContextFilter.TRACE_ID_ATTRIBUTE);
+                Object flags = sra.getRequest().getAttribute(TraceContextFilter.TRACE_FLAGS_ATTRIBUTE);
+                Object valid = sra.getRequest().getAttribute(TraceContextFilter.TRACE_PARENT_VALID_ATTRIBUTE);
+                return new TraceSnapshot(
+                    traceId != null ? traceId.toString() : event.getTraceId(),
+                    flags != null ? flags.toString() : null,
+                    valid instanceof Boolean ? (Boolean) valid : null);
+            }
+        } catch (IllegalStateException ignored) {
+            // No active request — fall through.
+        }
+        return new TraceSnapshot(event.getTraceId(), null, null);
+    }
+
+    private record TraceSnapshot(String traceId, String traceFlags, Boolean traceparentInboundValid) {}
 
     /**
      * Sign a payload with HMAC-SHA256. Returns "sha256=<hex>" format per v0.1.25 spec.

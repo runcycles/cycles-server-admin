@@ -3,12 +3,16 @@ package io.runcycles.admin.api.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.data.repository.EventRepository;
 import io.runcycles.admin.model.event.*;
 import io.runcycles.admin.model.shared.SortSpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.web.context.request.RequestAttributes;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 import java.time.Instant;
 import java.util.List;
@@ -49,6 +53,15 @@ public class EventService {
             }
             if (event.getCategory() == null && event.getEventType() != null) {
                 event.setCategory(event.getEventType().getCategory());
+            }
+            // v0.1.25.31: auto-populate trace_id from the request-scoped attribute
+            // set by TraceContextFilter when the emit happens inside a servlet
+            // request (which is true for every admin-plane caller today). Avoids
+            // threading trace_id through 13 call sites. Off-request emissions
+            // (future scheduled / async work) leave trace_id null, which the spec
+            // permits.
+            if (event.getTraceId() == null) {
+                event.setTraceId(currentTraceId());
             }
             validatePayloadShape(event);
             eventRepository.save(event);
@@ -124,6 +137,20 @@ public class EventService {
         emit(event);
     }
 
+    /** Reads the trace_id set by {@link TraceContextFilter} on the current request, if any. */
+    private String currentTraceId() {
+        try {
+            RequestAttributes attrs = RequestContextHolder.getRequestAttributes();
+            if (attrs instanceof ServletRequestAttributes sra) {
+                Object v = sra.getRequest().getAttribute(TraceContextFilter.TRACE_ID_ATTRIBUTE);
+                return v != null ? v.toString() : null;
+            }
+        } catch (IllegalStateException ignored) {
+            // No request context (off-request emission) — fine, trace_id stays null.
+        }
+        return null;
+    }
+
     public Event findById(String eventId) {
         return eventRepository.findById(eventId);
     }
@@ -131,21 +158,31 @@ public class EventService {
     public EventListResponse list(String tenantId, String eventType, String category,
                                    String scope, String correlationId, Instant from, Instant to,
                                    String cursor, int limit) {
-        return list(tenantId, eventType, category, scope, correlationId, from, to, cursor, limit, null, null);
+        return list(tenantId, eventType, category, scope, correlationId, from, to, cursor, limit,
+            null, null, null, null);
     }
 
     public EventListResponse list(String tenantId, String eventType, String category,
                                    String scope, String correlationId, Instant from, Instant to,
                                    String cursor, int limit, SortSpec sortSpec) {
-        return list(tenantId, eventType, category, scope, correlationId, from, to, cursor, limit, sortSpec, null);
+        return list(tenantId, eventType, category, scope, correlationId, from, to, cursor, limit,
+            sortSpec, null, null, null);
     }
 
     public EventListResponse list(String tenantId, String eventType, String category,
                                    String scope, String correlationId, Instant from, Instant to,
                                    String cursor, int limit, SortSpec sortSpec, String search) {
+        return list(tenantId, eventType, category, scope, correlationId, from, to, cursor, limit,
+            sortSpec, search, null, null);
+    }
+
+    public EventListResponse list(String tenantId, String eventType, String category,
+                                   String scope, String correlationId, Instant from, Instant to,
+                                   String cursor, int limit, SortSpec sortSpec, String search,
+                                   String traceId, String requestId) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         List<Event> events = eventRepository.list(tenantId, eventType, category, scope,
-            correlationId, from, to, cursor, effectiveLimit, sortSpec, search);
+            correlationId, from, to, cursor, effectiveLimit, sortSpec, search, traceId, requestId);
         return EventListResponse.builder()
             .events(events)
             .hasMore(events.size() >= effectiveLimit)

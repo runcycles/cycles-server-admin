@@ -79,13 +79,22 @@ public class EventRepository {
 
     public List<Event> list(String tenantId, String eventType, String category, String scope,
                             String correlationId, Instant from, Instant to, String cursor, int limit) {
-        return list(tenantId, eventType, category, scope, correlationId, from, to, cursor, limit, null, null);
+        return list(tenantId, eventType, category, scope, correlationId, from, to, cursor, limit,
+            null, null, null, null);
     }
 
     public List<Event> list(String tenantId, String eventType, String category, String scope,
                             String correlationId, Instant from, Instant to, String cursor, int limit,
                             SortSpec sortSpec) {
-        return list(tenantId, eventType, category, scope, correlationId, from, to, cursor, limit, sortSpec, null);
+        return list(tenantId, eventType, category, scope, correlationId, from, to, cursor, limit,
+            sortSpec, null, null, null);
+    }
+
+    public List<Event> list(String tenantId, String eventType, String category, String scope,
+                            String correlationId, Instant from, Instant to, String cursor, int limit,
+                            SortSpec sortSpec, String search) {
+        return list(tenantId, eventType, category, scope, correlationId, from, to, cursor, limit,
+            sortSpec, search, null, null);
     }
 
     /**
@@ -109,22 +118,24 @@ public class EventRepository {
      */
     public List<Event> list(String tenantId, String eventType, String category, String scope,
                             String correlationId, Instant from, Instant to, String cursor, int limit,
-                            SortSpec sortSpec, String search) {
+                            SortSpec sortSpec, String search,
+                            String traceId, String requestId) {
         if (limit <= 0) {
             return new ArrayList<>();
         }
         try (Jedis jedis = jedisPool.getResource()) {
             if (correlationId != null && !correlationId.isBlank()) {
                 List<Event> byCorrelation = listByCorrelation(
-                    jedis, correlationId, tenantId, eventType, category, scope, limit, sortSpec, search);
+                    jedis, correlationId, tenantId, eventType, category, scope, limit,
+                    sortSpec, search, traceId, requestId);
                 return byCorrelation;
             }
             if (sortSpec == null || isTimestampSort(sortSpec)) {
                 return listByTimestamp(jedis, tenantId, eventType, category, scope,
-                    from, to, cursor, limit, sortSpec, search);
+                    from, to, cursor, limit, sortSpec, search, traceId, requestId);
             }
             return listSortedNonTimestamp(jedis, tenantId, eventType, category, scope,
-                from, to, cursor, limit, sortSpec, search);
+                from, to, cursor, limit, sortSpec, search, traceId, requestId);
         }
     }
 
@@ -142,7 +153,8 @@ public class EventRepository {
 
     private List<Event> listByTimestamp(Jedis jedis, String tenantId, String eventType,
                                         String category, String scope, Instant from, Instant to,
-                                        String cursor, int limit, SortSpec sortSpec, String search) {
+                                        String cursor, int limit, SortSpec sortSpec, String search,
+                                        String traceId, String requestId) {
         double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
         double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
         String indexKey = (tenantId != null) ? "events:" + tenantId : "events:_all";
@@ -171,7 +183,7 @@ public class EventRepository {
                     continue;
                 }
                 Event event = objectMapper.readValue(data, Event.class);
-                if (!matchesFilters(event, eventType, category, scope)) continue;
+                if (!matchesFilters(event, eventType, category, scope, traceId, requestId)) continue;
                 if (!matchesSearch(event, search)) continue;
                 events.add(event);
                 if (events.size() >= limit) break;
@@ -184,7 +196,8 @@ public class EventRepository {
 
     private List<Event> listSortedNonTimestamp(Jedis jedis, String tenantId, String eventType,
                                                 String category, String scope, Instant from, Instant to,
-                                                String cursor, int limit, SortSpec sortSpec, String search) {
+                                                String cursor, int limit, SortSpec sortSpec, String search,
+                                                String traceId, String requestId) {
         double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
         double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
         String indexKey = (tenantId != null) ? "events:" + tenantId : "events:_all";
@@ -196,7 +209,7 @@ public class EventRepository {
                 String data = jedis.get("event:" + id);
                 if (data == null) continue;
                 Event event = objectMapper.readValue(data, Event.class);
-                if (!matchesFilters(event, eventType, category, scope)) continue;
+                if (!matchesFilters(event, eventType, category, scope, traceId, requestId)) continue;
                 if (!matchesSearch(event, search)) continue;
                 all.add(event);
             } catch (Exception e) {
@@ -217,10 +230,17 @@ public class EventRepository {
         return results;
     }
 
-    private boolean matchesFilters(Event event, String eventType, String category, String scope) {
+    private boolean matchesFilters(Event event, String eventType, String category, String scope,
+                                   String traceId, String requestId) {
         if (eventType != null && !eventType.equals(event.getEventType().getValue())) return false;
         if (category != null && !category.equals(event.getCategory().getValue())) return false;
         if (scope != null && (event.getScope() == null || !event.getScope().startsWith(scope))) return false;
+        // v0.1.25.31: exact-match on trace_id / request_id for cross-surface
+        // correlation JOINs. Null-field entries (historical writes before the
+        // v0.1.25.31 upgrade, or off-request emissions) cannot match a
+        // supplied filter value — they're excluded rather than returned.
+        if (traceId != null && !traceId.equals(event.getTraceId())) return false;
+        if (requestId != null && !requestId.equals(event.getRequestId())) return false;
         return true;
     }
 
@@ -279,7 +299,8 @@ public class EventRepository {
 
     private List<Event> listByCorrelation(Jedis jedis, String correlationId, String tenantId,
                                           String eventType, String category, String scope, int limit,
-                                          SortSpec sortSpec, String search) {
+                                          SortSpec sortSpec, String search,
+                                          String traceId, String requestId) {
         Set<String> ids = jedis.smembers("events:correlation:" + correlationId);
         if (ids == null || ids.isEmpty()) return new ArrayList<>();
         List<Event> events = new ArrayList<>();
@@ -289,7 +310,7 @@ public class EventRepository {
                 if (data == null) continue;
                 Event event = objectMapper.readValue(data, Event.class);
                 if (tenantId != null && !tenantId.equals(event.getTenantId())) continue;
-                if (!matchesFilters(event, eventType, category, scope)) continue;
+                if (!matchesFilters(event, eventType, category, scope, traceId, requestId)) continue;
                 if (!matchesSearch(event, search)) continue;
                 events.add(event);
             } catch (Exception e) {
