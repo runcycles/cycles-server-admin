@@ -206,6 +206,10 @@ public class AuthInterceptor implements HandlerInterceptor {
                                        path.startsWith("/v1/admin/budgets/unfreeze"))) {
             return true;
         }
+        // POST /v1/admin/budgets/bulk-action requires AdminKeyAuth per spec v0.1.25.26
+        if ("POST".equals(method) && path.startsWith("/v1/admin/budgets/bulk-action")) {
+            return true;
+        }
         return false;
     }
 

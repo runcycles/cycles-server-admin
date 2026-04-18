@@ -663,6 +663,42 @@ public class BudgetRepository {
         return list(tenantId, null, null, null, null, 1000);
     }
 
+    /**
+     * Tenant-scoped bulk-match for {@code POST /v1/admin/budgets/bulk-action}
+     * (spec v0.1.25.26). Hydrates up to {@code cap + 1} matching ledgers
+     * from {@code budgets:{tenantId}} and applies {@link BudgetListFilters#matches}
+     * for zero-drift semantics with listBudgets. The {@code +1} is the
+     * "filter is too wide" sentinel — callers check {@code size() > cap}
+     * and raise LIMIT_EXCEEDED without hydrating the remainder.
+     *
+     * <p>No cross-tenant path: the bulk endpoint requires {@code tenant_id}
+     * so the walk is constrained to a single tenant's budget index.
+     */
+    public List<BudgetLedger> matchForBulk(String tenantId, BudgetListFilters filters, int cap) {
+        BudgetListFilters effective = filters != null ? filters : BudgetListFilters.empty();
+        List<BudgetLedger> matched = new ArrayList<>();
+        try (Jedis jedis = jedisPool.getResource()) {
+            Set<String> keys = jedis.smembers("budgets:" + tenantId);
+            for (String key : keys) {
+                try {
+                    Map<String, String> hash = jedis.hgetAll(key);
+                    if (hash.isEmpty()) {
+                        LOG.warn("Budget data missing for key: {}, cleaning index", key);
+                        jedis.srem("budgets:" + tenantId, key);
+                        continue;
+                    }
+                    BudgetLedger ledger = hashToBudgetLedger(hash, key);
+                    if (!effective.matches(ledger)) continue;
+                    matched.add(ledger);
+                    if (matched.size() > cap) break;
+                } catch (Exception e) {
+                    LOG.warn("Failed to parse budget: {}", key, e);
+                }
+            }
+        }
+        return matched;
+    }
+
     public BudgetLedger getByExactScope(String scope, UnitEnum unit) {
         String normalizedScope = normalizeScope(scope);
         String key = "budget:" + normalizedScope + ":" + unit;
