@@ -647,6 +647,38 @@ class WebhookAdminControllerTest {
     }
 
     @Test
+    void bulkActionWebhooks_auditMetadata_carriesV030EnrichmentKeys() throws Exception {
+        // v0.1.25.30: audit metadata now carries per-row outcomes + filter
+        // echo + duration_ms so post-incident triage needs only the audit log.
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(isNull(), eq(WebhookStatus.ACTIVE), isNull(), isNull(), eq(500)))
+                .thenReturn(List.of(webhookRow("whsub_1", WebhookStatus.ACTIVE)));
+        when(webhookRepository.findById("whsub_1")).thenReturn(webhookRow("whsub_1", WebhookStatus.ACTIVE));
+        when(webhookService.update(anyString(), any())).thenReturn(webhookRow("whsub_1", WebhookStatus.PAUSED));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"PAUSE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<io.runcycles.admin.model.audit.AuditLogEntry> auditArg =
+                ArgumentCaptor.forClass(io.runcycles.admin.model.audit.AuditLogEntry.class);
+        verify(auditRepository).log(auditArg.capture());
+        java.util.Map<String, Object> meta = auditArg.getValue().getMetadata();
+        org.junit.jupiter.api.Assertions.assertEquals("bulkActionWebhooks", auditArg.getValue().getOperation());
+        org.junit.jupiter.api.Assertions.assertEquals("PAUSE", meta.get("action"));
+        org.junit.jupiter.api.Assertions.assertEquals(1, meta.get("total_matched"));
+        org.junit.jupiter.api.Assertions.assertEquals(List.of("whsub_1"), meta.get("succeeded_ids"));
+        org.junit.jupiter.api.Assertions.assertEquals(List.of(), meta.get("failed_rows"));
+        org.junit.jupiter.api.Assertions.assertEquals(List.of(), meta.get("skipped_rows"));
+        org.junit.jupiter.api.Assertions.assertEquals("k1", meta.get("idempotency_key"));
+        org.assertj.core.api.Assertions.assertThat(meta).containsKey("filter");
+        org.assertj.core.api.Assertions.assertThat((Long) meta.get("duration_ms")).isGreaterThanOrEqualTo(0L);
+    }
+
+    @Test
     void bulkActionWebhooks_genericException_classifiedAsInternalError() throws Exception {
         when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
                 .thenReturn(java.util.Optional.empty());

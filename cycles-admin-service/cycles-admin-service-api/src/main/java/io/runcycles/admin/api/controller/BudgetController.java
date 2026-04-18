@@ -14,6 +14,7 @@ import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.shared.UnitEnum;
 import io.runcycles.admin.api.config.ScopeFilterUtil;
 import io.runcycles.admin.api.config.ScopeValidator;
+import io.runcycles.admin.api.service.BulkActionAuditMetadataBuilder;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -449,6 +450,7 @@ public class BudgetController {
     @PostMapping("/bulk-action") @Operation(operationId = "bulkActionBudgets")
     public ResponseEntity<BudgetBulkActionResponse> bulkAction(
             @Valid @RequestBody BudgetBulkActionRequest request, HttpServletRequest httpRequest) {
+        long startNanos = System.nanoTime();
         // Action/payload validation runs BEFORE any Redis read so that
         // malformed combos fail fast with 400 and never enter the match /
         // apply path (spec requirement).
@@ -503,13 +505,10 @@ public class BudgetController {
 
         idempotencyStore.store(BULK_IDEMPOTENCY_ENDPOINT, request.getIdempotencyKey(), response);
 
-        Map<String, Object> auditMeta = new java.util.LinkedHashMap<>();
-        auditMeta.put("action", request.getAction().name());
-        auditMeta.put("total_matched", matched.size());
-        auditMeta.put("succeeded", succeeded.size());
-        auditMeta.put("failed", failed.size());
-        auditMeta.put("skipped", skipped.size());
-        auditMeta.put("idempotency_key", request.getIdempotencyKey());
+        Map<String, Object> auditMeta = BulkActionAuditMetadataBuilder.build(
+            request.getAction().name(), matched.size(),
+            succeeded, failed, skipped,
+            request.getIdempotencyKey(), filter, startNanos);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(filter.getTenantId())
             .resourceType("budget").resourceId("bulk-action")

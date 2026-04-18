@@ -18,6 +18,7 @@ import io.runcycles.admin.model.tenant.TenantCreateRequest;
 import io.runcycles.admin.model.tenant.TenantListResponse;
 import io.runcycles.admin.model.tenant.TenantStatus;
 import io.runcycles.admin.model.tenant.TenantUpdateRequest;
+import io.runcycles.admin.api.service.BulkActionAuditMetadataBuilder;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -202,6 +203,7 @@ public class TenantController {
     @PostMapping("/bulk-action") @Operation(operationId = "bulkActionTenants")
     public ResponseEntity<TenantBulkActionResponse> bulkAction(
             @Valid @RequestBody TenantBulkActionRequest request, HttpServletRequest httpRequest) {
+        long startNanos = System.nanoTime();
         if (request.getFilter() == null || request.getFilter().isEmpty()) {
             throw new GovernanceException(ErrorCode.INVALID_REQUEST,
                 "filter must contain at least one property", 400);
@@ -259,13 +261,10 @@ public class TenantController {
 
         idempotencyStore.store(BULK_IDEMPOTENCY_ENDPOINT, request.getIdempotencyKey(), response);
 
-        Map<String, Object> auditMeta = new java.util.LinkedHashMap<>();
-        auditMeta.put("action", request.getAction().name());
-        auditMeta.put("total_matched", matched.size());
-        auditMeta.put("succeeded", succeeded.size());
-        auditMeta.put("failed", failed.size());
-        auditMeta.put("skipped", skipped.size());
-        auditMeta.put("idempotency_key", request.getIdempotencyKey());
+        Map<String, Object> auditMeta = BulkActionAuditMetadataBuilder.build(
+            request.getAction().name(), matched.size(),
+            succeeded, failed, skipped,
+            request.getIdempotencyKey(), request.getFilter(), startNanos);
         auditRepository.log(buildAuditEntry(httpRequest)
             .resourceType("tenant").resourceId("bulk-action")
             .operation("bulkActionTenants").status(200)

@@ -35,6 +35,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -565,6 +566,12 @@ class BudgetControllerBulkActionTest {
         assertEquals(0, entry.getMetadata().get("failed"));
         assertEquals(0, entry.getMetadata().get("skipped"));
         assertEquals("k1", entry.getMetadata().get("idempotency_key"));
+        // v0.1.25.30 enrichment — per-row outcomes + filter echo + wall-clock
+        assertEquals(List.of("led-tenant:acme/workspace:eng"), entry.getMetadata().get("succeeded_ids"));
+        assertEquals(List.of(), entry.getMetadata().get("failed_rows"));
+        assertEquals(List.of(), entry.getMetadata().get("skipped_rows"));
+        assertThat(entry.getMetadata()).containsKey("filter");
+        assertThat((Long) entry.getMetadata().get("duration_ms")).isGreaterThanOrEqualTo(0L);
     }
 
     // -------- Auth ------------------------------------------------------
