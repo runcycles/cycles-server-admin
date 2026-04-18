@@ -19,10 +19,14 @@ new optional request fields) are **not** considered breaking.
 ### Added
 
 - **W3C Trace Context cross-surface correlation** — server impl of
-  spec v0.1.25.27 (cycles-protocol PR #56). Adds a third correlation
-  tier on top of the existing `request_id` / `correlation_id`, spanning
-  an HTTP request, every event it emits, the audit entry it produces,
-  and any outbound webhook delivery.
+  spec v0.1.25.28 (cycles-protocol PRs #56 + #58). Adds a third
+  correlation tier on top of the existing `request_id` /
+  `correlation_id`, spanning an HTTP request, every event it emits,
+  the audit entry it produces, and any outbound webhook delivery. The
+  v0.1.25.28 spec patch adds `trace_id` / `trace_flags` /
+  `traceparent_inbound_valid` to the `WebhookDelivery` schema so this
+  server's webhook-delivery payloads conform cleanly against the
+  strict admin spec.
 
   **`trace_id`** (optional, `^[0-9a-f]{32}$`) on response bodies:
 
