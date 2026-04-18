@@ -159,6 +159,10 @@ class AuthInterceptorTest {
 
         assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
         assertThat(response.getStatus()).isEqualTo(401);
+        // v0.1.25.28 regression guard: a failed admin-key attempt must
+        // NOT stamp actor_type — otherwise AuditFailureService would
+        // promote pre-auth failures into the __admin__ sentinel.
+        assertThat(request.getAttribute("authenticated_actor_type")).isNull();
     }
 
     @Test
@@ -471,6 +475,9 @@ class AuthInterceptorTest {
         assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
         assertThat(response.getStatus()).isEqualTo(500);
         assertThat(response.getContentAsString()).contains("Server misconfiguration");
+        // v0.1.25.28 regression guard: misconfig path must reject BEFORE
+        // stamping actor_type.
+        assertThat(request.getAttribute("authenticated_actor_type")).isNull();
     }
 
     @Test
@@ -481,6 +488,9 @@ class AuthInterceptorTest {
 
         assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
         assertThat(response.getStatus()).isEqualTo(401);
+        // v0.1.25.28 regression guard: blank-header 401 must reject
+        // BEFORE stamping actor_type.
+        assertThat(request.getAttribute("authenticated_actor_type")).isNull();
     }
 
     @Test

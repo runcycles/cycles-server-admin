@@ -368,15 +368,25 @@ class AuditRepositoryTest {
 
     @Test
     void resolveTtlSeconds_zeroDays_meansIndefinite() {
+        // retention=0 → indefinite across every tier. Includes all four
+        // tenant_id shapes the router branches on (real tenant,
+        // __unauth__, __admin__, legacy <unauthenticated>) so a future
+        // refactor that forgets one branch trips here.
         ReflectionTestUtils.setField(repository, "authenticatedRetentionDays", 0);
         ReflectionTestUtils.setField(repository, "unauthenticatedRetentionDays", 0);
 
         AuditLogEntry authed = AuditLogEntry.builder().tenantId("tenant-1").build();
         AuditLogEntry unauthed = AuditLogEntry.builder()
                 .tenantId(AuditLogEntry.UNAUTH_TENANT).build();
+        AuditLogEntry admin = AuditLogEntry.builder()
+                .tenantId(AuditLogEntry.ADMIN_TENANT).build();
+        AuditLogEntry legacy = AuditLogEntry.builder()
+                .tenantId(AuditLogEntry.LEGACY_UNAUTHENTICATED_TENANT).build();
 
         assertThat(repository.resolveTtlSeconds(authed)).isEqualTo(0L);
         assertThat(repository.resolveTtlSeconds(unauthed)).isEqualTo(0L);
+        assertThat(repository.resolveTtlSeconds(admin)).isEqualTo(0L);
+        assertThat(repository.resolveTtlSeconds(legacy)).isEqualTo(0L);
     }
 
     @Test

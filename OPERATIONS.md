@@ -73,8 +73,12 @@ distinguish.
 **Query examples:**
 
 ```bash
-# Failed admin attempts (unauthenticated).
-GET /v1/admin/audit/logs?tenant_id=%3Cunauthenticated%3E
+# Pre-auth failures (v0.1.25.28+: missing/invalid/revoked key).
+GET /v1/admin/audit/logs?tenant_id=__unauth__
+
+# Admin-plane activity (v0.1.25.28+: admin-key-authenticated requests,
+# governance ops, cross-tenant reads, admin-plane 4xx/5xx).
+GET /v1/admin/audit/logs?tenant_id=__admin__
 
 # All 401 rejections in the last hour.
 GET /v1/admin/audit/logs?status=401&from=<iso8601>

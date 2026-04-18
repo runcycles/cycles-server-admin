@@ -55,6 +55,9 @@ public class AuditLogEntry {
      * schedule as fresh {@link #UNAUTH_TENANT} rows. Data-layer code in
      * {@code AuditRepository} checks this legacy constant alongside
      * {@code UNAUTH_TENANT}; no other code should reference it.
+     *
+     * @since 0.1.25.28 (introduced to preserve TTL routing for legacy
+     *         rows after the sentinel rename).
      */
     public static final String LEGACY_UNAUTHENTICATED_TENANT = "<unauthenticated>";
 

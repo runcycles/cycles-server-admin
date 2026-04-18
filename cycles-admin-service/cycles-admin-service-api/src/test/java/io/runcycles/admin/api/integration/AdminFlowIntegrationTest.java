@@ -271,9 +271,11 @@ class AdminFlowIntegrationTest extends BaseIntegrationTest {
                 "GET:/v1/admin/tenants".equals(e.get("operation")) &&
                 AuditLogEntry.UNAUTH_TENANT.equals(e.get("tenant_id")));
 
-        // 400 malformed JSON → admin-key authenticated → __admin__ sentinel
-        // (v0.1.25.28: AuthInterceptor.validateAdminKey stamps
-        // authenticated_tenant_id = __admin__ on admin-key success).
+        // 400 malformed JSON → admin-key authenticated → __admin__ sentinel.
+        // (v0.1.25.28: AuthInterceptor.validateAdminKey stamps actor_type=
+        // "admin" — AuditFailureService reads that attribute to pick
+        // __admin__. authenticated_tenant_id stays null so downstream
+        // controllers' admin-vs-tenant discriminator is unaffected.)
         assertThat(logs).anyMatch(e ->
                 Integer.valueOf(400).equals(e.get("status")) &&
                 "INVALID_REQUEST".equals(e.get("error_code")) &&

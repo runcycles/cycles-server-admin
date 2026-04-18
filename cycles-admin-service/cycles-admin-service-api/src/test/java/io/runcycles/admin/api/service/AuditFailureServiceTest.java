@@ -92,6 +92,24 @@ class AuditFailureServiceTest {
     }
 
     @Test
+    void logFailure_unknownActorType_fallsBackToUnauthSentinel() {
+        // Guard: only the literal "admin" must resolve to __admin__. Any
+        // other actor_type value (legacy, typo, future-reserved) MUST
+        // fall through to __unauth__. Prevents a regression where the
+        // guard is widened to `actor != null`, which would silently
+        // promote unknown actor types into the long-TTL tier and defeat
+        // the sentinel split.
+        request.setAttribute("authenticated_actor_type", "weird");
+
+        service.logFailure(request, 401, ErrorCode.UNAUTHORIZED, "x", null);
+
+        ArgumentCaptor<AuditLogEntry> captor = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditRepository).log(captor.capture());
+        assertThat(captor.getValue().getTenantId())
+                .isEqualTo(AuditLogEntry.UNAUTH_TENANT);
+    }
+
+    @Test
     void logFailure_adminActorType_usesAdminSentinel() {
         // v0.1.25.28: AuthInterceptor.validateAdminKey stamps
         // actor_type="admin" but NOT authenticated_tenant_id (controllers
