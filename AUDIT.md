@@ -1,9 +1,81 @@
-# Complete Budget Governance v0.1.25.28 — Admin Server Audit
+# Complete Budget Governance v0.1.25.29 — Admin Server Audit
 
-**Server version:** 0.1.25.28 (2026-04-17 — audit tenant_id sentinel split: `__admin__` for admin-plane auth, `__unauth__` for pre-auth failures, spec v0.1.25.25)
-**Date:** 2026-04-17 (v0.1.25.28 audit sentinel split), 2026-04-17 (v0.1.25.27 audit filter DSL upgrade), 2026-04-17 (v0.1.25.26 bulk-action endpoints), 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
-**Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.25`; `listAuditLogs` gains `error_code` / `error_code_exclude` IN/NOT-IN arrays, `status_min` / `status_max` numeric range; `operation` / `resource_type` promoted scalar → array, all maxItems 25) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
+**Server version:** 0.1.25.29 (2026-04-18 — budget bulk-action endpoint, spec v0.1.25.26)
+**Date:** 2026-04-18 (v0.1.25.29 budget bulk-action), 2026-04-17 (v0.1.25.28 audit sentinel split), 2026-04-17 (v0.1.25.27 audit filter DSL upgrade), 2026-04-17 (v0.1.25.26 bulk-action endpoints), 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.26`; adds `POST /v1/admin/budgets/bulk-action` — fifth bulk-action endpoint, mirrors the tenant/webhook envelope) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
+
+### 2026-04-18 — v0.1.25.29 budget bulk-action endpoint (spec v0.1.25.26)
+
+Closes [cycles-server-admin issue #99](https://github.com/runcycles/cycles-server-admin/issues/99) ("Bulk Budget Reset at Tenant or Parent-Scope Level"). Operators rolling over a billing period previously had to iterate `listBudgets` + per-row `fundBudget` — painful for a tenant with dozens or hundreds of ledgers, and no atomic count-gate to catch drift between preview and apply. The new endpoint lets them issue one filtered bulk request. Spec v0.1.25.26 (merged to cycles-protocol `main` via PR #55) had already shipped the analogous endpoints for tenants and webhooks in server v0.1.25.26; budgets were the last gap.
+
+**Endpoint:** `POST /v1/admin/budgets/bulk-action` — AdminKeyAuth only. Body `BudgetBulkActionRequest`, success 200 `BudgetBulkActionResponse`. Errors: 400 (`INVALID_REQUEST` on validation, `LIMIT_EXCEEDED` when matched > 500), 409 (`COUNT_MISMATCH` when `expected_count` differs from server-counted matches).
+
+**Request shape:**
+
+| Field | Required | Notes |
+|---|---|---|
+| `filter.tenant_id` | yes | Cross-tenant bulk is explicitly out of scope per spec; `@NotBlank` at the DTO boundary. |
+| `filter.scope_prefix` / `unit` / `status` / `over_limit` / `has_debt` / `utilization_min` / `utilization_max` / `search` | no | Mirrors the `listBudgets` query params one-for-one. A preview via `listBudgets` and a bulk apply share the same match semantics — see "zero-drift matcher" below. |
+| `action` | yes | `FundingOperation` enum reused — values match spec exactly: `CREDIT`, `DEBIT`, `RESET`, `REPAY_DEBT`, `RESET_SPENT`. |
+| `amount` | yes, all 5 actions | Validation runs before the match phase so malformed combos never touch Redis. |
+| `spent` | only `RESET_SPENT` | 400 if present for any other action; 400 if negative. |
+| `reason` | no | Free-form, ≤512 chars. |
+| `expected_count` | no | Count-gate — if present and differs from matched size, 409 `COUNT_MISMATCH` with `details.total_matched`. |
+| `idempotency_key` | yes | 15-minute replay window via `IdempotencyStore` under the `budgets-bulk` namespace. |
+
+**Per-row outcome mapping** (spec row-level known codes, returned inside `failed[]` / `skipped[]`):
+
+| Row condition | Bucket | Outcome |
+|---|---|---|
+| `amount.unit != ledger.unit` — pre-check, no Lua round-trip | `failed` | `error_code=INVALID_TRANSITION`, `message="unit mismatch: expected <X>, got <Y>"` |
+| `action == REPAY_DEBT && ledger.debt == 0` — pre-check | `skipped` | `reason=ALREADY_IN_TARGET_STATE` |
+| `fund()` returns normally | `succeeded` | `id = ledger.ledger_id` (per spec `BudgetBulkActionResponse.succeeded` description) |
+| `fund()` throws `BUDGET_EXCEEDED` (DEBIT would take remaining negative) | `failed` | `error_code=BUDGET_EXCEEDED` |
+| `fund()` throws `BUDGET_FROZEN` / `BUDGET_CLOSED` / `INVALID_REQUEST` | `failed` | `error_code=INVALID_TRANSITION` |
+| `fund()` throws `BUDGET_NOT_FOUND` / `NOT_FOUND` (race) | `failed` | `error_code=NOT_FOUND` |
+| `fund()` throws `FORBIDDEN` / `INSUFFICIENT_PERMISSIONS` | `failed` | `error_code=PERMISSION_DENIED` |
+| Any other `GovernanceException` / `RuntimeException` | `failed` | `error_code=INTERNAL_ERROR` |
+
+**Safety semantics (identical to tenant/webhook bulk-action):**
+
+- **500-row hard cap.** `BudgetRepository.matchForBulk(tenantId, filters, cap)` fetches up to `cap + 1` ledgers; the +1 is the "this filter is too wide" sentinel that triggers `GovernanceException(LIMIT_EXCEEDED, 400, {total_matched})`. No writes on overflow.
+- **Idempotency, two layers.** The outer envelope is cached under `budgets-bulk:<key>` for 15 minutes — any replay within the window returns the cached envelope verbatim, no repo work. Each row also gets a **derived** key `<outerKey>:<scope>:<unit>` passed to `BudgetFundingRequest.idempotencyKey` so that if the filter is narrowed to the failed set after the envelope TTL expires, the Lua fund-idempotency cache short-circuits the already-applied rows.
+- **No cross-row rollback.** Partial completion is observable via the three-array envelope and is intentionally idempotent-retryable; Redis has no multi-key transaction across ledgers. HTTP status is **200 even when `failed[]` is non-empty** — envelope-level failure (4xx/5xx) is reserved for `LIMIT_EXCEEDED` / `COUNT_MISMATCH` / auth / infrastructure.
+- **Audit.** One `AuditLogEntry` per bulk-op, `operation="bulkActionBudgets"`, `resource_type="budget"`, `resource_id="bulk-action"`, `tenant_id=filter.tenant_id`. Metadata carries `action`, `total_matched`, `succeeded`, `failed`, `skipped`, `idempotency_key`. The synchronous response envelope remains the record-of-truth for per-row outcomes.
+
+**Zero-drift matcher.** The new `BudgetListFilters.fromBulkFilter(BudgetBulkFilter)` static factory drops the request-level `tenant_id` (that's applied as a tenant-scoped Redis walk, not a per-ledger predicate) and forwards every remaining dimension verbatim into the existing `BudgetListFilters.matches(BudgetLedger)` — the same matcher `listBudgets` uses. An operator's preview → bulk workflow therefore can never disagree on "what matches": whatever the listBudgets page shows is exactly what bulk-action will try to mutate (modulo races between the two calls, which the count-gate covers).
+
+**Per-file changes:**
+
+| File | Change |
+|---|---|
+| `cycles-admin-service/pom.xml` | `<revision>0.1.25.28</revision>` → `<revision>0.1.25.29</revision>` |
+| `docker-compose.prod.yml`, `docker-compose.full-stack.prod.yml` | Image tag `0.1.25.28` → `0.1.25.29` |
+| `.../model/budget/BudgetBulkFilter.java` | New DTO mirroring spec `BudgetBulkFilter` schema. `@NotBlank tenantId` + eight optional filter dimensions. `@JsonIgnoreProperties(ignoreUnknown = false)` enforces spec `additionalProperties: false`. |
+| `.../model/budget/BudgetBulkActionRequest.java` | New DTO. `action` reuses `FundingOperation` (no divergent enum). `@Valid` cascades into `filter` and `amount` / `spent`. |
+| `.../model/budget/BudgetBulkActionResponse.java` | New DTO. Three `BulkActionRowOutcome` lists + total_matched + echoed action & idempotency_key. |
+| `.../data/repository/BudgetListFilters.java` | `fromBulkFilter(BudgetBulkFilter)` static factory added. The adapter lives in the data module (not the model module) to avoid a model → data dependency inversion — `BudgetListFilters` already lives here and knows how to `matches(BudgetLedger)`. |
+| `.../data/repository/BudgetRepository.java` | `matchForBulk(String tenantId, BudgetListFilters filters, int cap)` walks `SMEMBERS budgets:<tenantId>`, hydrates each ledger, applies the filter, stops once `matched.size() > cap` (the +1 sentinel). Stale-index cleanup and parse-failure tolerance mirror the existing `list(...)` path. |
+| `.../api/controller/BudgetController.java` | New `@PostMapping("/bulk-action") @Operation(operationId = "bulkActionBudgets")` handler. Flow: `validateBulkActionPayload` → `parseSearch` → idempotency lookup → `matchForBulk(cap+1)` → LIMIT_EXCEEDED check → expected_count gate → per-row apply via `applyBudgetAction` → idempotency store → audit log. `classifyBudgetFailureCode` maps request-level `ErrorCode` to the row-level known-codes set. Constants: `BULK_ACTION_LIMIT = 500`, `BULK_IDEMPOTENCY_ENDPOINT = "budgets-bulk"`. |
+| `.../api/config/AuthInterceptor.java` | `requiresAdminKey` gains a branch for `POST /v1/admin/budgets/bulk-action`. Without this, the path would match the `/v1/admin/budgets` `requiresApiKey` prefix and a tenant API key would grant access — spec v0.1.25.26 makes this endpoint AdminKeyAuth only. The test `bulkAction_tenantKeyRejected_returns401` asserts this guard holds. |
+
+**Test coverage delta:**
+
+- `BudgetControllerBulkActionTest` (new, 27 tests) covers: happy path per action (CREDIT/DEBIT/RESET/REPAY_DEBT/RESET_SPENT), derived per-row idempotency key captured into `BudgetFundingRequest`, all per-row classifier branches (BUDGET_EXCEEDED / INVALID_TRANSITION for frozen and closed / NOT_FOUND / PERMISSION_DENIED / INTERNAL_ERROR for both `RuntimeException` and unknown `ErrorCode`), unit-mismatch pre-check, REPAY_DEBT-on-zero-debt skipped, envelope gates (LIMIT_EXCEEDED with 501-row mock, COUNT_MISMATCH with drift), validation 400s (missing amount, spent on non-RESET_SPENT, negative spent, missing tenant_id, utilization_min > utilization_max, missing idempotency_key, search > 128 chars), idempotency replay (cached envelope returned verbatim, zero repo work, zero audit writes), audit metadata assertions on all six keys, and auth (missing admin key → 401, tenant key → 401).
+- `BudgetRepositoryBulkMatchTest` (new, 14 tests) covers each filter dimension end-to-end against mocked Jedis (`scope_prefix`, `unit`, `status`, `over_limit`, `has_debt`, utilization range, `search`, empty filter, null filter), the cap+1 sentinel behavior, tenant isolation (the walk only reads `budgets:<requested-tenant>`), stale-index cleanup (empty hash → `SREM` then skip), and parse-failure tolerance (bad unit value → swallowed, next row still returned).
+- `OpenApiContractDiffTest` + `SpecCoverageReportTest` — both auto-detect `bulkActionBudgets` against spec v0.1.25.26 now that the implementation exists; no allowlist entry needed.
+
+**Verification:** `mvn -B -o test -pl cycles-admin-service-api -am -Dtest=BudgetControllerBulkActionTest` → 27/27 pass. `mvn -B -o test -pl cycles-admin-service-data -am -Dtest=BudgetRepositoryBulkMatchTest` → 14/14 pass. Full verify excluding IntegrationTest, plus contract tests, gate the PR.
+
+**Design decisions worth flagging:**
+
+- **Reused `FundingOperation` instead of introducing a `BudgetBulkAction` enum.** Spec says explicitly "mirrors BudgetFundingRequest.operation"; divergent enums would require a translator and rot on future spec changes.
+- **No new `ErrorCode` enum values.** The spec v0.1.25.26 review-round distinguishes row-level known-codes (free-form string returned inside `BulkActionRowOutcome.error_code`, never surfaced as envelope-level `ErrorCode`) from request-level `ErrorCode` (already has `COUNT_MISMATCH`, `LIMIT_EXCEEDED`, `BUDGET_EXCEEDED`).
+- **Adapter lives in the data module.** `BudgetListFilters.fromBulkFilter(BudgetBulkFilter)` was placed in `BudgetListFilters` (data module) rather than as `BudgetBulkFilter.toListFilters()` (model module) to preserve the one-way model → data dependency; the model layer does not know about the matcher.
+- **Out of scope (per spec + plan).** Cross-tenant bulk (tenant_id is `@NotBlank`), async / long-running bulk (500-row synchronous cap suffices for rollover workloads), CSV export of per-row outcomes (JSON envelope covers the need; revisit if compliance asks), bulk-action for non-`FundingOperation` actions.
+
+---
 
 ### 2026-04-17 — v0.1.25.28 audit tenant_id sentinel split (spec v0.1.25.25)
 

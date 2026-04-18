@@ -1,5 +1,6 @@
 package io.runcycles.admin.data.repository;
 
+import io.runcycles.admin.model.budget.BudgetBulkFilter;
 import io.runcycles.admin.model.budget.BudgetLedger;
 import io.runcycles.admin.model.budget.BudgetStatus;
 import io.runcycles.admin.model.shared.SearchSpec;
@@ -35,6 +36,23 @@ public record BudgetListFilters(
 
     public static BudgetListFilters empty() {
         return new BudgetListFilters(null, null, null, null, null, null, null, null);
+    }
+
+    /**
+     * Adapter for the bulk-action filter DTO (spec v0.1.25.26). Drops the
+     * required {@code tenant_id} — that is applied by the caller as a
+     * tenant-scoped repository walk, not as a per-ledger predicate — and
+     * forwards every remaining dimension verbatim. Guarantees the
+     * bulk-action and listBudgets endpoints agree on what "matches"
+     * for any given filter set, which is the spec-level contract for
+     * the operator preview → bulk workflow.
+     */
+    public static BudgetListFilters fromBulkFilter(BudgetBulkFilter bulk) {
+        return new BudgetListFilters(
+                bulk.getScopePrefix(), bulk.getUnit(), bulk.getStatus(),
+                bulk.getOverLimit(), bulk.getHasDebt(),
+                bulk.getUtilizationMin(), bulk.getUtilizationMax(),
+                bulk.getSearch());
     }
 
     /**

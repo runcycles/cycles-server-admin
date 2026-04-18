@@ -1,10 +1,12 @@
 package io.runcycles.admin.api.controller;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.idempotency.IdempotencyStore;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.BudgetListFilters;
 import io.runcycles.admin.data.repository.BudgetRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.budget.*;
+import io.runcycles.admin.model.shared.BulkActionRowOutcome;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortDirection;
@@ -24,6 +26,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -39,10 +42,18 @@ public class BudgetController {
         "tenant_id", "scope", "unit", "status", "commit_overage_policy",
         "utilization", "debt");
     private static final String DEFAULT_SORT_FIELD = "utilization";
+    // Bulk-action (spec v0.1.25.26): 500-row hard cap per invocation and
+    // 15-minute idempotency replay window. The idempotency endpoint tag
+    // "budgets-bulk" partitions this store from tenant / webhook bulk-ops
+    // so operator-supplied keys cannot collide across endpoints.
+    private static final int BULK_ACTION_LIMIT = 500;
+    private static final String BULK_IDEMPOTENCY_ENDPOINT = "budgets-bulk";
+
     @Autowired private BudgetRepository repository;
     @Autowired private AuditRepository auditRepository;
     @Autowired private EventService eventService;
     @Autowired private ObjectMapper objectMapper;
+    @Autowired private IdempotencyStore idempotencyStore;
     @PostMapping @Operation(operationId = "createBudget")
     public ResponseEntity<BudgetLedger> create(@Valid @RequestBody BudgetCreateRequest request, HttpServletRequest httpRequest) {
         validateCreateUnits(request);
@@ -412,6 +423,222 @@ public class BudgetController {
             LOG.warn("Failed to emit event: {}", e.getMessage());
         }
         return ResponseEntity.ok(ledger);
+    }
+
+    // ========== POST /v1/admin/budgets/bulk-action ==========
+
+    /**
+     * Apply one of the five {@link FundingOperation} actions to every
+     * budget ledger matching the filter, in a single synchronous request
+     * (spec v0.1.25.26). Resolves cycles-server-admin issue #99 — rolling
+     * over a billing period no longer requires the operator to iterate
+     * listBudgets + per-row fundBudget; they issue one filtered bulk
+     * request.
+     *
+     * <p>Body shape, envelope semantics, safety gates, and per-row outcome
+     * reporting mirror {@code bulkActionTenants} and {@code bulkActionWebhooks}:
+     * <ul>
+     *   <li>500-row hard cap → LIMIT_EXCEEDED (400).</li>
+     *   <li>{@code expected_count} mismatch → COUNT_MISMATCH (409), no writes.</li>
+     *   <li>15-minute {@code idempotency_key} replay window.</li>
+     *   <li>Overall HTTP 200 even when per-row failures land in {@code failed[]}.</li>
+     * </ul>
+     * AdminKeyAuth only (tenants cannot bulk-mutate their own budgets
+     * — the per-budget {@code fundBudget} endpoint remains available).
+     */
+    @PostMapping("/bulk-action") @Operation(operationId = "bulkActionBudgets")
+    public ResponseEntity<BudgetBulkActionResponse> bulkAction(
+            @Valid @RequestBody BudgetBulkActionRequest request, HttpServletRequest httpRequest) {
+        // Action/payload validation runs BEFORE any Redis read so that
+        // malformed combos fail fast with 400 and never enter the match /
+        // apply path (spec requirement).
+        validateBulkActionPayload(request);
+        String searchNorm = parseSearch(request.getFilter().getSearch());
+        BudgetBulkFilter filter = request.getFilter();
+        filter.setSearch(searchNorm);
+
+        var cached = idempotencyStore.lookup(
+            BULK_IDEMPOTENCY_ENDPOINT, request.getIdempotencyKey(),
+            BudgetBulkActionResponse.class);
+        if (cached.isPresent()) {
+            return ResponseEntity.ok(cached.get());
+        }
+
+        // Fetch up to cap+1 so size > cap is detectable without hydrating
+        // the remainder. The +1 is the "this filter is too wide" sentinel.
+        List<BudgetLedger> matched = repository.matchForBulk(
+            filter.getTenantId(),
+            BudgetListFilters.fromBulkFilter(filter),
+            BULK_ACTION_LIMIT);
+        if (matched.size() > BULK_ACTION_LIMIT) {
+            throw new GovernanceException(ErrorCode.LIMIT_EXCEEDED,
+                "filter matches more than " + BULK_ACTION_LIMIT
+                    + " budgets; narrow the filter and retry",
+                400,
+                Map.of("total_matched", matched.size()));
+        }
+        if (request.getExpectedCount() != null && request.getExpectedCount() != matched.size()) {
+            throw new GovernanceException(ErrorCode.COUNT_MISMATCH,
+                "expected_count " + request.getExpectedCount()
+                    + " differs from server-counted matches " + matched.size(),
+                409,
+                Map.of("total_matched", matched.size()));
+        }
+
+        List<BulkActionRowOutcome> succeeded = new ArrayList<>();
+        List<BulkActionRowOutcome> failed = new ArrayList<>();
+        List<BulkActionRowOutcome> skipped = new ArrayList<>();
+        for (BudgetLedger ledger : matched) {
+            applyBudgetAction(ledger, request, succeeded, failed, skipped);
+        }
+
+        BudgetBulkActionResponse response = BudgetBulkActionResponse.builder()
+            .action(request.getAction())
+            .totalMatched(matched.size())
+            .succeeded(succeeded)
+            .failed(failed)
+            .skipped(skipped)
+            .idempotencyKey(request.getIdempotencyKey())
+            .build();
+
+        idempotencyStore.store(BULK_IDEMPOTENCY_ENDPOINT, request.getIdempotencyKey(), response);
+
+        Map<String, Object> auditMeta = new java.util.LinkedHashMap<>();
+        auditMeta.put("action", request.getAction().name());
+        auditMeta.put("total_matched", matched.size());
+        auditMeta.put("succeeded", succeeded.size());
+        auditMeta.put("failed", failed.size());
+        auditMeta.put("skipped", skipped.size());
+        auditMeta.put("idempotency_key", request.getIdempotencyKey());
+        auditRepository.log(buildAuditEntry(httpRequest)
+            .tenantId(filter.getTenantId())
+            .resourceType("budget").resourceId("bulk-action")
+            .operation("bulkActionBudgets").status(200)
+            .metadata(auditMeta)
+            .build());
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Envelope-level validation — catches every invalid action/payload
+     * combination before the match phase so no Redis work is wasted on a
+     * malformed request. Per spec v0.1.25.26: every one of the five
+     * actions (CREDIT, DEBIT, RESET, REPAY_DEBT, RESET_SPENT) requires
+     * {@code amount}; {@code spent} is honoured only for RESET_SPENT and
+     * must be non-negative when present; {@code utilization_min} cannot
+     * exceed {@code utilization_max}.
+     */
+    private void validateBulkActionPayload(BudgetBulkActionRequest request) {
+        if (request.getAmount() == null) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                "amount is required for bulk action " + request.getAction().name(), 400);
+        }
+        if (request.getAction() != FundingOperation.RESET_SPENT && request.getSpent() != null) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                "spent is only honoured when action is RESET_SPENT", 400);
+        }
+        if (request.getSpent() != null && request.getSpent().getAmount() < 0L) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                "spent must be >= 0", 400);
+        }
+        BudgetBulkFilter f = request.getFilter();
+        if (f.getUtilizationMin() != null && f.getUtilizationMax() != null
+                && f.getUtilizationMin() > f.getUtilizationMax()) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                "utilization_min must be <= utilization_max", 400);
+        }
+    }
+
+    /**
+     * Apply one row of the bulk-action and bucket the outcome. Per-row
+     * failures never abort the loop — each matched ledger is attempted.
+     *
+     * <p>Pre-checks run before invoking {@link BudgetRepository#fund} so
+     * the spec-mandated row-level error codes (INVALID_TRANSITION for
+     * unit mismatch, ALREADY_IN_TARGET_STATE for REPAY_DEBT on zero debt)
+     * are surfaced without a wasted Lua round-trip.
+     *
+     * <p>Row-level idempotency: a derived key {@code bulkKey:scope:unit}
+     * is passed to fund() so that a network retry which re-enters this
+     * loop will short-circuit at the atomic Lua idempotency check in
+     * {@code BudgetRepository}, preventing double-application of
+     * CREDIT/DEBIT/etc. The outer bulk-op idempotency ({@code IdempotencyStore})
+     * handles the envelope-level replay within 15 minutes; the per-row
+     * derived key handles the rarer "client narrowed the filter to
+     * the previously-failed set and retried after the envelope TTL
+     * expired" case.
+     */
+    private void applyBudgetAction(BudgetLedger ledger, BudgetBulkActionRequest bulk,
+                                    List<BulkActionRowOutcome> succeeded,
+                                    List<BulkActionRowOutcome> failed,
+                                    List<BulkActionRowOutcome> skipped) {
+        // Spec v0.1.25.26 BudgetBulkActionResponse.succeeded: "Per-row `id`
+        // is the ledger_id." The ledger_id is the stable unique identifier;
+        // scope is the routing/matching key passed to fund().
+        String id = ledger.getLedgerId();
+        if (bulk.getAmount().getUnit() != ledger.getUnit()) {
+            failed.add(BulkActionRowOutcome.builder()
+                .id(id).errorCode("INVALID_TRANSITION")
+                .message("unit mismatch: expected " + ledger.getUnit()
+                    + ", got " + bulk.getAmount().getUnit()).build());
+            return;
+        }
+        if (bulk.getAction() == FundingOperation.REPAY_DEBT) {
+            long debtAmount = ledger.getDebt() != null ? ledger.getDebt().getAmount() : 0L;
+            if (debtAmount == 0L) {
+                skipped.add(BulkActionRowOutcome.builder()
+                    .id(id).reason("ALREADY_IN_TARGET_STATE").build());
+                return;
+            }
+        }
+        BudgetFundingRequest fundingRequest = new BudgetFundingRequest();
+        fundingRequest.setOperation(bulk.getAction());
+        fundingRequest.setAmount(bulk.getAmount());
+        fundingRequest.setSpent(bulk.getSpent());
+        fundingRequest.setReason(bulk.getReason());
+        fundingRequest.setIdempotencyKey(bulk.getIdempotencyKey()
+            + ":" + ledger.getScope() + ":" + ledger.getUnit().name());
+        try {
+            repository.fund(ledger.getTenantId(), ledger.getScope(), ledger.getUnit(), fundingRequest);
+            succeeded.add(BulkActionRowOutcome.builder().id(id).build());
+        } catch (GovernanceException e) {
+            failed.add(BulkActionRowOutcome.builder()
+                .id(id)
+                .errorCode(classifyBudgetFailureCode(e))
+                .message(e.getMessage()).build());
+        } catch (Exception e) {
+            LOG.warn("Bulk-action row failed for budget {}: {}", id, e.getMessage());
+            failed.add(BulkActionRowOutcome.builder()
+                .id(id).errorCode("INTERNAL_ERROR").message("Internal error").build());
+        }
+    }
+
+    /**
+     * Maps request-level {@link ErrorCode} values raised by
+     * {@link BudgetRepository#fund} into the row-level known-codes set
+     * documented by spec v0.1.25.26 for {@link BulkActionRowOutcome#getErrorCode}.
+     * BUDGET_EXCEEDED covers the DEBIT-goes-negative case; INVALID_TRANSITION
+     * is the umbrella for ledger-state rejections (frozen / closed / invalid
+     * request shape); everything else falls into INTERNAL_ERROR so clients
+     * never see an unknown code.
+     */
+    private static String classifyBudgetFailureCode(GovernanceException e) {
+        switch (e.getErrorCode()) {
+            case BUDGET_EXCEEDED:
+                return "BUDGET_EXCEEDED";
+            case BUDGET_FROZEN:
+            case BUDGET_CLOSED:
+            case INVALID_REQUEST:
+                return "INVALID_TRANSITION";
+            case BUDGET_NOT_FOUND:
+            case NOT_FOUND:
+                return "NOT_FOUND";
+            case FORBIDDEN:
+            case INSUFFICIENT_PERMISSIONS:
+                return "PERMISSION_DENIED";
+            default:
+                return "INTERNAL_ERROR";
+        }
     }
 
     private void validateCreateUnits(BudgetCreateRequest request) {
