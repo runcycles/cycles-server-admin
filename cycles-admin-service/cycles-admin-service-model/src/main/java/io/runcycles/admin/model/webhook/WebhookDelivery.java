@@ -3,8 +3,22 @@ import com.fasterxml.jackson.annotation.*;
 import io.runcycles.admin.model.event.EventType;
 import lombok.*;
 import java.time.Instant;
+/**
+ * Cross-plane read schema: runtime's {@code EventEmitterRepository} is
+ * the authoritative writer of {@code delivery:*} Redis keys; admin only
+ * reads these via {@link io.runcycles.admin.data.repository.WebhookDeliveryRepository}.
+ *
+ * <p>v0.1.25.32: explicit {@code ignoreUnknown=true} so runtime shipping
+ * an additive field in a patch release cannot cause admin's
+ * {@code listWebhookDeliveries} to fail with
+ * {@code UnrecognizedPropertyException}. Declared at the class level
+ * (not inherited from mapper config) so tolerance survives a bare
+ * {@code new ObjectMapper()} caller. Admin-owned schemas (subscriptions,
+ * configs) keep strict mode — this tolerance is scoped to schemas
+ * runtime writes.
+ */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
-@com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = false)
+@com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
 public class WebhookDelivery {
     @JsonProperty("delivery_id") private String deliveryId;
     @JsonProperty("subscription_id") private String subscriptionId;

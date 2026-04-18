@@ -304,4 +304,35 @@ class EventModelTest {
         assertFalse(json.contains("policy_id"));
         assertFalse(json.contains("deny_detail"));
     }
+
+    // ---- v0.1.25.32: lenient deserialization (cross-plane read) ----
+
+    /**
+     * Runtime (cycles-server) is the authoritative writer of Event Redis
+     * records; admin reads them. If runtime ships an additive field in
+     * a patch release, admin must not fail-fast — that would force
+     * lockstep deploys and violate the "additive fields are safe"
+     * invariant the admin/runtime split is built on.
+     */
+    @Test
+    void event_tolerantOfUnknownFieldAddedByRuntime() throws Exception {
+        String json = """
+            {
+                "event_id":"evt_abc",
+                "event_type":"budget.created",
+                "category":"budget",
+                "timestamp":"2026-04-18T12:00:00Z",
+                "tenant_id":"tenant_1",
+                "source":"cycles-server",
+                "future_runtime_field":"extra value",
+                "nested_unknown":{"k":"v"}
+            }
+            """;
+
+        Event event = mapper.readValue(json, Event.class);
+
+        assertEquals("evt_abc", event.getEventId());
+        assertEquals(EventType.BUDGET_CREATED, event.getEventType());
+        assertEquals("tenant_1", event.getTenantId());
+    }
 }

@@ -14,6 +14,44 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.32] — 2026-04-18
+
+### Changed
+
+- **Lenient deserialization on cross-plane read schemas** — `Event` and
+  `WebhookDelivery` now set `@JsonIgnoreProperties(ignoreUnknown = true)`
+  at the class level. Runtime (`cycles-server`) is the authoritative
+  writer of `event:*` and `delivery:*` Redis records; admin only reads
+  them. Previously the admin POJOs were annotated
+  `ignoreUnknown = false` — so if runtime shipped an additive field in
+  a patch release, admin's `listEvents` / `listWebhookDeliveries` would
+  throw `UnrecognizedPropertyException` until admin lockstep-updated
+  the POJO. This violated the "additive fields are safe" invariant the
+  admin/runtime split is built on. Now runtime can ship additive fields
+  in any patch without forcing an admin release.
+- **Hygiene:** removed a dead `@JsonIgnoreProperties(ignoreUnknown = false)`
+  from `ErrorResponse`. That annotation was never reachable at runtime
+  (admin writes `ErrorResponse` to the wire; no reader path exists
+  inside admin), so it was inert. Removed to reduce noise.
+
+### Unchanged (scope discipline)
+
+- **Strict mode preserved** on admin-owned schemas: `WebhookSubscription`,
+  `Tenant`, `Budget`, `Policy`, `ApiKey`, every `EventData*` subtype,
+  every `Bulk*Request` / `Bulk*Filter`, every `*CreateRequest` /
+  `*UpdateRequest`. Admin writes these; a typo there is an
+  admin-internal bug and must fail loudly. The lenient tolerance is
+  scoped to schemas runtime writes.
+
+### Internal
+
+- No wire contract change — this is a read-side tolerance adjustment
+  in admin only.
+- Added two test cases (`event_tolerantOfUnknownFieldAddedByRuntime`,
+  `webhookDelivery_tolerantOfUnknownFieldAddedByRuntime`) to pin the
+  invariant. A future regression — someone re-adding
+  `ignoreUnknown = false` — would fail these tests.
+
 ## [0.1.25.31] — 2026-04-18
 
 ### Added
