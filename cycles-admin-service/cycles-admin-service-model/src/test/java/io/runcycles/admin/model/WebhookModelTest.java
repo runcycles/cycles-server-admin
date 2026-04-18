@@ -317,6 +317,33 @@ class WebhookModelTest {
         assertTrue(json.contains("\"response_time_ms\""));
     }
 
+    /**
+     * v0.1.25.32: runtime (cycles-server) is the authoritative writer of
+     * WebhookDelivery records; admin reads them. Admin must tolerate
+     * additive fields so a runtime patch release doesn't break admin's
+     * listWebhookDeliveries.
+     */
+    @Test
+    void webhookDelivery_tolerantOfUnknownFieldAddedByRuntime() throws Exception {
+        String json = """
+            {
+                "delivery_id":"del_abc",
+                "subscription_id":"whsub_1",
+                "event_id":"evt_1",
+                "status":"SUCCESS",
+                "attempted_at":"2026-04-18T12:00:00Z",
+                "future_runtime_field":"extra",
+                "nested_unknown":{"k":"v"}
+            }
+            """;
+
+        WebhookDelivery delivery = mapper.readValue(json, WebhookDelivery.class);
+
+        assertEquals("del_abc", delivery.getDeliveryId());
+        assertEquals("whsub_1", delivery.getSubscriptionId());
+        assertEquals(DeliveryStatus.SUCCESS, delivery.getStatus());
+    }
+
     // ---- additionalProperties: false enforcement ----
 
     @Test

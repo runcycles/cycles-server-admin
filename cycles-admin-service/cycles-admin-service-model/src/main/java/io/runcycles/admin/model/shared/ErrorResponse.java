@@ -7,7 +7,6 @@ import java.util.Map;
 
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
-@JsonIgnoreProperties(ignoreUnknown = false)
 public class ErrorResponse {
     @NotNull @JsonProperty("error") private ErrorCode error;
     @NotNull @JsonProperty("message") private String message;
