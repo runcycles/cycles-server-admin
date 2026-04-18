@@ -134,9 +134,13 @@ class AuditFailureSoakIntegrationTest extends BaseIntegrationTest {
         // counter" — which needs the baseline subtraction.
         long indexBaselineGlobal;
         long indexBaselineTenant;
+        long indexBaselineUnauthSentinel;
+        long indexBaselineAdminSentinel;
         try (Jedis jedis = jedisPool.getResource()) {
             indexBaselineGlobal = jedis.zcard("audit:logs:_all");
             indexBaselineTenant = jedis.zcard("audit:logs:tenant-soak");
+            indexBaselineUnauthSentinel = jedis.zcard("audit:logs:__unauth__");
+            indexBaselineAdminSentinel = jedis.zcard("audit:logs:__admin__");
         }
 
         ExecutorService pool = Executors.newFixedThreadPool(WORKER_THREADS);
@@ -302,15 +306,24 @@ class AuditFailureSoakIntegrationTest extends BaseIntegrationTest {
             // Per-tier delta sanity: every failure write lands in exactly
             // one tier index (sentinel OR real tenant). Their delta sum
             // must equal the global delta — guards against a ZADD going
-            // into only one of the two index families.
-            long sentinelIndex = jedis.zcard("audit:logs:__unauth__");
-            long tenantSoakIndex = jedis.zcard("audit:logs:tenant-soak");
-            long tenantSoakDelta = tenantSoakIndex - indexBaselineTenant;
-            assertThat(sentinelIndex + tenantSoakDelta)
-                    .as("AS4: sentinel + (tenant-soak - baseline) must equal "
-                            + "load-phase global delta — ensures every write lands in "
-                            + "both its tier index AND the global index",
-                            sentinelIndex, tenantSoakDelta, globalDelta)
+            // into only one of the index families. v0.1.25.28 split the
+            // pre-auth sentinel into two tiers: __unauth__ (no auth
+            // header / invalid key) and __admin__ (valid admin key, but
+            // downstream validation failed → 400). Both must be summed
+            // in so 400-wave traffic is accounted for.
+            long unauthSentinelDelta = jedis.zcard("audit:logs:__unauth__")
+                    - indexBaselineUnauthSentinel;
+            long adminSentinelDelta = jedis.zcard("audit:logs:__admin__")
+                    - indexBaselineAdminSentinel;
+            long tenantSoakDelta = jedis.zcard("audit:logs:tenant-soak")
+                    - indexBaselineTenant;
+            assertThat(unauthSentinelDelta + adminSentinelDelta + tenantSoakDelta)
+                    .as("AS4: (__unauth__ + __admin__ + tenant-soak) load-phase "
+                            + "deltas must equal global delta — ensures every write "
+                            + "lands in both its tier index AND the global index. "
+                            + "unauth=%d admin=%d tenant-soak=%d global=%d",
+                            unauthSentinelDelta, adminSentinelDelta,
+                            tenantSoakDelta, globalDelta)
                     .isEqualTo(globalDelta);
         }
 

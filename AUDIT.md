@@ -5,6 +5,34 @@
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.26`; adds `POST /v1/admin/budgets/bulk-action` — fifth bulk-action endpoint, mirrors the tenant/webhook envelope) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
+### 2026-04-18 — v0.1.25.28.1 test fix: nightly soak AS4 must include `__admin__` sentinel
+
+**What broke.** The nightly audit-soak workflow went red on 2026-04-18 after v0.1.25.28 (run [`24599992000`](https://github.com/runcycles/cycles-server-admin/actions/runs/24599992000)). The AS4 tier-sum invariant in `AuditFailureSoakIntegrationTest` failed with `expected: 14000L, but was: 8923L` — a shortfall of exactly **5077**, matching the 400-response count the soak driver issued (401=3920, 403=5003, **400=5077**).
+
+**Root cause (test-only).** v0.1.25.28 split the pre-auth `tenant_id` sentinel in `AuditFailureService` into two tiers: `__unauth__` (no / invalid / revoked key) and `__admin__` (valid admin key, downstream validation failed). The production write path correctly routes to whichever sentinel applies — AS3 (`written + error + sampled-out == total_requests`) and AS4's first invariant (`globalDelta == written`) both passed on the failing run. But AS4's per-tier equality check was still summing only `__unauth__` + `tenant-soak`; the 5077 entries under `__admin__` (all the 400-wave audit rows) weren't included. The shortfall exactly equalled the `__admin__` tier cardinality.
+
+**Fix.** `AuditFailureSoakIntegrationTest.java`:
+- Capture a baseline for both `audit:logs:__unauth__` and `audit:logs:__admin__` after setup (same pattern as the existing `_all` / `tenant-soak` baselines; protects against setup-path contamination even though current setup only hits SUCCESS paths).
+- Sum three tier deltas in the AS4 equality: `__unauth__` + `__admin__` + `tenant-soak`.
+- Updated assertion description to name all three tiers and print each delta on failure, so future regressions triangulate to the offending family immediately.
+
+**Why this is a test fix, not a production fix.** Production `AuditFailureService.resolveTenantId` already stamps `__admin__` for admin-key-authenticated failures (v0.1.25.28 `AuthInterceptor` sets `authenticated_actor_type="admin"`, and `resolveTenantId` reads it). All 14000 writes landed in the global index and incremented the counter correctly. The nightly flagged a **coverage gap in the invariant** — AS4's tier-sum was stale against the sentinel split, not a real audit-integrity regression.
+
+**Scope.** No server / spec / data changes. One test file. Shipping as `v0.1.25.28.1` (point release) rather than piggybacking on v0.1.25.29 so the fix is attributable to the sentinel-split change that introduced the test coverage gap.
+
+**Verification.**
+
+```bash
+# Nightly soak (requires Docker; ~11 min)
+mvn-proxy -B test --file cycles-admin-service/pom.xml \
+  -pl cycles-admin-service-api -am \
+  -Psoak -Dsoak.duration.minutes=10 -Dsoak.target.rps=500 \
+  -Dtest=AuditFailureSoakIntegrationTest \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+The manual trigger on the PR branch must be green before this merges.
+
 ### 2026-04-18 — v0.1.25.29 budget bulk-action endpoint (spec v0.1.25.26)
 
 Closes [cycles-server-admin issue #99](https://github.com/runcycles/cycles-server-admin/issues/99) ("Bulk Budget Reset at Tenant or Parent-Scope Level"). Operators rolling over a billing period previously had to iterate `listBudgets` + per-row `fundBudget` — painful for a tenant with dozens or hundreds of ledgers, and no atomic count-gate to catch drift between preview and apply. The new endpoint lets them issue one filtered bulk request. Spec v0.1.25.26 (merged to cycles-protocol `main` via PR #55) had already shipped the analogous endpoints for tenants and webhooks in server v0.1.25.26; budgets were the last gap.
