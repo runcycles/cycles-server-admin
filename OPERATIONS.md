@@ -18,6 +18,7 @@ Alerts for the two planes should be routed separately.
 ## Table of contents
 
 1. [Audit coverage](#audit-coverage)
+   - [Bulk-action audit triage](#bulk-action-audit-triage)
 2. [Metrics inventory](#metrics-inventory)
 3. [Alerts worth paging on](#alerts-worth-paging-on)
 4. [Configuration tuning](#configuration-tuning)
@@ -89,6 +90,78 @@ GET /v1/admin/audit/logs?tenant_id=tenant-1&operation=POST:/v1/admin/budgets
 # Single-request trace — pairs the audit entry with the server log by request_id.
 GET /v1/admin/audit/logs  # then filter client-side by request_id
 ```
+
+### Bulk-action audit triage
+
+`POST /v1/admin/tenants/bulk-action`, `POST /v1/admin/webhooks/bulk-action`,
+and `POST /v1/admin/budgets/bulk-action` each emit **one** `AuditLogEntry`
+per invocation — not one per row. Since v0.1.25.30 that entry's
+`metadata` map carries enough information that the audit log alone is
+sufficient for post-incident triage; operators no longer need to
+preserve their copy of the synchronous response envelope or re-run the
+operation (which is unacceptable for destructive actions like DELETE
+or DEBIT).
+
+**Locating the entry.** Filter `listAuditLogs` by `operation` (one of
+`bulkActionTenants`, `bulkActionWebhooks`, `bulkActionBudgets`),
+`resource_type` (`tenant` / `webhook` / `budget`), and `tenant_id`.
+`resource_id` is the literal string `bulk-action` (not a specific row
+id — the entry covers the whole batch).
+
+```bash
+# Every budget bulk-op by a specific tenant in the last hour.
+GET /v1/admin/audit/logs?operation=bulkActionBudgets&tenant_id=acme&from=<iso8601>
+
+# Every bulk-op that had at least one failure — filter client-side on
+# metadata.failed > 0.
+GET /v1/admin/audit/logs?operation=bulkActionWebhooks
+```
+
+**`metadata` keys (v0.1.25.30+, `LinkedHashMap` field order preserved):**
+
+| Key | Type | Purpose |
+|---|---|---|
+| `action` | string | Echo of the action enum — e.g. `CREDIT`, `SUSPEND`, `PAUSE`. |
+| `total_matched` | int | Rows the filter matched (= `succeeded + failed + skipped`). |
+| `succeeded` / `failed` / `skipped` | int | Bucket counts — kept for backward compat with v0.1.25.26..29 dashboards. |
+| `succeeded_ids` | string[] | Per-row ids of successful operations — paper trail for compliance. |
+| `failed_rows` | object[] | Full `{ id, error_code, message }` per failure — replaces the "re-run to see what broke" workflow. |
+| `skipped_rows` | object[] | Full `{ id, reason }` per skip — distinguishes `ALREADY_IN_TARGET_STATE` from `ALREADY_DELETED`. |
+| `filter` | object | Normalized filter echoed as-is. Reconstructs operator intent from the audit log alone. |
+| `idempotency_key` | string | Correlates envelope ↔ retries ↔ audit across replay attempts. |
+| `duration_ms` | int64 | Handler-entry → audit-emit wall-clock for SLO triage without needing trace sampling. |
+
+**Size bound.** 500-row bulk-action cap × ~80 B per outcome + filter
+echo + fixed keys ≈ 40 KB worst-case per audit row. Within Redis
+value-size comfort range; no sizing changes required at the audit
+repository layer.
+
+**Triage recipe.**
+
+1. Find the entry: `listAuditLogs?operation=bulkAction*&tenant_id=…`.
+2. Compare `total_matched` to `succeeded + failed + skipped` — they
+   must agree; if not, suspect metadata corruption (file a bug).
+3. For each `failed_rows[i]`: classify by `error_code` — e.g.
+   `BUDGET_EXCEEDED` means DEBIT would have taken `remaining`
+   negative; `INVALID_TRANSITION` means unit mismatch / ledger
+   FROZEN / CLOSED; `NOT_FOUND` means the row was deleted between
+   match and apply (race — benign).
+4. For each `skipped_rows[i]`: `reason=ALREADY_IN_TARGET_STATE` is
+   the no-op case (currently only `REPAY_DEBT` on `debt==0`).
+5. Remediate the underlying issue (refill a ledger, unfreeze,
+   re-enable, …) and re-run the bulk-op with (a) a filter narrowed
+   to just the failed ids AND (b) a **new** `idempotency_key`.
+   Succeeded rows from the first round are protected by the Lua
+   fund-idempotency cache on budget actions and by
+   already-in-target-state skips on tenant / webhook actions —
+   re-targeting by filter cannot double-apply.
+
+**Dashboards that pre-date v0.1.25.30** (i.e. parse bulk-action
+audit entries) may display only the six original keys. Field
+insertion order is stable; new clients iterating the map see the
+five new keys in the documented positions. Clients that deserialize
+into a fixed DTO must tolerate unknown keys (Jackson
+`ignoreUnknown=true` or equivalent).
 
 ---
 

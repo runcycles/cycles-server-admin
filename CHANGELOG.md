@@ -14,6 +14,136 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.30] — 2026-04-18
+
+### Changed
+
+- **Bulk-action audit metadata enrichment.** The single
+  `AuditLogEntry` emitted per bulk-action invocation
+  (`bulkActionTenants`, `bulkActionWebhooks`, `bulkActionBudgets`)
+  now carries the full per-row outcome arrays plus filter echo plus
+  wall-clock duration. Additive change only — existing metadata keys
+  are unchanged. Spec `cycles-governance-admin-v0.1.25.yaml`
+  info.version stays at `0.1.25.26`; `AuditLogEntry.metadata` is
+  already typed `object` with `additionalProperties: true` so key
+  additions are spec-compatible with no bump.
+
+  New keys on `GET /v1/admin/audit/logs` entries with
+  `operation ∈ { bulkActionTenants, bulkActionWebhooks, bulkActionBudgets }`:
+
+  | Key | Type | Purpose |
+  |---|---|---|
+  | `succeeded_ids` | `string[]` | Per-row ids of successful operations — paper trail. |
+  | `failed_rows` | `BulkActionRowOutcome[]` | Full `id + error_code + message` per failure. |
+  | `skipped_rows` | `BulkActionRowOutcome[]` | Full `id + reason` per skip — distinguishes `ALREADY_IN_TARGET_STATE` from `ALREADY_DELETED`. |
+  | `filter` | object | Normalized filter echoed as-is — reconstructs operator intent from audit alone. |
+  | `duration_ms` | int64 | Handler-entry → audit-emit wall-clock for SLO triage. |
+
+  Key order is preserved by server-side `LinkedHashMap`: `action`,
+  `total_matched`, `succeeded`, `failed`, `skipped`, `succeeded_ids`,
+  `failed_rows`, `skipped_rows`, `filter`, `idempotency_key`,
+  `duration_ms`. Dashboards rendering the map in field-insertion
+  order (JSON object iteration in most runtimes) stay stable.
+
+- **Triage workflow.** Before 0.1.25.30, triaging a failed bulk-op
+  required the operator's own copy of the synchronous response
+  envelope or re-running the op (unacceptable for destructive
+  actions like DELETE / DEBIT). Now the audit log entry alone is
+  sufficient: ops picks the entry by `operation` + `tenant_id` +
+  time window, reads `failed_rows[].error_code` and `message` to
+  classify, and narrows the filter for a targeted re-run.
+
+### Migration notes
+
+- **Worst-case audit row size ~40 KB.** 500-row bulk-action cap ×
+  ~80 B per outcome + filter echo + fixed keys. Within Redis
+  value-size comfort range; no new limits required. Audit tooling
+  that caps on entry-level JSON size should review. No effect on
+  tenant-scoped ops (no bulk-action endpoints on the tenant plane).
+- **Dashboards parsing bulk-action audit entries** gain five fields
+  they may or may not display — fully backward compatible for
+  consumers that ignore unknown keys.
+
+### Unchanged
+
+- Response shape and HTTP semantics of all three bulk-action
+  endpoints. This release only enriches what persists to the audit
+  index; the synchronous envelope returned to callers is byte-
+  identical to 0.1.25.29.
+- Auth model, idempotency semantics, safety gates.
+
+## [0.1.25.29] — 2026-04-18
+
+### Added
+
+- **Budget bulk-action endpoint.** Closes
+  [cycles-server-admin#99](https://github.com/runcycles/cycles-server-admin/issues/99)
+  ("Bulk Budget Reset at Tenant or Parent-Scope Level"). Aligns
+  with spec `cycles-governance-admin-v0.1.25.yaml` info.version
+  `0.1.25.26`. Operators rolling over a billing period previously
+  had to iterate `listBudgets` + per-row `fundBudget` — painful for
+  a tenant with dozens/hundreds of ledgers and no atomic count-gate
+  to catch drift between preview and apply.
+- `POST /v1/admin/budgets/bulk-action` — AdminKeyAuth only (tenants
+  cannot bulk-mutate their own budgets; per-budget `fundBudget`
+  remains available). Five actions reusing `FundingOperation`:
+  `CREDIT`, `DEBIT`, `RESET`, `REPAY_DEBT`, `RESET_SPENT`. Request:
+  `{ filter, action, amount?, spent?, reason?, expected_count?,
+  idempotency_key }` — `amount` required for all 5 actions; `spent`
+  honored only on `RESET_SPENT`. Response mirrors the
+  tenant/webhook bulk-action envelope: `{ action, total_matched,
+  succeeded[], failed[], skipped[], idempotency_key }`.
+- **Filter mirrors `listBudgets`.** `filter.tenant_id` REQUIRED
+  (cross-tenant bulk explicitly out of scope per spec — 400 if
+  blank). Optional: `scope_prefix`, `unit`, `status`, `over_limit`,
+  `has_debt`, `utilization_min`, `utilization_max`, `search`.
+  Zero-drift match semantics — the preview via `listBudgets` and
+  the bulk apply use the same `BudgetListFilters` matcher, so
+  row set parity is guaranteed.
+- **Per-row classification.** `succeeded` rows carry the ledger
+  scope as `id`. `failed` rows carry `error_code`:
+  `BUDGET_EXCEEDED` (DEBIT would make remaining negative),
+  `INVALID_TRANSITION` (unit mismatch / FROZEN / CLOSED),
+  `NOT_FOUND` (ledger deleted between match and apply),
+  `INTERNAL_ERROR`. `skipped` rows carry
+  `reason=ALREADY_IN_TARGET_STATE` (currently only
+  REPAY_DEBT on `debt==0`). Per-row failures never abort the batch.
+- **Double-apply protection.** Per-row idempotency key derived as
+  `{bulkKey}:{scope}:{unit}` is passed into
+  `BudgetRepository.fund`, so the existing Lua fund-idempotency
+  cache short-circuits any row whose prior run actually landed at
+  the ledger. Retry-the-failed-set on a tighter filter cannot
+  double-apply CREDIT / DEBIT / RESET / RESET_SPENT / REPAY_DEBT.
+- **Safety gates** identical to tenant / webhook bulk-action
+  (0.1.25.26): (1) empty filter rejected on the DTO boundary; (2)
+  15-min idempotency replay returns cached envelope; (3) > 500
+  matches → 400 `LIMIT_EXCEEDED` with `details.total_matched`; (4)
+  `expected_count` mismatch → 409 `COUNT_MISMATCH` with
+  `details.total_matched`.
+
+### Unchanged
+
+- Response shape, auth, and idempotency semantics for every
+  pre-0.1.25.29 endpoint. No wire changes on existing surfaces.
+
+## [0.1.25.28.1] — 2026-04-18
+
+### Fixed
+
+- **Nightly audit-soak invariant AS4 extended for the `__admin__`
+  sentinel tier.** Test-only fix. v0.1.25.28 split the pre-auth
+  `tenant_id` sentinel into `__unauth__` and `__admin__`, but
+  `AuditFailureSoakIntegrationTest` still summed only
+  `__unauth__ + tenant-soak` in its per-tier equality check —
+  missing the admin-plane 4xx tier. Run
+  [24599992000](https://github.com/runcycles/cycles-server-admin/actions/runs/24599992000)
+  failed with `expected 14000, was 8923` (shortfall of exactly 5077,
+  the 400-response count). Production audit write path was
+  correct throughout; AS3 (`written + error + sampled-out ==
+  total_requests`) and AS4 first invariant (`globalDelta ==
+  written`) both passed on the failing run. No server / spec / data
+  changes; single test file updated.
+
 ## [0.1.25.28] — 2026-04-17
 
 ### Changed
