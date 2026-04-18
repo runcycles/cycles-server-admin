@@ -57,7 +57,7 @@ class AuditFailureServiceTest {
         ArgumentCaptor<AuditLogEntry> captor = ArgumentCaptor.forClass(AuditLogEntry.class);
         verify(auditRepository).log(captor.capture());
         AuditLogEntry entry = captor.getValue();
-        assertThat(entry.getTenantId()).isEqualTo(AuditLogEntry.UNAUTHENTICATED_TENANT);
+        assertThat(entry.getTenantId()).isEqualTo(AuditLogEntry.UNAUTH_TENANT);
         assertThat(entry.getOperation()).isEqualTo("GET:/v1/admin/budgets");
         assertThat(entry.getStatus()).isEqualTo(401);
         assertThat(entry.getErrorCode()).isEqualTo("UNAUTHORIZED");
@@ -88,7 +88,59 @@ class AuditFailureServiceTest {
         ArgumentCaptor<AuditLogEntry> captor = ArgumentCaptor.forClass(AuditLogEntry.class);
         verify(auditRepository).log(captor.capture());
         assertThat(captor.getValue().getTenantId())
-                .isEqualTo(AuditLogEntry.UNAUTHENTICATED_TENANT);
+                .isEqualTo(AuditLogEntry.UNAUTH_TENANT);
+    }
+
+    @Test
+    void logFailure_unknownActorType_fallsBackToUnauthSentinel() {
+        // Guard: only the literal "admin" must resolve to __admin__. Any
+        // other actor_type value (legacy, typo, future-reserved) MUST
+        // fall through to __unauth__. Prevents a regression where the
+        // guard is widened to `actor != null`, which would silently
+        // promote unknown actor types into the long-TTL tier and defeat
+        // the sentinel split.
+        request.setAttribute("authenticated_actor_type", "weird");
+
+        service.logFailure(request, 401, ErrorCode.UNAUTHORIZED, "x", null);
+
+        ArgumentCaptor<AuditLogEntry> captor = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditRepository).log(captor.capture());
+        assertThat(captor.getValue().getTenantId())
+                .isEqualTo(AuditLogEntry.UNAUTH_TENANT);
+    }
+
+    @Test
+    void logFailure_adminActorType_usesAdminSentinel() {
+        // v0.1.25.28: AuthInterceptor.validateAdminKey stamps
+        // actor_type="admin" but NOT authenticated_tenant_id (controllers
+        // rely on its null-ness as the admin discriminator). The audit
+        // writer must still label admin-plane failures distinctly from
+        // pre-auth failures.
+        request.setAttribute("authenticated_actor_type", "admin");
+
+        service.logFailure(request, 404, ErrorCode.TENANT_NOT_FOUND,
+                "does not exist", null);
+
+        ArgumentCaptor<AuditLogEntry> captor = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditRepository).log(captor.capture());
+        assertThat(captor.getValue().getTenantId())
+                .isEqualTo(AuditLogEntry.ADMIN_TENANT);
+    }
+
+    @Test
+    void logFailure_adminActorType_notSampledOutEvenAtHighRate() {
+        // __admin__ is a security-relevant signal, not DDoS-amplifiable
+        // noise — the sampling gate applies ONLY to __unauth__.
+        ReflectionTestUtils.setField(service, "unauthenticatedSampleRate", 1000);
+        request.setAttribute("authenticated_actor_type", "admin");
+
+        for (int i = 0; i < 50; i++) {
+            service.logFailure(request, 404, ErrorCode.TENANT_NOT_FOUND, "x", null);
+        }
+
+        verify(auditRepository, org.mockito.Mockito.times(50))
+                .log(org.mockito.ArgumentMatchers.any(AuditLogEntry.class));
+        assertThat(counter("sampled-out")).isEqualTo(0.0);
     }
 
     // --- sampling gate ---
@@ -242,7 +294,7 @@ class AuditFailureServiceTest {
         ArgumentCaptor<AuditLogEntry> captor = ArgumentCaptor.forClass(AuditLogEntry.class);
         verify(auditRepository).log(captor.capture());
         AuditLogEntry entry = captor.getValue();
-        assertThat(entry.getTenantId()).isEqualTo(AuditLogEntry.UNAUTHENTICATED_TENANT);
+        assertThat(entry.getTenantId()).isEqualTo(AuditLogEntry.UNAUTH_TENANT);
         assertThat(entry.getOperation()).isEqualTo("UNKNOWN:");
         assertThat(entry.getRequestId()).isNotNull(); // UUID fallback
     }

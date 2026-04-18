@@ -174,7 +174,11 @@ class AuditCoverageInvariantsPropertyTest {
         long actual = realRepo.resolveTtlSeconds(
                 AuditLogEntry.builder().tenantId(tenantId).build());
 
-        boolean isUnauth = AuditLogEntry.UNAUTHENTICATED_TENANT.equals(tenantId);
+        // v0.1.25.28: both the current __unauth__ sentinel and the legacy
+        // <unauthenticated> literal route to the unauthenticated tier.
+        // __admin__ and real tenant ids ride the authenticated tier.
+        boolean isUnauth = AuditLogEntry.UNAUTH_TENANT.equals(tenantId)
+                || AuditLogEntry.LEGACY_UNAUTHENTICATED_TENANT.equals(tenantId);
         int expectedDays = isUnauth ? unauthDays : authDays;
         long expected = expectedDays > 0 ? (long) expectedDays * 86400L : 0L;
 
@@ -290,7 +294,7 @@ class AuditCoverageInvariantsPropertyTest {
             @ForAll @IntRange(min = Integer.MIN_VALUE, max = 1) int badRate) {
         ReflectionTestUtils.setField(service, "unauthenticatedSampleRate", badRate);
         MockHttpServletRequest req = buildRequest(
-                AuditLogEntry.UNAUTHENTICATED_TENANT);
+                AuditLogEntry.UNAUTH_TENANT);
 
         service.logFailure(req, 401, ErrorCode.UNAUTHORIZED, "x", null);
 
@@ -323,10 +327,15 @@ class AuditCoverageInvariantsPropertyTest {
 
     @Provide
     Arbitrary<String> tenantIds() {
-        // Mix of the sentinel and typical tenant-id shapes per admin's
-        // ^[a-z0-9-]+$ validation.
+        // Mix of sentinels (current + legacy + admin) and typical tenant-
+        // id shapes per admin's ^[a-z0-9-]+$ validation. Including the
+        // legacy <unauthenticated> literal and the admin sentinel forces
+        // I3 to exercise every branch of resolveTtlSeconds, so a future
+        // refactor that forgets a sentinel trips here.
         return Arbitraries.oneOf(
-                Arbitraries.just(AuditLogEntry.UNAUTHENTICATED_TENANT),
+                Arbitraries.just(AuditLogEntry.UNAUTH_TENANT),
+                Arbitraries.just(AuditLogEntry.ADMIN_TENANT),
+                Arbitraries.just(AuditLogEntry.LEGACY_UNAUTHENTICATED_TENANT),
                 Arbitraries.strings()
                         .withCharRange('a', 'z')
                         .withCharRange('0', '9')
@@ -374,7 +383,7 @@ class AuditCoverageInvariantsPropertyTest {
         MockHttpServletRequest req = new MockHttpServletRequest();
         req.setMethod("GET");
         req.setRequestURI("/v1/admin/tenants");
-        if (!AuditLogEntry.UNAUTHENTICATED_TENANT.equals(tenantId)) {
+        if (!AuditLogEntry.UNAUTH_TENANT.equals(tenantId)) {
             req.setAttribute("authenticated_tenant_id", tenantId);
         }
         return req;

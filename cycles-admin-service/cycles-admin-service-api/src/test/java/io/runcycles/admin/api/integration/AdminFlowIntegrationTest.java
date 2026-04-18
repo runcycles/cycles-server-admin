@@ -1,6 +1,7 @@
 package io.runcycles.admin.api.integration;
 
 import io.runcycles.admin.api.BaseIntegrationTest;
+import io.runcycles.admin.model.audit.AuditLogEntry;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -263,27 +264,30 @@ class AdminFlowIntegrationTest extends BaseIntegrationTest {
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> logs = (List<Map<String, Object>>) auditAfter.getBody().get("logs");
 
-        // Unauth 401 → tenant_id sentinel, operation=GET:/v1/admin/tenants,
-        // error_code=UNAUTHORIZED.
+        // Unauth 401 → __unauth__ sentinel (pre-auth failure, no key).
         assertThat(logs).anyMatch(e ->
                 Integer.valueOf(401).equals(e.get("status")) &&
                 "UNAUTHORIZED".equals(e.get("error_code")) &&
                 "GET:/v1/admin/tenants".equals(e.get("operation")) &&
-                "<unauthenticated>".equals(e.get("tenant_id")));
+                AuditLogEntry.UNAUTH_TENANT.equals(e.get("tenant_id")));
 
-        // 400 malformed JSON → authenticated admin (no tenant_id stamped;
-        // sentinel still applies since admin key does NOT stamp
-        // authenticated_tenant_id per AuthInterceptor contract).
+        // 400 malformed JSON → admin-key authenticated → __admin__ sentinel.
+        // (v0.1.25.28: AuthInterceptor.validateAdminKey stamps actor_type=
+        // "admin" — AuditFailureService reads that attribute to pick
+        // __admin__. authenticated_tenant_id stays null so downstream
+        // controllers' admin-vs-tenant discriminator is unaffected.)
         assertThat(logs).anyMatch(e ->
                 Integer.valueOf(400).equals(e.get("status")) &&
                 "INVALID_REQUEST".equals(e.get("error_code")) &&
-                "POST:/v1/admin/tenants".equals(e.get("operation")));
+                "POST:/v1/admin/tenants".equals(e.get("operation")) &&
+                AuditLogEntry.ADMIN_TENANT.equals(e.get("tenant_id")));
 
-        // 404 governance → error_code=TENANT_NOT_FOUND.
+        // 404 governance → admin-key authenticated → __admin__ sentinel.
         assertThat(logs).anyMatch(e ->
                 Integer.valueOf(404).equals(e.get("status")) &&
                 "TENANT_NOT_FOUND".equals(e.get("error_code")) &&
-                "GET:/v1/admin/tenants/does-not-exist".equals(e.get("operation")));
+                "GET:/v1/admin/tenants/does-not-exist".equals(e.get("operation")) &&
+                AuditLogEntry.ADMIN_TENANT.equals(e.get("tenant_id")));
 
         // Sanity: success entries from steps 1-24 still present alongside
         // the new failure entries (single-write invariant preserved).

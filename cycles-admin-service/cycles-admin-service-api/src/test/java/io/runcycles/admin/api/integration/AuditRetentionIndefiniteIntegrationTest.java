@@ -53,7 +53,7 @@ class AuditRetentionIndefiniteIntegrationTest extends BaseIntegrationTest {
                 new HttpEntity<>(new HttpHeaders()), Map.class);
         assertThat(unauth.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
 
-        String logId = pullMostRecentLogId("audit:logs:<unauthenticated>");
+        String logId = pullMostRecentLogId("audit:logs:__unauth__");
         assertThat(logId).isNotNull();
 
         try (Jedis jedis = jedisPool.getResource()) {
@@ -106,11 +106,11 @@ class AuditRetentionIndefiniteIntegrationTest extends BaseIntegrationTest {
         // retention=0 would delete pointers to forever-retain records.
         restTemplate.exchange(baseUrl() + "/v1/admin/tenants", HttpMethod.GET,
                 new HttpEntity<>(new HttpHeaders()), Map.class);
-        String logId = pullMostRecentLogId("audit:logs:<unauthenticated>");
+        String logId = pullMostRecentLogId("audit:logs:__unauth__");
         assertThat(logId).isNotNull();
 
         try (Jedis jedis = jedisPool.getResource()) {
-            long sizeBefore = jedis.zcard("audit:logs:<unauthenticated>");
+            long sizeBefore = jedis.zcard("audit:logs:__unauth__");
             long sizeBeforeGlobal = jedis.zcard("audit:logs:_all");
             assertThat(sizeBefore).isGreaterThan(0);
             assertThat(sizeBeforeGlobal).isGreaterThan(0);
@@ -122,7 +122,7 @@ class AuditRetentionIndefiniteIntegrationTest extends BaseIntegrationTest {
                     applicationContext().getBean(io.runcycles.admin.data.repository.AuditRepository.class);
             repo.sweepStaleIndexEntries();
 
-            long sizeAfter = jedis.zcard("audit:logs:<unauthenticated>");
+            long sizeAfter = jedis.zcard("audit:logs:__unauth__");
             long sizeAfterGlobal = jedis.zcard("audit:logs:_all");
             assertThat(sizeAfter)
                     .as("sweep under retention=0 must not remove any tenant-index pointers")

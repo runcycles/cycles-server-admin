@@ -40,12 +40,15 @@ import java.util.concurrent.ThreadLocalRandom;
  * never mask the real error response. The {@code outcome=error} counter
  * increment lets ops alert on silent coverage loss.
  *
- * <p><b>Unauthenticated tenant sentinel.</b> Admin-plane spec marks
- * {@code tenant_id} as required on every audit entry. Pre-auth failures
- * (missing key, invalid key) have no authenticated tenant. Sentinel
- * {@link #UNAUTHENTICATED_TENANT} preserves the {@code required} invariant
- * and stays queryable for failed-attempt review
- * ({@code GET /v1/admin/audit/logs?tenant_id=%3Cunauthenticated%3E}).
+ * <p><b>tenant_id sentinels.</b> Admin-plane spec marks {@code tenant_id}
+ * as required on every audit entry. Two sentinels are written here:
+ * {@link AuditLogEntry#UNAUTH_TENANT} for pre-auth failures (missing /
+ * invalid / revoked key, missing admin key); requests that authenticated
+ * via admin-key but failed downstream arrive with
+ * {@link AuditLogEntry#ADMIN_TENANT} already stamped on the request by
+ * {@code AuthInterceptor} — this service just reads what's there.
+ * Both are queryable:
+ * {@code GET /v1/admin/audit/logs?tenant_id=__unauth__} or {@code __admin__}.
  */
 @Service
 public class AuditFailureService {
@@ -55,13 +58,13 @@ public class AuditFailureService {
     /**
      * Tenant-id sentinel for pre-auth failures.
      *
-     * <p><b>Source of truth lives on {@link AuditLogEntry#UNAUTHENTICATED_TENANT}</b>
+     * <p><b>Source of truth lives on {@link AuditLogEntry#UNAUTH_TENANT}</b>
      * so {@code AuditRepository} (data layer) can reference it for tiered-TTL
      * decisions without depending on this api/service-layer class. This
      * reference is kept as a convenience alias for callers already on this
      * service.
      */
-    public static final String UNAUTHENTICATED_TENANT = AuditLogEntry.UNAUTHENTICATED_TENANT;
+    public static final String UNAUTH_TENANT = AuditLogEntry.UNAUTH_TENANT;
 
     /**
      * Cap on {@code metadata.error_message} length. Bounds audit row size,
@@ -76,7 +79,7 @@ public class AuditFailureService {
     private final MeterRegistry meterRegistry;
 
     /**
-     * Sampling rate for {@link #UNAUTHENTICATED_TENANT} failure entries —
+     * Sampling rate for {@link #UNAUTH_TENANT} failure entries —
      * record 1 in N. Value {@code 1} (default) records every attempt —
      * safe default preserving full fidelity for small deployments.
      * Set to {@code 100} (or higher) in DDoS-exposed deployments to cut
@@ -124,12 +127,13 @@ public class AuditFailureService {
             String tenantId = resolveTenantId(request);
 
             // v0.1.25.20: sampling gate for the DDoS-amplifiable tier.
-            // Only the unauthenticated-sentinel entries are sampled; every
-            // authenticated failure (valid key, 403/404/409/500) persists
-            // at full fidelity because it's a real security signal.
-            // Default sampleRate=1 means "record every attempt" — operator
-            // must opt in to reduce volume.
-            if (UNAUTHENTICATED_TENANT.equals(tenantId) && shouldSampleOut()) {
+            // Only the __unauth__ (pre-auth failure) sentinel is sampled;
+            // every authenticated failure — __admin__ platform-plane ops
+            // AND valid-tenant-key 403/404/409/500 — persists at full
+            // fidelity because it's a real security signal. Default
+            // sampleRate=1 means "record every attempt" — operator must
+            // opt in to reduce volume.
+            if (UNAUTH_TENANT.equals(tenantId) && shouldSampleOut()) {
                 recordWrite("failure", "sampled-out");
                 return;
             }
@@ -174,11 +178,21 @@ public class AuditFailureService {
 
     private String resolveTenantId(HttpServletRequest request) {
         Object t = resolveAttrRaw(request, "authenticated_tenant_id");
-        if (t == null) {
-            return UNAUTHENTICATED_TENANT;
+        if (t != null) {
+            String s = t.toString();
+            if (!s.isEmpty()) {
+                return s;
+            }
         }
-        String s = t.toString();
-        return s.isEmpty() ? UNAUTHENTICATED_TENANT : s;
+        // v0.1.25.28: admin-key auth stamps actor_type="admin" but NOT
+        // authenticated_tenant_id (controllers use that attr's null-ness
+        // as the "is this admin?" discriminator). Pick the __admin__
+        // sentinel here so admin-plane failures don't fall into __unauth__.
+        Object actor = resolveAttrRaw(request, "authenticated_actor_type");
+        if (actor != null && "admin".equals(actor.toString())) {
+            return AuditLogEntry.ADMIN_TENANT;
+        }
+        return UNAUTH_TENANT;
     }
 
     private String resolveRequestId(HttpServletRequest request) {

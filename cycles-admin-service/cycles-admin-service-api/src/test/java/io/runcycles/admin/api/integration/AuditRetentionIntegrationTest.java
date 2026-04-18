@@ -120,7 +120,7 @@ class AuditRetentionIntegrationTest extends BaseIntegrationTest {
                 new HttpEntity<>(noAuth), Map.class);
         assertThat(unauth.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
 
-        String logId = pullMostRecentLogId("audit:logs:<unauthenticated>");
+        String logId = pullMostRecentLogId("audit:logs:__unauth__");
         assertThat(logId)
                 .as("audit entry for unauth 401 must be indexed under the sentinel")
                 .isNotNull();
@@ -143,7 +143,7 @@ class AuditRetentionIntegrationTest extends BaseIntegrationTest {
         // Fire unauth failure.
         restTemplate.exchange(baseUrl() + "/v1/admin/tenants", HttpMethod.GET,
                 new HttpEntity<>(new HttpHeaders()), Map.class);
-        String unauthLogId = pullMostRecentLogId("audit:logs:<unauthenticated>");
+        String unauthLogId = pullMostRecentLogId("audit:logs:__unauth__");
         long unauthTtl = readTtlSeconds("audit:log:" + unauthLogId);
 
         // Fire authenticated failure (403 via insufficient permissions).

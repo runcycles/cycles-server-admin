@@ -303,7 +303,7 @@ class AuditFailureSoakIntegrationTest extends BaseIntegrationTest {
             // one tier index (sentinel OR real tenant). Their delta sum
             // must equal the global delta — guards against a ZADD going
             // into only one of the two index families.
-            long sentinelIndex = jedis.zcard("audit:logs:<unauthenticated>");
+            long sentinelIndex = jedis.zcard("audit:logs:__unauth__");
             long tenantSoakIndex = jedis.zcard("audit:logs:tenant-soak");
             long tenantSoakDelta = tenantSoakIndex - indexBaselineTenant;
             assertThat(sentinelIndex + tenantSoakDelta)
