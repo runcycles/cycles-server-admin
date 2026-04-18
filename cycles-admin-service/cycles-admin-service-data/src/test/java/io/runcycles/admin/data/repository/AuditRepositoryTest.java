@@ -331,9 +331,38 @@ class AuditRepositoryTest {
         ReflectionTestUtils.setField(repository, "unauthenticatedRetentionDays", 30);
 
         AuditLogEntry entry = AuditLogEntry.builder()
-                .tenantId(AuditLogEntry.UNAUTHENTICATED_TENANT).build();
+                .tenantId(AuditLogEntry.UNAUTH_TENANT).build();
 
         // 30 days × 86400s
+        assertThat(repository.resolveTtlSeconds(entry)).isEqualTo(30L * 86400L);
+    }
+
+    @Test
+    void resolveTtlSeconds_adminSentinel_usesAuthenticatedRetention() {
+        // v0.1.25.28: __admin__ is platform-admin auth, not pre-auth
+        // failure — must route to the authenticated tier so admin-plane
+        // compliance signals persist at full fidelity.
+        ReflectionTestUtils.setField(repository, "authenticatedRetentionDays", 400);
+        ReflectionTestUtils.setField(repository, "unauthenticatedRetentionDays", 30);
+
+        AuditLogEntry entry = AuditLogEntry.builder()
+                .tenantId(AuditLogEntry.ADMIN_TENANT).build();
+
+        assertThat(repository.resolveTtlSeconds(entry)).isEqualTo(400L * 86400L);
+    }
+
+    @Test
+    void resolveTtlSeconds_legacyUnauthenticatedSentinel_usesShortRetention() {
+        // v0.1.25.28: historical Redis rows written by v0.1.25.20..v0.1.25.27
+        // carry the old "<unauthenticated>" literal. They must still age out
+        // on the unauthenticated-tier TTL schedule — no row should silently
+        // flip to long retention just because the sentinel label changed.
+        ReflectionTestUtils.setField(repository, "authenticatedRetentionDays", 400);
+        ReflectionTestUtils.setField(repository, "unauthenticatedRetentionDays", 30);
+
+        AuditLogEntry entry = AuditLogEntry.builder()
+                .tenantId(AuditLogEntry.LEGACY_UNAUTHENTICATED_TENANT).build();
+
         assertThat(repository.resolveTtlSeconds(entry)).isEqualTo(30L * 86400L);
     }
 
@@ -344,7 +373,7 @@ class AuditRepositoryTest {
 
         AuditLogEntry authed = AuditLogEntry.builder().tenantId("tenant-1").build();
         AuditLogEntry unauthed = AuditLogEntry.builder()
-                .tenantId(AuditLogEntry.UNAUTHENTICATED_TENANT).build();
+                .tenantId(AuditLogEntry.UNAUTH_TENANT).build();
 
         assertThat(repository.resolveTtlSeconds(authed)).isEqualTo(0L);
         assertThat(repository.resolveTtlSeconds(unauthed)).isEqualTo(0L);
@@ -372,7 +401,7 @@ class AuditRepositoryTest {
         ReflectionTestUtils.setField(repository, "unauthenticatedRetentionDays", 30);
 
         AuditLogEntry entry = AuditLogEntry.builder()
-                .tenantId(AuditLogEntry.UNAUTHENTICATED_TENANT)
+                .tenantId(AuditLogEntry.UNAUTH_TENANT)
                 .operation("POST:/v1/admin/budgets")
                 .status(401).errorCode("UNAUTHORIZED").build();
 

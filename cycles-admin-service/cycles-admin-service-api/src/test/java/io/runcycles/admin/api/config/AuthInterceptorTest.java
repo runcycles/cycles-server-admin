@@ -554,8 +554,12 @@ class AuthInterceptorTest {
         request.addHeader("X-Admin-API-Key", "admin-secret-key");
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
-        // Admin auth path: no authenticated_* attributes stamped on request.
+        // v0.1.25.28: admin auth path stamps actor_type="admin" so
+        // AuditFailureService can pick __admin__ for admin-plane failures.
+        // authenticated_tenant_id remains null — downstream controllers
+        // use its null-ness as the "is admin?" discriminator.
         assertThat(request.getAttribute("authenticated_tenant_id")).isNull();
+        assertThat(request.getAttribute("authenticated_actor_type")).isEqualTo("admin");
     }
 
     // --- v0.1.25.19: dual-auth on /v1/auth/introspect (spec v0.1.25.15) ---
@@ -625,8 +629,11 @@ class AuthInterceptorTest {
         request.addHeader("X-Admin-API-Key", "admin-secret-key");
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
-        // Admin auth sets no request attributes
+        // v0.1.25.28: admin auth stamps actor_type="admin", not a sentinel
+        // on authenticated_tenant_id — controllers rely on its null-ness
+        // as the "is admin?" discriminator.
         assertThat(request.getAttribute("authenticated_tenant_id")).isNull();
+        assertThat(request.getAttribute("authenticated_actor_type")).isEqualTo("admin");
     }
 
     @Test
@@ -637,6 +644,7 @@ class AuthInterceptorTest {
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
         assertThat(request.getAttribute("authenticated_tenant_id")).isNull();
+        assertThat(request.getAttribute("authenticated_actor_type")).isEqualTo("admin");
     }
 
     @Test
@@ -647,6 +655,7 @@ class AuthInterceptorTest {
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
         assertThat(request.getAttribute("authenticated_tenant_id")).isNull();
+        assertThat(request.getAttribute("authenticated_actor_type")).isEqualTo("admin");
     }
 
     // --- Dual-auth: admin-on-behalf-of writes (v0.1.25.14, spec v0.1.25.13) ---

@@ -259,6 +259,13 @@ public class AuthInterceptor implements HandlerInterceptor {
             writeError(request, response, 401, ErrorCode.UNAUTHORIZED, "Invalid admin API key");
             return false;
         }
+        // v0.1.25.28: stamp actor_type="admin" (NOT authenticated_tenant_id)
+        // so AuditFailureService can pick the __admin__ sentinel for admin-
+        // plane failures, while downstream controllers that use
+        // authenticated_tenant_id==null as their "is admin?" discriminator
+        // (BudgetController, PolicyController, WebhookTenantController
+        // admin-on-behalf-of branches) continue to work unchanged.
+        request.setAttribute("authenticated_actor_type", "admin");
         return true;
     }
 

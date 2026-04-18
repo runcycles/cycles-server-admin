@@ -20,12 +20,13 @@ public class AuditRepository {
     @Autowired private ObjectMapper objectMapper;
 
     /**
-     * Retention for entries whose {@code tenant_id != "<unauthenticated>"} —
-     * every success entry and every authenticated failure. Default 400 days
-     * = SOC2 Type II 12-month lookback + 1-month buffer for post-period
-     * auditor lag. Set to {@code 0} for indefinite retention (legal hold,
-     * HIPAA-adjacent deployments, or environments that offload to an
-     * archive store).
+     * Retention for entries NOT attributed to the {@code __unauth__}
+     * sentinel — every real-tenant entry, every {@code __admin__}
+     * platform-plane entry, and every authenticated failure. Default
+     * 400 days = SOC2 Type II 12-month lookback + 1-month buffer for
+     * post-period auditor lag. Set to {@code 0} for indefinite retention
+     * (legal hold, HIPAA-adjacent deployments, or environments that
+     * offload to an archive store).
      *
      * @since 0.1.25.20
      */
@@ -33,13 +34,18 @@ public class AuditRepository {
     private int authenticatedRetentionDays;
 
     /**
-     * Retention for entries whose {@code tenant_id == "<unauthenticated>"}.
+     * Retention for entries attributed to the {@code __unauth__} sentinel.
      * Applies to pre-auth failures (missing / invalid credentials, path
-     * traversal rejections, admin-key-only requests failing before the
-     * controller runs). Default 30 days — enough for brute-force /
-     * credential-stuffing post-mortem; aggregate attempt volume stays
-     * visible via the {@code cycles_admin_audit_writes_total} Prometheus
-     * counter regardless of this setting. Set to {@code 0} for indefinite.
+     * traversal rejections, etc.). Default 30 days — enough for brute-
+     * force / credential-stuffing post-mortem; aggregate attempt volume
+     * stays visible via the {@code cycles_admin_audit_writes_total}
+     * Prometheus counter regardless of this setting. Set to {@code 0}
+     * for indefinite.
+     *
+     * <p>Historical entries with {@code tenant_id == "<unauthenticated>"}
+     * (legacy sentinel, written by v0.1.25.20..v0.1.25.27) route to this
+     * same tier so they age out on the same schedule as fresh entries
+     * with the new sentinel.
      *
      * @since 0.1.25.20
      */
@@ -95,16 +101,29 @@ public class AuditRepository {
     }
 
     /**
-     * Pick the per-entry TTL based on whether the entry is attributed to a
-     * real tenant or the unauthenticated sentinel. Returns seconds; 0 means
-     * "no expiry" (Lua branch skips the {@code EX} argument).
+     * Pick the per-entry TTL from the tenant_id sentinel.
      *
-     * <p>Public to permit unit + property-based tests (v0.1.25.21) in sibling
-     * modules to verify the tier-selection contract directly. Not intended
-     * for external callers — prefer invoking {@link #log(AuditLogEntry)}.
+     * <p>Short bucket (unauthenticatedRetentionDays): entries attributed
+     * to {@link AuditLogEntry#UNAUTH_TENANT} OR the legacy
+     * {@link AuditLogEntry#LEGACY_UNAUTHENTICATED_TENANT} value — both
+     * are pre-auth failures, just written by different server revisions.
+     *
+     * <p>Long bucket (authenticatedRetentionDays): everything else,
+     * including real tenants AND the {@link AuditLogEntry#ADMIN_TENANT}
+     * platform-plane sentinel (admin actions are high-signal security
+     * events, not DDoS-amplifiable noise).
+     *
+     * <p>Returns seconds; 0 means "no expiry" (Lua branch skips the
+     * {@code EX} argument).
+     *
+     * <p>Public to permit unit + property-based tests (v0.1.25.21) in
+     * sibling modules to verify the tier-selection contract directly.
+     * Not intended for external callers — prefer {@link #log(AuditLogEntry)}.
      */
     public long resolveTtlSeconds(AuditLogEntry entry) {
-        boolean unauth = AuditLogEntry.UNAUTHENTICATED_TENANT.equals(entry.getTenantId());
+        String tenantId = entry.getTenantId();
+        boolean unauth = AuditLogEntry.UNAUTH_TENANT.equals(tenantId)
+                || AuditLogEntry.LEGACY_UNAUTHENTICATED_TENANT.equals(tenantId);
         int days = unauth ? unauthenticatedRetentionDays : authenticatedRetentionDays;
         return days > 0 ? (long) days * 86400L : 0L;
     }

@@ -174,7 +174,7 @@ class AuditCoverageInvariantsPropertyTest {
         long actual = realRepo.resolveTtlSeconds(
                 AuditLogEntry.builder().tenantId(tenantId).build());
 
-        boolean isUnauth = AuditLogEntry.UNAUTHENTICATED_TENANT.equals(tenantId);
+        boolean isUnauth = AuditLogEntry.UNAUTH_TENANT.equals(tenantId);
         int expectedDays = isUnauth ? unauthDays : authDays;
         long expected = expectedDays > 0 ? (long) expectedDays * 86400L : 0L;
 
@@ -290,7 +290,7 @@ class AuditCoverageInvariantsPropertyTest {
             @ForAll @IntRange(min = Integer.MIN_VALUE, max = 1) int badRate) {
         ReflectionTestUtils.setField(service, "unauthenticatedSampleRate", badRate);
         MockHttpServletRequest req = buildRequest(
-                AuditLogEntry.UNAUTHENTICATED_TENANT);
+                AuditLogEntry.UNAUTH_TENANT);
 
         service.logFailure(req, 401, ErrorCode.UNAUTHORIZED, "x", null);
 
@@ -326,7 +326,7 @@ class AuditCoverageInvariantsPropertyTest {
         // Mix of the sentinel and typical tenant-id shapes per admin's
         // ^[a-z0-9-]+$ validation.
         return Arbitraries.oneOf(
-                Arbitraries.just(AuditLogEntry.UNAUTHENTICATED_TENANT),
+                Arbitraries.just(AuditLogEntry.UNAUTH_TENANT),
                 Arbitraries.strings()
                         .withCharRange('a', 'z')
                         .withCharRange('0', '9')
@@ -374,7 +374,7 @@ class AuditCoverageInvariantsPropertyTest {
         MockHttpServletRequest req = new MockHttpServletRequest();
         req.setMethod("GET");
         req.setRequestURI("/v1/admin/tenants");
-        if (!AuditLogEntry.UNAUTHENTICATED_TENANT.equals(tenantId)) {
+        if (!AuditLogEntry.UNAUTH_TENANT.equals(tenantId)) {
             req.setAttribute("authenticated_tenant_id", tenantId);
         }
         return req;

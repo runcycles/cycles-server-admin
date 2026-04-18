@@ -14,6 +14,62 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.28] — 2026-04-17
+
+### Changed
+
+- **Audit `tenant_id` sentinel split.** Aligns with spec
+  `cycles-governance-admin-v0.1.25.yaml` info.version `0.1.25.25`. The
+  previous single `"<unauthenticated>"` sentinel conflated two very
+  different request populations: pre-auth failures (missing / invalid /
+  revoked key — potential DDoS noise) and platform-admin-authenticated
+  requests that aren't scoped to any one tenant (governance ops, cross-
+  tenant reads, admin-plane 4xx/5xx). This release splits them:
+  - **`__admin__`** (new) — written for any request authenticated via
+    `X-Admin-API-Key`. Rides the **authenticated-tier TTL**
+    (`audit.retention.authenticated.days`, default 400d) and is
+    **never sampled** regardless of `audit.sample.unauthenticated`.
+    Admin-plane compliance signals now persist at full fidelity.
+  - **`__unauth__`** (renamed from `<unauthenticated>`) — written for
+    pre-auth failures only. Rides the short unauthenticated-tier TTL
+    (default 30d) and is subject to the DDoS sampling gate.
+  - **`<unauthenticated>`** (legacy) — no longer emitted. Historical
+    rows written by v0.1.25.20..v0.1.25.27 still route to the
+    unauthenticated-tier TTL so they age out on the correct schedule;
+    no row silently flips to long retention just because the sentinel
+    label changed.
+- **URL-safe format.** Double-underscore delimiters replace angle
+  brackets. Tenant grammar `^[a-z0-9-]+$` excludes underscores so no
+  collision with a real tenant id is possible; underscores are RFC 3986
+  unreserved, so `GET /v1/admin/audit/logs?tenant_id=__admin__` needs
+  no percent encoding. The previous sentinel required URL-encoding
+  (`%3Cunauthenticated%3E`) and produced cosmetically-broken log IDs
+  and URLs.
+
+### Migration notes for ops / dashboard tooling
+
+- Auditor queries and dashboard filters hard-coded to
+  `?tenant_id=<unauthenticated>` will stop matching fresh writes the
+  moment 0.1.25.28 ships, but will still match historical rows that
+  actually carry that literal. Migrate to:
+  - `?tenant_id=__unauth__` — the pre-auth-failure slice only (same
+    population the old sentinel matched, minus admin-plane entries).
+  - `?tenant_id=__admin__` — the new platform-admin slice.
+- Existing Redis rows are **not rewritten**. They age out naturally
+  under the unauth-tier TTL. No operator action required for cutover.
+- `audit.retention.authenticated.days` now governs retention of
+  admin-plane failures in addition to tenant-authenticated entries.
+  If you had tuned `audit.retention.unauthenticated.days` to something
+  other than the default, review whether that still makes sense — it
+  now applies only to pre-auth failures and legacy rows.
+
+### Forward-compat client contract
+
+- Adding a fourth sentinel in the future remains backwards-compatible
+  — existing queries for `__admin__` / `__unauth__` continue to work;
+  only new auditor flows need to learn about the new value. Sentinel
+  names are stable per the cycles-protocol v0.1.25.25 CHANGELOG.
+
 ## [0.1.25.27] — 2026-04-17
 
 ### Added
