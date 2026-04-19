@@ -72,7 +72,7 @@ jobs:
 
       - name: Upload surefire reports on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: surefire-reports-audit-soak
           path: cycles-admin-service/cycles-admin-service-api/target/surefire-reports/
