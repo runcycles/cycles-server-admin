@@ -92,10 +92,18 @@ class AuditFailureSoakIntegrationTest extends BaseIntegrationTest {
             adminGet("/v1/admin/tenants");
         }
 
+        // Force a full GC BEFORE capturing the baseline so we measure
+        // retained heap, not transient warmup allocations that haven't
+        // been collected yet. AS1 is a leak check (retained growth),
+        // not a live-heap check. The prior ordering (measure, then GC)
+        // made AS1 flaky on GitHub runners where GC cadence varies
+        // run-to-run — runs where warmup young-gen was still live at
+        // measurement time produced an artificially low start value
+        // and a correspondingly inflated end/start ratio.
+        System.gc();
+        Thread.sleep(500);
         long heapStartBytes = ManagementFactory.getMemoryMXBean()
                 .getHeapMemoryUsage().getUsed();
-        System.gc();  // best-effort baseline; HotSpot may ignore
-        Thread.sleep(200);
 
         long totalMs = (long) DURATION_MINUTES * 60_000L;
         long startMs = System.currentTimeMillis();
@@ -237,6 +245,13 @@ class AuditFailureSoakIntegrationTest extends BaseIntegrationTest {
                 .isTrue();
         pool.shutdown();
 
+        // Match the start-measurement protocol: GC before reading so
+        // both endpoints of the ratio reflect retained (post-GC) heap.
+        // Without this, heapEndBytes includes whatever young-gen is
+        // live at the instant the workers shut down — noise that has
+        // nothing to do with retained state.
+        System.gc();
+        Thread.sleep(500);
         long heapEndBytes = ManagementFactory.getMemoryMXBean()
                 .getHeapMemoryUsage().getUsed();
 
