@@ -5,6 +5,20 @@
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.28`; adds `trace_id` W3C Trace Context correlation field on `Event` / `AuditLogEntry` / `ErrorResponse`, `X-Cycles-Trace-Id` response header, `trace_id` / `request_id` filter params on `listAuditLogs` / `listEvents`, and `trace_id` / `trace_flags` / `traceparent_inbound_valid` on `WebhookDelivery` — the v0.1.25.28 patch closes the spec gap so strict-schema consumers accept the webhook-delivery trace metadata this server persists) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis
 
+### 2026-04-19 — nightly soak AS1 heap assertion hardening (test-only, no version change)
+
+**Motivation.** The `Nightly Audit Soak Test` workflow failed on the 2026-04-19 scheduled run (run 24624192589) with `AS1: heap end/start ratio should be < 2.0 (measured 2.186)`. A manual re-run the same day on unchanged code passed, and the 2026-04-17 scheduled run had also passed. Classic flaky — the assertion itself was wrong, not the code under test.
+
+**Root cause.** `AuditFailureSoakIntegrationTest` captured `heapStartBytes` BEFORE calling `System.gc()`, and captured `heapEndBytes` without any GC at all. Both endpoints of the ratio were therefore "live heap at some arbitrary point in the GC cycle" — which on GitHub's ubuntu-latest runners varies run-to-run based on when young-gen GC happens to fire. On runs where warmup young-gen hadn't yet collected at the baseline measurement, `heapStartBytes` was artificially low; on runs where young-gen was full at the end measurement, `heapEndBytes` was artificially high. Neither reflected retained heap — the thing AS1 is actually meant to check.
+
+**Fix.** Reorder so `System.gc()` + `Thread.sleep(500)` happens BEFORE both the start and end `getUsed()` calls. Now both endpoints reflect post-GC retained heap, and the ratio measures what the assertion documents it measures.
+
+**Scope.** `AuditFailureSoakIntegrationTest.java` only. No production code changed. No spec change. No version bump — this is a test-measurement bug fix, not a behavior change.
+
+**Expected behavior post-fix.** The 2026-04-19 soak run showed end=142MB / start=65MB. With GC forced first, both numbers should shrink toward retained-state only; the actual retained growth over 10 minutes at 500 ops/s is dominated by Micrometer histogram buckets + Tomcat request-scoped state, both of which stabilize well under 2×. AS1 will now fail only on genuine leaks.
+
+---
+
 ### 2026-04-18 — v0.1.25.32 cross-plane read tolerance hardening (no spec change)
 
 **Motivation.** The post-v0.1.25.31 alignment audit against runtime v0.1.25.14 flagged a latent deployment-ordering trap: `Event`, `WebhookDelivery`, `WebhookSubscription`, and `ErrorResponse` all carried `@JsonIgnoreProperties(ignoreUnknown = false)` at the class level. Three of those four are admin-owned surfaces (`WebhookSubscription`, request/response DTOs) where strict mode is correct. The other two — `Event` and `WebhookDelivery` — are **cross-plane reads**: runtime's `cycles-server/EventEmitterRepository` writes to `event:*` and `delivery:*` Redis keys, admin only reads them. Strict mode on the admin reader meant any additive field runtime shipped in a patch release would break admin's `listEvents` / `listWebhookDeliveries` with `UnrecognizedPropertyException` until admin lockstep-updated the POJO — directly contradicting the "additive fields are safe" invariant the admin/runtime split is built on.
