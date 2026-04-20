@@ -199,10 +199,17 @@ into a fixed DTO must tolerate unknown keys (Jackson
 
 ### Tenant-close cascade (v0.1.25.35+)
 
+**Cascade mode: Mode B (flip-first-with-guarded-cascade).** Spec
+v0.1.25.31 Rule 1 defines two conformant cascade modes; this server
+implements **Mode B**. The tenant flip commits first; Rule 2's
+`TENANT_CLOSED` guard activates; children transition per-child (not
+atomically). Convergence is operator-driven — see "Convergence
+mechanism (Rule 1(c) — MUST be documented)" below for the bound.
+
 Closing a tenant via `PATCH /v1/admin/tenants/{id}` with
 `status=CLOSED` (or via `POST /v1/admin/tenants/bulk-action` with
 `action=CLOSE`) cascades owned objects into their terminal states per
-spec v0.1.25.29 Rule 1:
+spec v0.1.25.31 Rule 1:
 
 | Owned type | Pre-close state | Post-cascade state | Wire-visible effect |
 |---|---|---|---|
@@ -210,13 +217,44 @@ spec v0.1.25.29 Rule 1:
 | `WebhookSubscription` | `ACTIVE` / `PAUSED` | `DISABLED` | Rule 2 prevents any re-enable — DISABLED is effectively-terminal for closed-owner subscriptions. |
 | `ApiKey` | `ACTIVE` | `REVOKED` | `revoked_at` stamped; reason `tenant_closed`. |
 
-The tenant flip happens BEFORE the cascade so spec v0.1.25.29 Rule 2
+The tenant flip happens BEFORE the cascade so spec v0.1.25.31 Rule 2
 (`TENANT_CLOSED` 409 on any mutating op against a CLOSED-owner object)
 is active during the cascade window. Concurrent admin PATCHes during
 a cascade 409 rather than racing to resurrect a just-terminated
 child. On partial cascade failure the tenant remains CLOSED — operator
 re-issues the close and remaining non-terminal children pick up (every
 cascade step is idempotent; already-terminal children are skipped).
+
+**Convergence mechanism (Rule 1(c) — MUST be documented).** Spec
+v0.1.25.31 Rule 1(c) requires a Mode B implementation to document
+how an interrupted cascade reaches terminal state in bounded time.
+For this server:
+
+- **Primary mechanism:** operator-issued re-close. `PATCH /v1/admin/tenants/{id} { "status": "CLOSED" }`
+  on an already-CLOSED tenant is a no-op at the tenant level but
+  re-runs the cascade against any non-terminal child. Every cascade
+  step is idempotent (see Rule 1(b)) — already-terminal children are
+  skipped without emitting duplicate audit/event rows.
+- **Bound:** operator-reaction-time. There is no background
+  reconciler and no startup sweep in this release. The bound is
+  whatever operator-alert → operator-action latency your ops
+  organization runs at — typically minutes under normal pager
+  response, hours in the worst case.
+- **Detection:** any budget/webhook/apikey that stays non-terminal
+  under a CLOSED tenant for longer than your pager SLO should be
+  treated as a cascade-incomplete incident. Query:
+  `GET /v1/admin/budgets?tenant_id={id}&status=FROZEN`, or equivalent
+  per-child-type `GET`. See the triage recipe below.
+- **Reads remain consistent (Rule 1(d)).** Non-terminal children of
+  a CLOSED tenant are observable via `GET` until the cascade reaches
+  them. Clients and dashboards should treat the combination "tenant
+  CLOSED + child non-terminal" as a transient state that converges,
+  not a permanent inconsistency.
+
+A background reconciler / startup sweep is a potential future
+addition if operator re-issue proves insufficient at higher tenant-
+close rates; the spec permits it under Rule 1(c) without a wire
+change.
 
 **Correlation.** Every audit entry and event emitted in one cascade
 shares:

@@ -1,8 +1,8 @@
 # Complete Budget Governance v0.1.25.36 — Admin Server Audit
 
-**Server version:** 0.1.25.36 (2026-04-20 — spec v0.1.25.29 CASCADE SEMANTICS Rule 2 guard coverage expanded across all admin-mutating endpoints)
+**Server version:** 0.1.25.36 (2026-04-20 — spec v0.1.25.31 CASCADE SEMANTICS; Mode B flip-first-with-guarded-cascade conformant; Rule 2 guard coverage complete across all admin-mutating endpoints)
 **Date:** 2026-04-20 (v0.1.25.36 Rule 2 guard expansion: policies + api-keys + webhook-admin create/update/delete/test/replay + budgets and webhooks bulk-action per-row + webhook-tenant delete/test), 2026-04-20 (v0.1.25.35 cascade + TENANT_CLOSED guard), 2026-04-19 (v0.1.25.34 commons-lang3 CVE pin), 2026-04-19 (v0.1.25.33 Spring Boot / Tomcat CVE bump), 2026-04-18 (v0.1.25.32 cross-plane read tolerance hardening), 2026-04-18 (v0.1.25.31 trace_id cross-surface correlation), 2026-04-18 (v0.1.25.30 bulk-action audit enrichment), 2026-04-18 (v0.1.25.29 budget bulk-action), 2026-04-17 (v0.1.25.28 audit sentinel split), 2026-04-17 (v0.1.25.27 audit filter DSL upgrade), 2026-04-17 (v0.1.25.26 bulk-action endpoints), 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
-**Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.29`; adds CASCADE SEMANTICS — Rule 1 `POST /admin/tenants/{id}` PATCH→CLOSED cascades owned budgets (→CLOSED), webhook subscriptions (→DISABLED), and API keys (→REVOKED) atomically under a shared correlation_id, and Rule 2 rejects any mutating operation against an object whose owning tenant is CLOSED with 409 `TENANT_CLOSED`; adds the `TENANT_CLOSED` error code to the shared enum and the four `*_via_tenant_cascade` event kinds: `budget.closed_via_tenant_cascade`, `webhook.disabled_via_tenant_cascade`, `api_key.revoked_via_tenant_cascade`, `reservation.released_via_tenant_cascade`) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
+**Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.31`; adds CASCADE SEMANTICS — Rule 1 `POST /admin/tenants/{id}` PATCH→CLOSED cascades owned budgets (→CLOSED), webhook subscriptions (→DISABLED), and API keys (→REVOKED) under a shared correlation_id — Rule 1 permits **Mode A (atomic)** or **Mode B (flip-first-with-guarded-cascade)** as of v0.1.25.31, and Rule 2 rejects any mutating operation against an object whose owning tenant is CLOSED with 409 `TENANT_CLOSED`; adds the `TENANT_CLOSED` error code to the shared enum and the four `*_via_tenant_cascade` event kinds: `budget.closed_via_tenant_cascade`, `webhook.disabled_via_tenant_cascade`, `api_key.revoked_via_tenant_cascade`, `reservation.released_via_tenant_cascade`) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.13 / Java 21 / Redis · Tomcat 10.1.54 pin · commons-lang3 3.18.0 pin
 
 ### 2026-04-20 — v0.1.25.36: Rule 2 guard coverage completed (spec v0.1.25.29 MUST)
@@ -80,12 +80,25 @@ callsites + row-level classifier coverage. OpenAPI contract diff,
 DTO contract tests, property-based audit invariants: unchanged.
 `declared=46 covered=46 missing=0` still holds.
 
-**Conformance posture vs. spec v0.1.25.29.**
+**Conformance posture vs. spec v0.1.25.31.**
 
 | Rule | v0.1.25.35 | v0.1.25.36 |
 |---|---|---|
-| Rule 1 — close-time cascade | ✅ complete | ✅ complete |
+| Rule 1 — close-time cascade | ✅ complete (Mode B) | ✅ complete (Mode B) |
 | Rule 2 — terminal-owner mutation guard | ⚠️ partial (budgets + webhook-tenant create/update only) | ✅ complete (all admin mutation sites) |
+
+**Cascade mode: Mode B (flip-first-with-guarded-cascade).** Spec v0.1.25.31 relaxed Rule 1 to permit two conformant cascade modes. This server implements **Mode B**: the tenant status flip to `CLOSED` commits first, Rule 2's `TENANT_CLOSED` guard is active from that moment, and children are driven to terminal states per-child (not in one transaction) under a shared `correlation_id = tenant_close_cascade:<tenant_id>:<request_id>`. Mode A (single-transaction atomic cascade) would require cross-key transactions spanning `tenant:*`, `budget:*`, `webhook:*`, and `apikey:*` Redis keys — not available in the backing store — so Mode B is the correct choice for this implementation.
+
+Mode B requires four invariants (spec v0.1.25.31 Rule 1 (a)–(d)); this server satisfies all four:
+
+| Invariant | How this server satisfies it |
+|---|---|
+| (a) Rule 2 guard active at/before CLOSED flip durability | `TerminalOwnerMutationGuard` reads `tenant:<id>.status` on every mutating call; once the flip commits the guard returns `TENANT_CLOSED` on the next call, with no coordination gap. |
+| (b) Idempotent cascade | Every `cascadeClose` / `cascadeDisable` / `cascadeRevoke` step is a no-op for already-terminal children (conditional `MULTI/EXEC` guard on the child's current status). Audit/event rows are emitted only on actual state change. |
+| (c) Bounded eventual convergence, documented | Convergence mechanism is operator-issued re-close (`PATCH {status: CLOSED}` is a tenant-level no-op that re-runs the cascade). Documented in `OPERATIONS.md` §Tenant-close cascade. Bound is operator-reaction-time — no background reconciler is on the roadmap for this release. |
+| (d) Consistent reads of non-terminal children of CLOSED tenant | `GET` paths on owned objects are never guarded; a reader observing a partially-cascaded tenant sees each child's stored (pre-cascade) status until the child's transition commits. |
+
+**Consequence for client contracts.** Clients relying on the v0.1.25.29 "atomic / single transaction" wording must treat it as now-relaxed: between the CLOSED flip and the last child's terminal transition, a reader MAY observe a non-terminal child of a CLOSED tenant. Any mutation against that child fails `409 TENANT_CLOSED` (Rule 2); the child converges to its terminal state per Rule 1(c). This is the client-observable guarantee — not atomicity — that matters.
 
 ### 2026-04-20 — v0.1.25.35: Cascade semantics (spec v0.1.25.29 Rule 1 + Rule 2)
 
