@@ -466,6 +466,38 @@ public class ApiKeyRepository {
      * The previous Lua path returned the stored record with HTTP 200, which was
      * a pre-existing spec violation; this migration corrects it.
      */
+    /** Outcome of one API-key row in a tenant-close cascade. */
+    public record CascadeRevokeOutcome(String keyId, String name, ApiKeyStatus priorStatus) {}
+
+    /**
+     * Spec v0.1.25.29 CASCADE SEMANTICS (Rule 1): revoke every ACTIVE key
+     * owned by {@code tenantId}. Already-REVOKED or EXPIRED keys are skipped
+     * so re-issuing the cascade is a no-op. Returns one outcome per key
+     * that was actually transitioned; caller emits matching audit + events.
+     */
+    public List<CascadeRevokeOutcome> cascadeRevoke(String tenantId, String reason) {
+        List<CascadeRevokeOutcome> outcomes = new ArrayList<>();
+        List<ApiKey> keys = list(tenantId);
+        Instant now = Instant.now();
+        for (ApiKey k : keys) {
+            if (k.getStatus() != ApiKeyStatus.ACTIVE) continue;
+            ApiKeyStatus prior = k.getStatus();
+            try (Jedis jedis = jedisPool.getResource()) {
+                k.setStatus(ApiKeyStatus.REVOKED);
+                k.setRevokedAt(now);
+                if (reason != null && !reason.isEmpty()) {
+                    k.setRevokedReason(reason);
+                }
+                jedis.set("apikey:" + k.getKeyId(), objectMapper.writeValueAsString(k));
+                outcomes.add(new CascadeRevokeOutcome(k.getKeyId(), k.getName(), prior));
+            } catch (Exception e) {
+                LOG.warn("Cascade-revoke skipped key {} for tenant {}: {}",
+                    k.getKeyId(), tenantId, e.getMessage());
+            }
+        }
+        return outcomes;
+    }
+
     public ApiKey revoke(String keyId, String reason) {
         try (Jedis jedis = jedisPool.getResource()) {
             String json = jedis.get("apikey:" + keyId);

@@ -22,6 +22,7 @@ import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.api.service.BulkActionAuditMetadataBuilder;
 import io.runcycles.admin.api.service.EventService;
+import io.runcycles.admin.api.service.TenantCloseCascadeService;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -58,6 +59,7 @@ public class TenantController {
     @Autowired private EventService eventService;
     @Autowired private ObjectMapper objectMapper;
     @Autowired private IdempotencyStore idempotencyStore;
+    @Autowired private TenantCloseCascadeService tenantCloseCascadeService;
     @PostMapping @Operation(operationId = "createTenant")
     public ResponseEntity<Tenant> create(@Valid @RequestBody TenantCreateRequest request, HttpServletRequest httpRequest) {
         var result = repository.create(request);
@@ -108,13 +110,26 @@ public class TenantController {
     }
     @PatchMapping("/{tenant_id}") @Operation(operationId = "updateTenant")
     public ResponseEntity<Tenant> update(@PathVariable("tenant_id") String tenantId, @Valid @RequestBody TenantUpdateRequest request, HttpServletRequest httpRequest) {
+        // Spec v0.1.25.29 Rule 1: if this PATCH transitions the tenant into
+        // CLOSED, cascade ACTIVE/FROZEN budgets, ACTIVE/PAUSED webhooks and
+        // ACTIVE API keys into their terminal states BEFORE flipping the
+        // tenant. If cascade throws, the tenant stays in its prior status
+        // so an operator can safely re-issue the close — each cascade step
+        // is idempotent (already-terminal children are skipped).
+        TenantCloseCascadeService.CascadeResult cascadeResult = null;
+        if (request.getStatus() == TenantStatus.CLOSED) {
+            Tenant prior = repository.get(tenantId);
+            if (prior.getStatus() != TenantStatus.CLOSED) {
+                cascadeResult = tenantCloseCascadeService.cascade(tenantId, httpRequest);
+            }
+        }
         Tenant updated = repository.update(tenantId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
             .resourceType("tenant").resourceId(tenantId)
             .operation("updateTenant")
             .status(200)
-            .metadata(buildUpdateTenantMeta(request))
+            .metadata(enrichWithCascade(buildUpdateTenantMeta(request), cascadeResult))
             .build());
         try {
             EventType eventType = EventType.TENANT_UPDATED;
@@ -126,17 +141,40 @@ public class TenantController {
                     default: break;
                 }
             }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> eventData = objectMapper.convertValue(EventDataTenantLifecycle.builder()
+                .tenantId(tenantId)
+                .newStatus(updated.getStatus())
+                .changedFields(List.of()).build(), Map.class);
+            if (cascadeResult != null) {
+                eventData.put("cascade", cascadeSummaryMap(cascadeResult));
+            }
             eventService.emit(eventType, tenantId, null, "cycles-admin",
                 Actor.builder().type(ActorType.ADMIN).build(),
-                objectMapper.convertValue(EventDataTenantLifecycle.builder()
-                    .tenantId(tenantId)
-                    .newStatus(updated.getStatus())
-                    .changedFields(List.of()).build(), Map.class),
+                eventData,
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
             LOG.warn("Failed to emit event: {}", e.getMessage());
         }
         return ResponseEntity.ok(updated);
+    }
+
+    private static Map<String, Object> enrichWithCascade(Map<String, Object> meta,
+                                                          TenantCloseCascadeService.CascadeResult result) {
+        if (result == null) return meta;
+        java.util.LinkedHashMap<String, Object> out =
+            meta != null ? new java.util.LinkedHashMap<>(meta) : new java.util.LinkedHashMap<>();
+        out.put("cascade", cascadeSummaryMap(result));
+        return out;
+    }
+
+    private static Map<String, Object> cascadeSummaryMap(TenantCloseCascadeService.CascadeResult r) {
+        java.util.LinkedHashMap<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("budgets_closed", r.budgetsClosed());
+        m.put("webhooks_disabled", r.webhooksDisabled());
+        m.put("api_keys_revoked", r.apiKeysRevoked());
+        m.put("reservations_released", r.reservationsReleased());
+        return m;
     }
 
     private Map<String, Object> buildUpdateTenantMeta(TenantUpdateRequest request) {
@@ -255,7 +293,7 @@ public class TenantController {
         List<BulkActionRowOutcome> skipped = new ArrayList<>();
         TenantStatus target = targetStatus(request.getAction());
         for (Tenant t : matched) {
-            applyTenantAction(t, request.getAction(), target, succeeded, failed, skipped);
+            applyTenantAction(t, request.getAction(), target, succeeded, failed, skipped, httpRequest);
         }
 
         TenantBulkActionResponse response = TenantBulkActionResponse.builder()
@@ -299,7 +337,8 @@ public class TenantController {
     private void applyTenantAction(Tenant matched, TenantBulkAction action, TenantStatus target,
                                     List<BulkActionRowOutcome> succeeded,
                                     List<BulkActionRowOutcome> failed,
-                                    List<BulkActionRowOutcome> skipped) {
+                                    List<BulkActionRowOutcome> skipped,
+                                    HttpServletRequest httpRequest) {
         String id = matched.getTenantId();
         try {
             Tenant live = repository.get(id);
@@ -314,6 +353,13 @@ public class TenantController {
                     .id(id).errorCode("INVALID_TRANSITION")
                     .message("Cannot transition from CLOSED").build());
                 return;
+            }
+            // Spec v0.1.25.29 Rule 1: cascade owned objects into their
+            // terminal states BEFORE flipping the tenant. Cascade failure
+            // propagates to the catch below, which buckets this row as
+            // failed — other tenants in the batch still get processed.
+            if (action == TenantBulkAction.CLOSE) {
+                tenantCloseCascadeService.cascade(id, httpRequest);
             }
             TenantUpdateRequest update = new TenantUpdateRequest();
             update.setStatus(target);

@@ -1581,4 +1581,104 @@ class BudgetRepositoryTest {
         assertThat(result).hasSize(5);
         verify(jedis, atMost(cap)).hgetAll(anyString());
     }
+
+    // ========== cascadeClose (spec v0.1.25.29 Rule 1) ==========
+
+    @Test
+    void cascadeClose_noOwnedBudgets_returnsEmpty() {
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(Collections.emptySet());
+
+        List<BudgetRepository.CascadeCloseBudgetOutcome> outcomes = repository.cascadeClose("tenant-1");
+
+        assertThat(outcomes).isEmpty();
+        verify(jedis, never()).eval(anyString(), anyList(), anyList());
+    }
+
+    @Test
+    void cascadeClose_nullKeySet_returnsEmpty() {
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(null);
+
+        List<BudgetRepository.CascadeCloseBudgetOutcome> outcomes = repository.cascadeClose("tenant-1");
+
+        assertThat(outcomes).isEmpty();
+    }
+
+    @Test
+    void cascadeClose_mixedStatuses_transitionsActiveAndFrozenSkipsClosed() {
+        Set<String> keys = new LinkedHashSet<>(List.of(
+            "budget:a:USD_MICROCENTS",
+            "budget:b:USD_MICROCENTS",
+            "budget:c:USD_MICROCENTS"));
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(keys);
+
+        // Script returns {'OK', priorStatus, reserved} or {'ALREADY_CLOSED'}/{'NOT_FOUND'}
+        when(jedis.eval(anyString(), eq(List.of("budget:a:USD_MICROCENTS")), anyList()))
+            .thenReturn(List.of("OK", "ACTIVE", "0"));
+        when(jedis.eval(anyString(), eq(List.of("budget:b:USD_MICROCENTS")), anyList()))
+            .thenReturn(List.of("OK", "FROZEN", "250"));
+        when(jedis.eval(anyString(), eq(List.of("budget:c:USD_MICROCENTS")), anyList()))
+            .thenReturn(List.of("ALREADY_CLOSED"));
+
+        Map<String, String> hashA = createBudgetHash("led-a", "a", "USD_MICROCENTS");
+        hashA.put("status", "CLOSED");
+        Map<String, String> hashB = createBudgetHash("led-b", "b", "USD_MICROCENTS");
+        hashB.put("status", "CLOSED");
+        when(jedis.hgetAll("budget:a:USD_MICROCENTS")).thenReturn(hashA);
+        when(jedis.hgetAll("budget:b:USD_MICROCENTS")).thenReturn(hashB);
+
+        List<BudgetRepository.CascadeCloseBudgetOutcome> outcomes = repository.cascadeClose("tenant-1");
+
+        assertThat(outcomes).hasSize(2);
+        BudgetRepository.CascadeCloseBudgetOutcome first = outcomes.get(0);
+        assertThat(first.priorStatus()).isEqualTo(BudgetStatus.ACTIVE);
+        assertThat(first.releasedReservedAmount()).isZero();
+        assertThat(first.unit()).isEqualTo(UnitEnum.USD_MICROCENTS);
+
+        BudgetRepository.CascadeCloseBudgetOutcome second = outcomes.get(1);
+        assertThat(second.priorStatus()).isEqualTo(BudgetStatus.FROZEN);
+        assertThat(second.releasedReservedAmount()).isEqualTo(250L);
+
+        // Record's accessors already exercised above; also run `toString` for
+        // equals/hashCode/toString coverage on the generated record class.
+        assertThat(first.toString()).contains("led-a");
+    }
+
+    @Test
+    void cascadeClose_luaException_skipsAndContinues() {
+        Set<String> keys = new LinkedHashSet<>(List.of(
+            "budget:bad:USD_MICROCENTS",
+            "budget:good:USD_MICROCENTS"));
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(keys);
+
+        when(jedis.eval(anyString(), eq(List.of("budget:bad:USD_MICROCENTS")), anyList()))
+            .thenThrow(new RuntimeException("boom"));
+        when(jedis.eval(anyString(), eq(List.of("budget:good:USD_MICROCENTS")), anyList()))
+            .thenReturn(List.of("OK", "ACTIVE", "0"));
+
+        Map<String, String> hashGood = createBudgetHash("led-good", "good", "USD_MICROCENTS");
+        hashGood.put("status", "CLOSED");
+        when(jedis.hgetAll("budget:good:USD_MICROCENTS")).thenReturn(hashGood);
+
+        List<BudgetRepository.CascadeCloseBudgetOutcome> outcomes = repository.cascadeClose("tenant-1");
+
+        assertThat(outcomes).hasSize(1);
+        assertThat(outcomes.get(0).scope()).isEqualTo("good");
+    }
+
+    @Test
+    void cascadeClose_unparseableReservedAmount_coercesToZero() {
+        Set<String> keys = new LinkedHashSet<>(List.of("budget:a:USD_MICROCENTS"));
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(keys);
+        when(jedis.eval(anyString(), eq(List.of("budget:a:USD_MICROCENTS")), anyList()))
+            .thenReturn(List.of("OK", "FROZEN", "not-a-number"));
+
+        Map<String, String> hash = createBudgetHash("led-a", "a", "USD_MICROCENTS");
+        hash.put("status", "CLOSED");
+        when(jedis.hgetAll("budget:a:USD_MICROCENTS")).thenReturn(hash);
+
+        List<BudgetRepository.CascadeCloseBudgetOutcome> outcomes = repository.cascadeClose("tenant-1");
+
+        assertThat(outcomes).hasSize(1);
+        assertThat(outcomes.get(0).releasedReservedAmount()).isZero();
+    }
 }

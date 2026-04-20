@@ -18,6 +18,7 @@ import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.api.service.BulkActionAuditMetadataBuilder;
 import io.runcycles.admin.api.service.EventService;
+import io.runcycles.admin.api.service.TerminalOwnerMutationGuard;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.*;
@@ -57,6 +58,7 @@ public class BudgetController {
     @Autowired private EventService eventService;
     @Autowired private ObjectMapper objectMapper;
     @Autowired private IdempotencyStore idempotencyStore;
+    @Autowired private TerminalOwnerMutationGuard mutationGuard;
     @PostMapping @Operation(operationId = "createBudget")
     public ResponseEntity<BudgetLedger> create(@Valid @RequestBody BudgetCreateRequest request, HttpServletRequest httpRequest) {
         validateCreateUnits(request);
@@ -89,6 +91,7 @@ public class BudgetController {
         // Prevents "body says tenant=acme, scope says tenant:corp" from
         // silently creating a ledger under the wrong tenant.
         ScopeValidator.validateScopeMatchesTenant(request.getScope(), tenantId);
+        mutationGuard.assertTenantOpen(tenantId);
         BudgetLedger ledger = repository.create(tenantId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
@@ -245,6 +248,7 @@ public class BudgetController {
         }
         // Admin auth: tenantId is null, Lua script skips ownership check
         String tenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
+        mutationGuard.assertOpenForScope(scope);
         BudgetLedger ledger = repository.update(tenantId, scope, unit, request);
         String auditTenantId = tenantId != null ? tenantId : ledger.getTenantId();
         auditRepository.log(buildAuditEntry(httpRequest)
@@ -310,6 +314,7 @@ public class BudgetController {
             }
             tenantId = tenant_id;
         }
+        mutationGuard.assertTenantOpen(tenantId);
         BudgetFundingResponse response = repository.fund(tenantId, scope, unit, request);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
@@ -376,6 +381,7 @@ public class BudgetController {
     public ResponseEntity<BudgetLedger> freeze(@RequestParam String scope, @RequestParam UnitEnum unit,
             @RequestBody(required = false) @Valid BudgetStatusTransitionRequest request,
             HttpServletRequest httpRequest) {
+        mutationGuard.assertOpenForScope(scope);
         BudgetLedger ledger = repository.freeze(scope, unit);
         String auditTenantId = ledger.getTenantId();
         auditRepository.log(buildAuditEntry(httpRequest)
@@ -405,6 +411,7 @@ public class BudgetController {
     public ResponseEntity<BudgetLedger> unfreeze(@RequestParam String scope, @RequestParam UnitEnum unit,
             @RequestBody(required = false) @Valid BudgetStatusTransitionRequest request,
             HttpServletRequest httpRequest) {
+        mutationGuard.assertOpenForScope(scope);
         BudgetLedger ledger = repository.unfreeze(scope, unit);
         String auditTenantId = ledger.getTenantId();
         auditRepository.log(buildAuditEntry(httpRequest)

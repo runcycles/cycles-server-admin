@@ -1,9 +1,123 @@
-# Complete Budget Governance v0.1.25.34 — Admin Server Audit
+# Complete Budget Governance v0.1.25.35 — Admin Server Audit
 
-**Server version:** 0.1.25.34 (2026-04-19 — supply-chain CVE follow-up; commons-lang3 pinned to 3.18.0)
-**Date:** 2026-04-19 (v0.1.25.34 commons-lang3 CVE pin), 2026-04-19 (v0.1.25.33 Spring Boot / Tomcat CVE bump), 2026-04-18 (v0.1.25.32 cross-plane read tolerance hardening), 2026-04-18 (v0.1.25.31 trace_id cross-surface correlation), 2026-04-18 (v0.1.25.30 bulk-action audit enrichment), 2026-04-18 (v0.1.25.29 budget bulk-action), 2026-04-17 (v0.1.25.28 audit sentinel split), 2026-04-17 (v0.1.25.27 audit filter DSL upgrade), 2026-04-17 (v0.1.25.26 bulk-action endpoints), 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Server version:** 0.1.25.35 (2026-04-20 — spec v0.1.25.29 CASCADE SEMANTICS; Rule 1 tenant-close cascade + Rule 2 TENANT_CLOSED mutation guard)
+**Date:** 2026-04-20 (v0.1.25.35 cascade + TENANT_CLOSED guard), 2026-04-19 (v0.1.25.34 commons-lang3 CVE pin), 2026-04-19 (v0.1.25.33 Spring Boot / Tomcat CVE bump), 2026-04-18 (v0.1.25.32 cross-plane read tolerance hardening), 2026-04-18 (v0.1.25.31 trace_id cross-surface correlation), 2026-04-18 (v0.1.25.30 bulk-action audit enrichment), 2026-04-18 (v0.1.25.29 budget bulk-action), 2026-04-17 (v0.1.25.28 audit sentinel split), 2026-04-17 (v0.1.25.27 audit filter DSL upgrade), 2026-04-17 (v0.1.25.26 bulk-action endpoints), 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.28`; adds `trace_id` W3C Trace Context correlation field on `Event` / `AuditLogEntry` / `ErrorResponse`, `X-Cycles-Trace-Id` response header, `trace_id` / `request_id` filter params on `listAuditLogs` / `listEvents`, and `trace_id` / `trace_flags` / `traceparent_inbound_valid` on `WebhookDelivery` — the v0.1.25.28 patch closes the spec gap so strict-schema consumers accept the webhook-delivery trace metadata this server persists) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.13 / Java 21 / Redis · Tomcat 10.1.54 pin · commons-lang3 3.18.0 pin
+
+### 2026-04-20 — v0.1.25.35: Cascade semantics (spec v0.1.25.29 Rule 1 + Rule 2)
+
+**Motivation.** Operator report against the dashboard: after a tenant
+is CLOSED (terminal per spec L338), its budgets remain `FROZEN`
+forever, inflating the Overview "frozen budgets" alert axis with
+items that are un-fixable by definition — the owning tenant is
+closed, so `unfreezeBudget` would fail anyway. Root cause: the admin
+treated tenant close as a pure status flip; owned objects were never
+touched. The fix is the two-rule cascade contract added to the spec
+in v0.1.25.29.
+
+**Design — two rules, not one cascade.** The spec audit revealed
+that three of the four owned types (`BudgetLedger`, `ApiKey`,
+`Reservation`) already have natural terminal states, but
+`WebhookSubscription` does not — `DISABLED` is reversible via
+`PATCH`. Two complementary rules handle this cleanly without
+widening any enum:
+
+| Rule | What it does | Covers the webhook gap how |
+|---|---|---|
+| **1 — close-time cascade** | Transition owned objects to their terminal/nearest-terminal state atomically with tenant close | Webhook → `DISABLED` (reversible in isolation) |
+| **2 — terminal-owner mutation guard** | Any mutation on an object whose parent tenant is `CLOSED` returns `409 TENANT_CLOSED` | Blocks re-enabling a cascaded-DISABLED webhook — effectively terminal |
+
+Rule 2 is also defense-in-depth: even if Rule 1 misses a row (race
+with an in-flight mutation, fresh object created mid-close), the
+guard still blocks the downstream mutation.
+
+**Cascade mapping (Rule 1).**
+
+| Owned type | Target state | Additional side effects |
+|---|---|---|
+| `BudgetLedger` | `CLOSED` | Stamp `closed_at`; aggregate `reserved` released |
+| `WebhookSubscription` | `DISABLED` | — |
+| `ApiKey` | `REVOKED` | Stamp `revoked_at`, reason `tenant_closed` |
+
+Cascade fires from both code paths that transition a tenant into
+`CLOSED`: `PATCH /admin/tenants/{id}` with `status=CLOSED` AND the
+`tenants:bulk-action` `CLOSE` branch. Idempotent — a second
+tenant-close on an already-closed tenant is a no-op (no repo list
+returns rows, zero emit).
+
+**Correlation identity.** Every audit + event emitted during a
+cascade shares:
+
+- The originating request's `request_id` + `trace_id` (existing
+  per-entry columns — operators can JOIN on either without schema
+  change).
+- A dedicated event-correlation string
+  `tenant_close_cascade:<tenant_id>:<request_id>` (or `:no-req`
+  sentinel when the request has no id) so the cascade can be
+  reconstructed from event-stream replay alone.
+
+Aggregate `RESERVATION_RELEASED_VIA_TENANT_CASCADE` fires only for
+budgets whose `reserved > 0` at close time — avoids noise events
+for already-zero ledgers. Reservation release is tracked at the
+ledger level (not per-reservation) because reservation objects live
+on the runtime plane.
+
+**Implementation split.** Two new services:
+
+| Service | Role | Why a service, not an interceptor |
+|---|---|---|
+| `TenantCloseCascadeService` | Cascade orchestrator; one transaction per child object; continues on individual-row failures to avoid half-cascaded state | — |
+| `TerminalOwnerMutationGuard` | Rule 2 check; called explicitly from each guarded controller site | A servlet interceptor would need to parse the request body early to resolve tenant-in-body mutations; explicit service calls are targeted and don't consume the stream |
+
+Guard scope in this PR is the operator-facing dashboard paths from
+the original report: `BudgetController.create/update/fund/freeze/unfreeze`
+and `WebhookTenantController.create/update`. Remaining mutation
+sites (policies, api-keys, bulk-actions, webhook-delete) are
+follow-ups tracked for .36 — scoped this slice to avoid a sprawling
+PR.
+
+**EventType surface.** Added 4 kinds +
+new `WEBHOOK` category on `EventCategory`. All four registered in
+`EventPayloadTypeMapping`; `EventPayloadContractTest` covers them
+automatically. Payload classes reuse existing DTOs
+(`EventDataBudgetLifecycle`, `EventDataSystem`, `EventDataApiKey`) —
+no new wire types. `EventModelTest` updated for the new counts
+(45 event types, 7 categories).
+
+**Test coverage.**
+
+| Layer | New tests | Pins |
+|---|---|---|
+| `TenantCloseCascadeServiceTest` | 5 | Zero-owned-objects no-op · mixed-children fan-out (4 audit + 5 events, one correlation_id) · zero-reserved skips reservation-release event · missing-request-id fallback sentinel · `CascadeResult.empty()` |
+| `TerminalOwnerMutationGuardTest` | 12 | CLOSED→409 · ACTIVE/SUSPENDED pass · null/blank/missing-tenant defer · scope parsing (bare/malformed/empty-prefix) · webhook-by-id resolution |
+| Existing controller slices | +1 new, +3 updated | Cascade-skipped when prior tenant status already CLOSED · `@MockitoBean` for the two new services in Budget/Webhook/Tenant slices |
+
+Full API suite: **737 tests green.** Spec-coverage report stays at
+`declared=46 covered=46 missing=0` — the 4 new event kinds inherit
+coverage from the new controller + service tests.
+
+**Wire-compat audit.** Additive only: new error code
+(`TENANT_CLOSED` — clients must handle 409 already; the
+`error_code` string is the only new value), 4 new `EventType` enum
+values (producers emit; consumers must already accept unknown enum
+values per the additive-fields invariant), new optional
+`cascade_summary` field on tenant-close audit + event payloads.
+Nothing removed, nothing renamed.
+
+**Non-goals (explicitly out of scope).**
+
+- **Re-opening a closed tenant** — close is terminal by spec, no
+  un-close affordance.
+- **New `WebhookStatus` terminal value** — Rule 2 makes DISABLED
+  effectively-terminal without a wire change.
+- **Backfill cascade** for tenants already closed before .35.
+  Historical Overview inflation remains until a follow-up one-shot
+  migration lands. Documented as follow-up if operators request.
+- **Runtime-plane changes** — cascade is a governance-plane
+  concern; runtime reads propagate naturally.
+
+---
 
 ### 2026-04-19 — v0.1.25.34: commons-lang3 3.18.0 pin (CVE-2025-48924)
 

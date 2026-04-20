@@ -1,6 +1,7 @@
 package io.runcycles.admin.api.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.admin.api.service.TerminalOwnerMutationGuard;
 import io.runcycles.admin.api.service.WebhookService;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
@@ -37,6 +38,7 @@ class WebhookTenantControllerTest {
     @MockitoBean private AuditRepository auditRepository;
     @MockitoBean private ApiKeyRepository apiKeyRepository;
     @MockitoBean private JedisPool jedisPool;
+    @MockitoBean private TerminalOwnerMutationGuard mutationGuard;
 
     private void setupApiKeyAuth() {
         when(apiKeyRepository.validate("valid-api-key")).thenReturn(

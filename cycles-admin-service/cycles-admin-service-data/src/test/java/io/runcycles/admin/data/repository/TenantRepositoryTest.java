@@ -430,6 +430,22 @@ class TenantRepositoryTest {
                 });
     }
 
+    // Spec v0.1.25.29: re-issuing CLOSE on an already-CLOSED tenant is a
+    // no-op (CASCADE SEMANTICS idempotency clause).
+    @Test
+    void update_statusClosedToClosed_isNoOp() throws Exception {
+        String storedJson = storedTenantJson(TenantStatus.CLOSED);
+        when(jedis.get("tenant:tenant-1")).thenReturn(storedJson);
+
+        TenantUpdateRequest req = new TenantUpdateRequest();
+        req.setStatus(TenantStatus.CLOSED);
+
+        Tenant result = repository.update("tenant-1", req);
+
+        assertThat(result.getStatus()).isEqualTo(TenantStatus.CLOSED);
+        verify(jedis, never()).set(anyString(), anyString());
+    }
+
     @Test
     void update_metadata_updatesSuccessfully() throws Exception {
         String storedJson = storedTenantJson(TenantStatus.ACTIVE);

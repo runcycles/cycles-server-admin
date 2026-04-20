@@ -14,6 +14,101 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.35] — 2026-04-20
+
+### Added
+
+- **Tenant-close cascade (spec v0.1.25.29 Rule 1)** — when a tenant
+  transitions to `CLOSED`, owned objects now transition atomically to
+  their terminal states in the same request:
+  - **BudgetLedger** → `CLOSED` (stamps `closed_at`; releases any
+    outstanding `reserved` amount).
+  - **WebhookSubscription** → `DISABLED`.
+  - **ApiKey** → `REVOKED` (stamps `revoked_at`, reason
+    `tenant_closed`).
+  - Any budget that had `reserved > 0` at close time also emits an
+    aggregate `reservation.released_via_tenant_cascade` event with the
+    total released amount.
+
+  All touched rows produce one audit entry and one event apiece, and
+  every audit + event in the cascade shares the originating request's
+  `request_id` + `trace_id` plus a dedicated
+  `correlation_id = tenant_close_cascade:<tenant_id>:<request_id>` so
+  operators can JOIN by any of the three. Cascade is triggered by both
+  `PATCH /admin/tenants/{id}` with `status=CLOSED` and the
+  `tenants:bulk-action` `CLOSE` path; idempotent when the tenant is
+  already closed.
+
+- **`TENANT_CLOSED` mutation guard (spec v0.1.25.29 Rule 2)** — new
+  shared error code (409). Mutating operations on any object whose
+  owning tenant is `CLOSED` now short-circuit with
+  `error_code=TENANT_CLOSED` instead of reaching the state-machine
+  layer. Initial scope:
+  - `POST /admin/budgets` (create)
+  - `PATCH /admin/budgets/{scope}` (update)
+  - `POST /admin/budgets/{scope}:fund`
+  - `POST /admin/budgets/{scope}:freeze`
+  - `POST /admin/budgets/{scope}:unfreeze`
+  - `POST /admin/webhooks` (create)
+  - `PATCH /admin/webhooks/{id}` (update — closes the "DISABLED
+    webhook on a closed tenant can be re-enabled" gap without widening
+    `WebhookStatus`)
+
+  A tenant id that is null/blank or whose lookup fails defers to the
+  caller's own validation — the guard never masks a 404 as a 409.
+
+- **Four cascade event kinds** on `EventType` (spec v0.1.25.29):
+  `BUDGET_CLOSED_VIA_TENANT_CASCADE`,
+  `RESERVATION_RELEASED_VIA_TENANT_CASCADE`,
+  `WEBHOOK_DISABLED_VIA_TENANT_CASCADE`,
+  `API_KEY_REVOKED_VIA_TENANT_CASCADE`. New `WEBHOOK` event category
+  anchors the webhook cascade kind. All four are registered in
+  `EventPayloadTypeMapping` and covered by `EventPayloadContractTest`.
+
+### Changed
+
+- **Tenant close audit + event payload** now carries a
+  `cascade_summary` map (`budgets_closed`, `webhooks_disabled`,
+  `api_keys_revoked`, `reservations_released`) so downstream consumers
+  can read the cascade outcome without a follow-up query.
+
+### Internal
+
+- New services: `TenantCloseCascadeService` (cascade orchestrator,
+  sequential-idempotent; one transaction per child object; continues
+  on individual-row failures to avoid half-cascaded state), and
+  `TerminalOwnerMutationGuard` (Rule 2 check, called explicitly from
+  each guarded controller site rather than via a servlet interceptor
+  — avoids request-body pre-consumption for the tenant-in-body
+  mutations).
+- 17 new unit tests pin the cascade fan-out, correlation-id
+  composition, reservation-release emission threshold, and guard
+  behavior across blank/malformed/missing inputs. No wire break —
+  additive events + additive error code.
+
+## [0.1.25.34] — 2026-04-19
+
+### Security
+
+- **commons-lang3 3.18.0 pin** (CVE-2025-48924) — follow-up to the
+  v0.1.25.33 Spring Boot bump; Trivy flagged one remaining HIGH
+  finding that SB 3.5.13's BOM didn't cover. Added
+  `<commons-lang3.version>3.18.0</commons-lang3.version>` property
+  override alongside the Tomcat override; removable when SB ships a
+  release with 3.18.0+ managed. No API surface change.
+
+## [0.1.25.33] — 2026-04-19
+
+### Security
+
+- **Spring Boot 3.5.11 → 3.5.13 + Tomcat 10.1.54 pin** — closes 4
+  HIGH/CRITICAL CVEs against `tomcat-embed-core 10.1.52`
+  (CVE-2026-29145 CRITICAL, CVE-2026-29129 HIGH, CVE-2026-34483
+  HIGH, CVE-2026-34487 HIGH). SB 3.5.13 brings 10.1.53 transitively;
+  the `<tomcat.version>10.1.54</tomcat.version>` property override
+  picks up the remaining two. Patch-level bump within the same
+  3.5.x line — no API surface change.
+
 ## [0.1.25.32] — 2026-04-18
 
 ### Changed

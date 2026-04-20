@@ -1098,4 +1098,87 @@ class WebhookRepositoryTest {
         assertThat(result).hasSize(4);
         verify(jedis, never()).get("webhook:whsub_5");
     }
+
+    // ---- cascadeDisable (spec v0.1.25.29 Rule 1) ----
+
+    @Test
+    void cascadeDisable_noOwnedSubscriptions_returnsEmpty() {
+        when(jedis.smembers("webhooks:tenant-1")).thenReturn(Collections.emptySet());
+
+        List<WebhookRepository.CascadeDisableOutcome> outcomes = repository.cascadeDisable("tenant-1");
+
+        assertThat(outcomes).isEmpty();
+        verify(jedis, never()).get(anyString());
+    }
+
+    @Test
+    void cascadeDisable_nullIndex_returnsEmpty() {
+        when(jedis.smembers("webhooks:tenant-1")).thenReturn(null);
+
+        List<WebhookRepository.CascadeDisableOutcome> outcomes = repository.cascadeDisable("tenant-1");
+
+        assertThat(outcomes).isEmpty();
+    }
+
+    @Test
+    void cascadeDisable_mixedStatuses_transitionsOnlyNonDisabled() throws Exception {
+        WebhookSubscription active = webhookRow("whsub_1", "tenant-1", "https://a/",
+            WebhookStatus.ACTIVE, EventType.TENANT_CREATED);
+        WebhookSubscription paused = webhookRow("whsub_2", "tenant-1", "https://b/",
+            WebhookStatus.PAUSED, EventType.TENANT_CREATED);
+        WebhookSubscription disabled = webhookRow("whsub_3", "tenant-1", "https://c/",
+            WebhookStatus.DISABLED, EventType.TENANT_CREATED);
+        // Pre-compute JSON outside when(...) — Jackson invocations against the
+        // @Spy objectMapper inside a stubbing expression trip Mockito's
+        // UnfinishedStubbingException detector.
+        String json1 = objectMapper.writeValueAsString(active);
+        String json2 = objectMapper.writeValueAsString(paused);
+        String json3 = objectMapper.writeValueAsString(disabled);
+        when(jedis.smembers("webhooks:tenant-1"))
+            .thenReturn(new LinkedHashSet<>(List.of("whsub_1", "whsub_2", "whsub_3")));
+        when(jedis.get("webhook:whsub_1")).thenReturn(json1);
+        when(jedis.get("webhook:whsub_2")).thenReturn(json2);
+        when(jedis.get("webhook:whsub_3")).thenReturn(json3);
+
+        List<WebhookRepository.CascadeDisableOutcome> outcomes = repository.cascadeDisable("tenant-1");
+
+        assertThat(outcomes).hasSize(2);
+        assertThat(outcomes).extracting(WebhookRepository.CascadeDisableOutcome::subscriptionId)
+            .containsExactlyInAnyOrder("whsub_1", "whsub_2");
+        assertThat(outcomes).extracting(WebhookRepository.CascadeDisableOutcome::priorStatus)
+            .containsExactlyInAnyOrder(WebhookStatus.ACTIVE, WebhookStatus.PAUSED);
+        assertThat(outcomes.get(0).toString()).contains("whsub_");
+    }
+
+    @Test
+    void cascadeDisable_missingPayload_skipsRow() throws Exception {
+        WebhookSubscription active = webhookRow("whsub_1", "tenant-1", "https://a/",
+            WebhookStatus.ACTIVE, EventType.TENANT_CREATED);
+        String json = objectMapper.writeValueAsString(active);
+        when(jedis.smembers("webhooks:tenant-1"))
+            .thenReturn(new LinkedHashSet<>(List.of("whsub_stale", "whsub_1")));
+        when(jedis.get("webhook:whsub_stale")).thenReturn(null);
+        when(jedis.get("webhook:whsub_1")).thenReturn(json);
+
+        List<WebhookRepository.CascadeDisableOutcome> outcomes = repository.cascadeDisable("tenant-1");
+
+        assertThat(outcomes).hasSize(1);
+        assertThat(outcomes.get(0).subscriptionId()).isEqualTo("whsub_1");
+    }
+
+    @Test
+    void cascadeDisable_deserializationException_skipsRowAndContinues() throws Exception {
+        WebhookSubscription active = webhookRow("whsub_1", "tenant-1", "https://a/",
+            WebhookStatus.ACTIVE, EventType.TENANT_CREATED);
+        String json = objectMapper.writeValueAsString(active);
+        when(jedis.smembers("webhooks:tenant-1"))
+            .thenReturn(new LinkedHashSet<>(List.of("whsub_bad", "whsub_1")));
+        when(jedis.get("webhook:whsub_bad")).thenReturn("not-json");
+        when(jedis.get("webhook:whsub_1")).thenReturn(json);
+
+        List<WebhookRepository.CascadeDisableOutcome> outcomes = repository.cascadeDisable("tenant-1");
+
+        assertThat(outcomes).hasSize(1);
+        assertThat(outcomes.get(0).subscriptionId()).isEqualTo("whsub_1");
+    }
 }

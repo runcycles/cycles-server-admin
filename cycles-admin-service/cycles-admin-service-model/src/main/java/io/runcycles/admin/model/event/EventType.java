@@ -15,6 +15,7 @@ public enum EventType {
     BUDGET_FROZEN("budget.frozen", EventCategory.BUDGET),
     BUDGET_UNFROZEN("budget.unfrozen", EventCategory.BUDGET),
     BUDGET_CLOSED("budget.closed", EventCategory.BUDGET),
+    BUDGET_CLOSED_VIA_TENANT_CASCADE("budget.closed_via_tenant_cascade", EventCategory.BUDGET),
     BUDGET_THRESHOLD_CROSSED("budget.threshold_crossed", EventCategory.BUDGET),
     BUDGET_EXHAUSTED("budget.exhausted", EventCategory.BUDGET),
     BUDGET_OVER_LIMIT_ENTERED("budget.over_limit_entered", EventCategory.BUDGET),
@@ -27,6 +28,7 @@ public enum EventType {
     RESERVATION_EXPIRED("reservation.expired", EventCategory.RESERVATION),
     RESERVATION_EXPIRY_RATE_SPIKE("reservation.expiry_rate_spike", EventCategory.RESERVATION),
     RESERVATION_COMMIT_OVERAGE("reservation.commit_overage", EventCategory.RESERVATION),
+    RESERVATION_RELEASED_VIA_TENANT_CASCADE("reservation.released_via_tenant_cascade", EventCategory.RESERVATION),
     // Tenant (6)
     TENANT_CREATED("tenant.created", EventCategory.TENANT),
     TENANT_UPDATED("tenant.updated", EventCategory.TENANT),
@@ -37,10 +39,13 @@ public enum EventType {
     // API Key (6)
     API_KEY_CREATED("api_key.created", EventCategory.API_KEY),
     API_KEY_REVOKED("api_key.revoked", EventCategory.API_KEY),
+    API_KEY_REVOKED_VIA_TENANT_CASCADE("api_key.revoked_via_tenant_cascade", EventCategory.API_KEY),
     API_KEY_EXPIRED("api_key.expired", EventCategory.API_KEY),
     API_KEY_PERMISSIONS_CHANGED("api_key.permissions_changed", EventCategory.API_KEY),
     API_KEY_AUTH_FAILED("api_key.auth_failed", EventCategory.API_KEY),
     API_KEY_AUTH_FAILURE_RATE_SPIKE("api_key.auth_failure_rate_spike", EventCategory.API_KEY),
+    // Webhook (cascade)
+    WEBHOOK_DISABLED_VIA_TENANT_CASCADE("webhook.disabled_via_tenant_cascade", EventCategory.WEBHOOK),
     // Policy (3)
     POLICY_CREATED("policy.created", EventCategory.POLICY),
     POLICY_UPDATED("policy.updated", EventCategory.POLICY),

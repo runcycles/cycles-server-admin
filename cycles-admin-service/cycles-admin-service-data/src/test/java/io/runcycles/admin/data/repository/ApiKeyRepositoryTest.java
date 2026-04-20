@@ -1253,4 +1253,99 @@ class ApiKeyRepositoryTest {
         assertThat(result).hasSize(5);
         verify(jedis, atMost(cap)).get(anyString());
     }
+
+    // --- cascadeRevoke (spec v0.1.25.29 Rule 1) ---
+
+    @Test
+    void cascadeRevoke_noOwnedKeys_returnsEmpty() {
+        when(jedis.smembers("apikeys:tenant-1")).thenReturn(Collections.emptySet());
+
+        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "tenant_closed");
+
+        assertThat(outcomes).isEmpty();
+        verify(jedis, never()).set(anyString(), anyString());
+    }
+
+    @Test
+    void cascadeRevoke_mixedStatuses_revokesOnlyActive() throws Exception {
+        ApiKey active1 = ApiKey.builder().keyId("key_1").tenantId("tenant-1").name("ci").keyPrefix("cyc_live_1")
+            .keyHash("h").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        ApiKey revoked = ApiKey.builder().keyId("key_2").tenantId("tenant-1").name("old").keyPrefix("cyc_live_2")
+            .keyHash("h").status(ApiKeyStatus.REVOKED).createdAt(Instant.now()).build();
+        ApiKey expired = ApiKey.builder().keyId("key_3").tenantId("tenant-1").name("stale").keyPrefix("cyc_live_3")
+            .keyHash("h").status(ApiKeyStatus.EXPIRED).createdAt(Instant.now()).build();
+        // Pre-compute JSON outside when(...) — Jackson invocations against the
+        // @Spy objectMapper inside a stubbing expression trip Mockito's
+        // UnfinishedStubbingException detector.
+        String json1 = objectMapper.writeValueAsString(active1);
+        String json2 = objectMapper.writeValueAsString(revoked);
+        String json3 = objectMapper.writeValueAsString(expired);
+        when(jedis.smembers("apikeys:tenant-1"))
+            .thenReturn(new LinkedHashSet<>(List.of("key_1", "key_2", "key_3")));
+        when(jedis.get("apikey:key_1")).thenReturn(json1);
+        when(jedis.get("apikey:key_2")).thenReturn(json2);
+        when(jedis.get("apikey:key_3")).thenReturn(json3);
+
+        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "tenant_closed");
+
+        assertThat(outcomes).hasSize(1);
+        assertThat(outcomes.get(0).keyId()).isEqualTo("key_1");
+        assertThat(outcomes.get(0).priorStatus()).isEqualTo(ApiKeyStatus.ACTIVE);
+        assertThat(outcomes.get(0).name()).isEqualTo("ci");
+        assertThat(outcomes.get(0).toString()).contains("key_1");
+
+        verify(jedis).set(eq("apikey:key_1"), anyString());
+        verify(jedis, never()).set(eq("apikey:key_2"), anyString());
+        verify(jedis, never()).set(eq("apikey:key_3"), anyString());
+    }
+
+    @Test
+    void cascadeRevoke_nullReason_skipsReasonUpdate() throws Exception {
+        ApiKey active = ApiKey.builder().keyId("key_1").tenantId("tenant-1").name("ci").keyPrefix("cyc_live_1")
+            .keyHash("h").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String json = objectMapper.writeValueAsString(active);
+        when(jedis.smembers("apikeys:tenant-1"))
+            .thenReturn(new LinkedHashSet<>(List.of("key_1")));
+        when(jedis.get("apikey:key_1")).thenReturn(json);
+
+        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", null);
+
+        assertThat(outcomes).hasSize(1);
+    }
+
+    @Test
+    void cascadeRevoke_emptyReason_skipsReasonUpdate() throws Exception {
+        ApiKey active = ApiKey.builder().keyId("key_1").tenantId("tenant-1").name("ci").keyPrefix("cyc_live_1")
+            .keyHash("h").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String json = objectMapper.writeValueAsString(active);
+        when(jedis.smembers("apikeys:tenant-1"))
+            .thenReturn(new LinkedHashSet<>(List.of("key_1")));
+        when(jedis.get("apikey:key_1")).thenReturn(json);
+
+        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "");
+
+        assertThat(outcomes).hasSize(1);
+    }
+
+    @Test
+    void cascadeRevoke_serializationException_skipsRowAndContinues() throws Exception {
+        ApiKey active1 = ApiKey.builder().keyId("key_1").tenantId("tenant-1").name("bad").keyPrefix("cyc_live_1")
+            .keyHash("h").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        ApiKey active2 = ApiKey.builder().keyId("key_2").tenantId("tenant-1").name("good").keyPrefix("cyc_live_2")
+            .keyHash("h").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String json1 = objectMapper.writeValueAsString(active1);
+        String json2 = objectMapper.writeValueAsString(active2);
+        when(jedis.smembers("apikeys:tenant-1"))
+            .thenReturn(new LinkedHashSet<>(List.of("key_1", "key_2")));
+        when(jedis.get("apikey:key_1")).thenReturn(json1);
+        when(jedis.get("apikey:key_2")).thenReturn(json2);
+        when(jedis.set(eq("apikey:key_1"), anyString()))
+            .thenThrow(new RuntimeException("redis down"));
+        when(jedis.set(eq("apikey:key_2"), anyString())).thenReturn("OK");
+
+        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "tenant_closed");
+
+        assertThat(outcomes).hasSize(1);
+        assertThat(outcomes.get(0).keyId()).isEqualTo("key_2");
+    }
 }

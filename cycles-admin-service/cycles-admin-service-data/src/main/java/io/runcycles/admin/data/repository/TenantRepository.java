@@ -284,7 +284,13 @@ public class TenantRepository {
             if (request.getStatus() != null) {
                 TenantStatus oldStatus = tenant.getStatus() != null ? tenant.getStatus() : TenantStatus.ACTIVE;
                 TenantStatus newStatus = request.getStatus();
+                // Spec v0.1.25.29: re-issuing close on an already-CLOSED tenant
+                // is a no-op (matches the CASCADE SEMANTICS idempotency clause);
+                // any other transition away from CLOSED is still rejected.
                 if (oldStatus == TenantStatus.CLOSED) {
+                    if (newStatus == TenantStatus.CLOSED) {
+                        return tenant;
+                    }
                     throw new GovernanceException(
                         io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
                         "Cannot transition from CLOSED", 400);

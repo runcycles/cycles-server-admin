@@ -2,6 +2,7 @@ package io.runcycles.admin.api.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.api.service.EventService;
+import io.runcycles.admin.api.service.TenantCloseCascadeService;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.idempotency.IdempotencyStore;
 import io.runcycles.admin.data.repository.AuditRepository;
@@ -43,6 +44,7 @@ class TenantControllerTest {
     @MockitoBean private JedisPool jedisPool;
     @MockitoBean private EventService eventService;
     @MockitoBean private IdempotencyStore idempotencyStore;
+    @MockitoBean private TenantCloseCascadeService tenantCloseCascadeService;
 
     private static final String ADMIN_KEY = "test-admin-key";
 
@@ -473,9 +475,17 @@ class TenantControllerTest {
 
     @Test
     void updateTenant_withClosedStatus_emitsClosedEvent() throws Exception {
+        // Spec v0.1.25.29 Rule 1: PATCH→CLOSED reads the prior tenant and
+        // runs the cascade before flipping status. Stub both so the
+        // controller completes normally.
+        Tenant prior = Tenant.builder()
+                .tenantId("tenant-1").name("Test").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
         Tenant updated = Tenant.builder()
                 .tenantId("tenant-1").name("Test").status(TenantStatus.CLOSED).createdAt(Instant.now()).build();
+        when(tenantRepository.get("tenant-1")).thenReturn(prior);
         when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(updated);
+        when(tenantCloseCascadeService.cascade(eq("tenant-1"), any()))
+                .thenReturn(new TenantCloseCascadeService.CascadeResult(2, 1, 1, 0L));
 
         mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -483,7 +493,28 @@ class TenantControllerTest {
                         .content("{\"status\":\"CLOSED\"}"))
                 .andExpect(status().isOk());
 
+        verify(tenantCloseCascadeService).cascade(eq("tenant-1"), any());
         verify(eventService).emit(eq(EventType.TENANT_CLOSED), eq("tenant-1"), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void updateTenant_priorStatusAlreadyClosed_skipsCascade() throws Exception {
+        // Re-close must be a no-op: cascade is not re-run when the tenant is
+        // already CLOSED. TenantRepository's idempotent short-circuit handles
+        // the status-flip side; the controller must avoid redundant child
+        // writes.
+        Tenant prior = Tenant.builder()
+                .tenantId("tenant-1").name("Test").status(TenantStatus.CLOSED).createdAt(Instant.now()).build();
+        when(tenantRepository.get("tenant-1")).thenReturn(prior);
+        when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(prior);
+
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"CLOSED\"}"))
+                .andExpect(status().isOk());
+
+        verify(tenantCloseCascadeService, org.mockito.Mockito.never()).cascade(any(), any());
     }
 
     @Test
