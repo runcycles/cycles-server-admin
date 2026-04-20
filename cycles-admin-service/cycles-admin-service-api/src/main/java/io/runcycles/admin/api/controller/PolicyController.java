@@ -13,6 +13,7 @@ import io.runcycles.admin.api.config.ScopeFilterUtil;
 import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.api.service.EventService;
+import io.runcycles.admin.api.service.TerminalOwnerMutationGuard;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -34,6 +35,7 @@ public class PolicyController {
     @Autowired private AuditRepository auditRepository;
     @Autowired private EventService eventService;
     @Autowired private ObjectMapper objectMapper;
+    @Autowired private TerminalOwnerMutationGuard mutationGuard;
     @PostMapping @Operation(operationId = "createPolicy")
     public ResponseEntity<Policy> create(@Valid @RequestBody PolicyCreateRequest request, HttpServletRequest httpRequest) {
         // v0.1.25.15: enforce canonical scope-pattern grammar. Wildcards
@@ -58,6 +60,7 @@ public class PolicyController {
         }
         String tenantId = isAdminAuth ? request.getTenantId() : authTenantId;
         ScopeValidator.validateScopeMatchesTenant(request.getScopePattern(), tenantId);
+        mutationGuard.assertTenantOpen(tenantId);
         Policy policy = repository.create(tenantId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
@@ -101,6 +104,7 @@ public class PolicyController {
         // the persisted record's tenant_id is trusted as the audit subject.
         String authTenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         boolean isAdminAuth = authTenantId == null;
+        mutationGuard.assertOpenForScope(scopePattern);
         Policy policy = repository.update(authTenantId, policyId, request);
         // For audit / event the subject tenant is the policy's stored owner,
         // not the (possibly null) caller — keeps history attributable to the

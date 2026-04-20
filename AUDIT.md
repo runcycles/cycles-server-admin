@@ -1,9 +1,91 @@
-# Complete Budget Governance v0.1.25.35 — Admin Server Audit
+# Complete Budget Governance v0.1.25.36 — Admin Server Audit
 
-**Server version:** 0.1.25.35 (2026-04-20 — spec v0.1.25.29 CASCADE SEMANTICS; Rule 1 tenant-close cascade + Rule 2 TENANT_CLOSED mutation guard)
-**Date:** 2026-04-20 (v0.1.25.35 cascade + TENANT_CLOSED guard), 2026-04-19 (v0.1.25.34 commons-lang3 CVE pin), 2026-04-19 (v0.1.25.33 Spring Boot / Tomcat CVE bump), 2026-04-18 (v0.1.25.32 cross-plane read tolerance hardening), 2026-04-18 (v0.1.25.31 trace_id cross-surface correlation), 2026-04-18 (v0.1.25.30 bulk-action audit enrichment), 2026-04-18 (v0.1.25.29 budget bulk-action), 2026-04-17 (v0.1.25.28 audit sentinel split), 2026-04-17 (v0.1.25.27 audit filter DSL upgrade), 2026-04-17 (v0.1.25.26 bulk-action endpoints), 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Server version:** 0.1.25.36 (2026-04-20 — spec v0.1.25.29 CASCADE SEMANTICS Rule 2 guard coverage expanded across all admin-mutating endpoints)
+**Date:** 2026-04-20 (v0.1.25.36 Rule 2 guard expansion: policies + api-keys + webhook-admin create/update/delete/test/replay + budgets and webhooks bulk-action per-row + webhook-tenant delete/test), 2026-04-20 (v0.1.25.35 cascade + TENANT_CLOSED guard), 2026-04-19 (v0.1.25.34 commons-lang3 CVE pin), 2026-04-19 (v0.1.25.33 Spring Boot / Tomcat CVE bump), 2026-04-18 (v0.1.25.32 cross-plane read tolerance hardening), 2026-04-18 (v0.1.25.31 trace_id cross-surface correlation), 2026-04-18 (v0.1.25.30 bulk-action audit enrichment), 2026-04-18 (v0.1.25.29 budget bulk-action), 2026-04-17 (v0.1.25.28 audit sentinel split), 2026-04-17 (v0.1.25.27 audit filter DSL upgrade), 2026-04-17 (v0.1.25.26 bulk-action endpoints), 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.29`; adds CASCADE SEMANTICS — Rule 1 `POST /admin/tenants/{id}` PATCH→CLOSED cascades owned budgets (→CLOSED), webhook subscriptions (→DISABLED), and API keys (→REVOKED) atomically under a shared correlation_id, and Rule 2 rejects any mutating operation against an object whose owning tenant is CLOSED with 409 `TENANT_CLOSED`; adds the `TENANT_CLOSED` error code to the shared enum and the four `*_via_tenant_cascade` event kinds: `budget.closed_via_tenant_cascade`, `webhook.disabled_via_tenant_cascade`, `api_key.revoked_via_tenant_cascade`, `reservation.released_via_tenant_cascade`) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.13 / Java 21 / Redis · Tomcat 10.1.54 pin · commons-lang3 3.18.0 pin
+
+### 2026-04-20 — v0.1.25.36: Rule 2 guard coverage completed (spec v0.1.25.29 MUST)
+
+**Motivation.** A conformance review of server v0.1.25.35 against
+governance-admin spec v0.1.25.29 found that Rule 2 (terminal-owner
+mutation guard) was wired only into `BudgetController`
+(create/update/fund/freeze/unfreeze) and `WebhookTenantController`
+(create/update). The remaining admin-mutating endpoints — policies,
+API keys, admin-scoped webhooks (create/update/delete/test/replay),
+webhook-tenant delete/test, and the budgets + webhooks bulk-action
+endpoints' per-row apply — still let a mutation land against an
+object whose owning tenant was `CLOSED`, violating a spec MUST.
+v0.1.25.35's own AUDIT entry scoped this to a ".36 follow-up." This
+release closes that gap.
+
+**Scope of this release — guard callsites added.**
+
+| Controller | Endpoint(s) | Guard method used |
+|---|---|---|
+| `PolicyController` | `createPolicy`, `updatePolicy` | `assertTenantOpen(tenantId)`, `assertOpenForScope(scope)` |
+| `ApiKeyController` | `createApiKey`, `updateApiKey`, `revokeApiKey` | `assertTenantOpen(tenantId)` — revoke/update resolve owner via inline JedisPool read of `apikey:<id>` |
+| `WebhookAdminController` | `create`, `update`, `delete`, `test`, `replay`, `bulk-action` (per-row) | `assertTenantOpen`, `assertOpenForWebhook` |
+| `WebhookTenantController` | `delete`, `test` (create + update were already guarded) | `assertTenantOpen(existing.getTenantId())` |
+| `BudgetController` | `bulk-action` (per-row, pre-apply) | `assertTenantOpen(ledger.getTenantId())` |
+
+Controllers not in this release: tenant-scoped endpoints that mutate
+the tenant itself (`TenantController.bulkAction` SUSPEND branch etc.)
+stay out of scope — Rule 2 applies to *owned* objects; the tenant's
+own lifecycle is governed by Rule 1 + the existing
+`INVALID_TRANSITION` state machine.
+
+**Bulk-action behavior.** For both budgets and webhooks, a closed-
+owner row lands in `failed[]` with `error_code: "TENANT_CLOSED"`
+rather than aborting the whole batch — same bucketing discipline as
+the existing per-row rejection cases. `classifyFailureCode` /
+`classifyBudgetFailureCode` gained a `case TENANT_CLOSED → "TENANT_CLOSED"`
+branch so the row-level wire code matches the envelope-level one.
+
+**API-key owner resolution.** `updateApiKey` and `revokeApiKey` do
+not carry `tenant_id` on the request — the owning tenant is derived
+from the stored key record. To keep the guard callsite tight, both
+paths resolve the tenant via an inline `jedisPool.getResource()` +
+`jedis.get("apikey:<id>")` + `objectMapper.readValue(...)` (the same
+pattern already used by `updateApiKey` to load the prior record). A
+lookup miss → `null` tenant → guard no-ops, deferring to the
+controller's own 404 on the missing-key path; this keeps the guard
+from leaking existence via a different error code.
+
+**Test coverage added.** Each newly-guarded mutation site has a new
+contract test that stubs
+`doThrow(new GovernanceException(ErrorCode.TENANT_CLOSED, ..., 409))`
+on the mocked `TerminalOwnerMutationGuard` and asserts:
+- `409 Conflict` + `error: TENANT_CLOSED` for single-object paths.
+- Row lands in `failed[]` with `error_code: TENANT_CLOSED` and no
+  downstream repo/service call for bulk-action paths.
+
+New tests:
+- `PolicyControllerTest`: `createPolicy_closedTenant_returns409_tenantClosed`, `updatePolicy_closedTenant_returns409_tenantClosed`.
+- `ApiKeyControllerTest`: `createApiKey_closedTenant_returns409_tenantClosed`.
+- `WebhookAdminControllerTest`: `updateWebhook_closedTenant_returns409_tenantClosed`, `bulkActionWebhooks_closedTenantRow_landsInFailed_tenantClosed`.
+- `WebhookTenantControllerTest`: `deleteWebhook_closedTenant_returns409_tenantClosed`, `testWebhook_closedTenant_returns409_tenantClosed`.
+- `BudgetControllerBulkActionTest`: `bulkAction_closedTenantRow_landsInFailed_tenantClosed`.
+
+All four previously-unmocked test slices (`PolicyControllerTest`,
+`ApiKeyControllerTest`, `WebhookAdminControllerTest`,
+`BudgetControllerBulkActionTest`) now declare
+`@MockitoBean private TerminalOwnerMutationGuard mutationGuard;` so
+the `@WebMvcTest` context can wire the controllers without pulling
+the real `TenantRepository` / `WebhookRepository` transitive deps.
+
+**No wire change.** The `TENANT_CLOSED` error code landed in the
+shared `ErrorCode` enum in v0.1.25.35; .36 is purely additional
+callsites + row-level classifier coverage. OpenAPI contract diff,
+DTO contract tests, property-based audit invariants: unchanged.
+`declared=46 covered=46 missing=0` still holds.
+
+**Conformance posture vs. spec v0.1.25.29.**
+
+| Rule | v0.1.25.35 | v0.1.25.36 |
+|---|---|---|
+| Rule 1 — close-time cascade | ✅ complete | ✅ complete |
+| Rule 2 — terminal-owner mutation guard | ⚠️ partial (budgets + webhook-tenant create/update only) | ✅ complete (all admin mutation sites) |
 
 ### 2026-04-20 — v0.1.25.35: Cascade semantics (spec v0.1.25.29 Rule 1 + Rule 2)
 

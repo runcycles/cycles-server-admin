@@ -35,6 +35,7 @@ class ApiKeyControllerTest {
     @MockitoBean private AuditRepository auditRepository;
     @MockitoBean private io.runcycles.admin.api.service.EventService eventService;
     @MockitoBean private JedisPool jedisPool;
+    @MockitoBean private io.runcycles.admin.api.service.TerminalOwnerMutationGuard mutationGuard;
 
     private static final String ADMIN_KEY = "test-admin-key";
 
@@ -95,6 +96,23 @@ class ApiKeyControllerTest {
                         .param("reason", "test"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("REVOKED"));
+    }
+
+    // v0.1.25.36 — Cascade Rule 2: owner-tenant guard on create.
+    @Test
+    void createApiKey_closedTenant_returns409_tenantClosed() throws Exception {
+        doThrow(new GovernanceException(ErrorCode.TENANT_CLOSED,
+            "Tenant tenant-1 is closed; owned objects are read-only", 409))
+            .when(mutationGuard).assertTenantOpen("tenant-1");
+
+        mockMvc.perform(post("/v1/admin/api-keys")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tenant_id\":\"tenant-1\",\"name\":\"Blocked\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("TENANT_CLOSED"));
+
+        verify(apiKeyRepository, never()).create(any());
     }
 
     @Test

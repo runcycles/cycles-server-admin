@@ -4,6 +4,7 @@ import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.api.service.BulkActionAuditMetadataBuilder;
 import io.runcycles.admin.api.service.EventService;
+import io.runcycles.admin.api.service.TerminalOwnerMutationGuard;
 import io.runcycles.admin.api.service.WebhookService;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.idempotency.IdempotencyStore;
@@ -48,12 +49,16 @@ public class WebhookAdminController {
     @Autowired private WebhookRepository webhookRepository;
     @Autowired private AuditRepository auditRepository;
     @Autowired private IdempotencyStore idempotencyStore;
+    @Autowired private TerminalOwnerMutationGuard mutationGuard;
 
     @PostMapping @Operation(operationId = "createWebhookSubscription")
     public ResponseEntity<WebhookCreateResponse> create(
             @RequestParam(required = false) String tenant_id,
             @Valid @RequestBody WebhookCreateRequest request, HttpServletRequest httpRequest) {
         String tenantId = tenant_id != null ? tenant_id : "__system__";
+        // Rule 2: refuse creating a subscription under a CLOSED tenant. Guard
+        // no-ops on the "__system__" sentinel (no tenant record exists for it).
+        if (tenant_id != null) mutationGuard.assertTenantOpen(tenantId);
         WebhookCreateResponse response = webhookService.create(tenantId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
@@ -115,6 +120,7 @@ public class WebhookAdminController {
     public ResponseEntity<WebhookSubscription> update(
             @PathVariable("subscription_id") String subscriptionId,
             @Valid @RequestBody WebhookUpdateRequest request, HttpServletRequest httpRequest) {
+        mutationGuard.assertOpenForWebhook(subscriptionId);
         WebhookSubscription updated = webhookService.update(subscriptionId, request);
         java.util.Map<String, Object> updateMeta = new java.util.LinkedHashMap<>();
         updateMeta.put("url", updated.getUrl());
@@ -134,6 +140,7 @@ public class WebhookAdminController {
     @DeleteMapping("/{subscription_id}") @Operation(operationId = "deleteWebhookSubscription")
     public ResponseEntity<Void> delete(@PathVariable("subscription_id") String subscriptionId, HttpServletRequest httpRequest) {
         WebhookSubscription sub = webhookService.get(subscriptionId);
+        mutationGuard.assertTenantOpen(sub.getTenantId());
         webhookService.delete(subscriptionId);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(sub.getTenantId())
@@ -147,6 +154,7 @@ public class WebhookAdminController {
     @PostMapping("/{subscription_id}/test") @Operation(operationId = "testWebhookSubscription")
     public ResponseEntity<WebhookTestResponse> test(
             @PathVariable("subscription_id") String subscriptionId, HttpServletRequest httpRequest) {
+        mutationGuard.assertOpenForWebhook(subscriptionId);
         WebhookTestResponse response = webhookService.test(subscriptionId);
         java.util.Map<String, Object> testMeta = new java.util.LinkedHashMap<>();
         testMeta.put("success", response.isSuccess());
@@ -177,6 +185,7 @@ public class WebhookAdminController {
     public ResponseEntity<ReplayResponse> replay(
             @PathVariable("subscription_id") String subscriptionId,
             @Valid @RequestBody ReplayRequest request, HttpServletRequest httpRequest) {
+        mutationGuard.assertOpenForWebhook(subscriptionId);
         ReplayResponse response = webhookService.replay(subscriptionId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
             .resourceType("webhook").resourceId(subscriptionId)
@@ -289,6 +298,10 @@ public class WebhookAdminController {
                                      List<BulkActionRowOutcome> skipped) {
         String id = matched.getSubscriptionId();
         try {
+            // Rule 2 (v0.1.25.29): reject mutation on subscriptions whose
+            // owning tenant is CLOSED. Bucketed into failed[] via the outer
+            // catch so one closed-owner row doesn't poison the whole batch.
+            mutationGuard.assertTenantOpen(matched.getTenantId());
             if (action == WebhookBulkAction.DELETE) {
                 try {
                     webhookService.delete(id);
@@ -364,6 +377,8 @@ public class WebhookAdminController {
                 return "PERMISSION_DENIED";
             case INVALID_REQUEST:
                 return "INVALID_TRANSITION";
+            case TENANT_CLOSED:
+                return "TENANT_CLOSED";
             default:
                 return "INTERNAL_ERROR";
         }

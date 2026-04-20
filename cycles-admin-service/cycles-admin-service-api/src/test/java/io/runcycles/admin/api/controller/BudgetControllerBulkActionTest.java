@@ -3,6 +3,7 @@ package io.runcycles.admin.api.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.api.contract.ContractValidationConfig;
 import io.runcycles.admin.api.service.EventService;
+import io.runcycles.admin.api.service.TerminalOwnerMutationGuard;
 import io.runcycles.admin.api.support.MetricsTestConfiguration;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.idempotency.IdempotencyStore;
@@ -63,6 +64,7 @@ class BudgetControllerBulkActionTest {
     @MockitoBean private JedisPool jedisPool;
     @MockitoBean private EventService eventService;
     @MockitoBean private IdempotencyStore idempotencyStore;
+    @MockitoBean private TerminalOwnerMutationGuard mutationGuard;
 
     private static final String ADMIN_KEY = "test-admin-key";
     private static final String TENANT = "acme";
@@ -605,5 +607,30 @@ class BudgetControllerBulkActionTest {
                 .andExpect(status().isUnauthorized());
 
         verify(budgetRepository, never()).matchForBulk(anyString(), any(), anyInt());
+    }
+
+    // -------- Cascade Rule 2: closed-owner per-row rejection -----------
+    // v0.1.25.36 (spec v0.1.25.29 Rule 2): any ledger whose owning tenant
+    // is CLOSED lands in failed[] with TENANT_CLOSED; other rows proceed.
+    @Test
+    void bulkAction_closedTenantRow_landsInFailed_tenantClosed() throws Exception {
+        noReplay();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
+                .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
+        doThrow(new GovernanceException(ErrorCode.TENANT_CLOSED,
+            "Tenant " + TENANT + " is closed; owned objects are read-only", 409))
+            .when(mutationGuard).assertTenantOpen(TENANT);
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(filter(""), "CREDIT", "k_tc",
+                                "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":500}")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.failed.length()").value(1))
+                .andExpect(jsonPath("$.failed[0].error_code").value("TENANT_CLOSED"))
+                .andExpect(jsonPath("$.succeeded.length()").value(0));
+
+        verify(budgetRepository, never()).fund(anyString(), anyString(), any(), any());
     }
 }

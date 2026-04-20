@@ -129,6 +129,7 @@ public class WebhookTenantController {
         WebhookSubscription existing = webhookService.get(subscriptionId);
         boolean isAdminAuth = isAdminAuth(httpRequest);
         enforceTenantOwnership(httpRequest, existing);
+        mutationGuard.assertTenantOpen(existing.getTenantId());
         webhookService.delete(subscriptionId);
         java.util.Map<String, Object> delMeta = new java.util.LinkedHashMap<>();
         delMeta.put("url", existing.getUrl());
@@ -149,6 +150,7 @@ public class WebhookTenantController {
         WebhookSubscription existing = webhookService.get(subscriptionId);
         boolean isAdminAuth = isAdminAuth(httpRequest);
         enforceTenantOwnership(httpRequest, existing);
+        mutationGuard.assertTenantOpen(existing.getTenantId());
         WebhookTestResponse response = webhookService.test(subscriptionId);
         java.util.Map<String, Object> testMeta = new java.util.LinkedHashMap<>();
         testMeta.put("success", response.isSuccess());

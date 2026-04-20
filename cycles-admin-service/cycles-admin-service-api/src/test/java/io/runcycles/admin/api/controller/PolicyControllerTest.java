@@ -1,10 +1,12 @@
 package io.runcycles.admin.api.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.admin.api.service.TerminalOwnerMutationGuard;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.data.repository.PolicyRepository;
+import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.auth.ApiKeyValidationResponse;
 import io.runcycles.admin.model.policy.*;
 import org.junit.jupiter.api.Test;
@@ -37,6 +39,7 @@ class PolicyControllerTest {
     @MockitoBean private ApiKeyRepository apiKeyRepository;
     @MockitoBean private JedisPool jedisPool;
     @MockitoBean private io.runcycles.admin.api.service.EventService eventService;
+    @MockitoBean private TerminalOwnerMutationGuard mutationGuard;
 
     private void setupApiKeyAuth() {
         when(apiKeyRepository.validate("valid-api-key")).thenReturn(
@@ -443,6 +446,42 @@ class PolicyControllerTest {
                 "tenant-acme".equals(entry.getTenantId()) && // subject from policy, not null caller
                 entry.getMetadata() != null &&
                 "admin_on_behalf_of".equals(entry.getMetadata().get("actor_type"))));
+    }
+
+    // v0.1.25.36 — Cascade Rule 2: owner-tenant guard.
+    @Test
+    void createPolicy_closedTenant_returns409_tenantClosed() throws Exception {
+        setupApiKeyAuth();
+        doThrow(new GovernanceException(ErrorCode.TENANT_CLOSED,
+            "Tenant tenant-1 is closed; owned objects are read-only", 409))
+            .when(mutationGuard).assertTenantOpen("tenant-1");
+
+        mockMvc.perform(post("/v1/admin/policies")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"P\",\"scope_pattern\":\"tenant:tenant-1/*\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("TENANT_CLOSED"));
+
+        verify(policyRepository, never()).create(any(), any());
+    }
+
+    @Test
+    void updatePolicy_closedTenant_returns409_tenantClosed() throws Exception {
+        setupApiKeyAuth();
+        when(policyRepository.getScopePattern("pol_x")).thenReturn("tenant:tenant-1/*");
+        doThrow(new GovernanceException(ErrorCode.TENANT_CLOSED,
+            "Tenant tenant-1 is closed; owned objects are read-only", 409))
+            .when(mutationGuard).assertOpenForScope("tenant:tenant-1/*");
+
+        mockMvc.perform(patch("/v1/admin/policies/pol_x")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"blocked\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("TENANT_CLOSED"));
+
+        verify(policyRepository, never()).update(any(), any(), any());
     }
 
     @Test
