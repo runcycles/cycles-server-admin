@@ -197,6 +197,79 @@ five new keys in the documented positions. Clients that deserialize
 into a fixed DTO must tolerate unknown keys (Jackson
 `ignoreUnknown=true` or equivalent).
 
+### Tenant-close cascade (v0.1.25.35+)
+
+Closing a tenant via `PATCH /v1/admin/tenants/{id}` with
+`status=CLOSED` (or via `POST /v1/admin/tenants/bulk-action` with
+`action=CLOSE`) cascades owned objects into their terminal states per
+spec v0.1.25.29 Rule 1:
+
+| Owned type | Pre-close state | Post-cascade state | Wire-visible effect |
+|---|---|---|---|
+| `BudgetLedger` | `ACTIVE` / `FROZEN` | `CLOSED` | `reserved` drained to 0; `remaining` bumped by the released amount; `closed_at` stamped. |
+| `WebhookSubscription` | `ACTIVE` / `PAUSED` | `DISABLED` | Rule 2 prevents any re-enable — DISABLED is effectively-terminal for closed-owner subscriptions. |
+| `ApiKey` | `ACTIVE` | `REVOKED` | `revoked_at` stamped; reason `tenant_closed`. |
+
+The tenant flip happens BEFORE the cascade so spec v0.1.25.29 Rule 2
+(`TENANT_CLOSED` 409 on any mutating op against a CLOSED-owner object)
+is active during the cascade window. Concurrent admin PATCHes during
+a cascade 409 rather than racing to resurrect a just-terminated
+child. On partial cascade failure the tenant remains CLOSED — operator
+re-issues the close and remaining non-terminal children pick up (every
+cascade step is idempotent; already-terminal children are skipped).
+
+**Correlation.** Every audit entry and event emitted in one cascade
+shares:
+
+- the originating PATCH's `request_id` and W3C `trace_id`
+- a dedicated `correlation_id = tenant_close_cascade:<tenant_id>:<request_id>`
+
+The parent `TENANT_CLOSED` event stamps the same `correlation_id` so
+dashboards can JOIN it with the child `*_via_tenant_cascade` events as
+one logical operation.
+
+**Audit.** One entry per touched child, `operation=tenant_close_cascade`,
+`resource_type` in `{budget, webhook_subscription, api_key}`. Metadata
+includes `prior_status`, `new_status`, plus type-specific fields
+(`released_reserved_amount` on budgets, `name` on webhooks / api
+keys).
+
+```bash
+# Find every cascade entry for a specific tenant close.
+GET /v1/admin/audit/logs?operation=tenant_close_cascade&tenant_id=acme
+
+# Cross-reference with the parent tenant.closed entry by trace_id
+# (or request_id). All siblings share both.
+GET /v1/admin/audit/logs?trace_id=<value>
+```
+
+**Event kinds (v0.1.25.35+).**
+
+- `budget.closed_via_tenant_cascade` — one per closed budget; `data.cascade_reason = "tenant_closed"`.
+- `webhook.disabled_via_tenant_cascade` — one per disabled subscription.
+- `api_key.revoked_via_tenant_cascade` — one per revoked key.
+- `reservation.released_via_tenant_cascade` — aggregate, one per budget that had `reserved > 0` at close time; `data.released_amount` carries the total.
+- The parent `tenant.closed` event carries a `data.cascade` sub-object
+  with counts: `budgets_closed`, `webhooks_disabled`, `api_keys_revoked`,
+  `reservations_released`.
+
+**Triage recipe for "why is my budget still FROZEN on a closed tenant?"**
+
+1. Confirm the tenant is actually CLOSED: `GET /v1/admin/tenants/{id}`.
+2. List budgets owned by the tenant: `GET /v1/admin/budgets?tenant_id={id}&status=FROZEN`.
+3. If any remain non-CLOSED, the cascade partially failed. Re-issue
+   the close: `PATCH /v1/admin/tenants/{id} { "status": "CLOSED" }`.
+   This is a no-op on the tenant but re-runs the cascade and picks up
+   stragglers.
+4. Confirm with `GET /v1/admin/events?event_type=budget.closed_via_tenant_cascade&tenant_id={id}`
+   — you should see one event per remediated budget.
+
+**Post-close operator mutations 409 with `TENANT_CLOSED` (Rule 2).**
+This is the expected contract — don't treat it as a bug. To change
+anything about a CLOSED tenant's objects, the tenant itself would need
+to be re-opened, and closing is deliberately terminal (no re-open
+affordance exists by spec).
+
 ---
 
 ## Metrics inventory

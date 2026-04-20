@@ -354,6 +354,14 @@ public class BudgetRepository {
     // Runtime-plane reservations that live outside this admin store will see
     // the CLOSED status on their next precondition check and reject per the
     // existing runtime contract.
+    //
+    // Numeric precision: Redis embeds Lua 5.1, which lacks an integer
+    // subtype — amounts are doubles throughout. Values beyond 2^53
+    // (~9.0×10^15) lose precision in arithmetic; governance-plane units
+    // (cents / tokens / request-counts) do not approach this bound, so the
+    // string.format('%.0f', n) serialization is exact over the entire
+    // supported value range. Promote to big-integer string arithmetic only
+    // if a future unit widens past 2^53.
     private static final String CASCADE_CLOSE_BUDGET_LUA =
         "local key = KEYS[1]\n" +
         "if redis.call('EXISTS', key) == 0 then return {'NOT_FOUND'} end\n" +

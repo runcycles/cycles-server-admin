@@ -1025,6 +1025,14 @@ should switch to treating 409 as success-equivalent.
 - Multiple spec-compliance hardening fixes across controllers and error
   contracts (see `AUDIT.md` for the full list).
 
+[0.1.25.35]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.35
+[0.1.25.34]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.34
+[0.1.25.33]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.33
+[0.1.25.32]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.32
+[0.1.25.31]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.31
+[0.1.25.30]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.30
+[0.1.25.29]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.29
+[0.1.25.28]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.28
 [0.1.25.27]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.27
 [0.1.25.26]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.26
 [0.1.25.25]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.25

@@ -110,20 +110,27 @@ public class TenantController {
     }
     @PatchMapping("/{tenant_id}") @Operation(operationId = "updateTenant")
     public ResponseEntity<Tenant> update(@PathVariable("tenant_id") String tenantId, @Valid @RequestBody TenantUpdateRequest request, HttpServletRequest httpRequest) {
-        // Spec v0.1.25.29 Rule 1: if this PATCH transitions the tenant into
-        // CLOSED, cascade ACTIVE/FROZEN budgets, ACTIVE/PAUSED webhooks and
-        // ACTIVE API keys into their terminal states BEFORE flipping the
-        // tenant. If cascade throws, the tenant stays in its prior status
-        // so an operator can safely re-issue the close — each cascade step
-        // is idempotent (already-terminal children are skipped).
-        TenantCloseCascadeService.CascadeResult cascadeResult = null;
+        // Spec v0.1.25.29 Rule 1: flip the tenant to CLOSED BEFORE cascading.
+        // This activates Rule 2's mutation guard during the cascade window so
+        // a concurrent admin PATCH on an owned budget/webhook/api-key 409s
+        // rather than racing against us to resurrect a just-terminated child.
+        // Cascade steps are idempotent (already-terminal children are
+        // skipped), so on partial failure an operator simply re-issues the
+        // close and the cascade picks up any stragglers. We only run the
+        // cascade on the freshwire transition — already-CLOSED PATCHes are
+        // no-ops at the repository level.
+        boolean isFreshClose = false;
         if (request.getStatus() == TenantStatus.CLOSED) {
             Tenant prior = repository.get(tenantId);
-            if (prior.getStatus() != TenantStatus.CLOSED) {
-                cascadeResult = tenantCloseCascadeService.cascade(tenantId, httpRequest);
-            }
+            isFreshClose = prior.getStatus() != TenantStatus.CLOSED;
         }
         Tenant updated = repository.update(tenantId, request);
+        TenantCloseCascadeService.CascadeResult cascadeResult = null;
+        String cascadeCorrelationId = null;
+        if (isFreshClose) {
+            cascadeCorrelationId = TenantCloseCascadeService.correlationIdFor(tenantId, httpRequest);
+            cascadeResult = tenantCloseCascadeService.cascade(tenantId, httpRequest);
+        }
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
             .resourceType("tenant").resourceId(tenantId)
@@ -152,7 +159,8 @@ public class TenantController {
             eventService.emit(eventType, tenantId, null, "cycles-admin",
                 Actor.builder().type(ActorType.ADMIN).build(),
                 eventData,
-                null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
+                cascadeCorrelationId,
+                httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
             LOG.warn("Failed to emit event: {}", e.getMessage());
         }
@@ -354,16 +362,19 @@ public class TenantController {
                     .message("Cannot transition from CLOSED").build());
                 return;
             }
-            // Spec v0.1.25.29 Rule 1: cascade owned objects into their
-            // terminal states BEFORE flipping the tenant. Cascade failure
-            // propagates to the catch below, which buckets this row as
-            // failed — other tenants in the batch still get processed.
-            if (action == TenantBulkAction.CLOSE) {
-                tenantCloseCascadeService.cascade(id, httpRequest);
-            }
+            // Spec v0.1.25.29 Rule 1: flip the tenant to CLOSED FIRST, then
+            // cascade. Flipping first activates Rule 2's mutation guard so
+            // races during cascade can't resurrect a just-terminated child.
+            // Cascade failure propagates to the catch below, which buckets
+            // this row as failed; the tenant is already CLOSED and a retry
+            // against the same row picks up any remaining non-terminal
+            // children (cascade is idempotent).
             TenantUpdateRequest update = new TenantUpdateRequest();
             update.setStatus(target);
             repository.update(id, update);
+            if (action == TenantBulkAction.CLOSE) {
+                tenantCloseCascadeService.cascade(id, httpRequest);
+            }
             succeeded.add(BulkActionRowOutcome.builder().id(id).build());
         } catch (GovernanceException e) {
             failed.add(BulkActionRowOutcome.builder()

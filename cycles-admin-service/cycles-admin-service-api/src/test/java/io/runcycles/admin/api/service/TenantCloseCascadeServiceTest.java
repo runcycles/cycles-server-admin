@@ -1,6 +1,5 @@
 package io.runcycles.admin.api.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
@@ -64,7 +63,6 @@ class TenantCloseCascadeServiceTest {
         ReflectionTestUtils.setField(service, "apiKeyRepository", apiKeyRepository);
         ReflectionTestUtils.setField(service, "auditRepository", auditRepository);
         ReflectionTestUtils.setField(service, "eventService", eventService);
-        ReflectionTestUtils.setField(service, "objectMapper", new ObjectMapper());
         request = new MockHttpServletRequest();
         request.setAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE, "req_abc");
         request.setAttribute(TraceContextFilter.TRACE_ID_ATTRIBUTE, "trace_xyz");

@@ -1,6 +1,5 @@
 package io.runcycles.admin.api.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
@@ -36,11 +35,12 @@ import java.util.Map;
  *   <li>Revoke all owned ACTIVE API keys.</li>
  * </ol>
  *
- * <p>The final {@code tenant.status = CLOSED} flip happens in the caller
- * AFTER this service returns successfully. If any cascade step throws,
- * the caller leaves tenant.status unchanged — an operator can re-issue
- * the close and each step picks up where it left off (already-terminal
- * children are skipped, so the cascade is idempotent).
+ * <p>The caller MUST flip {@code tenant.status = CLOSED} BEFORE invoking
+ * this service: flipping first activates Rule 2's mutation guard during
+ * the cascade window so a concurrent user PATCH on an owned object 409s
+ * rather than racing against the cascade. On partial cascade failure the
+ * tenant remains CLOSED and an operator re-issues the close; each
+ * cascade step is idempotent (already-terminal children are skipped).
  *
  * <p>Audit: every mutated owned object gets one {@code AuditLogEntry} with
  * {@code operation = "tenant_close_cascade"} and resource_type /
@@ -63,7 +63,6 @@ public class TenantCloseCascadeService {
     @Autowired private ApiKeyRepository apiKeyRepository;
     @Autowired private AuditRepository auditRepository;
     @Autowired private EventService eventService;
-    @Autowired private ObjectMapper objectMapper;
 
     /**
      * Result of a cascade run: counts per owned-type so the caller can
@@ -76,15 +75,28 @@ public class TenantCloseCascadeService {
     }
 
     /**
-     * Orchestrate the cascade for one tenant. The caller MUST hold the
-     * tenant in its prior status while this runs and MUST only flip
-     * tenant.status = CLOSED after this returns normally.
+     * Build the shared correlation_id used to join every cascade-emitted
+     * event (TENANT_CLOSED + each {@code *_via_tenant_cascade} child) for
+     * one logical tenant-close operation. Exposed as a static helper so
+     * the calling controller can stamp the same id on the TENANT_CLOSED
+     * event that this service stamps on every child event.
+     */
+    public static String correlationIdFor(String tenantId, HttpServletRequest httpRequest) {
+        String requestId = attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE);
+        return "tenant_close_cascade:" + tenantId + ":"
+            + (requestId != null ? requestId : "no-req");
+    }
+
+    /**
+     * Orchestrate the cascade for one tenant. The caller MUST have already
+     * flipped {@code tenant.status = CLOSED} — this service fans out the
+     * children's terminal-state transitions and emits the audit + event
+     * rows under a shared correlation_id.
      */
     public CascadeResult cascade(String tenantId, HttpServletRequest httpRequest) {
         String requestId = attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE);
         String traceId   = attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE);
-        String correlationId = "tenant_close_cascade:" + tenantId + ":"
-            + (requestId != null ? requestId : "no-req");
+        String correlationId = correlationIdFor(tenantId, httpRequest);
 
         List<BudgetRepository.CascadeCloseBudgetOutcome> budgets =
             budgetRepository.cascadeClose(tenantId);

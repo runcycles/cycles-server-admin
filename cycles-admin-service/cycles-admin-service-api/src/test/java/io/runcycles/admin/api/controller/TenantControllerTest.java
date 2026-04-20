@@ -475,9 +475,9 @@ class TenantControllerTest {
 
     @Test
     void updateTenant_withClosedStatus_emitsClosedEvent() throws Exception {
-        // Spec v0.1.25.29 Rule 1: PATCH→CLOSED reads the prior tenant and
-        // runs the cascade before flipping status. Stub both so the
-        // controller completes normally.
+        // Spec v0.1.25.29 Rule 1: PATCH→CLOSED reads the prior tenant,
+        // flips status via repository.update (activating Rule 2's mutation
+        // guard), then runs the cascade. Stub all three collaborators.
         Tenant prior = Tenant.builder()
                 .tenantId("tenant-1").name("Test").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
         Tenant updated = Tenant.builder()
@@ -493,8 +493,67 @@ class TenantControllerTest {
                         .content("{\"status\":\"CLOSED\"}"))
                 .andExpect(status().isOk());
 
-        verify(tenantCloseCascadeService).cascade(eq("tenant-1"), any());
+        // Repository.update MUST run before cascade (flip-first ordering so
+        // Rule 2's guard is active during the cascade window).
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(tenantRepository, tenantCloseCascadeService);
+        order.verify(tenantRepository).update(eq("tenant-1"), any());
+        order.verify(tenantCloseCascadeService).cascade(eq("tenant-1"), any());
         verify(eventService).emit(eq(EventType.TENANT_CLOSED), eq("tenant-1"), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void updateTenant_closedStatus_tenantClosedEvent_carriesCascadeCorrelationId() throws Exception {
+        // Spec v0.1.25.29 Rule 1 correlation-id parity: the TENANT_CLOSED
+        // event must share the same correlation_id that the cascade stamps
+        // on every child event, so downstream consumers can JOIN parent +
+        // children as one logical operation.
+        Tenant prior = Tenant.builder()
+                .tenantId("tenant-1").name("Test").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        Tenant updated = Tenant.builder()
+                .tenantId("tenant-1").name("Test").status(TenantStatus.CLOSED).createdAt(Instant.now()).build();
+        when(tenantRepository.get("tenant-1")).thenReturn(prior);
+        when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(updated);
+        when(tenantCloseCascadeService.cascade(eq("tenant-1"), any()))
+                .thenReturn(new TenantCloseCascadeService.CascadeResult(1, 0, 0, 0L));
+
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .header("X-Request-ID", "req-abc")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"CLOSED\"}"))
+                .andExpect(status().isOk());
+
+        org.mockito.ArgumentCaptor<String> correlationCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(eventService).emit(eq(EventType.TENANT_CLOSED), eq("tenant-1"),
+                any(), any(), any(), any(),
+                correlationCaptor.capture(), any());
+        String expected = "tenant_close_cascade:tenant-1:req-abc";
+        org.junit.jupiter.api.Assertions.assertEquals(expected, correlationCaptor.getValue(),
+            "TENANT_CLOSED event must share cascade correlation_id");
+    }
+
+    @Test
+    void updateTenant_closedStatus_cascadeThrows_tenantStaysClosed() throws Exception {
+        // Spec v0.1.25.29 Rule 1 partial-failure: tenant is already flipped
+        // when the cascade throws. An operator re-issuing the close picks
+        // up any remaining non-terminal children (cascade is idempotent).
+        Tenant prior = Tenant.builder()
+                .tenantId("tenant-1").name("Test").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        Tenant updated = Tenant.builder()
+                .tenantId("tenant-1").name("Test").status(TenantStatus.CLOSED).createdAt(Instant.now()).build();
+        when(tenantRepository.get("tenant-1")).thenReturn(prior);
+        when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(updated);
+        when(tenantCloseCascadeService.cascade(eq("tenant-1"), any()))
+                .thenThrow(new RuntimeException("cascade boom"));
+
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"CLOSED\"}"))
+                .andExpect(status().is5xxServerError());
+
+        // Tenant flip already committed before the cascade blew up.
+        verify(tenantRepository).update(eq("tenant-1"), any());
     }
 
     @Test
@@ -874,6 +933,12 @@ class TenantControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.action").value("CLOSE"))
                 .andExpect(jsonPath("$.succeeded[0].id").value("t1"));
+
+        // Spec v0.1.25.29 Rule 1: bulk CLOSE flips tenant status BEFORE cascade
+        // so Rule 2's mutation guard is active during the cascade window.
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(tenantRepository, tenantCloseCascadeService);
+        order.verify(tenantRepository).update(eq("t1"), any());
+        order.verify(tenantCloseCascadeService).cascade(eq("t1"), any());
     }
 
     @Test
