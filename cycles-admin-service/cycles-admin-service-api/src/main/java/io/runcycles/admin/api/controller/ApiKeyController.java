@@ -11,6 +11,7 @@ import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.api.service.EventService;
+import io.runcycles.admin.api.service.TerminalOwnerMutationGuard;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -40,8 +41,10 @@ public class ApiKeyController {
     @Autowired private EventService eventService;
     @Autowired private ObjectMapper objectMapper;
     @Autowired private JedisPool jedisPool;
+    @Autowired private TerminalOwnerMutationGuard mutationGuard;
     @PostMapping @Operation(operationId = "createApiKey")
     public ResponseEntity<ApiKeyCreateResponse> create(@Valid @RequestBody ApiKeyCreateRequest request, HttpServletRequest httpRequest) {
+        mutationGuard.assertTenantOpen(request.getTenantId());
         ApiKeyCreateResponse response = repository.create(request);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(request.getTenantId())
@@ -136,7 +139,7 @@ public class ApiKeyController {
     @PatchMapping("/{key_id}") @Operation(operationId = "updateApiKey")
     public ResponseEntity<ApiKeyResponse> update(@PathVariable("key_id") String keyId,
             @Valid @RequestBody ApiKeyUpdateRequest request, HttpServletRequest httpRequest) {
-        // Read old key state for change detection
+        // Read old key state for change detection + owner-tenant resolution (Rule 2).
         ApiKey oldKey = null;
         try (var jedis = jedisPool.getResource()) {
             String data = jedis.get("apikey:" + keyId);
@@ -144,6 +147,7 @@ public class ApiKeyController {
         } catch (Exception e) {
             LOG.warn("Failed to read old key for change detection: {}", e.getMessage());
         }
+        if (oldKey != null) mutationGuard.assertTenantOpen(oldKey.getTenantId());
 
         ApiKey updated = repository.update(keyId, request);
         ApiKeyResponse response = ApiKeyResponse.from(updated);
@@ -183,6 +187,10 @@ public class ApiKeyController {
 
     @DeleteMapping("/{key_id}") @Operation(operationId = "revokeApiKey")
     public ResponseEntity<ApiKeyResponse> revoke(@PathVariable("key_id") String keyId, @RequestParam(required = false) String reason, HttpServletRequest httpRequest) {
+        // Resolve the owning tenant pre-revoke so Rule 2 fires before the write;
+        // tolerant of missing keys so the repository's own NOT_FOUND path stays
+        // authoritative for that case.
+        mutationGuard.assertTenantOpen(resolveKeyTenantId(keyId));
         ApiKeyResponse response = ApiKeyResponse.from(repository.revoke(keyId, reason));
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(response.getTenantId())
@@ -202,6 +210,16 @@ public class ApiKeyController {
             LOG.warn("Failed to emit event: {}", e.getMessage());
         }
         return ResponseEntity.ok(response);
+    }
+
+    private String resolveKeyTenantId(String keyId) {
+        try (var jedis = jedisPool.getResource()) {
+            String data = jedis.get("apikey:" + keyId);
+            if (data == null) return null;
+            return objectMapper.readValue(data, ApiKey.class).getTenantId();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private Map<String, Object> buildRevokeMeta(String name, String reason) {

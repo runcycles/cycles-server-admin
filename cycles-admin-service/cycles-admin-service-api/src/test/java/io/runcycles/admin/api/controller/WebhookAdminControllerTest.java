@@ -1,6 +1,7 @@
 package io.runcycles.admin.api.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.admin.api.service.TerminalOwnerMutationGuard;
 import io.runcycles.admin.api.service.WebhookService;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.idempotency.IdempotencyStore;
@@ -8,6 +9,7 @@ import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.data.repository.WebhookRepository;
 import io.runcycles.admin.model.event.EventType;
+import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.webhook.*;
@@ -43,6 +45,7 @@ class WebhookAdminControllerTest {
     @MockitoBean private ApiKeyRepository apiKeyRepository;
     @MockitoBean private JedisPool jedisPool;
     @MockitoBean private IdempotencyStore idempotencyStore;
+    @MockitoBean private TerminalOwnerMutationGuard mutationGuard;
 
     private static final String ADMIN_KEY = "test-admin-key";
 
@@ -676,6 +679,47 @@ class WebhookAdminControllerTest {
         org.junit.jupiter.api.Assertions.assertEquals("k1", meta.get("idempotency_key"));
         org.assertj.core.api.Assertions.assertThat(meta).containsKey("filter");
         org.assertj.core.api.Assertions.assertThat((Long) meta.get("duration_ms")).isGreaterThanOrEqualTo(0L);
+    }
+
+    // v0.1.25.36 — Cascade Rule 2 on bulk-action: closed-owner rows land in failed[] with TENANT_CLOSED.
+    @Test
+    void bulkActionWebhooks_closedTenantRow_landsInFailed_tenantClosed() throws Exception {
+        when(idempotencyStore.lookup(eq("webhooks-bulk"), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(webhookRow("whsub_1", WebhookStatus.ACTIVE)));
+        doThrow(new GovernanceException(ErrorCode.TENANT_CLOSED,
+            "Tenant tenant-1 is closed; owned objects are read-only", 409))
+            .when(mutationGuard).assertTenantOpen("tenant-1");
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"PAUSE\",\"idempotency_key\":\"k_tc\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.failed.length()").value(1))
+                .andExpect(jsonPath("$.failed[0].error_code").value("TENANT_CLOSED"))
+                .andExpect(jsonPath("$.succeeded.length()").value(0));
+
+        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).delete(anyString());
+    }
+
+    // v0.1.25.36 — Cascade Rule 2 on update: CLOSED owner → 409.
+    @Test
+    void updateWebhook_closedTenant_returns409_tenantClosed() throws Exception {
+        doThrow(new GovernanceException(ErrorCode.TENANT_CLOSED,
+            "Tenant tenant-1 is closed; owned objects are read-only", 409))
+            .when(mutationGuard).assertOpenForWebhook("whsub_1");
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"ACTIVE\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("TENANT_CLOSED"));
+
+        verify(webhookService, never()).update(anyString(), any());
     }
 
     @Test

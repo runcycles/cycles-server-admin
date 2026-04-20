@@ -8,6 +8,7 @@ import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.model.auth.ApiKeyValidationResponse;
 import io.runcycles.admin.model.event.EventType;
+import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.webhook.*;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -130,6 +131,46 @@ class WebhookTenantControllerTest {
                 "tenant-1".equals(entry.getTenantId()) &&
                 "key_1".equals(entry.getKeyId()) &&
                 entry.getStatus() == 204));
+    }
+
+    // v0.1.25.36 — Cascade Rule 2: delete on CLOSED-owner webhook → 409.
+    @Test
+    void deleteWebhook_closedTenant_returns409_tenantClosed() throws Exception {
+        setupApiKeyAuth();
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.DISABLED).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(sub);
+        doThrow(new GovernanceException(ErrorCode.TENANT_CLOSED,
+            "Tenant tenant-1 is closed; owned objects are read-only", 409))
+            .when(mutationGuard).assertTenantOpen("tenant-1");
+
+        mockMvc.perform(delete("/v1/webhooks/whsub_1")
+                        .header("X-Cycles-API-Key", "valid-api-key"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("TENANT_CLOSED"));
+
+        verify(webhookService, never()).delete(anyString());
+    }
+
+    // v0.1.25.36 — Cascade Rule 2: test on CLOSED-owner webhook → 409.
+    @Test
+    void testWebhook_closedTenant_returns409_tenantClosed() throws Exception {
+        setupApiKeyAuth();
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.DISABLED).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(sub);
+        doThrow(new GovernanceException(ErrorCode.TENANT_CLOSED,
+            "Tenant tenant-1 is closed; owned objects are read-only", 409))
+            .when(mutationGuard).assertTenantOpen("tenant-1");
+
+        mockMvc.perform(post("/v1/webhooks/whsub_1/test")
+                        .header("X-Cycles-API-Key", "valid-api-key"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("TENANT_CLOSED"));
+
+        verify(webhookService, never()).test(anyString());
     }
 
     @Test

@@ -14,6 +14,36 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.36] — 2026-04-20
+
+### Added
+
+- **Rule 2 terminal-owner mutation guard coverage completed** —
+  closes the conformance gap flagged in v0.1.25.35's AUDIT entry.
+  Any mutation on an object whose owning tenant is `CLOSED` now
+  returns `409 TENANT_CLOSED` from every admin-mutating endpoint,
+  per spec v0.1.25.29 (MUST).
+
+  New guard callsites:
+  - `POST /v1/admin/policies`, `PATCH /v1/admin/policies/{id}`
+  - `POST /v1/admin/api-keys`, `PATCH /v1/admin/api-keys/{id}`,
+    `DELETE /v1/admin/api-keys/{id}`
+  - `POST /v1/admin/webhooks`, `PATCH /v1/admin/webhooks/{id}`,
+    `DELETE /v1/admin/webhooks/{id}`,
+    `POST /v1/admin/webhooks/{id}/test`,
+    `POST /v1/admin/webhooks/{id}/replay`
+  - `DELETE /v1/webhooks/{id}`, `POST /v1/webhooks/{id}/test`
+  - Per-row in `POST /v1/admin/budgets/bulk-action` and
+    `POST /v1/admin/webhooks/bulk-action` — closed-owner rows land
+    in `failed[]` with `error_code: "TENANT_CLOSED"`; sibling rows
+    still proceed.
+
+### Unchanged
+
+- No wire / OpenAPI / DTO contract change. `TENANT_CLOSED` already
+  shipped in the shared `ErrorCode` enum in v0.1.25.35; .36 adds
+  only callsites and the row-level classifier branch.
+
 ## [0.1.25.35] — 2026-04-20
 
 ### Added

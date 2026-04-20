@@ -584,6 +584,19 @@ public class BudgetController {
         // is the ledger_id." The ledger_id is the stable unique identifier;
         // scope is the routing/matching key passed to fund().
         String id = ledger.getLedgerId();
+        // Rule 2 (v0.1.25.29): any mutation on a budget whose owning tenant
+        // is CLOSED returns TENANT_CLOSED. Bucketed per-row so one closed
+        // tenant doesn't poison the whole batch; classifyBudgetFailureCode
+        // maps the ErrorCode to the spec's known row-level code.
+        try {
+            mutationGuard.assertTenantOpen(ledger.getTenantId());
+        } catch (GovernanceException e) {
+            failed.add(BulkActionRowOutcome.builder()
+                .id(id)
+                .errorCode(classifyBudgetFailureCode(e))
+                .message(e.getMessage()).build());
+            return;
+        }
         if (bulk.getAmount().getUnit() != ledger.getUnit()) {
             failed.add(BulkActionRowOutcome.builder()
                 .id(id).errorCode("INVALID_TRANSITION")
@@ -644,6 +657,8 @@ public class BudgetController {
             case FORBIDDEN:
             case INSUFFICIENT_PERMISSIONS:
                 return "PERMISSION_DENIED";
+            case TENANT_CLOSED:
+                return "TENANT_CLOSED";
             default:
                 return "INTERNAL_ERROR";
         }
