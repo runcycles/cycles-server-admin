@@ -9,6 +9,7 @@ public enum EventCategory {
     API_KEY("api_key"),
     POLICY("policy"),
     RESERVATION("reservation"),
+    WEBHOOK("webhook"),
     SYSTEM("system");
 
     private final String value;

@@ -344,6 +344,94 @@ public class BudgetRepository {
         return transitionStatus(scope, unit, "ACTIVE");
     }
 
+    // Spec v0.1.25.29 CASCADE SEMANTICS: close every ACTIVE|FROZEN budget
+    // owned by `tenantId` and return the before-state of each row that was
+    // actually mutated. Drains `reserved` back to `remaining` (equivalent to
+    // releasing every open reservation against the budget) before flipping
+    // status → CLOSED. Stamps `closed_at`. Already-CLOSED budgets are
+    // skipped (idempotent — a re-issued tenant-close cascade is a no-op).
+    //
+    // Runtime-plane reservations that live outside this admin store will see
+    // the CLOSED status on their next precondition check and reject per the
+    // existing runtime contract.
+    //
+    // Numeric precision: Redis embeds Lua 5.1, which lacks an integer
+    // subtype — amounts are doubles throughout. Values beyond 2^53
+    // (~9.0×10^15) lose precision in arithmetic; governance-plane units
+    // (cents / tokens / request-counts) do not approach this bound, so the
+    // string.format('%.0f', n) serialization is exact over the entire
+    // supported value range. Promote to big-integer string arithmetic only
+    // if a future unit widens past 2^53.
+    private static final String CASCADE_CLOSE_BUDGET_LUA =
+        "local key = KEYS[1]\n" +
+        "if redis.call('EXISTS', key) == 0 then return {'NOT_FOUND'} end\n" +
+        "local status = redis.call('HGET', key, 'status') or 'ACTIVE'\n" +
+        "if status == 'CLOSED' then return {'ALREADY_CLOSED'} end\n" +
+        "local reserved = tonumber(redis.call('HGET', key, 'reserved') or '0')\n" +
+        "local remaining = tonumber(redis.call('HGET', key, 'remaining') or '0')\n" +
+        "local new_remaining = remaining + reserved\n" +
+        "local function i(n) return string.format('%.0f', n) end\n" +
+        "redis.call('HMSET', key,\n" +
+        "  'status', 'CLOSED',\n" +
+        "  'reserved', '0',\n" +
+        "  'remaining', i(new_remaining),\n" +
+        "  'closed_at', ARGV[1],\n" +
+        "  'updated_at', ARGV[1])\n" +
+        "return {'OK', status, i(reserved)}\n";
+
+    /** Outcome of one budget row in a tenant-close cascade. */
+    public record CascadeCloseBudgetOutcome(
+            String ledgerId,
+            String scope,
+            UnitEnum unit,
+            BudgetStatus priorStatus,
+            long releasedReservedAmount) {}
+
+    /**
+     * Spec v0.1.25.29 CASCADE SEMANTICS (Rule 1): close every budget owned by
+     * {@code tenantId}. Already-CLOSED budgets are skipped so re-issuing the
+     * cascade is a no-op. Returns one outcome per budget that was actually
+     * transitioned — the caller emits a matching audit + event per outcome.
+     *
+     * <p>This is the Redis-level primitive; sequencing across budget →
+     * webhook → api-key cascades + the final tenant.status flip lives in
+     * {@code TenantCloseCascadeService}.
+     */
+    public List<CascadeCloseBudgetOutcome> cascadeClose(String tenantId) {
+        List<CascadeCloseBudgetOutcome> outcomes = new ArrayList<>();
+        try (Jedis jedis = jedisPool.getResource()) {
+            Set<String> keys = jedis.smembers("budgets:" + tenantId);
+            if (keys == null || keys.isEmpty()) return outcomes;
+            String now = String.valueOf(Instant.now().toEpochMilli());
+            for (String key : keys) {
+                try {
+                    @SuppressWarnings("unchecked")
+                    List<String> result = (List<String>) jedis.eval(
+                        CASCADE_CLOSE_BUDGET_LUA,
+                        List.of(key),
+                        List.of(now));
+                    String status = result.get(0);
+                    if (!"OK".equals(status)) continue;
+                    Map<String, String> hash = jedis.hgetAll(key);
+                    BudgetLedger closed = hashToBudgetLedger(hash, key);
+                    long released = 0L;
+                    try { released = Long.parseLong(result.get(2)); }
+                    catch (NumberFormatException ignored) {}
+                    outcomes.add(new CascadeCloseBudgetOutcome(
+                        closed.getLedgerId(),
+                        closed.getScope(),
+                        closed.getUnit(),
+                        BudgetStatus.valueOf(result.get(1)),
+                        released));
+                } catch (Exception e) {
+                    LOG.warn("Cascade-close skipped budget {} for tenant {}: {}",
+                        key, tenantId, e.getMessage());
+                }
+            }
+        }
+        return outcomes;
+    }
+
     private BudgetLedger transitionStatus(String scope, UnitEnum unit, String targetStatus) {
         scope = normalizeScope(scope);
         LOG.info("Transitioning budget status: scope={}, unit={}, target={}", scope, unit, targetStatus);

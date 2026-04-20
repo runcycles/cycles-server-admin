@@ -91,6 +91,46 @@ public class WebhookRepository {
         }
     }
 
+    /** Outcome of one webhook row in a tenant-close cascade. */
+    public record CascadeDisableOutcome(String subscriptionId, String name, WebhookStatus priorStatus) {}
+
+    /**
+     * Spec v0.1.25.29 CASCADE SEMANTICS (Rule 1): disable every
+     * non-DISABLED webhook subscription owned by {@code tenantId}. Already-
+     * DISABLED subscriptions are skipped so re-issuing the cascade is a
+     * no-op. Returns one outcome per subscription that was actually
+     * transitioned; caller emits matching audit + events.
+     *
+     * <p>WebhookSubscription has no spec-level terminal enum value. Rule 2
+     * (terminal-owner mutation guard, enforced by the controller-layer
+     * interceptor) blocks any subsequent re-enable for closed-owner rows,
+     * making DISABLED effectively-terminal without widening the enum.
+     */
+    public List<CascadeDisableOutcome> cascadeDisable(String tenantId) {
+        List<CascadeDisableOutcome> outcomes = new ArrayList<>();
+        try (Jedis jedis = jedisPool.getResource()) {
+            Set<String> ids = jedis.smembers("webhooks:" + tenantId);
+            if (ids == null || ids.isEmpty()) return outcomes;
+            for (String id : ids) {
+                try {
+                    String data = jedis.get("webhook:" + id);
+                    if (data == null) continue;
+                    WebhookSubscription sub = objectMapper.readValue(data, WebhookSubscription.class);
+                    if (sub.getStatus() == WebhookStatus.DISABLED) continue;
+                    WebhookStatus prior = sub.getStatus();
+                    sub.setStatus(WebhookStatus.DISABLED);
+                    sub.setUpdatedAt(Instant.now());
+                    jedis.set("webhook:" + id, objectMapper.writeValueAsString(sub));
+                    outcomes.add(new CascadeDisableOutcome(id, sub.getName(), prior));
+                } catch (Exception e) {
+                    LOG.warn("Cascade-disable skipped webhook {} for tenant {}: {}",
+                        id, tenantId, e.getMessage());
+                }
+            }
+        }
+        return outcomes;
+    }
+
     public void update(String subscriptionId, WebhookSubscription updated) {
         try (Jedis jedis = jedisPool.getResource()) {
             updated.setUpdatedAt(Instant.now());

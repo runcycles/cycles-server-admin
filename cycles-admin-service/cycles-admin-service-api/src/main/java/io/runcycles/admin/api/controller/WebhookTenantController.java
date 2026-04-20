@@ -2,6 +2,7 @@ package io.runcycles.admin.api.controller;
 
 import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
+import io.runcycles.admin.api.service.TerminalOwnerMutationGuard;
 import io.runcycles.admin.api.service.WebhookService;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
@@ -24,6 +25,7 @@ import java.util.List;
 public class WebhookTenantController {
     @Autowired private WebhookService webhookService;
     @Autowired private AuditRepository auditRepository;
+    @Autowired private TerminalOwnerMutationGuard mutationGuard;
 
     // createTenantWebhook is intentionally NOT dual-auth (spec v0.1.25.14):
     // URL / signing secret / event choice are tenant policy; admin creating
@@ -36,6 +38,7 @@ public class WebhookTenantController {
             @Valid @RequestBody WebhookCreateRequest request, HttpServletRequest httpRequest) {
         String tenantId = getAuthenticatedTenantId(httpRequest);
         validateTenantEventTypes(request.getEventTypes());
+        mutationGuard.assertTenantOpen(tenantId);
         WebhookCreateResponse response = webhookService.create(tenantId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
@@ -96,6 +99,12 @@ public class WebhookTenantController {
         if (request.getEventTypes() != null) {
             validateTenantEventTypes(request.getEventTypes());
         }
+        // Spec v0.1.25.29 Rule 2: any mutation on a webhook owned by a CLOSED
+        // tenant returns 409 TENANT_CLOSED. This is the layer that makes
+        // DISABLED effectively-terminal for closed-owner webhooks without
+        // widening the WebhookStatus enum — a DISABLED webhook cascaded at
+        // tenant close can still be read, but cannot be re-enabled via PATCH.
+        mutationGuard.assertTenantOpen(existing.getTenantId());
         WebhookSubscription updated = webhookService.update(subscriptionId, request);
         java.util.Map<String, Object> updateMeta = new java.util.LinkedHashMap<>();
         updateMeta.put("url", updated.getUrl());

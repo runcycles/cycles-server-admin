@@ -80,6 +80,18 @@ public final class EventPayloadTypeMapping {
         m.put(EventType.POLICY_UPDATED, EventDataPolicy.class);
         m.put(EventType.POLICY_DELETED, EventDataPolicy.class);
 
+        // Cascade events — spec v0.1.25.29 Rule 1. Each carries a
+        // Map-shaped payload (ledger_id / subscription_id / key_id + prior/
+        // new status + cascade_reason) emitted by TenantCloseCascadeService.
+        // No dedicated DTO today — matches the inline-Map pattern used by
+        // other EventService.emit call sites; a typed class can be
+        // back-filled alongside EventService producer-boundary validation
+        // without a wire break.
+        m.put(EventType.BUDGET_CLOSED_VIA_TENANT_CASCADE, EventDataBudgetLifecycle.class);
+        m.put(EventType.RESERVATION_RELEASED_VIA_TENANT_CASCADE, EventDataBudgetLifecycle.class);
+        m.put(EventType.WEBHOOK_DISABLED_VIA_TENANT_CASCADE, EventDataSystem.class);
+        m.put(EventType.API_KEY_REVOKED_VIA_TENANT_CASCADE, EventDataApiKey.class);
+
         // System
         m.put(EventType.SYSTEM_STORE_CONNECTION_LOST, EventDataSystem.class);
         m.put(EventType.SYSTEM_STORE_CONNECTION_RESTORED, EventDataSystem.class);

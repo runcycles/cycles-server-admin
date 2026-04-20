@@ -39,11 +39,14 @@ class EventModelTest {
 
     @Test
     void eventType_allTypesHaveExpectedCount() {
-        // 41 = original 40 + BUDGET_RESET_SPENT (added in spec v0.1.25.17 alongside
-        // the RESET_SPENT funding operation). When adding new event types, bump
-        // this count and ensure the new type is also registered in
-        // EventPayloadTypeMapping (enforced by EventPayloadContractTest).
-        assertEquals(41, EventType.values().length);
+        // 45 = 41 (up through v0.1.25.17 RESET_SPENT) + 4 cascade-event kinds
+        // added in spec v0.1.25.29 CASCADE SEMANTICS:
+        // BUDGET_CLOSED_VIA_TENANT_CASCADE, RESERVATION_RELEASED_VIA_TENANT_CASCADE,
+        // WEBHOOK_DISABLED_VIA_TENANT_CASCADE, API_KEY_REVOKED_VIA_TENANT_CASCADE.
+        // When adding new event types, bump this count and ensure the new type
+        // is also registered in EventPayloadTypeMapping (enforced by
+        // EventPayloadContractTest).
+        assertEquals(45, EventType.values().length);
     }
 
     @Test
@@ -230,13 +233,17 @@ class EventModelTest {
 
     @Test
     void eventCategory_allValues() {
+        // v0.1.25.29: WEBHOOK category added to carry the cascade event
+        // WEBHOOK_DISABLED_VIA_TENANT_CASCADE (previously no webhook-scoped
+        // events existed, so no category was needed).
         EventCategory[] values = EventCategory.values();
-        assertEquals(6, values.length);
+        assertEquals(7, values.length);
         assertNotNull(EventCategory.valueOf("BUDGET"));
         assertNotNull(EventCategory.valueOf("TENANT"));
         assertNotNull(EventCategory.valueOf("API_KEY"));
         assertNotNull(EventCategory.valueOf("POLICY"));
         assertNotNull(EventCategory.valueOf("RESERVATION"));
+        assertNotNull(EventCategory.valueOf("WEBHOOK"));
         assertNotNull(EventCategory.valueOf("SYSTEM"));
     }
 
