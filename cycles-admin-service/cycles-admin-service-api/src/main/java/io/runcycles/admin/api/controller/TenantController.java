@@ -110,24 +110,31 @@ public class TenantController {
     }
     @PatchMapping("/{tenant_id}") @Operation(operationId = "updateTenant")
     public ResponseEntity<Tenant> update(@PathVariable("tenant_id") String tenantId, @Valid @RequestBody TenantUpdateRequest request, HttpServletRequest httpRequest) {
-        // Spec v0.1.25.29 Rule 1: flip the tenant to CLOSED BEFORE cascading.
-        // This activates Rule 2's mutation guard during the cascade window so
-        // a concurrent admin PATCH on an owned budget/webhook/api-key 409s
-        // rather than racing against us to resurrect a just-terminated child.
-        // Cascade steps are idempotent (already-terminal children are
-        // skipped), so on partial failure an operator simply re-issues the
-        // close and the cascade picks up any stragglers. We only run the
-        // cascade on the freshwire transition — already-CLOSED PATCHes are
-        // no-ops at the repository level.
+        // Spec v0.1.25.29 Rule 1 + v0.1.25.31 Rule 1(c): flip the tenant to
+        // CLOSED BEFORE cascading. This activates Rule 2's mutation guard
+        // during the cascade window so a concurrent admin PATCH on an owned
+        // budget/webhook/api-key 409s rather than racing against us to
+        // resurrect a just-terminated child.
+        //
+        // Convergence (Rule 1(c)): cascade runs on EVERY `status=CLOSED`
+        // request, not only the freshwire transition. Cascade steps are
+        // idempotent (already-terminal children are skipped in the
+        // repository cascade queries), so a re-issued close against an
+        // already-CLOSED tenant is a tenant-level no-op but picks up any
+        // children left non-terminal by a prior partial failure. This is
+        // how this server satisfies spec v0.1.25.31 Rule 1(c)
+        // bounded-convergence for Mode B — operator-issued re-close is the
+        // documented recovery path in OPERATIONS.md.
         boolean isFreshClose = false;
-        if (request.getStatus() == TenantStatus.CLOSED) {
+        boolean isCloseRequest = request.getStatus() == TenantStatus.CLOSED;
+        if (isCloseRequest) {
             Tenant prior = repository.get(tenantId);
             isFreshClose = prior.getStatus() != TenantStatus.CLOSED;
         }
         Tenant updated = repository.update(tenantId, request);
         TenantCloseCascadeService.CascadeResult cascadeResult = null;
         String cascadeCorrelationId = null;
-        if (isFreshClose) {
+        if (isCloseRequest) {
             cascadeCorrelationId = TenantCloseCascadeService.correlationIdFor(tenantId, httpRequest);
             cascadeResult = tenantCloseCascadeService.cascade(tenantId, httpRequest);
         }
@@ -144,7 +151,17 @@ public class TenantController {
                 switch (request.getStatus()) {
                     case SUSPENDED: eventType = EventType.TENANT_SUSPENDED; break;
                     case ACTIVE: eventType = EventType.TENANT_REACTIVATED; break;
-                    case CLOSED: eventType = EventType.TENANT_CLOSED; break;
+                    case CLOSED:
+                        // Rule 1(c) convergence: emit TENANT_CLOSED only on
+                        // the freshwire transition. Retry PATCHes against an
+                        // already-CLOSED tenant re-run the cascade (to pick
+                        // up stragglers) but fall through to TENANT_UPDATED
+                        // at the parent event level — no duplicate
+                        // TENANT_CLOSED. Any stragglers picked up by the
+                        // retry still emit their own *_via_tenant_cascade
+                        // events via the cascade service.
+                        eventType = isFreshClose ? EventType.TENANT_CLOSED : EventType.TENANT_UPDATED;
+                        break;
                     default: break;
                 }
             }
@@ -351,7 +368,11 @@ public class TenantController {
         try {
             Tenant live = repository.get(id);
             TenantStatus current = live.getStatus() != null ? live.getStatus() : TenantStatus.ACTIVE;
-            if (current == target) {
+            // For non-CLOSE actions, already-in-target is a clean skip.
+            // CLOSE is special: re-issuing CLOSE against an already-CLOSED
+            // tenant must re-run the cascade (Rule 1(c) bounded-convergence)
+            // and classify by whether any stragglers were picked up.
+            if (current == target && action != TenantBulkAction.CLOSE) {
                 skipped.add(BulkActionRowOutcome.builder()
                     .id(id).reason("ALREADY_IN_TARGET_STATE").build());
                 return;
@@ -362,18 +383,34 @@ public class TenantController {
                     .message("Cannot transition from CLOSED").build());
                 return;
             }
-            // Spec v0.1.25.29 Rule 1: flip the tenant to CLOSED FIRST, then
-            // cascade. Flipping first activates Rule 2's mutation guard so
-            // races during cascade can't resurrect a just-terminated child.
-            // Cascade failure propagates to the catch below, which buckets
-            // this row as failed; the tenant is already CLOSED and a retry
-            // against the same row picks up any remaining non-terminal
-            // children (cascade is idempotent).
-            TenantUpdateRequest update = new TenantUpdateRequest();
-            update.setStatus(target);
-            repository.update(id, update);
+            // Spec v0.1.25.29 Rule 1 + v0.1.25.31 Rule 1(c): flip the tenant
+            // to CLOSED FIRST, then cascade. Flipping first activates Rule 2's
+            // mutation guard so races during cascade can't resurrect a
+            // just-terminated child. Cascade failure propagates to the catch
+            // below, which buckets this row as failed; the tenant is already
+            // CLOSED and a retry against the same row picks up any remaining
+            // non-terminal children (cascade is idempotent). Skip the
+            // redundant repo.update when the tenant is already in target
+            // state (retry path).
+            if (current != target) {
+                TenantUpdateRequest update = new TenantUpdateRequest();
+                update.setStatus(target);
+                repository.update(id, update);
+            }
             if (action == TenantBulkAction.CLOSE) {
-                tenantCloseCascadeService.cascade(id, httpRequest);
+                TenantCloseCascadeService.CascadeResult r =
+                    tenantCloseCascadeService.cascade(id, httpRequest);
+                if (current == target
+                        && r.budgetsClosed() == 0
+                        && r.webhooksDisabled() == 0
+                        && r.apiKeysRevoked() == 0) {
+                    // Already-CLOSED with nothing left to cascade: retry
+                    // converged to a full no-op. Report as skipped to keep
+                    // the bulk-action contract honest (no state change).
+                    skipped.add(BulkActionRowOutcome.builder()
+                        .id(id).reason("ALREADY_IN_TARGET_STATE").build());
+                    return;
+                }
             }
             succeeded.add(BulkActionRowOutcome.builder().id(id).build());
         } catch (GovernanceException e) {
