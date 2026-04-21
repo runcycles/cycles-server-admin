@@ -39,8 +39,13 @@ import java.util.Map;
  * this service: flipping first activates Rule 2's mutation guard during
  * the cascade window so a concurrent user PATCH on an owned object 409s
  * rather than racing against the cascade. On partial cascade failure the
- * tenant remains CLOSED and an operator re-issues the close; each
- * cascade step is idempotent (already-terminal children are skipped).
+ * tenant remains CLOSED and an operator re-issues the close — as of
+ * v0.1.25.37 both {@code PATCH /v1/admin/tenants/{id}} with
+ * {@code status=CLOSED} and bulk-action {@code CLOSE} re-invoke this
+ * service on already-CLOSED tenants (spec v0.1.25.31 Rule 1(c)
+ * bounded-convergence). Each cascade step is idempotent — the repository
+ * cascade queries filter by non-terminal status so already-terminal
+ * children are skipped and no duplicate audit/event rows are emitted.
  *
  * <p>Audit: every mutated owned object gets one {@code AuditLogEntry} with
  * {@code operation = "tenant_close_cascade"} and resource_type /

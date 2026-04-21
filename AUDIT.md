@@ -1,9 +1,81 @@
-# Complete Budget Governance v0.1.25.36 — Admin Server Audit
+# Complete Budget Governance v0.1.25.37 — Admin Server Audit
 
-**Server version:** 0.1.25.36 (2026-04-20 — spec v0.1.25.31 CASCADE SEMANTICS; Mode B flip-first-with-guarded-cascade conformant; Rule 2 guard coverage complete across all admin-mutating endpoints)
-**Date:** 2026-04-20 (v0.1.25.36 Rule 2 guard expansion: policies + api-keys + webhook-admin create/update/delete/test/replay + budgets and webhooks bulk-action per-row + webhook-tenant delete/test), 2026-04-20 (v0.1.25.35 cascade + TENANT_CLOSED guard), 2026-04-19 (v0.1.25.34 commons-lang3 CVE pin), 2026-04-19 (v0.1.25.33 Spring Boot / Tomcat CVE bump), 2026-04-18 (v0.1.25.32 cross-plane read tolerance hardening), 2026-04-18 (v0.1.25.31 trace_id cross-surface correlation), 2026-04-18 (v0.1.25.30 bulk-action audit enrichment), 2026-04-18 (v0.1.25.29 budget bulk-action), 2026-04-17 (v0.1.25.28 audit sentinel split), 2026-04-17 (v0.1.25.27 audit filter DSL upgrade), 2026-04-17 (v0.1.25.26 bulk-action endpoints), 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Server version:** 0.1.25.37 (2026-04-21 — spec v0.1.25.31 CASCADE SEMANTICS; Mode B flip-first-with-guarded-cascade conformant; Rule 1(c) bounded-convergence wired into PATCH and bulk-action close paths; Rule 2 guard coverage complete across all admin-mutating endpoints)
+**Date:** 2026-04-21 (v0.1.25.37 Rule 1(c) bounded-convergence: PATCH /tenants/{id} and bulk-action CLOSE re-run cascade on already-CLOSED tenants for straggler convergence), 2026-04-20 (v0.1.25.36 Rule 2 guard expansion: policies + api-keys + webhook-admin create/update/delete/test/replay + budgets and webhooks bulk-action per-row + webhook-tenant delete/test), 2026-04-20 (v0.1.25.35 cascade + TENANT_CLOSED guard), 2026-04-19 (v0.1.25.34 commons-lang3 CVE pin), 2026-04-19 (v0.1.25.33 Spring Boot / Tomcat CVE bump), 2026-04-18 (v0.1.25.32 cross-plane read tolerance hardening), 2026-04-18 (v0.1.25.31 trace_id cross-surface correlation), 2026-04-18 (v0.1.25.30 bulk-action audit enrichment), 2026-04-18 (v0.1.25.29 budget bulk-action), 2026-04-17 (v0.1.25.28 audit sentinel split), 2026-04-17 (v0.1.25.27 audit filter DSL upgrade), 2026-04-17 (v0.1.25.26 bulk-action endpoints), 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.31`; adds CASCADE SEMANTICS — Rule 1 `POST /admin/tenants/{id}` PATCH→CLOSED cascades owned budgets (→CLOSED), webhook subscriptions (→DISABLED), and API keys (→REVOKED) under a shared correlation_id — Rule 1 permits **Mode A (atomic)** or **Mode B (flip-first-with-guarded-cascade)** as of v0.1.25.31, and Rule 2 rejects any mutating operation against an object whose owning tenant is CLOSED with 409 `TENANT_CLOSED`; adds the `TENANT_CLOSED` error code to the shared enum and the four `*_via_tenant_cascade` event kinds: `budget.closed_via_tenant_cascade`, `webhook.disabled_via_tenant_cascade`, `api_key.revoked_via_tenant_cascade`, `reservation.released_via_tenant_cascade`) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.13 / Java 21 / Redis · Tomcat 10.1.54 pin · commons-lang3 3.18.0 pin
+
+### 2026-04-21 — v0.1.25.37: Rule 1(c) bounded-convergence wired into close paths (spec v0.1.25.31 MUST)
+
+**Motivation.** A code-review against `OPERATIONS.md` §"Tenant-close
+cascade" and spec v0.1.25.31 Rule 1(c) found the controller code
+contradicted the server's own operator documentation. The
+`OPERATIONS.md` triage recipe instructs operators to recover from a
+partial cascade by re-issuing `PATCH /v1/admin/tenants/{id}` with
+`status=CLOSED`, promising the cascade would "pick up stragglers."
+In practice both entry points silently short-circuited on an
+already-CLOSED tenant:
+
+- **PATCH path** — `TenantController.update()` gated the cascade
+  behind `isFreshClose = prior.getStatus() != CLOSED`. A retry saw
+  the tenant was already CLOSED, set `isFreshClose=false`, and
+  **never re-invoked the cascade service**. Stragglers stayed
+  non-terminal.
+- **Bulk-action path** — `applyTenantAction()` short-circuited
+  `current == target` into the `skipped` bucket with
+  `reason="ALREADY_IN_TARGET_STATE"` **before** reaching the cascade
+  call, even for `action=CLOSE`.
+
+The cascade service itself (`TenantCloseCascadeService`) was already
+idempotent — the repository `cascadeClose` / `cascadeDisable` /
+`cascadeRevoke` queries filter by non-terminal status and the Lua
+budget script returns `ALREADY_CLOSED` for terminal rows. But with
+no controller-level entry point re-invoking it, that idempotency was
+unreachable from the public API. Spec v0.1.25.31 Rule 1(c) requires
+Mode B implementations to both document **and implement** a bounded
+convergence mechanism; before this release, the server documented
+the recovery path but did not implement it.
+
+**Scope of this release.**
+
+| Controller path | Before | After |
+|---|---|---|
+| `PATCH /v1/admin/tenants/{id}` with `status=CLOSED` | cascade runs only on freshwire transition | cascade runs on **every** CLOSE request; already-CLOSED → parent event falls through to `tenant.updated` (no duplicate `tenant.closed`); straggler child events still fire via cascade service |
+| `POST /v1/admin/tenants/bulk-action` with `action=CLOSE` | `current == target` short-circuited to `skipped` without calling cascade | `current == target` skips redundant `repo.update` but **still calls cascade**; bucketed `succeeded` if any child transitioned, `skipped` (with `reason=ALREADY_IN_TARGET_STATE`) if cascade was a full no-op |
+
+**No wire change, no DTO change.** `ErrorCode`, `EventType`,
+`OpenApiContractDiffTest`, the spec-coverage report, and the cascade
+service's public contract are all unchanged. Only controller-level
+gates were adjusted.
+
+**Test coverage.**
+
+- `TenantControllerTest.updateTenant_priorStatusAlreadyClosed_rerunsCascadeForConvergence`
+  asserts PATCH retry re-invokes cascade and emits `tenant.updated`
+  (not a duplicate `tenant.closed`).
+- `TenantControllerTest.bulkActionTenants_closeAgainstAlreadyClosed_withStragglers_rerunsCascadeAndSucceeds`
+  asserts bulk-action CLOSE on an already-CLOSED tenant with
+  stragglers → `succeeded`, cascade invoked, no redundant
+  `repo.update`.
+- `TenantControllerTest.bulkActionTenants_closeAgainstAlreadyClosed_fullyConverged_bucketsAsSkipped`
+  asserts bulk-action CLOSE on a fully-converged (no stragglers)
+  already-CLOSED tenant → `skipped` with
+  `reason=ALREADY_IN_TARGET_STATE`, cascade still invoked (proves
+  we didn't regress to the old short-circuit).
+- The pre-existing
+  `TenantControllerTest.updateTenant_priorStatusAlreadyClosed_skipsCascade`
+  asserted the old (broken) behavior; it has been renamed and
+  inverted to the new contract above.
+
+**Operator-visible effect.** The `OPERATIONS.md` §"Convergence
+mechanism (Rule 1(c))" and §"Triage recipe" steps now work as
+documented — an operator seeing a budget in `FROZEN` under a
+`CLOSED` tenant can re-issue the close via PATCH or bulk-action and
+the straggler will transition, with the cascade emitting its own
+audit + `*_via_tenant_cascade` events for the picked-up child under
+a fresh `correlation_id` (new `request_id`).
+
+---
 
 ### 2026-04-20 — v0.1.25.36: Rule 2 guard coverage completed (spec v0.1.25.29 MUST)
 

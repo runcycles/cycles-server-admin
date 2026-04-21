@@ -14,6 +14,39 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.37] — 2026-04-21
+
+### Fixed
+
+- **Tenant-close cascade now actually reconverges on retry** (spec
+  v0.1.25.31 Rule 1(c) bounded-convergence). Prior releases gated the
+  cascade behind `isFreshClose` in the PATCH path and
+  `ALREADY_IN_TARGET_STATE` in bulk-action: a mid-cascade crash left
+  the tenant CLOSED but any straggler children remained non-terminal,
+  and re-issuing the close was silently a no-op. The documented
+  recovery path in `OPERATIONS.md` (re-issue the close; cascade is
+  idempotent and picks up stragglers) now matches the code.
+
+  - `PATCH /v1/admin/tenants/{id}` with `status=CLOSED` re-invokes
+    the cascade on every request regardless of prior status. The
+    parent event falls through to `tenant.updated` (not
+    `tenant.closed`) on a retry so consumers don't see a duplicate
+    close event; child `*_via_tenant_cascade` events still fire for
+    any rows the retry actually transitions.
+  - `POST /v1/admin/tenants/bulk-action` with `action=CLOSE` skips
+    the redundant `repo.update` on already-CLOSED rows but still runs
+    the cascade. If any children transition, the row is bucketed as
+    `succeeded`; if the cascade is a full no-op, the row is bucketed
+    as `skipped` with `reason=ALREADY_IN_TARGET_STATE` — keeping the
+    bulk-action response honest about whether state changed.
+
+### Unchanged
+
+- No wire / OpenAPI / DTO contract change. Cascade service semantics
+  unchanged — already idempotent per-child (repository cascade
+  queries filter by non-terminal status). Only the controller-level
+  gates that prevented re-entry were removed.
+
 ## [0.1.25.36] — 2026-04-20
 
 ### Added

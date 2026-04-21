@@ -557,15 +557,23 @@ class TenantControllerTest {
     }
 
     @Test
-    void updateTenant_priorStatusAlreadyClosed_skipsCascade() throws Exception {
-        // Re-close must be a no-op: cascade is not re-run when the tenant is
-        // already CLOSED. TenantRepository's idempotent short-circuit handles
-        // the status-flip side; the controller must avoid redundant child
-        // writes.
+    void updateTenant_priorStatusAlreadyClosed_rerunsCascadeForConvergence() throws Exception {
+        // Spec v0.1.25.31 Rule 1(c) bounded-convergence: a re-issued close
+        // against an already-CLOSED tenant MUST re-invoke the cascade so any
+        // children left non-terminal by a prior partial failure reach
+        // terminal state. The cascade service's per-child filtering makes
+        // this idempotent — already-terminal children are skipped and no
+        // duplicate child events are emitted. The parent-level event falls
+        // through to TENANT_UPDATED (not TENANT_CLOSED) since the status
+        // didn't change.
         Tenant prior = Tenant.builder()
                 .tenantId("tenant-1").name("Test").status(TenantStatus.CLOSED).createdAt(Instant.now()).build();
         when(tenantRepository.get("tenant-1")).thenReturn(prior);
         when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(prior);
+        // Simulate one straggler picked up by the retry (e.g. a budget left
+        // in FROZEN by a prior crash mid-cascade).
+        when(tenantCloseCascadeService.cascade(eq("tenant-1"), any()))
+                .thenReturn(new TenantCloseCascadeService.CascadeResult(1, 0, 0, 0L));
 
         mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -573,7 +581,14 @@ class TenantControllerTest {
                         .content("{\"status\":\"CLOSED\"}"))
                 .andExpect(status().isOk());
 
-        verify(tenantCloseCascadeService, org.mockito.Mockito.never()).cascade(any(), any());
+        // Cascade MUST be invoked on the retry — this is the recovery path.
+        verify(tenantCloseCascadeService).cascade(eq("tenant-1"), any());
+        // No duplicate TENANT_CLOSED event on the retry.
+        verify(eventService, org.mockito.Mockito.never()).emit(eq(EventType.TENANT_CLOSED),
+                any(), any(), any(), any(), any(), any(), any());
+        // Instead, the parent event falls through to TENANT_UPDATED.
+        verify(eventService).emit(eq(EventType.TENANT_UPDATED), eq("tenant-1"),
+                any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -939,6 +954,60 @@ class TenantControllerTest {
         org.mockito.InOrder order = org.mockito.Mockito.inOrder(tenantRepository, tenantCloseCascadeService);
         order.verify(tenantRepository).update(eq("t1"), any());
         order.verify(tenantCloseCascadeService).cascade(eq("t1"), any());
+    }
+
+    @Test
+    void bulkActionTenants_closeAgainstAlreadyClosed_withStragglers_rerunsCascadeAndSucceeds() throws Exception {
+        // Spec v0.1.25.31 Rule 1(c) bounded-convergence via bulk-action:
+        // re-issuing CLOSE against an already-CLOSED tenant skips the no-op
+        // repo.update but MUST re-run the cascade and, if any stragglers
+        // transition, classify the row as succeeded (state changed).
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.CLOSED)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.CLOSED));
+        when(tenantCloseCascadeService.cascade(eq("t1"), any()))
+                .thenReturn(new TenantCloseCascadeService.CascadeResult(1, 0, 0, 0L));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"CLOSED\"},\"action\":\"CLOSE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.succeeded[0].id").value("t1"))
+                .andExpect(jsonPath("$.skipped.length()").value(0));
+
+        // Cascade invoked; repo.update skipped (tenant already CLOSED).
+        verify(tenantCloseCascadeService).cascade(eq("t1"), any());
+        verify(tenantRepository, never()).update(anyString(), any());
+    }
+
+    @Test
+    void bulkActionTenants_closeAgainstAlreadyClosed_fullyConverged_bucketsAsSkipped() throws Exception {
+        // Spec v0.1.25.31 Rule 1(c): re-issuing CLOSE against a tenant that
+        // is already CLOSED AND has no non-terminal children → cascade is a
+        // complete no-op → row bucketed as skipped (ALREADY_IN_TARGET_STATE)
+        // so the bulk-action response honestly reports no state change.
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.CLOSED)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.CLOSED));
+        when(tenantCloseCascadeService.cascade(eq("t1"), any()))
+                .thenReturn(TenantCloseCascadeService.CascadeResult.empty());
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"CLOSED\"},\"action\":\"CLOSE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.skipped[0].id").value("t1"))
+                .andExpect(jsonPath("$.skipped[0].reason").value("ALREADY_IN_TARGET_STATE"))
+                .andExpect(jsonPath("$.succeeded.length()").value(0));
+
+        verify(tenantCloseCascadeService).cascade(eq("t1"), any());
+        verify(tenantRepository, never()).update(anyString(), any());
     }
 
     @Test
