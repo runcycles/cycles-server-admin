@@ -499,8 +499,17 @@ public class BudgetController {
         List<BulkActionRowOutcome> succeeded = new ArrayList<>();
         List<BulkActionRowOutcome> failed = new ArrayList<>();
         List<BulkActionRowOutcome> skipped = new ArrayList<>();
+        // Per-invocation correlation_id for every per-row Event emitted below.
+        // Spec v0.1.25.32: operators query listEvents?correlation_id=... to see
+        // every row a bulk op touched, tying per-row Events back to the single
+        // aggregate AuditLogEntry via the shared request_id.
+        String requestId = attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE);
+        String correlationId = "budget_bulk_action:"
+            + request.getAction().name().toLowerCase() + ":"
+            + (requestId != null ? requestId : "none");
         for (BudgetLedger ledger : matched) {
-            applyBudgetAction(ledger, request, succeeded, failed, skipped);
+            applyBudgetAction(ledger, request, succeeded, failed, skipped,
+                httpRequest, correlationId, requestId);
         }
 
         BudgetBulkActionResponse response = BudgetBulkActionResponse.builder()
@@ -579,7 +588,10 @@ public class BudgetController {
     private void applyBudgetAction(BudgetLedger ledger, BudgetBulkActionRequest bulk,
                                     List<BulkActionRowOutcome> succeeded,
                                     List<BulkActionRowOutcome> failed,
-                                    List<BulkActionRowOutcome> skipped) {
+                                    List<BulkActionRowOutcome> skipped,
+                                    HttpServletRequest httpRequest,
+                                    String correlationId,
+                                    String requestId) {
         // Spec v0.1.25.26 BudgetBulkActionResponse.succeeded: "Per-row `id`
         // is the ledger_id." The ledger_id is the stable unique identifier;
         // scope is the routing/matching key passed to fund().
@@ -620,8 +632,11 @@ public class BudgetController {
         fundingRequest.setIdempotencyKey(bulk.getIdempotencyKey()
             + ":" + ledger.getScope() + ":" + ledger.getUnit().name());
         try {
-            repository.fund(ledger.getTenantId(), ledger.getScope(), ledger.getUnit(), fundingRequest);
+            BudgetFundingResponse fundResponse = repository.fund(
+                ledger.getTenantId(), ledger.getScope(), ledger.getUnit(), fundingRequest);
             succeeded.add(BulkActionRowOutcome.builder().id(id).build());
+            emitBulkFundEvent(ledger, bulk, fundResponse, httpRequest,
+                correlationId, requestId);
         } catch (GovernanceException e) {
             failed.add(BulkActionRowOutcome.builder()
                 .id(id)
@@ -631,6 +646,65 @@ public class BudgetController {
             LOG.warn("Bulk-action row failed for budget {}: {}", id, e.getMessage());
             failed.add(BulkActionRowOutcome.builder()
                 .id(id).errorCode("INTERNAL_ERROR").message("Internal error").build());
+        }
+    }
+
+    /**
+     * Per-row Event emission for bulk-action budgets (spec v0.1.25.32). Mirrors
+     * the single-op fund event at {@link #fund}: maps FundingOperation to the
+     * matching {@link EventType}, builds the pre/post {@link EventDataBudgetLifecycle}
+     * snapshot from the repository response, and stamps the envelope-scoped
+     * {@code budget_bulk_action:<action>:<request_id>} correlation_id so
+     * operators can query {@code listEvents?correlation_id=...} to see every
+     * row this invocation touched. Skipped and failed rows never reach this
+     * method. Event emission failure is caught and logged — it must not
+     * abort the bulk op (matching single-fund discipline).
+     */
+    private void emitBulkFundEvent(BudgetLedger ledger, BudgetBulkActionRequest bulk,
+                                    BudgetFundingResponse response,
+                                    HttpServletRequest httpRequest,
+                                    String correlationId, String requestId) {
+        if (response == null) return;
+        try {
+            EventType eventType;
+            switch (bulk.getAction()) {
+                case CREDIT: eventType = EventType.BUDGET_FUNDED; break;
+                case DEBIT: eventType = EventType.BUDGET_DEBITED; break;
+                case RESET: eventType = EventType.BUDGET_RESET; break;
+                case RESET_SPENT: eventType = EventType.BUDGET_RESET_SPENT; break;
+                case REPAY_DEBT: eventType = EventType.BUDGET_DEBT_REPAID; break;
+                default: eventType = EventType.BUDGET_FUNDED; break;
+            }
+            EventDataBudgetLifecycle.BudgetState previousState = EventDataBudgetLifecycle.BudgetState.builder()
+                .allocated(response.getPreviousAllocated() != null ? response.getPreviousAllocated().getAmount() : null)
+                .remaining(response.getPreviousRemaining() != null ? response.getPreviousRemaining().getAmount() : null)
+                .debt(response.getPreviousDebt() != null ? response.getPreviousDebt().getAmount() : null)
+                .spent(response.getPreviousSpent() != null ? response.getPreviousSpent().getAmount() : null)
+                .build();
+            EventDataBudgetLifecycle.BudgetState newState = EventDataBudgetLifecycle.BudgetState.builder()
+                .allocated(response.getNewAllocated() != null ? response.getNewAllocated().getAmount() : null)
+                .remaining(response.getNewRemaining() != null ? response.getNewRemaining().getAmount() : null)
+                .debt(response.getNewDebt() != null ? response.getNewDebt().getAmount() : null)
+                .spent(response.getNewSpent() != null ? response.getNewSpent().getAmount() : null)
+                .build();
+            EventDataBudgetLifecycle.EventDataBudgetLifecycleBuilder payloadBuilder =
+                EventDataBudgetLifecycle.builder()
+                    .scope(ledger.getScope()).unit(ledger.getUnit())
+                    .operation(BudgetOperation.valueOf(bulk.getAction().name()))
+                    .previousState(previousState)
+                    .newState(newState)
+                    .reason(bulk.getReason());
+            if (bulk.getAction() == FundingOperation.RESET_SPENT) {
+                payloadBuilder.spentOverrideProvided(bulk.getSpent() != null);
+            }
+            eventService.emit(eventType, ledger.getTenantId(), ledger.getScope(),
+                "cycles-admin",
+                Actor.builder().type(ActorType.ADMIN)
+                    .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
+                objectMapper.convertValue(payloadBuilder.build(), Map.class),
+                correlationId, requestId);
+        } catch (Exception e) {
+            LOG.warn("Failed to emit bulk-action event: {}", e.getMessage());
         }
     }
 

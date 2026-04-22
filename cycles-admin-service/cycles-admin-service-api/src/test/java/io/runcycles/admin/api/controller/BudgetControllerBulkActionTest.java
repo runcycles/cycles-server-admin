@@ -15,9 +15,11 @@ import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.auth.ApiKeyValidationResponse;
 import io.runcycles.admin.model.budget.BudgetBulkActionResponse;
 import io.runcycles.admin.model.budget.BudgetFundingRequest;
+import io.runcycles.admin.model.budget.BudgetFundingResponse;
 import io.runcycles.admin.model.budget.BudgetLedger;
 import io.runcycles.admin.model.budget.BudgetStatus;
 import io.runcycles.admin.model.budget.FundingOperation;
+import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.Amount;
 import io.runcycles.admin.model.shared.BulkActionRowOutcome;
 import io.runcycles.admin.model.shared.ErrorCode;
@@ -607,6 +609,193 @@ class BudgetControllerBulkActionTest {
                 .andExpect(status().isUnauthorized());
 
         verify(budgetRepository, never()).matchForBulk(anyString(), any(), anyInt());
+    }
+
+    // -------- Per-row Event emission (spec v0.1.25.32) ------------------
+    // Each successfully-mutated row emits one Event typed by action with a
+    // shared `budget_bulk_action:<action>:<request_id>` correlation_id.
+    // Skipped/failed rows MUST NOT emit.
+
+    private static BudgetFundingResponse fundResponse() {
+        return BudgetFundingResponse.builder()
+                .previousAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .newAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1500L))
+                .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1500L))
+                .previousSpent(new Amount(UnitEnum.USD_MICROCENTS, 0L))
+                .newSpent(new Amount(UnitEnum.USD_MICROCENTS, 0L))
+                .build();
+    }
+
+    @Test
+    void bulkAction_credit_emitsBudgetFundedEventPerRow() throws Exception {
+        noReplay();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
+                .thenReturn(List.of(ledger("tenant:acme/workspace:a"),
+                                    ledger("tenant:acme/workspace:b")));
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+                .thenReturn(fundResponse());
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(filter(""), "CREDIT", "k_evt",
+                                "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":500}")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.succeeded.length()").value(2));
+
+        ArgumentCaptor<String> corr = ArgumentCaptor.forClass(String.class);
+        verify(eventService, times(2)).emit(eq(EventType.BUDGET_FUNDED),
+                eq(TENANT), anyString(), eq("cycles-admin"),
+                any(), any(), corr.capture(), any());
+        assertEquals(1, new java.util.HashSet<>(corr.getAllValues()).size());
+        assertThat(corr.getValue()).startsWith("budget_bulk_action:credit:");
+    }
+
+    @Test
+    void bulkAction_debit_emitsBudgetDebitedEvent() throws Exception {
+        noReplay();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
+                .thenReturn(List.of(ledger("tenant:acme/workspace:eng", 1_000L, 100L, 0L)));
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+                .thenReturn(fundResponse());
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(filter(""), "DEBIT", "k_d",
+                                "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":100}")))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<String> corr = ArgumentCaptor.forClass(String.class);
+        verify(eventService).emit(eq(EventType.BUDGET_DEBITED),
+                eq(TENANT), anyString(), eq("cycles-admin"),
+                any(), any(), corr.capture(), any());
+        assertThat(corr.getValue()).startsWith("budget_bulk_action:debit:");
+    }
+
+    @Test
+    void bulkAction_reset_emitsBudgetResetEvent() throws Exception {
+        noReplay();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
+                .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+                .thenReturn(fundResponse());
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(filter(""), "RESET", "k_r",
+                                "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000}")))
+                .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(EventType.BUDGET_RESET),
+                eq(TENANT), anyString(), eq("cycles-admin"),
+                any(), any(), startsWith("budget_bulk_action:reset:"), any());
+    }
+
+    @Test
+    void bulkAction_resetSpent_emitsBudgetResetSpentEvent() throws Exception {
+        noReplay();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
+                .thenReturn(List.of(ledger("tenant:acme/workspace:eng", 1_000L, 500L, 0L)));
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+                .thenReturn(fundResponse());
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(filter(""), "RESET_SPENT", "k_rs",
+                                "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000},"
+                                        + "\"spent\":{\"unit\":\"USD_MICROCENTS\",\"amount\":0}")))
+                .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(EventType.BUDGET_RESET_SPENT),
+                eq(TENANT), anyString(), eq("cycles-admin"),
+                any(), any(), startsWith("budget_bulk_action:reset_spent:"), any());
+    }
+
+    @Test
+    void bulkAction_repayDebt_emitsBudgetDebtRepaidEvent() throws Exception {
+        noReplay();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
+                .thenReturn(List.of(ledger("tenant:acme/workspace:eng", 1_000L, 0L, 250L)));
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+                .thenReturn(fundResponse());
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(filter(""), "REPAY_DEBT", "k_rp",
+                                "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":250}")))
+                .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(EventType.BUDGET_DEBT_REPAID),
+                eq(TENANT), anyString(), eq("cycles-admin"),
+                any(), any(), startsWith("budget_bulk_action:repay_debt:"), any());
+    }
+
+    @Test
+    void bulkAction_skippedRow_noEventEmitted() throws Exception {
+        // REPAY_DEBT on a zero-debt ledger → skipped (ALREADY_IN_TARGET_STATE).
+        // No event should be emitted.
+        noReplay();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
+                .thenReturn(List.of(ledger("tenant:acme/workspace:eng", 1_000L, 0L, 0L)));
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(filter(""), "REPAY_DEBT", "k_s",
+                                "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":100}")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.skipped.length()").value(1));
+
+        verify(eventService, never()).emit(any(EventType.class), anyString(), anyString(),
+                anyString(), any(), any(), anyString(), any());
+    }
+
+    @Test
+    void bulkAction_failedRow_noEventEmitted() throws Exception {
+        // fund() throws → row bucketed as failed; no event emitted.
+        noReplay();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
+                .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+                .thenThrow(new GovernanceException(ErrorCode.BUDGET_FROZEN, "frozen", 409));
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(filter(""), "CREDIT", "k_f",
+                                "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":500}")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.failed.length()").value(1));
+
+        verify(eventService, never()).emit(any(EventType.class), anyString(), anyString(),
+                anyString(), any(), any(), anyString(), any());
+    }
+
+    @Test
+    void bulkAction_emitFailure_doesNotAbortBulkOp() throws Exception {
+        // Spec v0.1.25.32: event emission failure is logged + swallowed; the
+        // row still succeeds (event log is observability, not correctness).
+        noReplay();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
+                .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+                .thenReturn(fundResponse());
+        doThrow(new RuntimeException("event-store-down"))
+                .when(eventService).emit(any(EventType.class), anyString(), anyString(),
+                        anyString(), any(), any(), anyString(), any());
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(filter(""), "CREDIT", "k_ef",
+                                "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":500}")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.succeeded.length()").value(1));
     }
 
     // -------- Cascade Rule 2: closed-owner per-row rejection -----------

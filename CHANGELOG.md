@@ -14,6 +14,38 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.38] — 2026-04-22
+
+### Added
+
+- **Per-row Events on bulk-action endpoints** (spec v0.1.25.32). Previously,
+  `POST /v1/admin/budgets/bulk-action` and `POST /v1/admin/tenants/bulk-action`
+  wrote only a single aggregate `AuditLogEntry` per invocation; the matching
+  single-op endpoints (`POST /fund`, `PATCH /tenants/{id}`) emitted a per-op
+  lifecycle Event. Operators watching `listEvents` had a blind spot whenever
+  the same logical operation went through the bulk path.
+  - `bulkActionBudgets` now emits one Event per successfully-mutated row,
+    typed by action (`budget.funded` / `budget.debited` / `budget.reset` /
+    `budget.reset_spent` / `budget.debt_repaid`), with
+    `correlation_id = budget_bulk_action:<action>:<request_id>`.
+  - `bulkActionTenants` now emits one *parent* Event per successfully-mutated
+    row (`tenant.suspended` / `tenant.reactivated` / `tenant.closed`), with
+    `correlation_id = tenant_bulk_action:<action>:<request_id>`. For
+    action=CLOSE this is in addition to the existing
+    `tenant_close_cascade:<tenant_id>:<request_id>` cascade fan-out events,
+    which are unchanged (complementary correlation_ids — operators tracing
+    the bulk invocation query the bulk id; operators tracing a specific
+    tenant's close query the cascade id).
+  - Skipped rows (`ALREADY_IN_TARGET_STATE`) and failed rows emit no
+    Event — matching single-op discipline and avoiding false signal.
+
+### Unchanged
+
+- No wire / OpenAPI / DTO contract change; `EventType` enum unchanged
+  (existing kinds reused, no new enum values). Aggregate `AuditLogEntry`
+  per invocation unchanged — spec's "one audit entry per bulk op" rule
+  is preserved. Close-cascade semantics unchanged.
+
 ## [0.1.25.37] — 2026-04-21
 
 ### Fixed
