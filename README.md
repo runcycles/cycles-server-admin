@@ -4,7 +4,7 @@
 
 # Runcycles Admin Server
 
-Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25.31](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml).
+Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25.32](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml).
 
 ## Documentation
 
