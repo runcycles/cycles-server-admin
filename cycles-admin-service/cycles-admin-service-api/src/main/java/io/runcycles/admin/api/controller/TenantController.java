@@ -325,7 +325,7 @@ public class TenantController {
         String requestId = attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE);
         String correlationId = "tenant_bulk_action:"
             + request.getAction().name().toLowerCase() + ":"
-            + (requestId != null ? requestId : "none");
+            + (requestId != null ? requestId : "no-req");
         for (Tenant t : matched) {
             applyTenantAction(t, request.getAction(), target, succeeded, failed, skipped,
                 httpRequest, correlationId, requestId);
@@ -404,6 +404,15 @@ public class TenantController {
             // non-terminal children (cascade is idempotent). Skip the
             // redundant repo.update when the tenant is already in target
             // state (retry path).
+            //
+            // HAZARD (mirrors single-op updateTenant, lines 134-183): if
+            // cascade throws after the flip, the tenant is CLOSED on disk
+            // but NO parent `tenant.closed` Event is emitted for this row
+            // (emit happens after cascade returns, line 428). The row
+            // surfaces in `failed[]` so operators see the cascade failure;
+            // the documented recovery is re-issuing CLOSE (cascade is
+            // idempotent; retry converges). The flip-first ordering is
+            // spec-mandated by Rule 2 and cannot be reversed to avoid this.
             if (current != target) {
                 TenantUpdateRequest update = new TenantUpdateRequest();
                 update.setStatus(target);

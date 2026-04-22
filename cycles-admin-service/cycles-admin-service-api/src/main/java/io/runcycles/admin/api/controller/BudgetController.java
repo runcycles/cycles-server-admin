@@ -506,7 +506,7 @@ public class BudgetController {
         String requestId = attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE);
         String correlationId = "budget_bulk_action:"
             + request.getAction().name().toLowerCase() + ":"
-            + (requestId != null ? requestId : "none");
+            + (requestId != null ? requestId : "no-req");
         for (BudgetLedger ledger : matched) {
             applyBudgetAction(ledger, request, succeeded, failed, skipped,
                 httpRequest, correlationId, requestId);
