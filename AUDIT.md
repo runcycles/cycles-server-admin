@@ -90,6 +90,47 @@ Coverage remains ≥95% on both controllers (jacoco).
 - Tests extended in matching `*Test.java` files.
 - `cycles-admin-service/pom.xml` revision bump.
 
+**Post-merge review hardening (same v0.1.25.38 release window, pre-ship).**
+
+A post-merge review of PR #139 surfaced three correctness-adjacent
+findings worth addressing before the release ships. None are
+regressions; all are addressed in this same v0.1.25.38 release via a
+hardening PR so the public artifact carries the fixes:
+
+- *Cascade-failure hazard (documentation).* `applyTenantAction` flips
+  the tenant to CLOSED **before** the cascade call (spec v0.1.25.29
+  Rule 2 mutation guard — ordering cannot be reversed without
+  re-introducing the resurrect-during-cascade race). If the cascade
+  throws, the tenant is CLOSED on disk, the row is bucketed as
+  `failed[]`, and **no parent `tenant.closed` Event is emitted**
+  (the emit happens after cascade returns). This exactly mirrors
+  single-op `updateTenant` behavior (`TenantController.java:134-183`);
+  both paths rely on the documented operator recovery of re-issuing
+  CLOSE, which is idempotent (cascade is safe to retry; re-close
+  converges per Rule 1(c) and the bulk-action `ALREADY_IN_TARGET_STATE`
+  skip path, v0.1.25.37). An inline block comment now flags the
+  hazard at the flip site so it isn't re-discovered during the next
+  review. No ordering change.
+- *Request-id sentinel unification.* The new bulk correlation_id
+  builders used `"none"` as the missing-request-id sentinel while
+  the pre-existing `TenantCloseCascadeService.correlationIdFor` used
+  `"no-req"`. Unified to `"no-req"` (the incumbent) in both new
+  builders so cascade and bulk correlation ids share the same
+  sentinel when `X-Request-Id` is absent; this keeps any "no request
+  id" operator dashboard query uniform across the two axes.
+- *CLOSE correlation-id axes (documentation).* Intentional
+  divergence: bulk parent `tenant.closed` uses
+  `tenant_bulk_action:close:<req>` (invocation grouping) while
+  single-op close uses `tenant_close_cascade:<tenant_id>:<req>`
+  (per-tenant grouping). This is by design — the two surfaces have
+  different operator-query semantics (bulk: "what did this one
+  invocation touch?"; single-op: "what happened to this one
+  tenant?") — and the `tenant_close_cascade:<tenant_id>:<req>` axis
+  is still emitted unchanged on the cascade fan-out for every CLOSE
+  (bulk or single), so a tenant-centric query still works on both
+  paths. Called out explicitly here because a naive reading of
+  "parity" would flag it as a break; it isn't.
+
 ### 2026-04-21 — v0.1.25.37: Rule 1(c) bounded-convergence wired into close paths (spec v0.1.25.31 MUST)
 
 **Motivation.** A code-review against `OPERATIONS.md` §"Tenant-close
