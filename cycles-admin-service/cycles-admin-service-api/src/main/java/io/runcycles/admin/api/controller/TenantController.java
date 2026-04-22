@@ -317,8 +317,18 @@ public class TenantController {
         List<BulkActionRowOutcome> failed = new ArrayList<>();
         List<BulkActionRowOutcome> skipped = new ArrayList<>();
         TenantStatus target = targetStatus(request.getAction());
+        // Per-invocation correlation_id for every per-row Event emitted below.
+        // Spec v0.1.25.32: parent tenant event stamped here; the cascade fan-out
+        // (action=CLOSE) keeps its own `tenant_close_cascade:<tenant_id>:<request_id>`
+        // correlation_id unchanged so operators can trace the bulk invocation
+        // (this correlation_id) OR a specific tenant's cascade (cascade id).
+        String requestId = attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE);
+        String correlationId = "tenant_bulk_action:"
+            + request.getAction().name().toLowerCase() + ":"
+            + (requestId != null ? requestId : "none");
         for (Tenant t : matched) {
-            applyTenantAction(t, request.getAction(), target, succeeded, failed, skipped, httpRequest);
+            applyTenantAction(t, request.getAction(), target, succeeded, failed, skipped,
+                httpRequest, correlationId, requestId);
         }
 
         TenantBulkActionResponse response = TenantBulkActionResponse.builder()
@@ -363,7 +373,9 @@ public class TenantController {
                                     List<BulkActionRowOutcome> succeeded,
                                     List<BulkActionRowOutcome> failed,
                                     List<BulkActionRowOutcome> skipped,
-                                    HttpServletRequest httpRequest) {
+                                    HttpServletRequest httpRequest,
+                                    String correlationId,
+                                    String requestId) {
         String id = matched.getTenantId();
         try {
             Tenant live = repository.get(id);
@@ -397,13 +409,13 @@ public class TenantController {
                 update.setStatus(target);
                 repository.update(id, update);
             }
+            TenantCloseCascadeService.CascadeResult cascadeResult = null;
             if (action == TenantBulkAction.CLOSE) {
-                TenantCloseCascadeService.CascadeResult r =
-                    tenantCloseCascadeService.cascade(id, httpRequest);
+                cascadeResult = tenantCloseCascadeService.cascade(id, httpRequest);
                 if (current == target
-                        && r.budgetsClosed() == 0
-                        && r.webhooksDisabled() == 0
-                        && r.apiKeysRevoked() == 0) {
+                        && cascadeResult.budgetsClosed() == 0
+                        && cascadeResult.webhooksDisabled() == 0
+                        && cascadeResult.apiKeysRevoked() == 0) {
                     // Already-CLOSED with nothing left to cascade: retry
                     // converged to a full no-op. Report as skipped to keep
                     // the bulk-action contract honest (no state change).
@@ -413,6 +425,8 @@ public class TenantController {
                 }
             }
             succeeded.add(BulkActionRowOutcome.builder().id(id).build());
+            emitBulkTenantEvent(id, action, cascadeResult, httpRequest,
+                correlationId, requestId);
         } catch (GovernanceException e) {
             failed.add(BulkActionRowOutcome.builder()
                 .id(id)
@@ -422,6 +436,56 @@ public class TenantController {
             LOG.warn("Bulk-action row failed for tenant {}: {}", id, e.getMessage());
             failed.add(BulkActionRowOutcome.builder()
                 .id(id).errorCode("INTERNAL_ERROR").message("Internal error").build());
+        }
+    }
+
+    /**
+     * Per-row Event emission for bulk-action tenants (spec v0.1.25.32). Maps
+     * TenantBulkAction to the matching {@link EventType} for the *parent*
+     * tenant lifecycle transition (SUSPEND → TENANT_SUSPENDED, REACTIVATE →
+     * TENANT_REACTIVATED, CLOSE → TENANT_CLOSED). The cascade fan-out events
+     * (action=CLOSE) retain their own {@code tenant_close_cascade:...}
+     * correlation_id and are emitted separately by {@link TenantCloseCascadeService}.
+     * Skipped and failed rows never reach this method.
+     */
+    private void emitBulkTenantEvent(String tenantId, TenantBulkAction action,
+                                      TenantCloseCascadeService.CascadeResult cascadeResult,
+                                      HttpServletRequest httpRequest,
+                                      String correlationId, String requestId) {
+        try {
+            EventType eventType;
+            TenantStatus newStatus;
+            switch (action) {
+                case SUSPEND:
+                    eventType = EventType.TENANT_SUSPENDED;
+                    newStatus = TenantStatus.SUSPENDED;
+                    break;
+                case REACTIVATE:
+                    eventType = EventType.TENANT_REACTIVATED;
+                    newStatus = TenantStatus.ACTIVE;
+                    break;
+                case CLOSE:
+                    eventType = EventType.TENANT_CLOSED;
+                    newStatus = TenantStatus.CLOSED;
+                    break;
+                default: return;
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> eventData = objectMapper.convertValue(
+                EventDataTenantLifecycle.builder()
+                    .tenantId(tenantId)
+                    .newStatus(newStatus)
+                    .changedFields(List.of()).build(), Map.class);
+            if (cascadeResult != null) {
+                eventData.put("cascade", cascadeSummaryMap(cascadeResult));
+            }
+            eventService.emit(eventType, tenantId, null, "cycles-admin",
+                Actor.builder().type(ActorType.ADMIN)
+                    .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
+                eventData,
+                correlationId, requestId);
+        } catch (Exception e) {
+            LOG.warn("Failed to emit bulk-action event: {}", e.getMessage());
         }
     }
 

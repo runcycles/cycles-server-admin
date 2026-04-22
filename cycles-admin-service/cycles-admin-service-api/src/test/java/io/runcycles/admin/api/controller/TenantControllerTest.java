@@ -1142,4 +1142,157 @@ class TenantControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.failed[0].error_code").value("INTERNAL_ERROR"));
     }
+
+    // -------- Per-row Event emission (spec v0.1.25.32) ------------------
+    // Each successfully-mutated row emits one parent tenant Event with a
+    // shared `tenant_bulk_action:<action>:<request_id>` correlation_id.
+    // Skipped/failed rows MUST NOT emit.
+
+    @Test
+    void bulkActionTenants_suspend_emitsTenantSuspendedEventPerRow() throws Exception {
+        when(idempotencyStore.lookup(eq("tenants-bulk"), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(eq(TenantStatus.ACTIVE), isNull(), isNull(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.ACTIVE), tenantRow("t2", TenantStatus.ACTIVE)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.ACTIVE));
+        when(tenantRepository.get("t2")).thenReturn(tenantRow("t2", TenantStatus.ACTIVE));
+        when(tenantRepository.update(anyString(), any())).thenReturn(tenantRow("t1", TenantStatus.SUSPENDED));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.succeeded.length()").value(2));
+
+        org.mockito.ArgumentCaptor<String> corr = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(eventService, times(2)).emit(eq(EventType.TENANT_SUSPENDED),
+                anyString(), isNull(), eq("cycles-admin"), any(), any(), corr.capture(), any());
+        // Both rows must share the same correlation_id (one-per-invocation).
+        assertEquals(1, new java.util.HashSet<>(corr.getAllValues()).size());
+        org.assertj.core.api.Assertions.assertThat(corr.getValue())
+                .startsWith("tenant_bulk_action:suspend:");
+    }
+
+    @Test
+    void bulkActionTenants_reactivate_emitsTenantReactivatedEventPerRow() throws Exception {
+        when(idempotencyStore.lookup(eq("tenants-bulk"), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.SUSPENDED)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.SUSPENDED));
+        when(tenantRepository.update(anyString(), any())).thenReturn(tenantRow("t1", TenantStatus.ACTIVE));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"SUSPENDED\"},\"action\":\"REACTIVATE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.succeeded.length()").value(1));
+
+        org.mockito.ArgumentCaptor<String> corr = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(eventService).emit(eq(EventType.TENANT_REACTIVATED),
+                anyString(), isNull(), eq("cycles-admin"), any(), any(), corr.capture(), any());
+        org.assertj.core.api.Assertions.assertThat(corr.getValue())
+                .startsWith("tenant_bulk_action:reactivate:");
+    }
+
+    @Test
+    void bulkActionTenants_close_emitsTenantClosedParentEvent_preservesCascadeCorrelationId() throws Exception {
+        // action=CLOSE emits TWO correlation-id axes:
+        //   - `tenant_bulk_action:close:<request_id>` on the parent tenant.closed event.
+        //   - `tenant_close_cascade:<tenant_id>:<request_id>` on each cascade
+        //     fan-out event (emitted inside TenantCloseCascadeService, mocked
+        //     here). This test verifies the PARENT event is correctly tagged
+        //     and that the cascade service is still invoked (its internal
+        //     correlation_id remains unchanged by this change).
+        when(idempotencyStore.lookup(eq("tenants-bulk"), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.ACTIVE)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.ACTIVE));
+        when(tenantRepository.update(eq("t1"), any())).thenReturn(tenantRow("t1", TenantStatus.CLOSED));
+        when(tenantCloseCascadeService.cascade(eq("t1"), any()))
+                .thenReturn(new TenantCloseCascadeService.CascadeResult(2, 1, 0, 0L));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"CLOSE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.succeeded[0].id").value("t1"));
+
+        org.mockito.ArgumentCaptor<String> corr = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(eventService).emit(eq(EventType.TENANT_CLOSED),
+                eq("t1"), isNull(), eq("cycles-admin"), any(), any(), corr.capture(), any());
+        org.assertj.core.api.Assertions.assertThat(corr.getValue())
+                .startsWith("tenant_bulk_action:close:");
+        verify(tenantCloseCascadeService).cascade(eq("t1"), any());
+    }
+
+    @Test
+    void bulkActionTenants_skippedRow_noEventEmitted() throws Exception {
+        // ALREADY_IN_TARGET_STATE short-circuit before mutation → no event.
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.SUSPENDED)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.SUSPENDED));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"SUSPENDED\"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.skipped.length()").value(1));
+
+        verify(eventService, never()).emit(any(EventType.class), anyString(), any(), anyString(),
+                any(), any(), anyString(), any());
+    }
+
+    @Test
+    void bulkActionTenants_failedRow_noEventEmitted() throws Exception {
+        // Repository.update throws → row bucketed as failed; no event emitted.
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.ACTIVE)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.ACTIVE));
+        when(tenantRepository.update(eq("t1"), any()))
+                .thenThrow(new GovernanceException(ErrorCode.INSUFFICIENT_PERMISSIONS, "denied", 403));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.failed.length()").value(1));
+
+        verify(eventService, never()).emit(any(EventType.class), anyString(), any(), anyString(),
+                any(), any(), anyString(), any());
+    }
+
+    @Test
+    void bulkActionTenants_emitFailure_doesNotAbortBulkOp() throws Exception {
+        // Spec v0.1.25.32: event emission failure must be logged and swallowed;
+        // the row still succeeds (event log is an observability surface, not
+        // a correctness gate). This mirrors the single-op discipline at
+        // TenantController.update.
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.ACTIVE)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.ACTIVE));
+        when(tenantRepository.update(eq("t1"), any())).thenReturn(tenantRow("t1", TenantStatus.SUSPENDED));
+        doThrow(new RuntimeException("event-store-down"))
+                .when(eventService).emit(any(EventType.class), anyString(), any(), anyString(),
+                        any(), any(), anyString(), any());
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.succeeded.length()").value(1));
+    }
 }

@@ -1,9 +1,94 @@
-# Complete Budget Governance v0.1.25.37 — Admin Server Audit
+# Complete Budget Governance v0.1.25.38 — Admin Server Audit
 
-**Server version:** 0.1.25.37 (2026-04-21 — spec v0.1.25.31 CASCADE SEMANTICS; Mode B flip-first-with-guarded-cascade conformant; Rule 1(c) bounded-convergence wired into PATCH and bulk-action close paths; Rule 2 guard coverage complete across all admin-mutating endpoints)
-**Date:** 2026-04-21 (v0.1.25.37 Rule 1(c) bounded-convergence: PATCH /tenants/{id} and bulk-action CLOSE re-run cascade on already-CLOSED tenants for straggler convergence), 2026-04-20 (v0.1.25.36 Rule 2 guard expansion: policies + api-keys + webhook-admin create/update/delete/test/replay + budgets and webhooks bulk-action per-row + webhook-tenant delete/test), 2026-04-20 (v0.1.25.35 cascade + TENANT_CLOSED guard), 2026-04-19 (v0.1.25.34 commons-lang3 CVE pin), 2026-04-19 (v0.1.25.33 Spring Boot / Tomcat CVE bump), 2026-04-18 (v0.1.25.32 cross-plane read tolerance hardening), 2026-04-18 (v0.1.25.31 trace_id cross-surface correlation), 2026-04-18 (v0.1.25.30 bulk-action audit enrichment), 2026-04-18 (v0.1.25.29 budget bulk-action), 2026-04-17 (v0.1.25.28 audit sentinel split), 2026-04-17 (v0.1.25.27 audit filter DSL upgrade), 2026-04-17 (v0.1.25.26 bulk-action endpoints), 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
+**Server version:** 0.1.25.38 (2026-04-22 — spec v0.1.25.32 bulk-action event parity; per-row Events emitted on `bulkActionBudgets` + `bulkActionTenants` with resource-scoped `*_bulk_action:<action>:<request_id>` correlation_id; aggregate `AuditLogEntry` and cascade semantics unchanged)
+**Date:** 2026-04-22 (v0.1.25.38 bulk-action event parity: per-row Events on budget + tenant bulk paths), 2026-04-21 (v0.1.25.37 Rule 1(c) bounded-convergence: PATCH /tenants/{id} and bulk-action CLOSE re-run cascade on already-CLOSED tenants for straggler convergence), 2026-04-20 (v0.1.25.36 Rule 2 guard expansion: policies + api-keys + webhook-admin create/update/delete/test/replay + budgets and webhooks bulk-action per-row + webhook-tenant delete/test), 2026-04-20 (v0.1.25.35 cascade + TENANT_CLOSED guard), 2026-04-19 (v0.1.25.34 commons-lang3 CVE pin), 2026-04-19 (v0.1.25.33 Spring Boot / Tomcat CVE bump), 2026-04-18 (v0.1.25.32 cross-plane read tolerance hardening), 2026-04-18 (v0.1.25.31 trace_id cross-surface correlation), 2026-04-18 (v0.1.25.30 bulk-action audit enrichment), 2026-04-18 (v0.1.25.29 budget bulk-action), 2026-04-17 (v0.1.25.28 audit sentinel split), 2026-04-17 (v0.1.25.27 audit filter DSL upgrade), 2026-04-17 (v0.1.25.26 bulk-action endpoints), 2026-04-17 (v0.1.25.25 search on six list endpoints), 2026-04-16 (v0.1.25.24 server-side sort — six admin list endpoints), 2026-04-16 (v0.1.25.23 BudgetLedger tenant_id on wire), 2026-04-16 (v0.1.25.22 cross-tenant list + filters), 2026-04-16 (v0.1.25.21 nightly CI), 2026-04-16 (v0.1.25.20 audit-on-failure), 2026-04-16 (v0.1.25.19 introspect dual-auth + operator docs), 2026-04-15 (v0.1.25.18 RESET_SPENT operation), 2026-04-14 (v0.1.25.17 cjson round-trip sweep: apikey + policy + tenant), 2026-04-13 (v0.1.25.16 webhooks dual-auth), 2026-04-13 (v0.1.25.15 ScopeValidator), 2026-04-13 (v0.1.25.14 admin-on-behalf-of dual-auth), 2026-04-13 (v0.1.25.13 CORS PUT fix), 2026-04-12 (v0.1.25.12 spec-compliance hardening + observability), 2026-04-12 (v0.1.25.11 contract-testing default ON), 2026-04-12 (v0.1.25.10 spec-compliance hardening), 2026-04-10 (v0.1.25.9 release), 2026-04-10 (CORS hardening + prod config), 2026-04-10 (observability: prometheus metrics + k8s probes), 2026-04-10 (v0.1.25.8 spec alignment), 2026-04-09 (v0.1.25.7 admin wildcard fallback), 2026-04-08 (v0.1.25.6 freeze/unfreeze + admin fund), 2026-04-08 (v0.1.25.5 dashboard support release), 2026-04-06 (v0.1.25.4 spec compliance + replay lock), 2026-04-01 (spec compliance review), 2026-04-01 (TTL retention + release prep), 2026-04-01 (integration audit + encryption), 2026-03-31 (v0.1.25 Pillar 4: Events & Webhooks spec), 2026-03-31 (dynamic version), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (Round 5: pre-release audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-14 (initial)
 **Spec:** [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (OpenAPI 3.1.0, info.version `0.1.25.31`; adds CASCADE SEMANTICS — Rule 1 `POST /admin/tenants/{id}` PATCH→CLOSED cascades owned budgets (→CLOSED), webhook subscriptions (→DISABLED), and API keys (→REVOKED) under a shared correlation_id — Rule 1 permits **Mode A (atomic)** or **Mode B (flip-first-with-guarded-cascade)** as of v0.1.25.31, and Rule 2 rejects any mutating operation against an object whose owning tenant is CLOSED with 409 `TENANT_CLOSED`; adds the `TENANT_CLOSED` error code to the shared enum and the four `*_via_tenant_cascade` event kinds: `budget.closed_via_tenant_cascade`, `webhook.disabled_via_tenant_cascade`, `api_key.revoked_via_tenant_cascade`, `reservation.released_via_tenant_cascade`) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 **Server:** Spring Boot 3.5.13 / Java 21 / Redis · Tomcat 10.1.54 pin · commons-lang3 3.18.0 pin
+
+### 2026-04-22 — v0.1.25.38: Bulk-action event parity (spec v0.1.25.32)
+
+**Motivation.** An operator observability review found that single-op
+budget-fund and tenant-lifecycle endpoints emitted first-class Events
+(`budget.funded`, `tenant.closed`, etc.) while the matching bulk-action
+paths emitted **only** a single aggregate `AuditLogEntry` per invocation.
+Operators watching `listEvents` to track funding or lifecycle activity
+had a blind spot whenever the same logical operation went through the
+bulk path. Spec was silent on bulk event emission but the existing
+`EventType` enum already defined the per-op kinds as first-class, and
+the tenant-close cascade (spec v0.1.25.29) had already set the
+precedent of per-row Events with a shared correlation_id on a multi-row
+op. Cycles-protocol spec v0.1.25.32 formalizes the emission contract
+on both endpoints; this server release implements it.
+
+**Scope.** `POST /v1/admin/budgets/bulk-action` +
+`POST /v1/admin/tenants/bulk-action`. `bulkActionWebhooks` is out of
+scope — webhook lifecycle events (`webhook.enabled` /
+`webhook.disabled` / `webhook.deleted`) do not exist in the `EventType`
+enum today (only `WEBHOOK_DISABLED_VIA_TENANT_CASCADE` for cascade
+fan-out). Adding them is a separate spec RFC; the bulk-action path
+can't emit kinds the spec doesn't define.
+
+**What changed.**
+- `BudgetController.applyBudgetAction` now captures the
+  `BudgetFundingResponse` from `repository.fund(...)` and emits
+  `budget.funded` / `budget.debited` / `budget.reset` /
+  `budget.reset_spent` / `budget.debt_repaid` keyed off the
+  FundingOperation (same mapping as single-op `fundBudget` at
+  `BudgetController.java:328-335`). Correlation_id shape:
+  `budget_bulk_action:<action>:<request_id>`.
+- `TenantController.applyTenantAction` now emits `tenant.suspended` /
+  `tenant.reactivated` / `tenant.closed` after each successful mutation.
+  For action=CLOSE the cascade call was hoisted so its result is
+  attached to the parent-event `cascade` summary (mirroring the single-
+  op PATCH at `TenantController.java:173-175`). Correlation_id shape:
+  `tenant_bulk_action:<action>:<request_id>`.
+
+**Correlation-id design.** Each bulk invocation now produces **two**
+correlation axes for CLOSE:
+- `tenant_bulk_action:close:<request_id>` stamped on the N parent
+  `tenant.closed` Events — one per row in the bulk op. Operators
+  tracing *this invocation* query by this id.
+- `tenant_close_cascade:<tenant_id>:<request_id>` stamped on each
+  tenant's cascade fan-out (unchanged v0.1.25.29 behavior). Operators
+  tracing *one specific tenant's close* query by this id.
+
+The two axes are complementary; neither was touched by the other.
+
+**Discipline — what does NOT emit.**
+- Skipped rows (`ALREADY_IN_TARGET_STATE`) emit no Event — matches
+  single-op behavior where a no-op doesn't write to the Event log.
+- Failed rows emit no Event — the bulk-action response's `failed[]`
+  bucket is the operator-facing signal; double-writing to the Event
+  log would produce false failure alerts.
+- Event emission failure is caught and logged (`LOG.warn`); it never
+  aborts the bulk op. Matches the single-op try/catch discipline.
+
+**Unchanged.**
+- Aggregate `AuditLogEntry` per invocation — spec v0.1.25.26 requires
+  "one AuditLogEntry per bulk-action invocation (not per row)" and
+  this release does not touch that.
+- `EventType` enum — existing per-op kinds reused, no new values.
+- Close-cascade service (`TenantCloseCascadeService`) — unchanged. The
+  bulk path now simply hoists its call so the `CascadeResult` can be
+  attached to the parent tenant Event, but the service's own semantics
+  and its `*_via_tenant_cascade` per-child emissions are untouched.
+
+**Tests.** Extended `BudgetControllerBulkActionTest` and
+`TenantControllerTest` (bulk-action slice) with per-action event
+verification — one `verify(eventService, times(n)).emit(...)` per
+success path plus negative assertions on skipped/failed rows.
+Coverage remains ≥95% on both controllers (jacoco).
+
+**Files touched.**
+- `cycles-admin-service/cycles-admin-service-api/src/main/java/io/runcycles/admin/api/controller/BudgetController.java`
+  — `bulkAction` computes once-per-invocation correlationId + requestId;
+  `applyBudgetAction` signature extended; new `emitBulkFundEvent` helper.
+- `cycles-admin-service/cycles-admin-service-api/src/main/java/io/runcycles/admin/api/controller/TenantController.java`
+  — `bulkAction` computes once-per-invocation correlationId + requestId;
+  `applyTenantAction` signature extended and cascade-call hoisted;
+  new `emitBulkTenantEvent` helper.
+- Tests extended in matching `*Test.java` files.
+- `cycles-admin-service/pom.xml` revision bump.
 
 ### 2026-04-21 — v0.1.25.37: Rule 1(c) bounded-convergence wired into close paths (spec v0.1.25.31 MUST)
 
