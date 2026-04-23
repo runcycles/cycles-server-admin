@@ -24,6 +24,9 @@ Alerts for the two planes should be routed separately.
 3. [Alerts worth paging on](#alerts-worth-paging-on)
 4. [Configuration tuning](#configuration-tuning)
 5. [Incident playbook](#incident-playbook)
+6. [Nightly CI coverage](#nightly-ci-coverage-v01252121)
+7. [Pre-release drift checklist](#pre-release-drift-checklist)
+8. [Related docs](#related-docs)
 
 ---
 
@@ -653,6 +656,91 @@ mvn test -Pproperty-tests --file cycles-admin-service/pom.xml \
 ```
 
 PR CI does not run either workflow — `<excludedGroups>soak,property-tests</excludedGroups>` in the default surefire config skips them. A PR that breaks these invariants will pass PR CI and only fail the next nightly run. If ops sees a nightly red shortly after a release, look at the prior day's merged PRs.
+
+## Pre-release drift checklist
+
+Each item below has caused an actual drift incident in this repo's
+history; they are cheap to verify and painful to discover after a tag
+is published. Run through the list before opening the release PR,
+before tagging, and after `release.yml` finishes. A five-minute check
+here prevents the multi-release consolidation windows we've had to
+patch around (see the v0.1.25.38 release audit, which found
+`AUDIT.md` and `README.md` spec-version pointers still stuck at
+`v0.1.25.31` two days after the spec had advanced to `.32`).
+
+Mirrors the same checklist in
+[`cycles-server-events/OPERATIONS.md`](https://github.com/runcycles/cycles-server-events/blob/main/OPERATIONS.md#pre-release-drift-checklist)
+with admin-specific additions (spec pointer, smoke-test-published job,
+fourth-segment same-day follow-up convention).
+
+### Before opening the release PR
+
+- **`cycles-admin-service/pom.xml` `<revision>` is bumped to the target
+  version.** Grep the module pom (the parent pom inherits via
+  `${revision}`). A PR that edits code + CHANGELOG but forgets the pom
+  bump will build and publish the *prior* version — silently.
+- **`CHANGELOG.md` top entry heading matches the pom revision
+  exactly.** `## [X.Y.Z.W] — YYYY-MM-DD` — bracketed version, em-dash,
+  ISO date. Version must be string-equal to `<revision>`
+  (`0.1.25.38` ≠ `0.1.25.38.0`). Same-day follow-up patches use the
+  fourth segment (`0.1.25.28.1`, `0.1.25.38.1`); the preamble in
+  `CHANGELOG.md` documents this convention.
+- **`AUDIT.md` has a matching section for this version**, header date
+  matches the CHANGELOG date. This is a
+  [CLAUDE.md](CLAUDE.md) invariant ("always update AUDIT.md files
+  when making changes"). Missing AUDIT entry blocks release.
+- **`AUDIT.md` top `# <title>` line and `**Server version:**` line
+  carry the target version**, not the previous one. Caught on 2026-04-22
+  where the header still said 0.1.25.37 while the release was 0.1.25.38.
+- **Spec pointer in `AUDIT.md` and `README.md` matches the actual
+  spec version used.** `AUDIT.md`'s `**Spec:**` line and the
+  `README.md:7` "Cycles Protocol vX.Y.Z" link. This drifted on
+  v0.1.25.38 (stuck at `v0.1.25.31` while the spec had advanced to
+  `v0.1.25.32`). Cross-check against the current
+  `cycles-governance-admin-v0.1.25.yaml` `info.version`.
+
+### Before tagging
+
+- **Every commit on main since the last tag has a home in CHANGELOG.**
+  `git log --oneline <last-tag>..HEAD` vs. the top `[X.Y.Z.W]` entry's
+  bullet list. Dependabot bumps, CODEOWNERS / workflow tweaks, and
+  chore commits often fall through the cracks — either list them under
+  `### Changed` / `### Internal` or consolidate with a single "plus N
+  transitive dependency bumps" line.
+- **No un-tagged intermediate pom revision on main.** Before tagging
+  `vX.Y.Z.W`, confirm the previous revision on main (`vX.Y.Z.W-1`) was
+  either (a) tagged + released, or (b) explicitly folded into the
+  current entry's CHANGELOG body. The events repo hit this exact drift
+  on v0.1.25.10; admin's fourth-segment convention
+  (`0.1.25.28.1` / `0.1.25.38.1`) is designed to avoid it but the
+  check still matters.
+- **Tag message is prose, not a bullet dump.** `git tag -a vX.Y.Z.W
+  -m "..."` body should be a short paragraph matching the CHANGELOG
+  entry's headline (admin's release precedent uses 2–3 sentences).
+
+### After `release.yml` finishes
+
+- **`smoke-test-published` job green.** This job runs inside
+  `release.yml`: pulls `ghcr.io/runcycles/cycles-server-admin:X.Y.Z.W`,
+  runs the container, probes `/actuator/health`, confirms the
+  version matches the tag, probes an unauthenticated endpoint for the
+  401 shape. A red smoke-test means a broken image was published — do
+  not announce the release until it's fixed (either hotfix with a
+  fourth-segment same-day patch, or delete the tag + release and
+  re-cut). This is the admin-specific differentiator vs. events
+  (events `release.yml` has build-and-push only).
+- **Published image tag resolves correctly.** `docker pull
+  ghcr.io/runcycles/cycles-server-admin:X.Y.Z.W` + `:latest` resolve
+  to the same digest.
+- **GitHub release notes match CHANGELOG.** `gh release view vX.Y.Z.W`
+  — body should be the CHANGELOG entry verbatim (or close), not a raw
+  autogenerated commit list.
+- **Next cycle: bump pom immediately.** To make a future un-tagged
+  revision a louder signal, bump `<revision>` to the next planned
+  version on the post-release merge to main, even if no work is
+  scheduled yet. The next PR will either add a CHANGELOG entry at the
+  new version or roll the pom back, not silently ship under the new
+  number.
 
 ## Related docs
 
