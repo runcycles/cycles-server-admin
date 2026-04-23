@@ -173,6 +173,9 @@ public class TenantController {
             if (cascadeResult != null) {
                 eventData.put("cascade", cascadeSummaryMap(cascadeResult));
             }
+            // TODO actor-parity: hardcoded ADMIN with no keyId. Bulk path (emitBulkTenantEvent)
+            // populates keyId from authenticated_key_id; single-op here does not. Aligning
+            // would change event wire shape, so deferred — tracked as hygiene follow-up.
             eventService.emit(eventType, tenantId, null, "cycles-admin",
                 Actor.builder().type(ActorType.ADMIN).build(),
                 eventData,
@@ -488,6 +491,9 @@ public class TenantController {
             if (cascadeResult != null) {
                 eventData.put("cascade", cascadeSummaryMap(cascadeResult));
             }
+            // TODO actor-parity: hardcoded ADMIN; bulk endpoint is AdminKeyAuth-gated today
+            // so the attribution is correct. If auth is ever broadened (admin-on-behalf-of),
+            // mirror the BudgetController#emitBulkFundEvent dual-auth conditional here.
             eventService.emit(eventType, tenantId, null, "cycles-admin",
                 Actor.builder().type(ActorType.ADMIN)
                     .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
