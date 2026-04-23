@@ -1,6 +1,7 @@
 package io.runcycles.admin.api.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.api.service.TerminalOwnerMutationGuard;
 import io.runcycles.admin.api.service.WebhookService;
 import io.runcycles.admin.data.exception.GovernanceException;
@@ -8,6 +9,7 @@ import io.runcycles.admin.data.idempotency.IdempotencyStore;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.data.repository.WebhookRepository;
+import io.runcycles.admin.model.event.Actor;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.SortDirection;
@@ -46,6 +48,7 @@ class WebhookAdminControllerTest {
     @MockitoBean private JedisPool jedisPool;
     @MockitoBean private IdempotencyStore idempotencyStore;
     @MockitoBean private TerminalOwnerMutationGuard mutationGuard;
+    @MockitoBean private EventService eventService;
 
     private static final String ADMIN_KEY = "test-admin-key";
 
@@ -119,10 +122,15 @@ class WebhookAdminControllerTest {
 
     @Test
     void updateWebhook_returns200() throws Exception {
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").name("Old")
+            .url("https://example.com/wh").status(WebhookStatus.ACTIVE)
+            .createdAt(Instant.now()).build();
         WebhookSubscription updated = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").name("Updated")
             .url("https://example.com/wh").status(WebhookStatus.ACTIVE)
             .createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(prior);
         when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
 
         mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
@@ -507,6 +515,7 @@ class WebhookAdminControllerTest {
                 .thenReturn(java.util.Optional.empty());
         when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
                 .thenReturn(List.of(webhookRow("w1", WebhookStatus.ACTIVE)));
+        when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.ACTIVE));
         // Concurrent delete between match and apply — service now 404s.
         doThrow(GovernanceException.webhookNotFound("w1"))
                 .when(webhookService).delete("w1");
@@ -528,6 +537,7 @@ class WebhookAdminControllerTest {
                 .thenReturn(java.util.Optional.empty());
         when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
                 .thenReturn(List.of(webhookRow("w1", WebhookStatus.ACTIVE)));
+        when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.ACTIVE));
 
         mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -635,6 +645,7 @@ class WebhookAdminControllerTest {
                 .thenReturn(java.util.Optional.empty());
         when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
                 .thenReturn(List.of(webhookRow("whsub_1", WebhookStatus.ACTIVE)));
+        when(webhookRepository.findById("whsub_1")).thenReturn(webhookRow("whsub_1", WebhookStatus.ACTIVE));
         doThrow(new GovernanceException(
                         io.runcycles.admin.model.shared.ErrorCode.INSUFFICIENT_PERMISSIONS,
                         "nope", 403))
@@ -720,6 +731,396 @@ class WebhookAdminControllerTest {
                 .andExpect(jsonPath("$.error").value("TENANT_CLOSED"));
 
         verify(webhookService, never()).update(anyString(), any());
+    }
+
+    // --- Webhook lifecycle event-emission contract (spec v0.1.25.33) ---
+
+    @Test
+    void createWebhook_emitsWebhookCreatedEvent() throws Exception {
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .eventTypes(List.of(EventType.BUDGET_CREATED)).status(WebhookStatus.ACTIVE)
+            .createdAt(Instant.now()).build();
+        WebhookCreateResponse response = WebhookCreateResponse.builder()
+            .subscription(sub).signingSecret("whsec_abc").build();
+        when(webhookService.create(eq("tenant-1"), any())).thenReturn(response);
+
+        mockMvc.perform(post("/v1/admin/webhooks")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("tenant_id", "tenant-1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://example.com/wh\",\"event_types\":[\"budget.created\"]}"))
+                .andExpect(status().isCreated());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> payload =
+            ArgumentCaptor.forClass(java.util.Map.class);
+        ArgumentCaptor<String> corr = ArgumentCaptor.forClass(String.class);
+        verify(eventService).emit(eq(EventType.WEBHOOK_CREATED), eq("tenant-1"), isNull(),
+            eq("cycles-admin"), any(Actor.class), payload.capture(), corr.capture(), any());
+        java.util.Map<String, Object> p = payload.getValue();
+        org.assertj.core.api.Assertions.assertThat(p)
+            .containsEntry("subscription_id", "whsub_1")
+            .containsEntry("tenant_id", "tenant-1")
+            .containsEntry("new_status", "ACTIVE");
+        org.assertj.core.api.Assertions.assertThat(corr.getValue())
+            .isEqualTo("webhook_create:whsub_1");
+    }
+
+    @Test
+    void updateWebhook_statusFlip_active_to_paused_emitsWebhookPaused() throws Exception {
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        WebhookSubscription updated = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.PAUSED).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"PAUSED\"}"))
+                .andExpect(status().isOk());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> payload =
+            ArgumentCaptor.forClass(java.util.Map.class);
+        ArgumentCaptor<String> corr = ArgumentCaptor.forClass(String.class);
+        verify(eventService).emit(eq(EventType.WEBHOOK_PAUSED), eq("tenant-1"), isNull(),
+            eq("cycles-admin"), any(Actor.class), payload.capture(), corr.capture(), any());
+        java.util.Map<String, Object> p = payload.getValue();
+        org.assertj.core.api.Assertions.assertThat(p)
+            .containsEntry("previous_status", "ACTIVE")
+            .containsEntry("new_status", "PAUSED");
+        org.assertj.core.api.Assertions.assertThat(corr.getValue())
+            .startsWith("webhook_update:whsub_1:");
+    }
+
+    @Test
+    void updateWebhook_statusFlip_paused_to_active_emitsWebhookResumed() throws Exception {
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.PAUSED).createdAt(Instant.now()).build();
+        WebhookSubscription updated = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"ACTIVE\"}"))
+                .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(EventType.WEBHOOK_RESUMED), eq("tenant-1"), isNull(),
+            eq("cycles-admin"), any(Actor.class), any(), anyString(), any());
+    }
+
+    @Test
+    void updateWebhook_statusOnlyFlip_emitsEmptyChangedFields() throws Exception {
+        // Spec §6278: changed_fields lists the non-status mutations. A pure
+        // status flip (ACTIVE → PAUSED, no other fields in the request body)
+        // MUST emit an empty changed_fields array.
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        WebhookSubscription updated = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.PAUSED).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"PAUSED\"}"))
+                .andExpect(status().isOk());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> payload =
+            ArgumentCaptor.forClass(java.util.Map.class);
+        verify(eventService).emit(eq(EventType.WEBHOOK_PAUSED), eq("tenant-1"), isNull(),
+            eq("cycles-admin"), any(Actor.class), payload.capture(), anyString(), any());
+        @SuppressWarnings("unchecked")
+        java.util.List<String> changed = (java.util.List<String>) payload.getValue().get("changed_fields");
+        org.assertj.core.api.Assertions.assertThat(changed).isEmpty();
+    }
+
+    @Test
+    void updateWebhook_propertyOnly_emitsWebhookUpdated() throws Exception {
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        WebhookSubscription updated = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/new-wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://example.com/new-wh\"}"))
+                .andExpect(status().isOk());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> payload =
+            ArgumentCaptor.forClass(java.util.Map.class);
+        verify(eventService).emit(eq(EventType.WEBHOOK_UPDATED), eq("tenant-1"), isNull(),
+            eq("cycles-admin"), any(Actor.class), payload.capture(), anyString(), any());
+        java.util.Map<String, Object> p = payload.getValue();
+        @SuppressWarnings("unchecked")
+        java.util.List<String> changed = (java.util.List<String>) p.get("changed_fields");
+        org.assertj.core.api.Assertions.assertThat(changed).contains("url");
+    }
+
+    @Test
+    void updateWebhook_noop_doesNotEmit() throws Exception {
+        // Spec v0.1.25.33: a PATCH that mutates zero fields AND does not flip
+        // status MUST NOT produce an Event. Empty body here.
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq("whsub_1"), any())).thenReturn(prior);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isOk());
+
+        verify(eventService, never()).emit(any(EventType.class), anyString(), any(),
+            anyString(), any(Actor.class), any(), anyString(), any());
+    }
+
+    @Test
+    void updateWebhook_statusFlip_disabled_to_active_emitsWebhookResumed() throws Exception {
+        // Spec v0.1.25.33: operator re-enable of an auto-disabled subscription
+        // (DISABLED → ACTIVE) emits webhook.resumed, matching the PAUSED →
+        // ACTIVE transition semantics. The dispatcher owns webhook.disabled.
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.DISABLED).createdAt(Instant.now()).build();
+        WebhookSubscription updated = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"ACTIVE\"}"))
+                .andExpect(status().isOk());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> payload =
+            ArgumentCaptor.forClass(java.util.Map.class);
+        verify(eventService).emit(eq(EventType.WEBHOOK_RESUMED), eq("tenant-1"), isNull(),
+            eq("cycles-admin"), any(Actor.class), payload.capture(), anyString(), any());
+        java.util.Map<String, Object> p = payload.getValue();
+        org.assertj.core.api.Assertions.assertThat(p)
+            .containsEntry("previous_status", "DISABLED")
+            .containsEntry("new_status", "ACTIVE");
+    }
+
+    @Test
+    void deleteWebhook_emitsWebhookDeleted() throws Exception {
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(sub);
+
+        mockMvc.perform(delete("/v1/admin/webhooks/whsub_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY))
+                .andExpect(status().isNoContent());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> payload =
+            ArgumentCaptor.forClass(java.util.Map.class);
+        ArgumentCaptor<String> corr = ArgumentCaptor.forClass(String.class);
+        verify(eventService).emit(eq(EventType.WEBHOOK_DELETED), eq("tenant-1"), isNull(),
+            eq("cycles-admin"), any(Actor.class), payload.capture(), corr.capture(), any());
+        java.util.Map<String, Object> p = payload.getValue();
+        org.assertj.core.api.Assertions.assertThat(p)
+            .containsEntry("subscription_id", "whsub_1")
+            .containsEntry("previous_status", "ACTIVE");
+        org.assertj.core.api.Assertions.assertThat(corr.getValue())
+            .isEqualTo("webhook_delete:whsub_1");
+    }
+
+    @Test
+    void bulkActionWebhooks_pause_emitsWebhookPausedEventPerRow() throws Exception {
+        when(idempotencyStore.lookup(eq("webhooks-bulk"), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(isNull(), eq(WebhookStatus.ACTIVE), isNull(), isNull(), eq(500)))
+                .thenReturn(List.of(webhookRow("w1", WebhookStatus.ACTIVE), webhookRow("w2", WebhookStatus.ACTIVE)));
+        when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.ACTIVE));
+        when(webhookRepository.findById("w2")).thenReturn(webhookRow("w2", WebhookStatus.ACTIVE));
+        when(webhookService.update(anyString(), any())).thenReturn(webhookRow("w1", WebhookStatus.PAUSED));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"PAUSE\",\"idempotency_key\":\"k_emit\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.succeeded.length()").value(2));
+
+        ArgumentCaptor<String> corr = ArgumentCaptor.forClass(String.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> payload =
+            ArgumentCaptor.forClass(java.util.Map.class);
+        verify(eventService, times(2)).emit(eq(EventType.WEBHOOK_PAUSED),
+                eq("tenant-1"), isNull(), eq("cycles-admin"), any(Actor.class),
+                payload.capture(), corr.capture(), any());
+        // One correlation_id per invocation, shared across all per-row emits.
+        org.junit.jupiter.api.Assertions.assertEquals(1, new java.util.HashSet<>(corr.getAllValues()).size());
+        org.assertj.core.api.Assertions.assertThat(corr.getValue())
+            .startsWith("webhook_bulk_action:pause:");
+        java.util.Map<String, Object> p = payload.getValue();
+        org.assertj.core.api.Assertions.assertThat(p)
+            .containsEntry("tenant_id", "tenant-1")
+            .containsEntry("previous_status", "ACTIVE")
+            .containsEntry("new_status", "PAUSED");
+    }
+
+    @Test
+    void bulkActionWebhooks_resume_emitsWebhookResumedEventPerRow() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(webhookRow("w1", WebhookStatus.PAUSED)));
+        when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.PAUSED));
+        when(webhookService.update(anyString(), any())).thenReturn(webhookRow("w1", WebhookStatus.ACTIVE));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"PAUSED\"},\"action\":\"RESUME\",\"idempotency_key\":\"k_emit_r\"}"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<String> corr = ArgumentCaptor.forClass(String.class);
+        verify(eventService).emit(eq(EventType.WEBHOOK_RESUMED),
+                eq("tenant-1"), isNull(), eq("cycles-admin"), any(Actor.class),
+                any(), corr.capture(), any());
+        org.assertj.core.api.Assertions.assertThat(corr.getValue())
+            .startsWith("webhook_bulk_action:resume:");
+    }
+
+    @Test
+    void bulkActionWebhooks_delete_emitsWebhookDeletedEventPerRow() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(webhookRow("w1", WebhookStatus.ACTIVE)));
+        // Fresh live-read parity with PAUSE/RESUME — bulk DELETE now calls
+        // findById to capture live previous_status at time of deletion.
+        when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.ACTIVE));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"tenant_id\":\"tenant-1\"},\"action\":\"DELETE\",\"idempotency_key\":\"k_emit_d\"}"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<String> corr = ArgumentCaptor.forClass(String.class);
+        verify(eventService).emit(eq(EventType.WEBHOOK_DELETED),
+                eq("tenant-1"), isNull(), eq("cycles-admin"), any(Actor.class),
+                any(), corr.capture(), any());
+        org.assertj.core.api.Assertions.assertThat(corr.getValue())
+            .startsWith("webhook_bulk_action:delete:");
+    }
+
+    @Test
+    void bulkActionWebhooks_delete_liveReadMissing_rowSkipped_doesNotEmit() throws Exception {
+        // Concurrent delete between match and apply: findById throws, row
+        // lands in skipped[] with ALREADY_DELETED and MUST NOT emit.
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(webhookRow("w1", WebhookStatus.ACTIVE)));
+        when(webhookRepository.findById("w1"))
+                .thenThrow(new GovernanceException(ErrorCode.WEBHOOK_NOT_FOUND, "gone", 404));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"tenant_id\":\"tenant-1\"},\"action\":\"DELETE\",\"idempotency_key\":\"k_race\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.skipped.length()").value(1))
+                .andExpect(jsonPath("$.skipped[0].reason").value("ALREADY_DELETED"));
+
+        verify(eventService, never()).emit(any(EventType.class), anyString(), any(),
+                anyString(), any(), any(), any(), any());
+    }
+
+    @Test
+    void bulkActionWebhooks_skippedRow_doesNotEmit() throws Exception {
+        // Skipped rows (ALREADY_IN_TARGET_STATE / ALREADY_DELETED) MUST NOT
+        // emit — emission is bound to actual state transition.
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(webhookRow("w1", WebhookStatus.PAUSED)));
+        when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.PAUSED));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"PAUSED\"},\"action\":\"PAUSE\",\"idempotency_key\":\"k_skip\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.skipped.length()").value(1));
+
+        verify(eventService, never()).emit(any(EventType.class), anyString(), any(),
+                anyString(), any(), any(), any(), any());
+    }
+
+    @Test
+    void bulkActionWebhooks_failedRow_doesNotEmit() throws Exception {
+        // Failed rows (INVALID_TRANSITION, TENANT_CLOSED, INTERNAL_ERROR)
+        // MUST NOT emit a lifecycle event — state did not transition.
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(webhookRow("w1", WebhookStatus.DISABLED)));
+        when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.DISABLED));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"DISABLED\"},\"action\":\"RESUME\",\"idempotency_key\":\"k_fail\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.failed.length()").value(1));
+
+        verify(eventService, never()).emit(any(EventType.class), anyString(), any(),
+                anyString(), any(), any(), any(), any());
+    }
+
+    @Test
+    void webhookEmit_exceptionInEventService_doesNotBreakResponse() throws Exception {
+        // Belt-and-suspenders: emit failure is swallowed and logged. Operator
+        // response must still be 201/200/204 on the underlying mutation.
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .eventTypes(List.of(EventType.BUDGET_CREATED)).status(WebhookStatus.ACTIVE)
+            .createdAt(Instant.now()).build();
+        WebhookCreateResponse response = WebhookCreateResponse.builder()
+            .subscription(sub).signingSecret("whsec_abc").build();
+        when(webhookService.create(eq("tenant-1"), any())).thenReturn(response);
+        doThrow(new RuntimeException("event bus down"))
+            .when(eventService).emit(any(EventType.class), anyString(), any(),
+                anyString(), any(), any(), any(), any());
+
+        mockMvc.perform(post("/v1/admin/webhooks")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("tenant_id", "tenant-1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://example.com/wh\",\"event_types\":[\"budget.created\"]}"))
+                .andExpect(status().isCreated());
     }
 
     @Test

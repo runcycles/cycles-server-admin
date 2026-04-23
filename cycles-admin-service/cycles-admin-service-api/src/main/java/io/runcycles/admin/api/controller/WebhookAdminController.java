@@ -11,12 +11,17 @@ import io.runcycles.admin.data.idempotency.IdempotencyStore;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.WebhookRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
+import io.runcycles.admin.model.event.Actor;
+import io.runcycles.admin.model.event.ActorType;
+import io.runcycles.admin.model.event.EventDataWebhookLifecycle;
+import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.BulkActionRowOutcome;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.webhook.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -50,6 +55,8 @@ public class WebhookAdminController {
     @Autowired private AuditRepository auditRepository;
     @Autowired private IdempotencyStore idempotencyStore;
     @Autowired private TerminalOwnerMutationGuard mutationGuard;
+    @Autowired private EventService eventService;
+    @Autowired private ObjectMapper objectMapper;
 
     @PostMapping @Operation(operationId = "createWebhookSubscription")
     public ResponseEntity<WebhookCreateResponse> create(
@@ -66,6 +73,11 @@ public class WebhookAdminController {
             .operation("createWebhookSubscription").status(201)
             .metadata(java.util.Map.of("url", request.getUrl()))
             .build());
+        emitWebhookLifecycleEvent(EventType.WEBHOOK_CREATED,
+            response.getSubscription().getSubscriptionId(), tenantId,
+            null, response.getSubscription().getStatus(), List.of(), null,
+            "webhook_create:" + response.getSubscription().getSubscriptionId(),
+            httpRequest);
         return ResponseEntity.status(201).body(response);
     }
 
@@ -121,6 +133,10 @@ public class WebhookAdminController {
             @PathVariable("subscription_id") String subscriptionId,
             @Valid @RequestBody WebhookUpdateRequest request, HttpServletRequest httpRequest) {
         mutationGuard.assertOpenForWebhook(subscriptionId);
+        // Capture prior status BEFORE mutating so we can classify the emit
+        // type (WEBHOOK_PAUSED / WEBHOOK_RESUMED vs plain WEBHOOK_UPDATED).
+        WebhookSubscription prior = webhookService.get(subscriptionId);
+        WebhookStatus previousStatus = prior.getStatus();
         WebhookSubscription updated = webhookService.update(subscriptionId, request);
         java.util.Map<String, Object> updateMeta = new java.util.LinkedHashMap<>();
         updateMeta.put("url", updated.getUrl());
@@ -134,6 +150,47 @@ public class WebhookAdminController {
             .operation("updateWebhookSubscription").status(200)
             .metadata(updateMeta)
             .build());
+        // Spec v0.1.25.33: status-flip PATCH emits WEBHOOK_PAUSED/RESUMED;
+        // property-only PATCH emits WEBHOOK_UPDATED. WEBHOOK_DISABLED is
+        // reserved for dispatcher auto-disable (cycles-server-events) and
+        // is not produced on this operator path. A no-op PATCH (zero fields
+        // mutated AND no status change) MUST NOT emit an Event.
+        EventType updateEventType = EventType.WEBHOOK_UPDATED;
+        List<String> changedFields = new ArrayList<>();
+        if (request.getName() != null) changedFields.add("name");
+        if (request.getDescription() != null) changedFields.add("description");
+        if (request.getUrl() != null) changedFields.add("url");
+        if (request.getEventTypes() != null) changedFields.add("event_types");
+        if (request.getEventCategories() != null) changedFields.add("event_categories");
+        if (request.getScopeFilter() != null) changedFields.add("scope_filter");
+        if (request.getThresholds() != null) changedFields.add("thresholds");
+        if (request.getSigningSecret() != null) changedFields.add("signing_secret");
+        if (request.getHeaders() != null) changedFields.add("headers");
+        if (request.getRetryPolicy() != null) changedFields.add("retry_policy");
+        if (request.getDisableAfterFailures() != null) changedFields.add("disable_after_failures");
+        if (request.getMetadata() != null) changedFields.add("metadata");
+        boolean statusFlipped = request.getStatus() != null && request.getStatus() != previousStatus;
+        if (statusFlipped) {
+            if (request.getStatus() == WebhookStatus.PAUSED) {
+                updateEventType = EventType.WEBHOOK_PAUSED;
+            } else if (request.getStatus() == WebhookStatus.ACTIVE) {
+                // Both PAUSED → ACTIVE and DISABLED → ACTIVE (operator
+                // re-enable of an auto-disabled subscription) emit
+                // webhook.resumed per spec v0.1.25.33 §EVENTS.
+                updateEventType = EventType.WEBHOOK_RESUMED;
+            }
+        }
+        // No-op PATCH guard (spec v0.1.25.33: zero fields mutated AND no
+        // status change MUST NOT emit). changedFields enumerates every
+        // non-status field the request touched; statusFlipped covers the
+        // status axis.
+        if (!changedFields.isEmpty() || statusFlipped) {
+            String requestId = attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE);
+            emitWebhookLifecycleEvent(updateEventType, subscriptionId, updated.getTenantId(),
+                previousStatus, updated.getStatus(), changedFields, null,
+                "webhook_update:" + subscriptionId + ":" + (requestId != null ? requestId : "no-req"),
+                httpRequest);
+        }
         return ResponseEntity.ok(updated);
     }
 
@@ -148,6 +205,9 @@ public class WebhookAdminController {
             .operation("deleteWebhookSubscription").status(204)
             .metadata(java.util.Map.of("url", sub.getUrl()))
             .build());
+        emitWebhookLifecycleEvent(EventType.WEBHOOK_DELETED, subscriptionId, sub.getTenantId(),
+            sub.getStatus(), null, List.of(), null,
+            "webhook_delete:" + subscriptionId, httpRequest);
         return ResponseEntity.noContent().build();
     }
 
@@ -258,8 +318,17 @@ public class WebhookAdminController {
         List<BulkActionRowOutcome> succeeded = new ArrayList<>();
         List<BulkActionRowOutcome> failed = new ArrayList<>();
         List<BulkActionRowOutcome> skipped = new ArrayList<>();
+        // Spec v0.1.25.33: per-invocation correlation_id stamped on every
+        // per-row Event emitted below. Operators retrieve the full fan-out
+        // via GET /v1/admin/events?correlation_id=…; the shared request_id
+        // also ties every row to the invocation's single AuditLogEntry.
+        String requestId = attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE);
+        String correlationId = "webhook_bulk_action:"
+            + request.getAction().name().toLowerCase() + ":"
+            + (requestId != null ? requestId : "no-req");
         for (WebhookSubscription sub : matched) {
-            applyWebhookAction(sub, request.getAction(), succeeded, failed, skipped);
+            applyWebhookAction(sub, request.getAction(), succeeded, failed, skipped,
+                httpRequest, correlationId, requestId);
         }
 
         WebhookBulkActionResponse response = WebhookBulkActionResponse.builder()
@@ -295,7 +364,9 @@ public class WebhookAdminController {
     private void applyWebhookAction(WebhookSubscription matched, WebhookBulkAction action,
                                      List<BulkActionRowOutcome> succeeded,
                                      List<BulkActionRowOutcome> failed,
-                                     List<BulkActionRowOutcome> skipped) {
+                                     List<BulkActionRowOutcome> skipped,
+                                     HttpServletRequest httpRequest,
+                                     String correlationId, String requestId) {
         String id = matched.getSubscriptionId();
         try {
             // Rule 2 (v0.1.25.29): reject mutation on subscriptions whose
@@ -303,9 +374,24 @@ public class WebhookAdminController {
             // catch so one closed-owner row doesn't poison the whole batch.
             mutationGuard.assertTenantOpen(matched.getTenantId());
             if (action == WebhookBulkAction.DELETE) {
+                // Fresh live read for previous_status parity with PAUSE/RESUME
+                // so the emitted Event carries the subscription's status at
+                // time of deletion (spec §6358-6360), not the pre-match
+                // snapshot, which can drift if the dispatcher auto-disables
+                // between match and apply.
+                WebhookSubscription deleteLive;
+                try {
+                    deleteLive = webhookRepository.findById(id);
+                } catch (GovernanceException e) {
+                    skipped.add(BulkActionRowOutcome.builder()
+                        .id(id).reason("ALREADY_DELETED").build());
+                    return;
+                }
                 try {
                     webhookService.delete(id);
                     succeeded.add(BulkActionRowOutcome.builder().id(id).build());
+                    emitBulkWebhookEvent(id, deleteLive.getTenantId(), action,
+                        deleteLive.getStatus(), httpRequest, correlationId, requestId);
                 } catch (GovernanceException e) {
                     if (e.getErrorCode() == ErrorCode.WEBHOOK_NOT_FOUND
                             || e.getErrorCode() == ErrorCode.NOT_FOUND) {
@@ -337,6 +423,8 @@ public class WebhookAdminController {
                     .status(WebhookStatus.PAUSED).build();
                 webhookService.update(id, update);
                 succeeded.add(BulkActionRowOutcome.builder().id(id).build());
+                emitBulkWebhookEvent(id, live.getTenantId(), action, current,
+                    httpRequest, correlationId, requestId);
                 return;
             }
             // action == RESUME
@@ -355,6 +443,8 @@ public class WebhookAdminController {
                 .status(WebhookStatus.ACTIVE).build();
             webhookService.update(id, update);
             succeeded.add(BulkActionRowOutcome.builder().id(id).build());
+            emitBulkWebhookEvent(id, live.getTenantId(), action, current,
+                httpRequest, correlationId, requestId);
         } catch (GovernanceException e) {
             failed.add(BulkActionRowOutcome.builder()
                 .id(id)
@@ -364,6 +454,95 @@ public class WebhookAdminController {
             LOG.warn("Bulk-action row failed for subscription {}: {}", id, e.getMessage());
             failed.add(BulkActionRowOutcome.builder()
                 .id(id).errorCode("INTERNAL_ERROR").message("Internal error").build());
+        }
+    }
+
+    /**
+     * Single-op webhook lifecycle Event emission (spec v0.1.25.33). Wraps
+     * EventService.emit in a try/catch so emit-layer failures never break
+     * the operator-facing response. Called from create / update / delete.
+     */
+    private void emitWebhookLifecycleEvent(EventType eventType, String subscriptionId,
+                                            String tenantId,
+                                            WebhookStatus previousStatus,
+                                            WebhookStatus newStatus,
+                                            List<String> changedFields,
+                                            String disableReason,
+                                            String correlationId,
+                                            HttpServletRequest httpRequest) {
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> eventData = objectMapper.convertValue(
+                EventDataWebhookLifecycle.builder()
+                    .subscriptionId(subscriptionId)
+                    .tenantId(tenantId)
+                    .previousStatus(previousStatus)
+                    .newStatus(newStatus)
+                    .changedFields(changedFields)
+                    .disableReason(disableReason)
+                    .build(), Map.class);
+            // TODO actor-parity: hardcoded ADMIN with no keyId on single-op.
+            // Bulk path (emitBulkWebhookEvent) populates keyId from
+            // authenticated_key_id. Mirrors TenantController's known gap.
+            eventService.emit(eventType, tenantId, null, "cycles-admin",
+                Actor.builder().type(ActorType.ADMIN).build(),
+                eventData,
+                correlationId,
+                attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE));
+        } catch (Exception e) {
+            LOG.warn("Failed to emit webhook lifecycle event {} for {}: {}",
+                eventType, subscriptionId, e.getMessage());
+        }
+    }
+
+    /**
+     * Per-row Event emission for bulkActionWebhooks (spec v0.1.25.33). Maps
+     * WebhookBulkAction → EventType (PAUSE → WEBHOOK_PAUSED, RESUME →
+     * WEBHOOK_RESUMED, DELETE → WEBHOOK_DELETED). Skipped/failed rows never
+     * reach this method — emission is bound to actual state transition.
+     * WEBHOOK_DISABLED is intentionally not produced here; it's reserved
+     * for dispatcher auto-disable (cycles-server-events).
+     */
+    private void emitBulkWebhookEvent(String subscriptionId, String tenantId,
+                                       WebhookBulkAction action,
+                                       WebhookStatus previousStatus,
+                                       HttpServletRequest httpRequest,
+                                       String correlationId, String requestId) {
+        try {
+            EventType eventType;
+            WebhookStatus newStatus;
+            switch (action) {
+                case PAUSE:
+                    eventType = EventType.WEBHOOK_PAUSED;
+                    newStatus = WebhookStatus.PAUSED;
+                    break;
+                case RESUME:
+                    eventType = EventType.WEBHOOK_RESUMED;
+                    newStatus = WebhookStatus.ACTIVE;
+                    break;
+                case DELETE:
+                    eventType = EventType.WEBHOOK_DELETED;
+                    newStatus = null;
+                    break;
+                default: return;
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> eventData = objectMapper.convertValue(
+                EventDataWebhookLifecycle.builder()
+                    .subscriptionId(subscriptionId)
+                    .tenantId(tenantId)
+                    .previousStatus(previousStatus)
+                    .newStatus(newStatus)
+                    .changedFields(List.of())
+                    .build(), Map.class);
+            eventService.emit(eventType, tenantId, null, "cycles-admin",
+                Actor.builder().type(ActorType.ADMIN)
+                    .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
+                eventData,
+                correlationId, requestId);
+        } catch (Exception e) {
+            LOG.warn("Failed to emit bulk webhook event {} for {}: {}",
+                action, subscriptionId, e.getMessage());
         }
     }
 
