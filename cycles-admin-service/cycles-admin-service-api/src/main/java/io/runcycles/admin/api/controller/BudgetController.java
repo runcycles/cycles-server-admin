@@ -697,9 +697,14 @@ public class BudgetController {
             if (bulk.getAction() == FundingOperation.RESET_SPENT) {
                 payloadBuilder.spentOverrideProvided(bulk.getSpent() != null);
             }
+            // Actor-type parity with single-op fund path (line ~337): resolves to API_KEY
+            // when a tenant key authenticated the call, ADMIN otherwise. Today bulk is
+            // AdminKeyAuth-gated so this always yields ADMIN, but mirroring the single-op
+            // conditional prevents silent mis-attribution if bulk auth is ever broadened.
+            ActorType actorType = httpRequest.getAttribute("authenticated_tenant_id") != null ? ActorType.API_KEY : ActorType.ADMIN;
             eventService.emit(eventType, ledger.getTenantId(), ledger.getScope(),
                 "cycles-admin",
-                Actor.builder().type(ActorType.ADMIN)
+                Actor.builder().type(actorType)
                     .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
                 objectMapper.convertValue(payloadBuilder.build(), Map.class),
                 correlationId, requestId);

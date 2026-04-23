@@ -14,6 +14,41 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.38.1] — 2026-04-23
+
+### Fixed
+
+- **README v0.1.25.x catalog backfilled** (.32 through .38). The catalog
+  had stopped at v0.1.25.31; seven paragraph-shaped entries now cover
+  the lenient read-side deserialization change, the Spring Boot /
+  Tomcat / commons-lang3 CVE patches, the tenant-close cascade + Rule 2
+  guard, the Rule 2 coverage completion, the bounded-convergence retry
+  fix, and the per-row Events on bulk-action endpoints. Pure
+  documentation — no code or wire change.
+
+### Internal
+
+- **Test hygiene:** payload-map `ArgumentCaptor` added to the five
+  budget bulk-action emit tests (`CREDIT`, `DEBIT`, `RESET`,
+  `RESET_SPENT`, `REPAY_DEBT`) and the three tenant bulk-action emit
+  tests (`SUSPEND`, `REACTIVATE`, `CLOSE`). The previous assertions
+  used `any()` for the payload argument and could not catch
+  `EventDataBudgetLifecycle` / `EventDataTenantLifecycle` wire-shape
+  drift; the captured map is now checked for the core keys
+  (`scope`/`unit`/`operation`/`previous_state`/`new_state` for budget;
+  `tenant_id`/`new_status` for tenant; `cascade` sub-map with
+  `budgets_closed`/`webhooks_disabled`/`api_keys_revoked` on CLOSE).
+- **Code hygiene:** `emitBulkFundEvent` now mirrors the single-op
+  dual-auth `ActorType` conditional (`authenticated_tenant_id` present
+  → `API_KEY`, otherwise `ADMIN`). Today bulk is AdminKeyAuth-gated so
+  this always resolves to `ADMIN`, but aligning with the single-op
+  pattern prevents silent mis-attribution if bulk auth is ever
+  broadened. `TenantController` bulk + single-op ADMIN-hardcodes left
+  intact with `// TODO actor-parity` comments — the single-op omits
+  `keyId` and aligning would be a wire-shape change, deferred.
+
+No behavior change, no API change, no spec change.
+
 ## [0.1.25.38] — 2026-04-22
 
 ### Added

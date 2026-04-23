@@ -1166,12 +1166,19 @@ class TenantControllerTest {
                 .andExpect(jsonPath("$.succeeded.length()").value(2));
 
         org.mockito.ArgumentCaptor<String> corr = org.mockito.ArgumentCaptor.forClass(String.class);
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<java.util.Map<String, Object>> payload =
+                org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
         verify(eventService, times(2)).emit(eq(EventType.TENANT_SUSPENDED),
-                anyString(), isNull(), eq("cycles-admin"), any(), any(), corr.capture(), any());
+                anyString(), isNull(), eq("cycles-admin"), any(), payload.capture(), corr.capture(), any());
         // Both rows must share the same correlation_id (one-per-invocation).
         assertEquals(1, new java.util.HashSet<>(corr.getAllValues()).size());
         org.assertj.core.api.Assertions.assertThat(corr.getValue())
                 .startsWith("tenant_bulk_action:suspend:");
+        // Payload-map shape: core EventDataTenantLifecycle fields must be present.
+        java.util.Map<String, Object> p = payload.getValue();
+        org.assertj.core.api.Assertions.assertThat(p).containsKeys("tenant_id", "new_status");
+        assertEquals("SUSPENDED", p.get("new_status"));
     }
 
     @Test
@@ -1191,10 +1198,16 @@ class TenantControllerTest {
                 .andExpect(jsonPath("$.succeeded.length()").value(1));
 
         org.mockito.ArgumentCaptor<String> corr = org.mockito.ArgumentCaptor.forClass(String.class);
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<java.util.Map<String, Object>> payload =
+                org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
         verify(eventService).emit(eq(EventType.TENANT_REACTIVATED),
-                anyString(), isNull(), eq("cycles-admin"), any(), any(), corr.capture(), any());
+                anyString(), isNull(), eq("cycles-admin"), any(), payload.capture(), corr.capture(), any());
         org.assertj.core.api.Assertions.assertThat(corr.getValue())
                 .startsWith("tenant_bulk_action:reactivate:");
+        java.util.Map<String, Object> p = payload.getValue();
+        org.assertj.core.api.Assertions.assertThat(p).containsKeys("tenant_id", "new_status");
+        assertEquals("ACTIVE", p.get("new_status"));
     }
 
     @Test
@@ -1223,10 +1236,21 @@ class TenantControllerTest {
                 .andExpect(jsonPath("$.succeeded[0].id").value("t1"));
 
         org.mockito.ArgumentCaptor<String> corr = org.mockito.ArgumentCaptor.forClass(String.class);
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<java.util.Map<String, Object>> payload =
+                org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
         verify(eventService).emit(eq(EventType.TENANT_CLOSED),
-                eq("t1"), isNull(), eq("cycles-admin"), any(), any(), corr.capture(), any());
+                eq("t1"), isNull(), eq("cycles-admin"), any(), payload.capture(), corr.capture(), any());
         org.assertj.core.api.Assertions.assertThat(corr.getValue())
                 .startsWith("tenant_bulk_action:close:");
+        // CLOSE additionally carries a cascade sub-map with cascadeSummaryMap keys.
+        java.util.Map<String, Object> p = payload.getValue();
+        org.assertj.core.api.Assertions.assertThat(p).containsKeys("tenant_id", "new_status", "cascade");
+        assertEquals("CLOSED", p.get("new_status"));
+        @SuppressWarnings("unchecked")
+        java.util.Map<String, Object> cascade = (java.util.Map<String, Object>) p.get("cascade");
+        org.assertj.core.api.Assertions.assertThat(cascade)
+                .containsKeys("budgets_closed", "webhooks_disabled", "api_keys_revoked");
         verify(tenantCloseCascadeService).cascade(eq("t1"), any());
     }
 

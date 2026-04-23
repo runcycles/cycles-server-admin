@@ -645,11 +645,18 @@ class BudgetControllerBulkActionTest {
                 .andExpect(jsonPath("$.succeeded.length()").value(2));
 
         ArgumentCaptor<String> corr = ArgumentCaptor.forClass(String.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> payload =
+                ArgumentCaptor.forClass(java.util.Map.class);
         verify(eventService, times(2)).emit(eq(EventType.BUDGET_FUNDED),
                 eq(TENANT), anyString(), eq("cycles-admin"),
-                any(), any(), corr.capture(), any());
+                any(), payload.capture(), corr.capture(), any());
         assertEquals(1, new java.util.HashSet<>(corr.getAllValues()).size());
         assertThat(corr.getValue()).startsWith("budget_bulk_action:credit:");
+        // Payload-map shape: core EventDataBudgetLifecycle fields must be present.
+        java.util.Map<String, Object> p = payload.getValue();
+        assertThat(p).containsKeys("scope", "unit", "operation", "previous_state", "new_state");
+        assertEquals("CREDIT", p.get("operation"));
     }
 
     @Test
@@ -668,10 +675,15 @@ class BudgetControllerBulkActionTest {
                 .andExpect(status().isOk());
 
         ArgumentCaptor<String> corr = ArgumentCaptor.forClass(String.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> payload =
+                ArgumentCaptor.forClass(java.util.Map.class);
         verify(eventService).emit(eq(EventType.BUDGET_DEBITED),
                 eq(TENANT), anyString(), eq("cycles-admin"),
-                any(), any(), corr.capture(), any());
+                any(), payload.capture(), corr.capture(), any());
         assertThat(corr.getValue()).startsWith("budget_bulk_action:debit:");
+        assertThat(payload.getValue()).containsKeys("scope", "unit", "operation", "previous_state", "new_state");
+        assertEquals("DEBIT", payload.getValue().get("operation"));
     }
 
     @Test
@@ -689,9 +701,14 @@ class BudgetControllerBulkActionTest {
                                 "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000}")))
                 .andExpect(status().isOk());
 
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> payload =
+                ArgumentCaptor.forClass(java.util.Map.class);
         verify(eventService).emit(eq(EventType.BUDGET_RESET),
                 eq(TENANT), anyString(), eq("cycles-admin"),
-                any(), any(), startsWith("budget_bulk_action:reset:"), any());
+                any(), payload.capture(), startsWith("budget_bulk_action:reset:"), any());
+        assertThat(payload.getValue()).containsKeys("scope", "unit", "operation", "previous_state", "new_state");
+        assertEquals("RESET", payload.getValue().get("operation"));
     }
 
     @Test
@@ -710,9 +727,16 @@ class BudgetControllerBulkActionTest {
                                         + "\"spent\":{\"unit\":\"USD_MICROCENTS\",\"amount\":0}")))
                 .andExpect(status().isOk());
 
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> payload =
+                ArgumentCaptor.forClass(java.util.Map.class);
         verify(eventService).emit(eq(EventType.BUDGET_RESET_SPENT),
                 eq(TENANT), anyString(), eq("cycles-admin"),
-                any(), any(), startsWith("budget_bulk_action:reset_spent:"), any());
+                any(), payload.capture(), startsWith("budget_bulk_action:reset_spent:"), any());
+        // RESET_SPENT uniquely carries spent_override_provided.
+        assertThat(payload.getValue()).containsKeys(
+                "scope", "unit", "operation", "previous_state", "new_state", "spent_override_provided");
+        assertEquals("RESET_SPENT", payload.getValue().get("operation"));
     }
 
     @Test
@@ -730,9 +754,14 @@ class BudgetControllerBulkActionTest {
                                 "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":250}")))
                 .andExpect(status().isOk());
 
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> payload =
+                ArgumentCaptor.forClass(java.util.Map.class);
         verify(eventService).emit(eq(EventType.BUDGET_DEBT_REPAID),
                 eq(TENANT), anyString(), eq("cycles-admin"),
-                any(), any(), startsWith("budget_bulk_action:repay_debt:"), any());
+                any(), payload.capture(), startsWith("budget_bulk_action:repay_debt:"), any());
+        assertThat(payload.getValue()).containsKeys("scope", "unit", "operation", "previous_state", "new_state");
+        assertEquals("REPAY_DEBT", payload.getValue().get("operation"));
     }
 
     @Test
