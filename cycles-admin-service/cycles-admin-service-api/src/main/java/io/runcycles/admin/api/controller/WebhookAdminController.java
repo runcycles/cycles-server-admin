@@ -374,11 +374,24 @@ public class WebhookAdminController {
             // catch so one closed-owner row doesn't poison the whole batch.
             mutationGuard.assertTenantOpen(matched.getTenantId());
             if (action == WebhookBulkAction.DELETE) {
+                // Fresh live read for previous_status parity with PAUSE/RESUME
+                // so the emitted Event carries the subscription's status at
+                // time of deletion (spec §6358-6360), not the pre-match
+                // snapshot, which can drift if the dispatcher auto-disables
+                // between match and apply.
+                WebhookSubscription deleteLive;
+                try {
+                    deleteLive = webhookRepository.findById(id);
+                } catch (GovernanceException e) {
+                    skipped.add(BulkActionRowOutcome.builder()
+                        .id(id).reason("ALREADY_DELETED").build());
+                    return;
+                }
                 try {
                     webhookService.delete(id);
                     succeeded.add(BulkActionRowOutcome.builder().id(id).build());
-                    emitBulkWebhookEvent(id, matched.getTenantId(), action,
-                        matched.getStatus(), httpRequest, correlationId, requestId);
+                    emitBulkWebhookEvent(id, deleteLive.getTenantId(), action,
+                        deleteLive.getStatus(), httpRequest, correlationId, requestId);
                 } catch (GovernanceException e) {
                     if (e.getErrorCode() == ErrorCode.WEBHOOK_NOT_FOUND
                             || e.getErrorCode() == ErrorCode.NOT_FOUND) {

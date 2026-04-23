@@ -515,6 +515,7 @@ class WebhookAdminControllerTest {
                 .thenReturn(java.util.Optional.empty());
         when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
                 .thenReturn(List.of(webhookRow("w1", WebhookStatus.ACTIVE)));
+        when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.ACTIVE));
         // Concurrent delete between match and apply — service now 404s.
         doThrow(GovernanceException.webhookNotFound("w1"))
                 .when(webhookService).delete("w1");
@@ -536,6 +537,7 @@ class WebhookAdminControllerTest {
                 .thenReturn(java.util.Optional.empty());
         when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
                 .thenReturn(List.of(webhookRow("w1", WebhookStatus.ACTIVE)));
+        when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.ACTIVE));
 
         mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -643,6 +645,7 @@ class WebhookAdminControllerTest {
                 .thenReturn(java.util.Optional.empty());
         when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
                 .thenReturn(List.of(webhookRow("whsub_1", WebhookStatus.ACTIVE)));
+        when(webhookRepository.findById("whsub_1")).thenReturn(webhookRow("whsub_1", WebhookStatus.ACTIVE));
         doThrow(new GovernanceException(
                         io.runcycles.admin.model.shared.ErrorCode.INSUFFICIENT_PERMISSIONS,
                         "nope", 403))
@@ -817,6 +820,36 @@ class WebhookAdminControllerTest {
     }
 
     @Test
+    void updateWebhook_statusOnlyFlip_emitsEmptyChangedFields() throws Exception {
+        // Spec §6278: changed_fields lists the non-status mutations. A pure
+        // status flip (ACTIVE → PAUSED, no other fields in the request body)
+        // MUST emit an empty changed_fields array.
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        WebhookSubscription updated = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.PAUSED).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"PAUSED\"}"))
+                .andExpect(status().isOk());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> payload =
+            ArgumentCaptor.forClass(java.util.Map.class);
+        verify(eventService).emit(eq(EventType.WEBHOOK_PAUSED), eq("tenant-1"), isNull(),
+            eq("cycles-admin"), any(Actor.class), payload.capture(), anyString(), any());
+        @SuppressWarnings("unchecked")
+        java.util.List<String> changed = (java.util.List<String>) payload.getValue().get("changed_fields");
+        org.assertj.core.api.Assertions.assertThat(changed).isEmpty();
+    }
+
+    @Test
     void updateWebhook_propertyOnly_emitsWebhookUpdated() throws Exception {
         WebhookSubscription prior = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
@@ -984,6 +1017,9 @@ class WebhookAdminControllerTest {
                 .thenReturn(java.util.Optional.empty());
         when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
                 .thenReturn(List.of(webhookRow("w1", WebhookStatus.ACTIVE)));
+        // Fresh live-read parity with PAUSE/RESUME — bulk DELETE now calls
+        // findById to capture live previous_status at time of deletion.
+        when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.ACTIVE));
 
         mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -997,6 +1033,29 @@ class WebhookAdminControllerTest {
                 any(), corr.capture(), any());
         org.assertj.core.api.Assertions.assertThat(corr.getValue())
             .startsWith("webhook_bulk_action:delete:");
+    }
+
+    @Test
+    void bulkActionWebhooks_delete_liveReadMissing_rowSkipped_doesNotEmit() throws Exception {
+        // Concurrent delete between match and apply: findById throws, row
+        // lands in skipped[] with ALREADY_DELETED and MUST NOT emit.
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(webhookRow("w1", WebhookStatus.ACTIVE)));
+        when(webhookRepository.findById("w1"))
+                .thenThrow(new GovernanceException(ErrorCode.WEBHOOK_NOT_FOUND, "gone", 404));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"tenant_id\":\"tenant-1\"},\"action\":\"DELETE\",\"idempotency_key\":\"k_race\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.skipped.length()").value(1))
+                .andExpect(jsonPath("$.skipped[0].reason").value("ALREADY_DELETED"));
+
+        verify(eventService, never()).emit(any(EventType.class), anyString(), any(),
+                anyString(), any(), any(), any(), any());
     }
 
     @Test
