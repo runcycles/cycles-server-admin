@@ -35,7 +35,9 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 
 @RestController @RequestMapping("/v1/admin/webhooks") @Tag(name = "Webhooks")
 public class WebhookAdminController {
@@ -155,20 +157,27 @@ public class WebhookAdminController {
         // reserved for dispatcher auto-disable (cycles-server-events) and
         // is not produced on this operator path. A no-op PATCH (zero fields
         // mutated AND no status change) MUST NOT emit an Event.
+        // Spec v0.1.25.33 §6281: changed_fields lists fields *modified* — a
+        // PATCH that resends an existing value is not a mutation. Diff each
+        // request-provided field against the prior snapshot to keep the emit
+        // (and the no-op guard below) in sync with actual state change.
+        // signing_secret is @JsonIgnore on the subscription model, so its prior
+        // (possibly encrypted) value isn't safely comparable to the plaintext
+        // request value — treat any presence as rotation intent.
         EventType updateEventType = EventType.WEBHOOK_UPDATED;
         List<String> changedFields = new ArrayList<>();
-        if (request.getName() != null) changedFields.add("name");
-        if (request.getDescription() != null) changedFields.add("description");
-        if (request.getUrl() != null) changedFields.add("url");
-        if (request.getEventTypes() != null) changedFields.add("event_types");
-        if (request.getEventCategories() != null) changedFields.add("event_categories");
-        if (request.getScopeFilter() != null) changedFields.add("scope_filter");
-        if (request.getThresholds() != null) changedFields.add("thresholds");
+        if (request.getName() != null && !Objects.equals(request.getName(), prior.getName())) changedFields.add("name");
+        if (request.getDescription() != null && !Objects.equals(request.getDescription(), prior.getDescription())) changedFields.add("description");
+        if (request.getUrl() != null && !Objects.equals(request.getUrl(), prior.getUrl())) changedFields.add("url");
+        if (request.getEventTypes() != null && !Objects.equals(request.getEventTypes(), prior.getEventTypes())) changedFields.add("event_types");
+        if (request.getEventCategories() != null && !Objects.equals(request.getEventCategories(), prior.getEventCategories())) changedFields.add("event_categories");
+        if (request.getScopeFilter() != null && !Objects.equals(request.getScopeFilter(), prior.getScopeFilter())) changedFields.add("scope_filter");
+        if (request.getThresholds() != null && !Objects.equals(request.getThresholds(), prior.getThresholds())) changedFields.add("thresholds");
         if (request.getSigningSecret() != null) changedFields.add("signing_secret");
-        if (request.getHeaders() != null) changedFields.add("headers");
-        if (request.getRetryPolicy() != null) changedFields.add("retry_policy");
-        if (request.getDisableAfterFailures() != null) changedFields.add("disable_after_failures");
-        if (request.getMetadata() != null) changedFields.add("metadata");
+        if (request.getHeaders() != null && !Objects.equals(request.getHeaders(), prior.getHeaders())) changedFields.add("headers");
+        if (request.getRetryPolicy() != null && !Objects.equals(request.getRetryPolicy(), prior.getRetryPolicy())) changedFields.add("retry_policy");
+        if (request.getDisableAfterFailures() != null && !Objects.equals(request.getDisableAfterFailures(), prior.getDisableAfterFailures())) changedFields.add("disable_after_failures");
+        if (request.getMetadata() != null && !Objects.equals(request.getMetadata(), prior.getMetadata())) changedFields.add("metadata");
         boolean statusFlipped = request.getStatus() != null && request.getStatus() != previousStatus;
         if (statusFlipped) {
             if (request.getStatus() == WebhookStatus.PAUSED) {
@@ -185,10 +194,10 @@ public class WebhookAdminController {
         // non-status field the request touched; statusFlipped covers the
         // status axis.
         if (!changedFields.isEmpty() || statusFlipped) {
-            String requestId = attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE);
+            String requestId = resolveRequestId(httpRequest);
             emitWebhookLifecycleEvent(updateEventType, subscriptionId, updated.getTenantId(),
                 previousStatus, updated.getStatus(), changedFields, null,
-                "webhook_update:" + subscriptionId + ":" + (requestId != null ? requestId : "no-req"),
+                "webhook_update:" + subscriptionId + ":" + requestId,
                 httpRequest);
         }
         return ResponseEntity.ok(updated);
@@ -270,6 +279,16 @@ public class WebhookAdminController {
     }
 
     /**
+     * Resolve the caller's request_id with a UUID fallback so correlation_id
+     * stays unique across concurrent requests even if RequestIdFilter didn't
+     * populate the attribute (defensive — should not happen in production).
+     */
+    private static String resolveRequestId(HttpServletRequest request) {
+        String requestId = attr(request, RequestIdFilter.REQUEST_ID_ATTRIBUTE);
+        return requestId != null ? requestId : "req_" + UUID.randomUUID();
+    }
+
+    /**
      * Bulk webhook lifecycle action (spec v0.1.25.21). PAUSE / RESUME /
      * DELETE across every subscription matching the filter, same safety
      * gates as {@link TenantController#bulkAction}: empty filter → 400,
@@ -322,10 +341,10 @@ public class WebhookAdminController {
         // per-row Event emitted below. Operators retrieve the full fan-out
         // via GET /v1/admin/events?correlation_id=…; the shared request_id
         // also ties every row to the invocation's single AuditLogEntry.
-        String requestId = attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE);
+        String requestId = resolveRequestId(httpRequest);
         String correlationId = "webhook_bulk_action:"
             + request.getAction().name().toLowerCase() + ":"
-            + (requestId != null ? requestId : "no-req");
+            + requestId;
         for (WebhookSubscription sub : matched) {
             applyWebhookAction(sub, request.getAction(), succeeded, failed, skipped,
                 httpRequest, correlationId, requestId);
@@ -481,11 +500,13 @@ public class WebhookAdminController {
                     .changedFields(changedFields)
                     .disableReason(disableReason)
                     .build(), Map.class);
-            // TODO actor-parity: hardcoded ADMIN with no keyId on single-op.
-            // Bulk path (emitBulkWebhookEvent) populates keyId from
-            // authenticated_key_id. Mirrors TenantController's known gap.
+            // v0.1.25.40 B1 fix: attribute operator-driven single-op events
+            // to the authenticated API key, matching the bulk path's actor
+            // shape so audit consumers see consistent attribution across
+            // single-op and bulk webhook lifecycle emits.
             eventService.emit(eventType, tenantId, null, "cycles-admin",
-                Actor.builder().type(ActorType.ADMIN).build(),
+                Actor.builder().type(ActorType.ADMIN)
+                    .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
                 eventData,
                 correlationId,
                 attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE));

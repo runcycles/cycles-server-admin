@@ -1141,4 +1141,111 @@ class WebhookAdminControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.failed[0].error_code").value("INTERNAL_ERROR"));
     }
+
+    // v0.1.25.40 B2/B3: changed_fields is a true diff, not request-presence.
+    // PATCHing a field with its current value is a no-op for that field.
+    @Test
+    void updateWebhook_patchWithSameUrlValue_excludesUrlFromChangedFields() throws Exception {
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .name("unchanged-name")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        WebhookSubscription updated = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .name("new-name")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://example.com/wh\",\"name\":\"new-name\"}"))
+                .andExpect(status().isOk());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> payload =
+            ArgumentCaptor.forClass(java.util.Map.class);
+        verify(eventService).emit(eq(EventType.WEBHOOK_UPDATED), eq("tenant-1"), isNull(),
+            eq("cycles-admin"), any(Actor.class), payload.capture(), anyString(), any());
+        @SuppressWarnings("unchecked")
+        java.util.List<String> changed =
+            (java.util.List<String>) payload.getValue().get("changed_fields");
+        org.assertj.core.api.Assertions.assertThat(changed).containsExactly("name");
+    }
+
+    // v0.1.25.40 B2/B3: a PATCH that resends every field with its current
+    // value and does not flip status is a no-op — MUST NOT emit.
+    @Test
+    void updateWebhook_patchAllFieldsWithSameValues_doesNotEmit() throws Exception {
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1")
+            .url("https://example.com/wh").name("fixed")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq("whsub_1"), any())).thenReturn(prior);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://example.com/wh\",\"name\":\"fixed\"}"))
+                .andExpect(status().isOk());
+
+        verify(eventService, never()).emit(any(EventType.class), anyString(), any(),
+            anyString(), any(Actor.class), any(), anyString(), any());
+    }
+
+    // v0.1.25.40 B1: single-op lifecycle emits now attribute to the
+    // authenticated API key, matching bulk-path actor parity.
+    @Test
+    void createWebhook_emitCarriesAuthenticatedKeyIdOnActor() throws Exception {
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .eventTypes(List.of(EventType.BUDGET_CREATED)).status(WebhookStatus.ACTIVE)
+            .createdAt(Instant.now()).build();
+        when(webhookService.create(eq("tenant-1"), any()))
+            .thenReturn(WebhookCreateResponse.builder().subscription(sub).signingSecret("whsec_abc").build());
+
+        mockMvc.perform(post("/v1/admin/webhooks?tenant_id=tenant-1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .requestAttr("authenticated_key_id", "cyc_ak_test_key_42")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://example.com/wh\",\"event_types\":[\"budget.created\"]}"))
+                .andExpect(status().isCreated());
+
+        ArgumentCaptor<Actor> actorCaptor = ArgumentCaptor.forClass(Actor.class);
+        verify(eventService).emit(eq(EventType.WEBHOOK_CREATED), eq("tenant-1"), isNull(),
+            eq("cycles-admin"), actorCaptor.capture(), any(), anyString(), any());
+        org.assertj.core.api.Assertions.assertThat(actorCaptor.getValue().getKeyId())
+            .isEqualTo("cyc_ak_test_key_42");
+    }
+
+    // v0.1.25.40 B4: the "no-req" literal fallback is gone. In the normal
+    // path RequestIdFilter populates a valid request_id which we pass through
+    // verbatim; the UUID fallback only fires if the filter chain is bypassed,
+    // which is unreachable through MockMvc.
+    @Test
+    void updateWebhook_correlationIdNeverContainsNoReqLiteral() throws Exception {
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        WebhookSubscription updated = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/new")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://example.com/new\"}"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<String> correlationCaptor = ArgumentCaptor.forClass(String.class);
+        verify(eventService).emit(eq(EventType.WEBHOOK_UPDATED), eq("tenant-1"), isNull(),
+            eq("cycles-admin"), any(Actor.class), any(), correlationCaptor.capture(), any());
+        org.assertj.core.api.Assertions.assertThat(correlationCaptor.getValue())
+            .startsWith("webhook_update:whsub_1:")
+            .doesNotContain("no-req");
+    }
 }
