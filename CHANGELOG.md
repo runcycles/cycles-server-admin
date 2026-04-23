@@ -14,6 +14,42 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.40] — 2026-04-23
+
+Post-review correctness pass on v0.1.25.39 webhook lifecycle Events. No new
+spec surface, no wire-format changes — strictly better output for
+`listEvents` consumers.
+
+### Fixed
+
+- **Actor parity on single-op webhook lifecycle emits.** `createWebhookSubscription`,
+  `updateWebhookSubscription`, and `deleteWebhookSubscription` now populate
+  `Actor.keyId` from `authenticated_key_id`, matching the bulk-action path.
+  Audit consumers see consistent API-key attribution across single-op and
+  bulk emits.
+- **`changed_fields` is now a real diff.** `updateWebhookSubscription`
+  previously listed any field present in the PATCH body even when the value
+  matched the subscription's current value. It now compares each provided
+  field against the prior snapshot and only records genuine mutations.
+  Consequence: a PATCH that re-sends existing values on every field AND
+  does not flip status is a true no-op and emits nothing (matching spec
+  v0.1.25.33 §6281). `signing_secret` retains presence-based detection —
+  the subscription's stored secret is not safely comparable to the
+  plaintext request value.
+- **Correlation-id uniqueness under defensive paths.** The `"no-req"`
+  literal fallback in `webhook_update:<sub_id>:<request_id>` and
+  `webhook_bulk_action:<action>:<request_id>` (used only when
+  `RequestIdFilter` did not populate the request attribute) is replaced
+  with a UUID fallback (`req_<uuid>`). Prevents collision of concurrent
+  correlation IDs if the filter misfires.
+
+### Compatibility
+
+Internal-only fixes. No EventType/schema/endpoint changes. Existing
+consumers of `listEvents` see strictly-better data: `changed_fields`
+shrinks on identity-PATCHes and `actor.key_id` now populates on single-op
+lifecycle events.
+
 ## [0.1.25.39] — 2026-04-23
 
 ### Added
