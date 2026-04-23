@@ -14,6 +14,55 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.39] — 2026-04-23
+
+### Added
+
+- **Webhook lifecycle Events** (spec v0.1.25.33). The single-op
+  `createWebhookSubscription` / `updateWebhookSubscription` /
+  `deleteWebhookSubscription` endpoints and the bulk-action
+  `POST /v1/admin/webhooks/bulk-action` (PAUSE / RESUME / DELETE) now
+  emit matching lifecycle Events. Previously these mutations wrote only
+  an `AuditLogEntry` and left `listEvents` blind to webhook provisioning
+  and state transitions. Six new `EventType` values — `webhook.created`,
+  `webhook.updated`, `webhook.paused`, `webhook.resumed`,
+  `webhook.disabled`, `webhook.deleted` — map 1:1 to the new
+  `EventDataWebhookLifecycle` payload schema (`subscription_id`,
+  `tenant_id`, `previous_status`, `new_status`, `changed_fields`,
+  `disable_reason`).
+- **Bulk correlation_id**: every row emitted by a single
+  `bulkActionWebhooks` invocation shares
+  `correlation_id = webhook_bulk_action:<action>:<request_id>`. The
+  shared `request_id` ties the per-row Events to the invocation's
+  single `AuditLogEntry`. Single-op correlation_ids:
+  `webhook_create:<id>`, `webhook_update:<id>:<request_id>`,
+  `webhook_delete:<id>`.
+- **Transition-accurate typing**: a `status=PAUSED` PATCH on an
+  `ACTIVE` subscription emits `webhook.paused`; a `status=ACTIVE`
+  PATCH on a `PAUSED` subscription emits `webhook.resumed`; a PATCH
+  that touches other fields (or no-ops on status) emits
+  `webhook.updated` with the touched fields enumerated in
+  `changed_fields`. Skipped and failed bulk rows
+  (`ALREADY_IN_TARGET_STATE`, `ALREADY_DELETED`, `INVALID_TRANSITION`,
+  `TENANT_CLOSED`) never emit — emission is bound to actual state
+  transition.
+
+### Internal
+
+- `EventType` enum gains 6 new values; `EventPayloadTypeMapping`
+  registers all six against the new `EventDataWebhookLifecycle` class.
+  `EventPayloadContractTest` automatically covers the new mappings.
+- `webhook.disabled` is emitted here **only** for completeness of the
+  enum + schema registry; the runtime emission point for
+  dispatcher-driven auto-disable lives in `cycles-server-events` (wired
+  in a follow-up patch release).
+- Four event lanes of bulk coverage (skipped → no emit, failed → no
+  emit, emit exception → response unaffected, correlation_id shape).
+
+Compatibility: additive-only — new enum values and a new payload schema
+are non-breaking for existing consumers (typical OpenAPI codegen
+ignores unknown enum values).
+
 ## [0.1.25.38.1] — 2026-04-23
 
 ### Fixed

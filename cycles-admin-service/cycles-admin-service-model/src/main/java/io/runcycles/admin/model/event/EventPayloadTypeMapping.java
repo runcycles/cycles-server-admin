@@ -75,6 +75,17 @@ public final class EventPayloadTypeMapping {
         m.put(EventType.API_KEY_AUTH_FAILED, EventDataApiKey.class);
         m.put(EventType.API_KEY_AUTH_FAILURE_RATE_SPIKE, EventDataRateSpike.class);
 
+        // Webhook lifecycle (spec v0.1.25.33) — operator-driven transitions
+        // emitted by WebhookAdminController single-op + bulk paths, plus
+        // dispatcher-driven webhook.disabled (auto-disable on failure
+        // threshold) from cycles-server-events.
+        m.put(EventType.WEBHOOK_CREATED, EventDataWebhookLifecycle.class);
+        m.put(EventType.WEBHOOK_UPDATED, EventDataWebhookLifecycle.class);
+        m.put(EventType.WEBHOOK_PAUSED, EventDataWebhookLifecycle.class);
+        m.put(EventType.WEBHOOK_RESUMED, EventDataWebhookLifecycle.class);
+        m.put(EventType.WEBHOOK_DISABLED, EventDataWebhookLifecycle.class);
+        m.put(EventType.WEBHOOK_DELETED, EventDataWebhookLifecycle.class);
+
         // Policies
         m.put(EventType.POLICY_CREATED, EventDataPolicy.class);
         m.put(EventType.POLICY_UPDATED, EventDataPolicy.class);

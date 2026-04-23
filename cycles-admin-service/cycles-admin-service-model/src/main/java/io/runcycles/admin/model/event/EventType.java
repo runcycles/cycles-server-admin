@@ -44,6 +44,13 @@ public enum EventType {
     API_KEY_PERMISSIONS_CHANGED("api_key.permissions_changed", EventCategory.API_KEY),
     API_KEY_AUTH_FAILED("api_key.auth_failed", EventCategory.API_KEY),
     API_KEY_AUTH_FAILURE_RATE_SPIKE("api_key.auth_failure_rate_spike", EventCategory.API_KEY),
+    // Webhook lifecycle (6)
+    WEBHOOK_CREATED("webhook.created", EventCategory.WEBHOOK),
+    WEBHOOK_UPDATED("webhook.updated", EventCategory.WEBHOOK),
+    WEBHOOK_PAUSED("webhook.paused", EventCategory.WEBHOOK),
+    WEBHOOK_RESUMED("webhook.resumed", EventCategory.WEBHOOK),
+    WEBHOOK_DISABLED("webhook.disabled", EventCategory.WEBHOOK),
+    WEBHOOK_DELETED("webhook.deleted", EventCategory.WEBHOOK),
     // Webhook (cascade)
     WEBHOOK_DISABLED_VIA_TENANT_CASCADE("webhook.disabled_via_tenant_cascade", EventCategory.WEBHOOK),
     // Policy (3)

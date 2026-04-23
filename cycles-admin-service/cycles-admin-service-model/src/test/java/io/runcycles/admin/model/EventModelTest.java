@@ -39,14 +39,12 @@ class EventModelTest {
 
     @Test
     void eventType_allTypesHaveExpectedCount() {
-        // 45 = 41 (up through v0.1.25.17 RESET_SPENT) + 4 cascade-event kinds
-        // added in spec v0.1.25.29 CASCADE SEMANTICS:
-        // BUDGET_CLOSED_VIA_TENANT_CASCADE, RESERVATION_RELEASED_VIA_TENANT_CASCADE,
-        // WEBHOOK_DISABLED_VIA_TENANT_CASCADE, API_KEY_REVOKED_VIA_TENANT_CASCADE.
+        // 51 = 45 (prior total) + 6 webhook lifecycle kinds added in spec
+        // v0.1.25.33: WEBHOOK_CREATED/UPDATED/PAUSED/RESUMED/DISABLED/DELETED.
         // When adding new event types, bump this count and ensure the new type
         // is also registered in EventPayloadTypeMapping (enforced by
         // EventPayloadContractTest).
-        assertEquals(45, EventType.values().length);
+        assertEquals(51, EventType.values().length);
     }
 
     @Test
