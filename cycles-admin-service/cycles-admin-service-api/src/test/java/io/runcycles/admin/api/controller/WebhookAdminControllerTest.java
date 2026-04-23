@@ -845,6 +845,57 @@ class WebhookAdminControllerTest {
     }
 
     @Test
+    void updateWebhook_noop_doesNotEmit() throws Exception {
+        // Spec v0.1.25.33: a PATCH that mutates zero fields AND does not flip
+        // status MUST NOT produce an Event. Empty body here.
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq("whsub_1"), any())).thenReturn(prior);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isOk());
+
+        verify(eventService, never()).emit(any(EventType.class), anyString(), any(),
+            anyString(), any(Actor.class), any(), anyString(), any());
+    }
+
+    @Test
+    void updateWebhook_statusFlip_disabled_to_active_emitsWebhookResumed() throws Exception {
+        // Spec v0.1.25.33: operator re-enable of an auto-disabled subscription
+        // (DISABLED → ACTIVE) emits webhook.resumed, matching the PAUSED →
+        // ACTIVE transition semantics. The dispatcher owns webhook.disabled.
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.DISABLED).createdAt(Instant.now()).build();
+        WebhookSubscription updated = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"ACTIVE\"}"))
+                .andExpect(status().isOk());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> payload =
+            ArgumentCaptor.forClass(java.util.Map.class);
+        verify(eventService).emit(eq(EventType.WEBHOOK_RESUMED), eq("tenant-1"), isNull(),
+            eq("cycles-admin"), any(Actor.class), payload.capture(), anyString(), any());
+        java.util.Map<String, Object> p = payload.getValue();
+        org.assertj.core.api.Assertions.assertThat(p)
+            .containsEntry("previous_status", "DISABLED")
+            .containsEntry("new_status", "ACTIVE");
+    }
+
+    @Test
     void deleteWebhook_emitsWebhookDeleted() throws Exception {
         WebhookSubscription sub = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")

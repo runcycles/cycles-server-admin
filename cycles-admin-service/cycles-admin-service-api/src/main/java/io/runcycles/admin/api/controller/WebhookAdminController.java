@@ -151,10 +151,10 @@ public class WebhookAdminController {
             .metadata(updateMeta)
             .build());
         // Spec v0.1.25.33: status-flip PATCH emits WEBHOOK_PAUSED/RESUMED;
-        // property-only PATCH (or no-op status) emits WEBHOOK_UPDATED.
-        // WEBHOOK_DISABLED is reserved for dispatcher auto-disable — PATCH
-        // to DISABLED is not a supported transition (operator-driven
-        // disable goes via auto-disable policy only).
+        // property-only PATCH emits WEBHOOK_UPDATED. WEBHOOK_DISABLED is
+        // reserved for dispatcher auto-disable (cycles-server-events) and
+        // is not produced on this operator path. A no-op PATCH (zero fields
+        // mutated AND no status change) MUST NOT emit an Event.
         EventType updateEventType = EventType.WEBHOOK_UPDATED;
         List<String> changedFields = new ArrayList<>();
         if (request.getName() != null) changedFields.add("name");
@@ -169,18 +169,28 @@ public class WebhookAdminController {
         if (request.getRetryPolicy() != null) changedFields.add("retry_policy");
         if (request.getDisableAfterFailures() != null) changedFields.add("disable_after_failures");
         if (request.getMetadata() != null) changedFields.add("metadata");
-        if (request.getStatus() != null && request.getStatus() != previousStatus) {
+        boolean statusFlipped = request.getStatus() != null && request.getStatus() != previousStatus;
+        if (statusFlipped) {
             if (request.getStatus() == WebhookStatus.PAUSED) {
                 updateEventType = EventType.WEBHOOK_PAUSED;
             } else if (request.getStatus() == WebhookStatus.ACTIVE) {
+                // Both PAUSED → ACTIVE and DISABLED → ACTIVE (operator
+                // re-enable of an auto-disabled subscription) emit
+                // webhook.resumed per spec v0.1.25.33 §EVENTS.
                 updateEventType = EventType.WEBHOOK_RESUMED;
             }
         }
-        String requestId = attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE);
-        emitWebhookLifecycleEvent(updateEventType, subscriptionId, updated.getTenantId(),
-            previousStatus, updated.getStatus(), changedFields, null,
-            "webhook_update:" + subscriptionId + ":" + (requestId != null ? requestId : "no-req"),
-            httpRequest);
+        // No-op PATCH guard (spec v0.1.25.33: zero fields mutated AND no
+        // status change MUST NOT emit). changedFields enumerates every
+        // non-status field the request touched; statusFlipped covers the
+        // status axis.
+        if (!changedFields.isEmpty() || statusFlipped) {
+            String requestId = attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE);
+            emitWebhookLifecycleEvent(updateEventType, subscriptionId, updated.getTenantId(),
+                previousStatus, updated.getStatus(), changedFields, null,
+                "webhook_update:" + subscriptionId + ":" + (requestId != null ? requestId : "no-req"),
+                httpRequest);
+        }
         return ResponseEntity.ok(updated);
     }
 
