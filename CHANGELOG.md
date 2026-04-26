@@ -14,6 +14,43 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.41] — 2026-04-26
+
+Dependency hygiene aligning all three Cycles services (events / server /
+admin) on the same Spring Boot patch and Redis client major. No code or
+wire-format changes — pom-only patch.
+
+### Changed
+
+- **Spring Boot 3.5.13 → 3.5.14.** Patch upgrade picking up upstream
+  security hardening (constant-time comparison for remote DevTools
+  secret, `RandomValuePropertySource` switched to `SecureRandom`,
+  hostname verification applied consistently for Cassandra/RabbitMQ
+  SSL) plus symlink-handling fixes in `ApplicationPidFileWriter` /
+  `ApplicationTemp`. Mirrors the events-server bump shipped in
+  `cycles-server-events` v0.1.25.12 and the protocol-server bump
+  shipped in `cycles-server` v0.1.25.18.
+- **Drop `<tomcat.version>10.1.54</tomcat.version>` override.** Spring
+  Boot 3.5.14's BOM now manages Tomcat 10.1.54 directly (verified
+  against `spring-boot-dependencies-3.5.14.pom`), so the explicit pin
+  added in v0.1.25.33 to close CVE-2026-34483 / CVE-2026-34487 is
+  redundant. Same effective Tomcat version, smaller pom diff for
+  future Spring Boot bumps.
+- **Jedis 5.2.0 → 6.2.0** (major). Aligns with `cycles-server-events`
+  (6.2.0 since v0.1.25.12) and `cycles-server` (6.2.0 in v0.1.25.18)
+  on a single Redis-client major across the fleet. Jedis 6.1.0
+  explicitly restored binary compatibility for `SetParams` (#4225
+  upstream); all call sites use stable APIs and all 782 tests pass
+  on 6.2.0.
+
+### Retained
+
+- `<commons-lang3.version>3.18.0</commons-lang3.version>` override
+  stays — Spring Boot 3.5.14's BOM still manages commons-lang3 at
+  3.17.0 (CVE-2025-48924 unfixed there), so the explicit 3.18.0 pin
+  added in v0.1.25.34 is still required. Override comment updated to
+  reference SB 3.5.14.
+
 ## [0.1.25.40] — 2026-04-23
 
 Post-review correctness pass on v0.1.25.39 webhook lifecycle Events. No new
