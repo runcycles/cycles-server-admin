@@ -2,9 +2,11 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Coverage](https://img.shields.io/badge/coverage-95%25+-brightgreen)](https://github.com/runcycles/cycles-server-admin/actions)
 
-# Runcycles Admin Server
+# Cycles Admin Server — Multi-tenant management for AI agent governance
 
-Administrative API for the Complete Budget Governance System, aligned with [Cycles Protocol v0.1.25.33](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml).
+**Administrative API for managing tenants, budgets, API keys, and policies in a Cycles deployment.** Configures the AI agent budget and action enforcement that the [Cycles Server](https://github.com/runcycles/cycles-server) applies at runtime.
+
+Multi-tenant by default, with four integrated planes: tenant lifecycle and budget ledgers, API key authentication and permission enforcement, runtime reservation control, and event/webhook delivery for observability. Aligned with [Cycles Protocol v0.1.25.33](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml).
 
 ## Documentation
 
