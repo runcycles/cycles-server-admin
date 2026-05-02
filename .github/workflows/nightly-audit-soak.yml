@@ -40,6 +40,8 @@ on:
         required: false
         default: '500'
 
+permissions: read-all
+
 jobs:
   audit-soak:
     name: Sustained failure-flood stability
