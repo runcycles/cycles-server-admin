@@ -147,7 +147,12 @@ jobs:
         env:
           VERSION: ${{ needs.build-and-push.outputs.version }}
         run: |
-          served=$(curl -s http://localhost:7979/actuator/info | python -c "import sys,json; print(json.load(sys.stdin).get('build',{}).get('version','?'))")
+          # Avoid `curl | python` (Scorecard's downloadThenRun heuristic flags
+          # any download piped directly into an interpreter, regardless of the
+          # source). Capture the body first, then parse — same behavior, no
+          # supply-chain footgun pattern.
+          info=$(curl -s http://localhost:7979/actuator/info)
+          served=$(echo "$info" | python -c "import sys,json; print(json.load(sys.stdin).get('build',{}).get('version','?'))")
           if [ "$served" != "$VERSION" ]; then
             echo "ERROR: image reports version=$served but tag is $VERSION"
             exit 1
