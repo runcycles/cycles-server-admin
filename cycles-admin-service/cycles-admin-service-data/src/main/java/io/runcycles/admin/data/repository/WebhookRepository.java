@@ -1,5 +1,6 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.logging.LogSanitizer;
 import io.runcycles.admin.data.service.CryptoService;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.SearchSpec;
@@ -65,8 +66,8 @@ public class WebhookRepository {
             }
         } catch (Exception e) {
             LOG.error("Failed to save webhook subscription: subscription_id={} tenant_id={} status={} event_types={} event_categories={} secret_present={}",
-                sub != null ? sub.getSubscriptionId() : null,
-                sub != null ? sub.getTenantId() : null,
+                sub != null ? LogSanitizer.safe(sub.getSubscriptionId()) : null,
+                sub != null ? LogSanitizer.safe(sub.getTenantId()) : null,
                 sub != null ? sub.getStatus() : null,
                 sub != null ? sub.getEventTypes() : null,
                 sub != null ? sub.getEventCategories() : null,
@@ -93,7 +94,7 @@ public class WebhookRepository {
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
-            LOG.error("Failed to find webhook subscription: subscription_id={}", subscriptionId, e);
+            LOG.error("Failed to find webhook subscription: subscription_id={}", LogSanitizer.safe(subscriptionId), e);
             throw new RuntimeException("Failed to find webhook subscription", e);
         }
     }
@@ -131,7 +132,7 @@ public class WebhookRepository {
                     outcomes.add(new CascadeDisableOutcome(id, sub.getName(), prior));
                 } catch (Exception e) {
                     LOG.warn("Cascade-disable skipped webhook subscription: subscription_id={} tenant_id={} error={}",
-                        id, tenantId, e.getMessage(), e);
+                        LogSanitizer.safe(id), LogSanitizer.safe(tenantId), LogSanitizer.safe(e.getMessage()), e);
                 }
             }
         }
@@ -150,8 +151,8 @@ public class WebhookRepository {
             jedis.set("webhook:" + subscriptionId, json);
         } catch (Exception e) {
             LOG.error("Failed to update webhook subscription: subscription_id={} tenant_id={} status={} event_types={} event_categories={} secret_present={}",
-                subscriptionId,
-                updated != null ? updated.getTenantId() : null,
+                LogSanitizer.safe(subscriptionId),
+                updated != null ? LogSanitizer.safe(updated.getTenantId()) : null,
                 updated != null ? updated.getStatus() : null,
                 updated != null ? updated.getEventTypes() : null,
                 updated != null ? updated.getEventCategories() : null,
@@ -178,7 +179,7 @@ public class WebhookRepository {
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
-            LOG.error("Failed to delete webhook subscription: subscription_id={}", subscriptionId, e);
+            LOG.error("Failed to delete webhook subscription: subscription_id={}", LogSanitizer.safe(subscriptionId), e);
             throw new RuntimeException("Failed to delete webhook subscription", e);
         }
     }
@@ -303,7 +304,7 @@ public class WebhookRepository {
                     matching.add(sub);
                 } catch (Exception e) {
                     LOG.warn("Failed to parse webhook subscription while matching event: subscription_id={} tenant_id={} event_type={} scope={}",
-                        id, tenantId, eventType != null ? eventType.getValue() : null, scope, e);
+                        LogSanitizer.safe(id), LogSanitizer.safe(tenantId), eventType != null ? eventType.getValue() : null, LogSanitizer.safe(scope), e);
                 }
             }
             return matching;
@@ -409,7 +410,7 @@ public class WebhookRepository {
             if (data == null) return null;
             return objectMapper.readValue(data, WebhookSubscription.class);
         } catch (Exception e) {
-            LOG.warn("Failed to parse webhook subscription row: subscription_id={}", id, e);
+            LOG.warn("Failed to parse webhook subscription row: subscription_id={}", LogSanitizer.safe(id), e);
             return null;
         }
     }

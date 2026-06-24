@@ -19,6 +19,21 @@ webhook replay, webhook CIDR config, and audit-fallback logs. Response bodies
 and stored event/audit payloads are unchanged; this is operator-log hardening
 only.
 
+The first pass put the helper in the API module and so missed the **data
+plane**: repository, idempotency, and crypto/config logs
+(`ApiKeyRepository`, `AuditRepository`, `BudgetRepository`, `EventRepository`,
+`PolicyRepository`, `TenantRepository`, `WebhookRepository`,
+`WebhookDeliveryRepository`, `IdempotencyStore`) still logged raw
+request-derived strings (tenant id, scope, Redis resource keys, request-supplied
+resource ids, exception messages) at `INFO`/`WARN`/`ERROR`. Those are now
+sanitized too. The single implementation now lives in the data module
+(`io.runcycles.admin.data.logging.LogSanitizer`, covered by `LogSanitizerTest`);
+the API-layer `LogSanitizer.safe` is a thin delegate so its existing call sites
+are unchanged. The trailing SLF4J throwable is never sanitized (stack traces are
+preserved) and `DEBUG` traces are left as-is. Version: the `.43` and `.44`
+increments share one release boundary; `cycles-admin-service/pom.xml`
+`<revision>` lands at `0.1.25.44`.
+
 ### 2026-06-24 — v0.1.25.43: ops-focused logging context review
 
 Reviewed admin-server `INFO`, `WARN`, and `ERROR` logs from an operator
@@ -40,8 +55,11 @@ fields. Idempotency keys are fingerprinted instead of logged raw, and webhook
 test failures log `target_host` instead of the full subscriber URL.
 
 No admin HTTP request/response change, no Redis key/queue/payload-shape change,
-no Lua semantics change, and no cycles-protocol spec change. Version bump:
-`cycles-admin-service/pom.xml` `<revision>` -> `0.1.25.43`.
+no Lua semantics change, and no cycles-protocol spec change. This review's
+changes ship in the same release boundary as the v0.1.25.44 sanitization
+follow-up above, so `cycles-admin-service/pom.xml` `<revision>` lands at
+`0.1.25.44` (the `.43` increment is documented separately but is not released on
+its own).
 
 ### 2026-06-23 — Docker log rotation defaults on all compose files (no version bump)
 All four `docker-compose*.yml` (base, `prod`, `full-stack`, `full-stack.prod`) gain a shared `x-logging` anchor (`json-file`, `max-size: 10m`, `max-file: 5`) referenced by every service (redis, cycles-server, cycles-admin, cycles-events). Previously no compose file declared a logging driver, so containers inherited Docker's default UNBOUNDED `json-file` logs — a slow disk-exhaustion path on long-running deployments. The anchor caps each container at 5×10 MB = 50 MB with rotation. Runtime/deployment config only — no image, server-code, or wire change, so no version bump or release; takes effect on containers (re)created from these files. `docker compose config` validates clean on all four.

@@ -1,5 +1,6 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.logging.LogSanitizer;
 import io.runcycles.admin.model.webhook.DeliveryStatus;
 import io.runcycles.admin.model.webhook.WebhookDelivery;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -46,9 +47,9 @@ public class WebhookDeliveryRepository {
             throw e;
         } catch (Exception e) {
             LOG.error("Failed to save webhook delivery: delivery_id={} subscription_id={} event_id={} event_type={} status={} trace_id={}",
-                delivery != null ? delivery.getDeliveryId() : null,
-                delivery != null ? delivery.getSubscriptionId() : null,
-                delivery != null ? delivery.getEventId() : null,
+                delivery != null ? LogSanitizer.safe(delivery.getDeliveryId()) : null,
+                delivery != null ? LogSanitizer.safe(delivery.getSubscriptionId()) : null,
+                delivery != null ? LogSanitizer.safe(delivery.getEventId()) : null,
                 delivery != null && delivery.getEventType() != null ? delivery.getEventType().getValue() : null,
                 delivery != null ? delivery.getStatus() : null,
                 delivery != null ? delivery.getTraceId() : null,
@@ -69,7 +70,7 @@ public class WebhookDeliveryRepository {
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
-            LOG.error("Failed to read webhook delivery: delivery_id={}", deliveryId, e);
+            LOG.error("Failed to read webhook delivery: delivery_id={}", LogSanitizer.safe(deliveryId), e);
             throw new RuntimeException("Failed to read webhook delivery", e);
         }
     }
@@ -99,7 +100,7 @@ public class WebhookDeliveryRepository {
                     String data = jedis.get("delivery:" + id);
                     if (data == null) {
                         LOG.warn("Webhook delivery index points to missing row: delivery_id={} subscription_id={} index_key={} status_filter={}",
-                            id, subscriptionId, indexKey, status);
+                            LogSanitizer.safe(id), LogSanitizer.safe(subscriptionId), LogSanitizer.safe(indexKey), status);
                         continue;
                     }
                     WebhookDelivery delivery = objectMapper.readValue(data, WebhookDelivery.class);
@@ -109,7 +110,7 @@ public class WebhookDeliveryRepository {
                     if (deliveries.size() >= limit) break;
                 } catch (Exception e) {
                     LOG.warn("Failed to parse webhook delivery row: delivery_id={} subscription_id={} index_key={} status_filter={}",
-                        id, subscriptionId, indexKey, status, e);
+                        LogSanitizer.safe(id), LogSanitizer.safe(subscriptionId), LogSanitizer.safe(indexKey), status, e);
                 }
             }
             return deliveries;
@@ -135,9 +136,9 @@ public class WebhookDeliveryRepository {
             throw e;
         } catch (Exception e) {
             LOG.error("Failed to update webhook delivery: delivery_id={} subscription_id={} event_id={} event_type={} status={} attempts={} trace_id={}",
-                delivery != null ? delivery.getDeliveryId() : null,
-                delivery != null ? delivery.getSubscriptionId() : null,
-                delivery != null ? delivery.getEventId() : null,
+                delivery != null ? LogSanitizer.safe(delivery.getDeliveryId()) : null,
+                delivery != null ? LogSanitizer.safe(delivery.getSubscriptionId()) : null,
+                delivery != null ? LogSanitizer.safe(delivery.getEventId()) : null,
                 delivery != null && delivery.getEventType() != null ? delivery.getEventType().getValue() : null,
                 delivery != null ? delivery.getStatus() : null,
                 delivery != null ? delivery.getAttempts() : null,

@@ -21,6 +21,10 @@ new optional request fields) are **not** considered breaking.
 - Added common CR/LF flattening for dynamic operator-log fields across
   exception, auth rejection, controller side-effect, bulk-row, event dispatch,
   webhook test/replay, webhook security config, and audit fallback logs.
+- Extended the same flattening to the data-plane repository, idempotency, and
+  config logs (api-key, audit, budget, event, policy, tenant, webhook,
+  webhook-delivery) via a shared `LogSanitizer`, so request-derived strings
+  logged below the controller layer cannot inject log lines either.
 - Kept the v0.1.25.43 operational context while preventing request/config/
   exception strings from injecting misleading log lines.
 

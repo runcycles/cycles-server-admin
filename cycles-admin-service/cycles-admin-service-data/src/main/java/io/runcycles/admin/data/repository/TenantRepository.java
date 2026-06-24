@@ -1,5 +1,6 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.logging.LogSanitizer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.model.shared.CommitOveragePolicy;
 import io.runcycles.admin.model.shared.SearchSpec;
@@ -47,7 +48,7 @@ public class TenantRepository {
 
     public TenantCreateResult create(TenantCreateRequest request) {
         LOG.info("Creating tenant: tenant_id={} parent_tenant_id={} default_commit_overage_policy={}",
-            request.getTenantId(), request.getParentTenantId(), request.getDefaultCommitOveragePolicy());
+            LogSanitizer.safe(request.getTenantId()), LogSanitizer.safe(request.getParentTenantId()), request.getDefaultCommitOveragePolicy());
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "tenant:" + request.getTenantId();
             Tenant tenant = Tenant.builder()
@@ -129,7 +130,7 @@ public class TenantRepository {
                     String data = jedis.get("tenant:" + id);
                     if (data == null) {
                         LOG.warn("Tenant index points to missing row: tenant_id={} index_key=tenants status_filter={} parent_tenant_id_filter={} search_present={} sort_field={}",
-                            id, status, parentTenantId, search != null && !search.isBlank(),
+                            LogSanitizer.safe(id), status, LogSanitizer.safe(parentTenantId), search != null && !search.isBlank(),
                             sortSpec != null ? sortSpec.field() : null);
                         continue;
                     }
@@ -138,7 +139,7 @@ public class TenantRepository {
                     hydrated.add(t);
                 } catch (Exception e) {
                     LOG.warn("Failed to parse tenant row: tenant_id={} index_key=tenants status_filter={} parent_tenant_id_filter={} search_present={} sort_field={}",
-                        id, status, parentTenantId, search != null && !search.isBlank(),
+                        LogSanitizer.safe(id), status, LogSanitizer.safe(parentTenantId), search != null && !search.isBlank(),
                         sortSpec != null ? sortSpec.field() : null, e);
                 }
             }
@@ -173,7 +174,7 @@ public class TenantRepository {
                 String data = jedis.get("tenant:" + id);
                 if (data == null) {
                     LOG.warn("Tenant index points to missing row: tenant_id={} index_key=tenants status_filter={} parent_tenant_id_filter={} search_present={}",
-                        id, status, parentTenantId, search != null && !search.isBlank());
+                        LogSanitizer.safe(id), status, LogSanitizer.safe(parentTenantId), search != null && !search.isBlank());
                     continue;
                 }
                 Tenant t = objectMapper.readValue(data, Tenant.class);
@@ -182,7 +183,7 @@ public class TenantRepository {
                 if (tenants.size() >= limit) break;
             } catch (Exception e) {
                 LOG.warn("Failed to parse tenant row: tenant_id={} index_key=tenants status_filter={} parent_tenant_id_filter={} search_present={}",
-                    id, status, parentTenantId, search != null && !search.isBlank(), e);
+                    LogSanitizer.safe(id), status, LogSanitizer.safe(parentTenantId), search != null && !search.isBlank(), e);
             }
         }
         return tenants;
@@ -266,7 +267,7 @@ public class TenantRepository {
                     if (matches.size() >= ceiling) break;
                 } catch (Exception e) {
                     LOG.warn("Failed to parse tenant row during bulk match: tenant_id={} status_filter={} parent_tenant_id_filter={} search_present={}",
-                        id, status, parentTenantId, search != null && !search.isBlank(), e);
+                        LogSanitizer.safe(id), status, LogSanitizer.safe(parentTenantId), search != null && !search.isBlank(), e);
                 }
             }
             return matches;

@@ -1,4 +1,5 @@
 package io.runcycles.admin.data.repository;
+import io.runcycles.admin.data.logging.LogSanitizer;
 import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortSpec;
@@ -97,10 +98,10 @@ public class AuditRepository {
         } catch (Exception e) {
             // Audit log failure should not break the business operation that triggered it
             LOG.error("Failed to write audit log; business operation continues: tenant_id={} operation={} resource_type={} resource_id={} status={} error_code={} request_id={} trace_id={}",
-                entry != null ? entry.getTenantId() : null,
+                entry != null ? LogSanitizer.safe(entry.getTenantId()) : null,
                 entry != null ? entry.getOperation() : null,
                 entry != null ? entry.getResourceType() : null,
-                entry != null ? entry.getResourceId() : null,
+                entry != null ? LogSanitizer.safe(entry.getResourceId()) : null,
                 entry != null ? entry.getStatus() : null,
                 entry != null ? entry.getErrorCode() : null,
                 entry != null ? entry.getRequestId() : null,
@@ -355,7 +356,7 @@ public class AuditRepository {
                 if (logs.size() >= limit) break;
             } catch (Exception e) {
                 LOG.warn("Failed to parse audit log entry: log_id={} index_key={} tenant_id={} request_id_filter={} trace_id_filter={}",
-                    id, indexKey, tenantId, requestId, traceId, e);
+                    LogSanitizer.safe(id), LogSanitizer.safe(indexKey), LogSanitizer.safe(tenantId), requestId, traceId, e);
             }
         }
         return logs;
@@ -386,7 +387,7 @@ public class AuditRepository {
                 all.add(entry);
             } catch (Exception e) {
                 LOG.warn("Failed to parse audit log entry: log_id={} index_key={} tenant_id={} request_id_filter={} trace_id_filter={}",
-                    id, indexKey, tenantId, requestId, traceId, e);
+                    LogSanitizer.safe(id), LogSanitizer.safe(indexKey), LogSanitizer.safe(tenantId), requestId, traceId, e);
             }
         }
         all.sort(auditLogComparator(sortSpec));

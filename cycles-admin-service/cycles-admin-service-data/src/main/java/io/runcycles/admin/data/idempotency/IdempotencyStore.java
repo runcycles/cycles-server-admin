@@ -1,6 +1,7 @@
 package io.runcycles.admin.data.idempotency;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.admin.data.logging.LogSanitizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -63,11 +64,11 @@ public class IdempotencyStore {
             return Optional.of(objectMapper.readValue(json, type));
         } catch (JsonProcessingException e) {
             LOG.warn("Corrupt idempotency entry: endpoint={} key_present={} key_sha256={} response_type={} error={}",
-                    endpoint, key != null && !key.isBlank(), fingerprint(key), type.getSimpleName(), e.getMessage());
+                    endpoint, key != null && !key.isBlank(), fingerprint(key), type.getSimpleName(), LogSanitizer.safe(e.getMessage()));
             return Optional.empty();
         } catch (Exception e) {
             LOG.warn("Idempotency lookup failed: endpoint={} key_present={} key_sha256={} response_type={} error={}",
-                    endpoint, key != null && !key.isBlank(), fingerprint(key), type.getSimpleName(), e.getMessage(), e);
+                    endpoint, key != null && !key.isBlank(), fingerprint(key), type.getSimpleName(), LogSanitizer.safe(e.getMessage()), e);
             return Optional.empty();
         }
     }
@@ -90,7 +91,7 @@ public class IdempotencyStore {
         } catch (Exception e) {
             LOG.warn("Idempotency store failed: endpoint={} key_present={} key_sha256={} envelope_type={} ttl_seconds={} error={}",
                     endpoint, key != null && !key.isBlank(), fingerprint(key),
-                    envelope != null ? envelope.getClass().getSimpleName() : null, TTL_SECONDS, e.getMessage(), e);
+                    envelope != null ? envelope.getClass().getSimpleName() : null, TTL_SECONDS, LogSanitizer.safe(e.getMessage()), e);
         }
     }
 

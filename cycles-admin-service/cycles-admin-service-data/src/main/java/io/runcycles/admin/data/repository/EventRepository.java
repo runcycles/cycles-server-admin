@@ -1,5 +1,6 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.logging.LogSanitizer;
 import io.runcycles.admin.model.event.Event;
 import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventType;
@@ -60,8 +61,8 @@ public class EventRepository {
             LOG.error("Failed to save admin event: event_id={} event_type={} tenant_id={} scope={} correlation_id={} request_id={} trace_id={}",
                 event != null ? event.getEventId() : null,
                 event != null && event.getEventType() != null ? event.getEventType().getValue() : null,
-                event != null ? event.getTenantId() : null,
-                event != null ? event.getScope() : null,
+                event != null ? LogSanitizer.safe(event.getTenantId()) : null,
+                event != null ? LogSanitizer.safe(event.getScope()) : null,
                 event != null ? event.getCorrelationId() : null,
                 event != null ? event.getRequestId() : null,
                 event != null ? event.getTraceId() : null,
@@ -80,7 +81,7 @@ public class EventRepository {
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
-            LOG.error("Failed to find admin event: event_id={}", eventId, e);
+            LOG.error("Failed to find admin event: event_id={}", LogSanitizer.safe(eventId), e);
             throw new RuntimeException("Failed to find event", e);
         }
     }
@@ -188,7 +189,7 @@ public class EventRepository {
                 String data = jedis.get("event:" + id);
                 if (data == null) {
                     LOG.warn("Admin event index points to missing row: event_id={} index_key={} tenant_id={} event_type_filter={} category_filter={} scope_filter={} request_id_filter={} trace_id_filter={}",
-                        id, indexKey, tenantId, eventType, category, scope, requestId, traceId);
+                        LogSanitizer.safe(id), LogSanitizer.safe(indexKey), LogSanitizer.safe(tenantId), eventType, category, LogSanitizer.safe(scope), requestId, traceId);
                     continue;
                 }
                 Event event = objectMapper.readValue(data, Event.class);
@@ -198,7 +199,7 @@ public class EventRepository {
                 if (events.size() >= limit) break;
             } catch (Exception e) {
                 LOG.warn("Failed to parse admin event row: event_id={} index_key={} tenant_id={} event_type_filter={} category_filter={} scope_filter={} request_id_filter={} trace_id_filter={}",
-                    id, indexKey, tenantId, eventType, category, scope, requestId, traceId, e);
+                    LogSanitizer.safe(id), LogSanitizer.safe(indexKey), LogSanitizer.safe(tenantId), eventType, category, LogSanitizer.safe(scope), requestId, traceId, e);
             }
         }
         return events;
@@ -224,7 +225,7 @@ public class EventRepository {
                 all.add(event);
             } catch (Exception e) {
                 LOG.warn("Failed to parse admin event row: event_id={} index_key={} tenant_id={} event_type_filter={} category_filter={} scope_filter={} request_id_filter={} trace_id_filter={}",
-                    id, indexKey, tenantId, eventType, category, scope, requestId, traceId, e);
+                    LogSanitizer.safe(id), LogSanitizer.safe(indexKey), LogSanitizer.safe(tenantId), eventType, category, LogSanitizer.safe(scope), requestId, traceId, e);
             }
         }
         all.sort(eventComparator(sortSpec));
@@ -326,7 +327,7 @@ public class EventRepository {
                 events.add(event);
             } catch (Exception e) {
                 LOG.warn("Failed to parse admin event row: event_id={} correlation_id={} tenant_id={} event_type_filter={} category_filter={} scope_filter={} request_id_filter={} trace_id_filter={}",
-                    id, correlationId, tenantId, eventType, category, scope, requestId, traceId, e);
+                    LogSanitizer.safe(id), correlationId, LogSanitizer.safe(tenantId), eventType, category, LogSanitizer.safe(scope), requestId, traceId, e);
             }
         }
         if (sortSpec != null) {

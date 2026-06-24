@@ -1,5 +1,6 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.logging.LogSanitizer;
 import io.runcycles.admin.data.service.KeyService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.model.auth.*;
@@ -159,7 +160,7 @@ public class ApiKeyRepository {
                 String data = jedis.get("apikey:" + id);
                 if (data == null) {
                     LOG.warn("API key index points to missing row: key_id={} tenant_id={} index_key={} status_filter={}",
-                        id, tenantId, "apikeys:" + tenantId, statusFilter);
+                        LogSanitizer.safe(id), LogSanitizer.safe(tenantId), LogSanitizer.safe("apikeys:" + tenantId), statusFilter);
                     continue;
                 }
                 ApiKey key = objectMapper.readValue(data, ApiKey.class);
@@ -169,7 +170,7 @@ public class ApiKeyRepository {
                 if (keys.size() >= limit) break;
             } catch (Exception e) {
                 LOG.warn("Failed to parse API key row: key_id={} tenant_id={} index_key={} status_filter={}",
-                    id, tenantId, "apikeys:" + tenantId, statusFilter, e);
+                    LogSanitizer.safe(id), LogSanitizer.safe(tenantId), LogSanitizer.safe("apikeys:" + tenantId), statusFilter, e);
             }
         }
         return keys;
@@ -188,7 +189,7 @@ public class ApiKeyRepository {
                 all.add(key);
             } catch (Exception e) {
                 LOG.warn("Failed to parse API key row: key_id={} tenant_id={} index_key={} status_filter={}",
-                    id, tenantId, "apikeys:" + tenantId, statusFilter, e);
+                    LogSanitizer.safe(id), LogSanitizer.safe(tenantId), LogSanitizer.safe("apikeys:" + tenantId), statusFilter, e);
             }
         }
         all.sort(apiKeyComparator(sortSpec));
@@ -341,7 +342,7 @@ public class ApiKeyRepository {
                     all.add(key);
                 } catch (Exception e) {
                     LOG.warn("Failed to parse API key row during cross-tenant sorted list: key_id={} tenant_id={} status_filter={} sort_field={} search_present={}",
-                        keyId, tenantId, statusFilter, sortSpec != null ? sortSpec.field() : null,
+                        LogSanitizer.safe(keyId), LogSanitizer.safe(tenantId), statusFilter, sortSpec != null ? sortSpec.field() : null,
                         search != null && !search.isBlank(), e);
                 }
             }
@@ -393,7 +394,7 @@ public class ApiKeyRepository {
                 String data = jedis.get("apikey:" + id);
                 if (data == null) {
                     LOG.warn("API key index points to missing row: key_id={} tenant_id={} index_key={} status_filter={}",
-                        id, tenantId, "apikeys:" + tenantId, statusFilter);
+                        LogSanitizer.safe(id), LogSanitizer.safe(tenantId), LogSanitizer.safe("apikeys:" + tenantId), statusFilter);
                     continue;
                 }
                 ApiKey key = objectMapper.readValue(data, ApiKey.class);
@@ -403,7 +404,7 @@ public class ApiKeyRepository {
                 if (keys.size() >= limit) break;
             } catch (Exception e) {
                 LOG.warn("Failed to parse API key row: key_id={} tenant_id={} index_key={} status_filter={}",
-                    id, tenantId, "apikeys:" + tenantId, statusFilter, e);
+                    LogSanitizer.safe(id), LogSanitizer.safe(tenantId), LogSanitizer.safe("apikeys:" + tenantId), statusFilter, e);
             }
         }
         return keys;
@@ -501,7 +502,7 @@ public class ApiKeyRepository {
                 outcomes.add(new CascadeRevokeOutcome(k.getKeyId(), k.getName(), prior));
             } catch (Exception e) {
                 LOG.warn("Cascade-revoke skipped API key: key_id={} tenant_id={} reason={} error={}",
-                    k.getKeyId(), tenantId, reason, e.getMessage(), e);
+                    LogSanitizer.safe(k.getKeyId()), LogSanitizer.safe(tenantId), LogSanitizer.safe(reason), LogSanitizer.safe(e.getMessage()), e);
             }
         }
         return outcomes;
