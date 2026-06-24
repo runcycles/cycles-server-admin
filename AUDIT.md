@@ -80,6 +80,31 @@ with no code or wire change:
   (revisit whether SB 3.5.15's BOM makes it redundant on the next bump).
 - **Container log rotation** (#189, 2026-06-23): `json-file` driver with
   `max-size: 10m` / `max-file: 5` across all four compose files. Ops-only.
+- **Trivy gate scoping for jackson-databind CVE-2026-54515.** The first
+  v0.1.25.42 release build failed its Trivy gate on the only fixable finding
+  in the image: `jackson-databind` 2.21.4 (CVE-2026-54515), pulled in
+  transitively via the Spring web stack and managed by SB 3.5.15's BOM.
+
+  Two facts shaped the fix:
+  1. **No fix is publishable yet.** The advisory lists fixed versions 3.1.4
+     / 2.18.9 / 2.21.5. For the SB 2.21 line the only forward fix is 2.21.5,
+     and jackson 2.x ships `jackson-bom` + `jackson-core` + `jackson-databind`
+     together — `jackson-bom:2.21.5` is absent from Maven Central, so 2.21.5
+     is not yet released (Trivy's "Fixed Version" is ahead of the artifact).
+     2.18.9 is a downgrade; 3.1.4 is jackson 3.x, incompatible with SB 3.5.x.
+     A `<jackson-bom.version>2.21.5</jackson-bom.version>` override was tried
+     and fails to resolve (`Non-resolvable import POM`).
+  2. **The CVE is MEDIUM (CVSS 5.3)** and the gate is declared for
+     `severity: HIGH,CRITICAL`. The block was an `aquasecurity/trivy-action`
+     quirk: in `format: sarif` mode it builds an all-severities report and
+     `exit-code: 1` trips on any finding, ignoring the `severity` filter.
+
+  **Fix.** Set `limit-severities-for-sarif: true` on the trivy-action in both
+  `release.yml` and `pr-container-scan.yml` so the SARIF — and therefore the
+  gate — honors `HIGH,CRITICAL`. A fixable MEDIUM no longer blocks publish;
+  HIGH/CRITICAL still fail. CVE-2026-54515 is tracked in the pom (bump jackson
+  once 2.21.5 ships). v0.1.25.42 was re-cut in place on this fix since no
+  image had been published. Workflow/config only — no code or wire change.
 
 
 

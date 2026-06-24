@@ -39,6 +39,12 @@
                CVE-2026-43514 LOW      — Observable timing in AJP secret compare
              Remove once Spring Boot ships with 10.1.55+ as its managed version. -->
         <tomcat.version>10.1.55</tomcat.version>
+        <!-- NOTE: jackson-databind 2.21.4 carries CVE-2026-54515 (MEDIUM,
+             CVE fix lands in jackson 2.21.5, not yet published to Central as
+             of this release). No override is possible until 2.21.5 ships;
+             the release/PR Trivy gates are scoped to HIGH,CRITICAL so a
+             fixable MEDIUM does not block publish. Bump jackson here once
+             Spring Boot's BOM manages 2.21.5+. -->
     </properties>
     <dependencyManagement>
         <dependencies>

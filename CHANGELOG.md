@@ -47,6 +47,12 @@ a Spring Boot patch, and supply-chain/CI hardening.
   Action SHAs pinned, workflow token permissions tightened, Alpine `gnutls`
   CVE-2026-33845 patched in the image, and a two-phase Trivy-gated release
   build (scan before push).
+- Trivy container gates (release + PR) now set `limit-severities-for-sarif:
+  true` so `exit-code` honors the declared `HIGH,CRITICAL` severity. In
+  `format: sarif` mode the action otherwise gates on any fixable finding of
+  any severity. A known fixable MEDIUM (`jackson-databind` CVE-2026-54515,
+  fix awaiting the unreleased jackson 2.21.5) is reported but no longer
+  blocks publish; HIGH/CRITICAL still fail the gate.
 
 ## [0.1.25.41] — 2026-04-26
 
