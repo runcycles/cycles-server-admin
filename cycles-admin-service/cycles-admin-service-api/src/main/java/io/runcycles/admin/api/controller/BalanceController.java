@@ -6,6 +6,7 @@ import io.runcycles.admin.model.shared.UnitEnum;
 import io.runcycles.admin.api.config.ScopeFilterUtil;
 import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -32,9 +33,9 @@ public class BalanceController {
         ScopeFilterUtil.enforceScopeFilter(httpRequest, scope_prefix);
         String effectiveTenantId = (String) httpRequest.getAttribute("authenticated_tenant_id");
         LOG.info("Balance query received: tenant_id={} requested_tenant_id_present={} scope_prefix={} unit={} limit={} cursor_present={} key_id={} request_id={} trace_id={}",
-            effectiveTenantId, tenant_id != null && !tenant_id.isBlank(), scope_prefix, unit, limit,
+            safe(effectiveTenantId), tenant_id != null && !tenant_id.isBlank(), safe(scope_prefix), unit, limit,
             cursor != null && !cursor.isBlank(),
-            attr(httpRequest, "authenticated_key_id"),
+            safe(attr(httpRequest, "authenticated_key_id")),
             attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
             attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE));
         var ledgers = repository.list(effectiveTenantId, scope_prefix, unit, BudgetStatus.ACTIVE, cursor, limit);

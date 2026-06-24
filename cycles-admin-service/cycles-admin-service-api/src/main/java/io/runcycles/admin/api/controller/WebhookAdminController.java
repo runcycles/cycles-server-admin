@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.controller;
 
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
+
 import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.api.service.BulkActionAuditMetadataBuilder;
@@ -471,9 +473,9 @@ public class WebhookAdminController {
                 .message(e.getMessage()).build());
         } catch (Exception e) {
             LOG.warn("Webhook bulk-action row failed: action={} subscription_id={} tenant_id={} status={} correlation_id={} request_id={} trace_id={} exception_class={} error={}",
-                action, id, matched.getTenantId(), matched.getStatus(), correlationId, requestId,
+                action, safe(id), safe(matched.getTenantId()), matched.getStatus(), safe(correlationId), requestId,
                 attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE),
-                e.getClass().getSimpleName(), e.getMessage(), e);
+                e.getClass().getSimpleName(), safe(e.getMessage()), e);
             failed.add(BulkActionRowOutcome.builder()
                 .id(id).errorCode("INTERNAL_ERROR").message("Internal error").build());
         }
@@ -515,11 +517,11 @@ public class WebhookAdminController {
                 attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE));
         } catch (Exception e) {
             LOG.warn("Failed to emit admin webhook event: event_type={} subscription_id={} tenant_id={} previous_status={} new_status={} changed_field_count={} correlation_id={} request_id={} trace_id={} exception_class={} error={}",
-                eventType, subscriptionId, tenantId, previousStatus, newStatus,
-                changedFields != null ? changedFields.size() : 0, correlationId,
+                eventType, safe(subscriptionId), safe(tenantId), previousStatus, newStatus,
+                changedFields != null ? changedFields.size() : 0, safe(correlationId),
                 attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
                 attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE),
-                e.getClass().getSimpleName(), e.getMessage(), e);
+                e.getClass().getSimpleName(), safe(e.getMessage()), e);
         }
     }
 
@@ -555,9 +557,9 @@ public class WebhookAdminController {
                 correlationId, requestId);
         } catch (Exception e) {
             LOG.warn("Failed to emit admin webhook bulk event: action={} event_type={} subscription_id={} tenant_id={} previous_status={} new_status={} correlation_id={} request_id={} trace_id={} exception_class={} error={}",
-                action, eventType, subscriptionId, tenantId, previousStatus, newStatus,
-                correlationId, requestId, attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE),
-                e.getClass().getSimpleName(), e.getMessage(), e);
+                action, eventType, safe(subscriptionId), safe(tenantId), previousStatus, newStatus,
+                safe(correlationId), requestId, attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE),
+                e.getClass().getSimpleName(), safe(e.getMessage()), e);
         }
     }
 

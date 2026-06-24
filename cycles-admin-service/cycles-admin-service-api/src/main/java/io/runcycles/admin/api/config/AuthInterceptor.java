@@ -17,6 +17,7 @@ import org.springframework.web.servlet.HandlerInterceptor;
 
 import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -369,14 +370,14 @@ public class AuthInterceptor implements HandlerInterceptor {
         String logMessage = "Admin auth request rejected: method={} path={} servlet_path={} status={} error={} request_id={} trace_id={} source_ip={} admin_key_present={} api_key_present={} tenant_id={} key_id={} reason={}";
         if (status >= 500) {
             LOG.error(logMessage,
-                    request.getMethod(), request.getRequestURI(), request.getServletPath(), status, code,
-                    reqId, traceId, request.getRemoteAddr(), adminHeaderPresent, apiKeyHeaderPresent,
-                    tenantId, keyId, message);
+                    request.getMethod(), safe(request.getRequestURI()), safe(request.getServletPath()), status, code,
+                    reqId, traceId, safe(request.getRemoteAddr()), adminHeaderPresent, apiKeyHeaderPresent,
+                    safe(tenantId), safe(keyId), safe(message));
         } else {
             LOG.warn(logMessage,
-                    request.getMethod(), request.getRequestURI(), request.getServletPath(), status, code,
-                    reqId, traceId, request.getRemoteAddr(), adminHeaderPresent, apiKeyHeaderPresent,
-                    tenantId, keyId, message);
+                    request.getMethod(), safe(request.getRequestURI()), safe(request.getServletPath()), status, code,
+                    reqId, traceId, safe(request.getRemoteAddr()), adminHeaderPresent, apiKeyHeaderPresent,
+                    safe(tenantId), safe(keyId), safe(message));
         }
     }
 

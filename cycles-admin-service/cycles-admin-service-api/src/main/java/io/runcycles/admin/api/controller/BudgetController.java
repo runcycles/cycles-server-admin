@@ -1,4 +1,5 @@
 package io.runcycles.admin.api.controller;
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.idempotency.IdempotencyStore;
 import io.runcycles.admin.data.repository.AuditRepository;
@@ -641,9 +642,9 @@ public class BudgetController {
                 .message(e.getMessage()).build());
         } catch (Exception e) {
             LOG.warn("Budget bulk-action row failed: action={} budget_id={} tenant_id={} scope={} unit={} correlation_id={} request_id={} trace_id={} exception_class={} error={}",
-                bulk.getAction(), id, ledger.getTenantId(), ledger.getScope(), ledger.getUnit(),
-                correlationId, requestId, attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE),
-                e.getClass().getSimpleName(), e.getMessage(), e);
+                bulk.getAction(), safe(id), safe(ledger.getTenantId()), safe(ledger.getScope()), ledger.getUnit(),
+                safe(correlationId), requestId, attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE),
+                e.getClass().getSimpleName(), safe(e.getMessage()), e);
             failed.add(BulkActionRowOutcome.builder()
                 .id(id).errorCode("INTERNAL_ERROR").message("Internal error").build());
         }
@@ -751,10 +752,10 @@ public class BudgetController {
                                           String scope, UnitEnum unit, String correlationId,
                                           HttpServletRequest request, Exception e) {
         LOG.warn("Failed to emit admin budget event: event_type={} tenant_id={} budget_id={} scope={} unit={} correlation_id={} request_id={} trace_id={} exception_class={} error={}",
-            eventType, tenantId, budgetId, scope, unit, correlationId,
+            eventType, safe(tenantId), safe(budgetId), safe(scope), unit, safe(correlationId),
             attr(request, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
             attr(request, TraceContextFilter.TRACE_ID_ATTRIBUTE),
-            e.getClass().getSimpleName(), e.getMessage(), e);
+            e.getClass().getSimpleName(), safe(e.getMessage()), e);
     }
 
     private void validateCreateUnits(BudgetCreateRequest request) {

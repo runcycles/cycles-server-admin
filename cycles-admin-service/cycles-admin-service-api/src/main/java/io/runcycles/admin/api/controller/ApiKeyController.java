@@ -1,4 +1,5 @@
 package io.runcycles.admin.api.controller;
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
@@ -65,9 +66,9 @@ public class ApiKeyController {
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
             LOG.warn("Failed to emit API key event: event_type={} key_id={} tenant_id={} request_id={} trace_id={} error={}",
-                EventType.API_KEY_CREATED.getValue(), response.getKeyId(), request.getTenantId(),
+                EventType.API_KEY_CREATED.getValue(), safe(response.getKeyId()), safe(request.getTenantId()),
                 attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
-                attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE), e.getMessage(), e);
+                attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE), safe(e.getMessage()), e);
         }
         return ResponseEntity.status(201).body(response);
     }
@@ -149,8 +150,8 @@ public class ApiKeyController {
             if (data != null) oldKey = objectMapper.readValue(data, ApiKey.class);
         } catch (Exception e) {
             LOG.warn("Failed to read API key before update for change detection: key_id={} request_id={} trace_id={} error={}",
-                keyId, attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
-                attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE), e.getMessage(), e);
+                safe(keyId), attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
+                attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE), safe(e.getMessage()), e);
         }
         if (oldKey != null) mutationGuard.assertTenantOpen(oldKey.getTenantId());
 
@@ -185,9 +186,9 @@ public class ApiKeyController {
                     null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
             } catch (Exception e) {
                 LOG.warn("Failed to emit API key event: event_type={} key_id={} tenant_id={} request_id={} trace_id={} error={}",
-                    EventType.API_KEY_PERMISSIONS_CHANGED.getValue(), keyId, response.getTenantId(),
+                    EventType.API_KEY_PERMISSIONS_CHANGED.getValue(), safe(keyId), safe(response.getTenantId()),
                     attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
-                    attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE), e.getMessage(), e);
+                    attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE), safe(e.getMessage()), e);
             }
         }
         return ResponseEntity.ok(response);
@@ -216,9 +217,9 @@ public class ApiKeyController {
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
             LOG.warn("Failed to emit API key event: event_type={} key_id={} tenant_id={} request_id={} trace_id={} error={}",
-                EventType.API_KEY_REVOKED.getValue(), keyId, response.getTenantId(),
+                EventType.API_KEY_REVOKED.getValue(), safe(keyId), safe(response.getTenantId()),
                 attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
-                attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE), e.getMessage(), e);
+                attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE), safe(e.getMessage()), e);
         }
         return ResponseEntity.ok(response);
     }

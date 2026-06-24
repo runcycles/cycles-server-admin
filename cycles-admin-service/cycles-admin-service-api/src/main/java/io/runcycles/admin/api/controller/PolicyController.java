@@ -1,4 +1,5 @@
 package io.runcycles.admin.api.controller;
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
 import io.runcycles.admin.api.config.ScopeValidator;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
@@ -207,9 +208,9 @@ public class PolicyController {
     private void logEventEmissionFailure(EventType eventType, String tenantId, String policyId,
                                           String scopePattern, HttpServletRequest request, Exception e) {
         LOG.warn("Failed to emit admin policy event: event_type={} tenant_id={} policy_id={} scope_pattern={} request_id={} trace_id={} exception_class={} error={}",
-            eventType, tenantId, policyId, scopePattern,
+            eventType, safe(tenantId), safe(policyId), safe(scopePattern),
             attr(request, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
             attr(request, TraceContextFilter.TRACE_ID_ATTRIBUTE),
-            e.getClass().getSimpleName(), e.getMessage(), e);
+            e.getClass().getSimpleName(), safe(e.getMessage()), e);
     }
 }

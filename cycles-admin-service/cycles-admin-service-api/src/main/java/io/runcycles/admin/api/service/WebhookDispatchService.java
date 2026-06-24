@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.service;
 
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
+
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.runcycles.admin.api.filter.TraceContextFilter;
@@ -59,28 +61,28 @@ public class WebhookDispatchService {
                     recordDispatch("queued");
                 } catch (Exception e) {
                     LOG.error("Failed to create webhook delivery: event_id={} event_type={} tenant_id={} scope={} subscription_id={} correlation_id={} request_id={} trace_id={} error={}",
-                            event != null ? event.getEventId() : null,
+                            safe(event != null ? event.getEventId() : null),
                             event != null && event.getEventType() != null ? event.getEventType().getValue() : null,
-                            event != null ? event.getTenantId() : null,
-                            event != null ? event.getScope() : null,
-                            sub != null ? sub.getSubscriptionId() : null,
-                            event != null ? event.getCorrelationId() : null,
-                            event != null ? event.getRequestId() : null,
-                            event != null ? event.getTraceId() : null,
-                            e.getMessage(), e);
+                            safe(event != null ? event.getTenantId() : null),
+                            safe(event != null ? event.getScope() : null),
+                            safe(sub != null ? sub.getSubscriptionId() : null),
+                            safe(event != null ? event.getCorrelationId() : null),
+                            safe(event != null ? event.getRequestId() : null),
+                            safe(event != null ? event.getTraceId() : null),
+                            safe(e.getMessage()), e);
                     recordDispatch("failure");
                 }
             }
         } catch (Exception e) {
             LOG.error("Failed to dispatch admin event to webhooks: event_id={} event_type={} tenant_id={} scope={} correlation_id={} request_id={} trace_id={} error={}",
-                    event != null ? event.getEventId() : null,
+                    safe(event != null ? event.getEventId() : null),
                     event != null && event.getEventType() != null ? event.getEventType().getValue() : null,
-                    event != null ? event.getTenantId() : null,
-                    event != null ? event.getScope() : null,
-                    event != null ? event.getCorrelationId() : null,
-                    event != null ? event.getRequestId() : null,
-                    event != null ? event.getTraceId() : null,
-                    e.getMessage(), e);
+                    safe(event != null ? event.getTenantId() : null),
+                    safe(event != null ? event.getScope() : null),
+                    safe(event != null ? event.getCorrelationId() : null),
+                    safe(event != null ? event.getRequestId() : null),
+                    safe(event != null ? event.getTraceId() : null),
+                    safe(e.getMessage()), e);
             recordDispatch("failure");
         }
     }
@@ -120,9 +122,10 @@ public class WebhookDispatchService {
             jedis.lpush("dispatch:pending", delivery.getDeliveryId());
         } catch (Exception e) {
             LOG.warn("Failed to enqueue webhook delivery: delivery_id={} event_id={} event_type={} subscription_id={} tenant_id={} queue=dispatch:pending trace_id={} error={}",
-                    delivery.getDeliveryId(), delivery.getEventId(),
+                    safe(delivery.getDeliveryId()), safe(delivery.getEventId()),
                     delivery.getEventType() != null ? delivery.getEventType().getValue() : null,
-                    delivery.getSubscriptionId(), sub.getTenantId(), delivery.getTraceId(), e.getMessage(), e);
+                    safe(delivery.getSubscriptionId()), safe(sub.getTenantId()),
+                    safe(delivery.getTraceId()), safe(e.getMessage()), e);
         }
     }
 

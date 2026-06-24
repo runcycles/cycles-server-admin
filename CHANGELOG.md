@@ -14,6 +14,21 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.44] — 2026-06-24
+
+### Fixed
+
+- Added common CR/LF flattening for dynamic operator-log fields across
+  exception, auth rejection, controller side-effect, bulk-row, event dispatch,
+  webhook test/replay, webhook security config, and audit fallback logs.
+- Kept the v0.1.25.43 operational context while preventing request/config/
+  exception strings from injecting misleading log lines.
+
+### Compatibility
+
+- No admin HTTP request/response, Redis key/value, Lua, event payload, webhook
+  wire, or spec change.
+
 ## [0.1.25.43] — 2026-06-24
 
 ### Changed

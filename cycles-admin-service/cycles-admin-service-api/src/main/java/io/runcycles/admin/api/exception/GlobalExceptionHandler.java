@@ -2,6 +2,7 @@ package io.runcycles.admin.api.exception;
 
 import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
 import io.runcycles.admin.api.service.AuditFailureService;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.shared.ErrorCode;
@@ -68,14 +69,14 @@ public class GlobalExceptionHandler {
     private void logRequestError(HttpServletRequest request, int status, ErrorCode error, String message) {
         LOG.warn("Admin request rejected: method={} path={} route={} status={} error={} request_id={} trace_id={} message={}",
                 method(request), path(request), route(request), status, error, resolveRequestId(request),
-                resolveTraceId(request), message);
+                resolveTraceId(request), safe(message));
     }
 
     @ExceptionHandler(GovernanceException.class)
     public ResponseEntity<ErrorResponse> handleGovernanceException(GovernanceException ex, HttpServletRequest request) {
         LOG.info("Governance exception handled: method={} path={} route={} status={} error={} request_id={} trace_id={} exception_class={} message={}",
                 method(request), path(request), route(request), ex.getHttpStatus(), ex.getErrorCode(),
-                resolveRequestId(request), resolveTraceId(request), ex.getClass().getName(), ex.getMessage());
+                resolveRequestId(request), resolveTraceId(request), ex.getClass().getName(), safe(ex.getMessage()));
         auditFailure.logFailure(request, ex.getHttpStatus(), ex.getErrorCode(), ex.getMessage(), null);
         return ResponseEntity.status(ex.getHttpStatus()).body(errorBuilder(request)
             .error(ex.getErrorCode()).message(ex.getMessage()).details(ex.getDetails()).build());

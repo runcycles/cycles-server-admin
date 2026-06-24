@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.service;
 
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
+
 import io.runcycles.admin.data.repository.WebhookDeliveryRepository;
 import io.runcycles.admin.data.repository.WebhookRepository;
 import io.runcycles.admin.data.repository.WebhookSecurityConfigRepository;
@@ -153,8 +155,8 @@ public class WebhookService {
             payload = objectMapper.writeValueAsString(testEvent);
         } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
             LOG.error("Failed to serialize webhook test event: subscription_id={} tenant_id={} event_id={} event_type={} error={}",
-                    subscriptionId, sub.getTenantId(), testEventId, testEvent.getEventType().getValue(),
-                    e.getMessage(), e);
+                    safe(subscriptionId), safe(sub.getTenantId()), testEventId, testEvent.getEventType().getValue(),
+                    safe(e.getMessage()), e);
             return WebhookTestResponse.builder()
                 .success(false)
                 .responseTimeMs(0)
@@ -190,9 +192,9 @@ public class WebhookService {
         } catch (Exception e) {
             int elapsed = (int) (System.currentTimeMillis() - start);
             LOG.warn("Webhook test delivery failed: subscription_id={} tenant_id={} event_id={} event_type={} target_host={} latency_ms={} exception_class={} error={}",
-                    subscriptionId, sub.getTenantId(), testEventId, testEvent.getEventType().getValue(),
-                    targetUri != null ? targetUri.getHost() : null, elapsed, e.getClass().getName(),
-                    e.getMessage(), e);
+                    safe(subscriptionId), safe(sub.getTenantId()), testEventId, testEvent.getEventType().getValue(),
+                    safe(targetUri != null ? targetUri.getHost() : null), elapsed, e.getClass().getName(),
+                    safe(e.getMessage()), e);
             return WebhookTestResponse.builder()
                 .success(false)
                 .responseTimeMs(elapsed)
@@ -289,9 +291,9 @@ public class WebhookService {
                     queued++;
                 } catch (Exception e) {
                     LOG.warn("Failed to queue webhook replay delivery: replay_id={} subscription_id={} tenant_id={} event_id={} event_type={} correlation_id={} request_id={} trace_id={} error={}",
-                            replayId, subscriptionId, sub.getTenantId(), event.getEventId(),
-                            event.getEventType() != null ? event.getEventType().getValue() : null,
-                            event.getCorrelationId(), event.getRequestId(), event.getTraceId(), e.getMessage(), e);
+                            safe(replayId), safe(subscriptionId), safe(sub.getTenantId()), safe(event.getEventId()),
+                            safe(event.getEventType() != null ? event.getEventType().getValue() : null),
+                            safe(event.getCorrelationId()), safe(event.getRequestId()), safe(event.getTraceId()), safe(e.getMessage()), e);
                 }
             }
             return ReplayResponse.builder()

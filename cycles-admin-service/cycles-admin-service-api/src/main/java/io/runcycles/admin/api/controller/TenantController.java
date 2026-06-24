@@ -1,4 +1,5 @@
 package io.runcycles.admin.api.controller;
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.idempotency.IdempotencyStore;
 import io.runcycles.admin.data.repository.AuditRepository;
@@ -429,9 +430,9 @@ public class TenantController {
                 .message(e.getMessage()).build());
         } catch (Exception e) {
             LOG.warn("Tenant bulk-action row failed: action={} tenant_id={} target_status={} correlation_id={} request_id={} trace_id={} exception_class={} error={}",
-                action, id, target, correlationId, requestId,
+                action, safe(id), target, safe(correlationId), requestId,
                 attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE),
-                e.getClass().getSimpleName(), e.getMessage(), e);
+                e.getClass().getSimpleName(), safe(e.getMessage()), e);
             failed.add(BulkActionRowOutcome.builder()
                 .id(id).errorCode("INTERNAL_ERROR").message("Internal error").build());
         }
@@ -503,10 +504,10 @@ public class TenantController {
     private void logEventEmissionFailure(EventType eventType, String tenantId, String correlationId,
                                           HttpServletRequest request, Exception e) {
         LOG.warn("Failed to emit admin tenant event: event_type={} tenant_id={} correlation_id={} request_id={} trace_id={} exception_class={} error={}",
-            eventType, tenantId, correlationId,
+            eventType, safe(tenantId), safe(correlationId),
             attr(request, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
             attr(request, TraceContextFilter.TRACE_ID_ATTRIBUTE),
-            e.getClass().getSimpleName(), e.getMessage(), e);
+            e.getClass().getSimpleName(), safe(e.getMessage()), e);
     }
 
     private static String classifyFailureCode(GovernanceException e) {

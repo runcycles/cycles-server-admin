@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.service;
 
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
+
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.runcycles.admin.api.filter.RequestIdFilter;
@@ -176,14 +178,14 @@ public class AuditFailureService {
             recordWrite("failure", "error");
             LOG.warn("Failed to write failure audit entry; continuing with response: method={} path={} status={} error={} request_id={} trace_id={} source_ip={} exception_class={} error_message={}",
                     request != null ? request.getMethod() : null,
-                    request != null ? request.getRequestURI() : null,
+                    safe(request != null ? request.getRequestURI() : null),
                     status,
                     code,
                     resolveAttr(request, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
                     resolveAttr(request, TraceContextFilter.TRACE_ID_ATTRIBUTE),
-                    request != null ? request.getRemoteAddr() : null,
+                    safe(request != null ? request.getRemoteAddr() : null),
                     e.getClass().getName(),
-                    e.getMessage(),
+                    safe(e.getMessage()),
                     e);
         }
     }
