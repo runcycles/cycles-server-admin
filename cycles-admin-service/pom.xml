@@ -39,6 +39,14 @@
                CVE-2026-43514 LOW      — Observable timing in AJP secret compare
              Remove once Spring Boot ships with 10.1.55+ as its managed version. -->
         <tomcat.version>10.1.55</tomcat.version>
+        <!-- Override Spring Boot 3.5.15's managed jackson-databind 2.21.4 to
+             pick up the fix in 2.21.5 for CVE-2026-54515 (Trivy-flagged;
+             jackson enters the image transitively via the Spring web stack).
+             Rated MEDIUM, but the release pipeline's SARIF-mode Trivy gate
+             fails on any fixable finding, so this blocks image publish.
+             jackson-bom.version drives all com.fasterxml.jackson.* modules.
+             Remove once Spring Boot ships with 2.21.5+ as its managed version. -->
+        <jackson-bom.version>2.21.5</jackson-bom.version>
     </properties>
     <dependencyManagement>
         <dependencies>

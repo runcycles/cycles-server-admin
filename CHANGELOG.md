@@ -36,6 +36,11 @@ a Spring Boot patch, and supply-chain/CI hardening.
 - **Spring Boot 3.5.14 → 3.5.15** (patch). Upstream patch release. The
   `commons-lang3 3.18.0` override is retained — SB 3.5.15's BOM still manages
   3.17.0, where CVE-2025-48924 is unfixed.
+- **jackson-databind 2.21.4 → 2.21.5** (security). `<jackson-bom.version>`
+  override picking up the CVE-2026-54515 fix; jackson enters the image
+  transitively via the Spring web stack. Rated MEDIUM, but the release
+  pipeline's Trivy gate fails on any fixable finding. Retire once SB's BOM
+  manages 2.21.5+.
 - **Container log rotation.** All four `docker-compose*.yml` files gain a
   shared `json-file` logging anchor (`max-size: 10m`, `max-file: 5`), capping
   each container at 50 MB to prevent unbounded `*-json.log` growth on

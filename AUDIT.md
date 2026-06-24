@@ -80,6 +80,16 @@ with no code or wire change:
   (revisit whether SB 3.5.15's BOM makes it redundant on the next bump).
 - **Container log rotation** (#189, 2026-06-23): `json-file` driver with
   `max-size: 10m` / `max-file: 5` across all four compose files. Ops-only.
+- **jackson-databind 2.21.4 → 2.21.5** (CVE-2026-54515). Surfaced when the
+  first v0.1.25.42 release build's Trivy gate flagged the only fixable
+  finding in the image. Although NVD rates it MEDIUM (CVSS 5.3), the
+  release pipeline runs `aquasecurity/trivy-action` in `format: sarif`
+  mode, where `exit-code: 1` trips on any finding regardless of the
+  `severity: HIGH,CRITICAL` input — so the effective gate is "no fixable
+  vulns." Pinned via `<jackson-bom.version>2.21.5</jackson-bom.version>`
+  (drives all `com.fasterxml.jackson.*` modules); v0.1.25.42 was re-cut in
+  place on top of this fix since no image had been published. Deps-only,
+  no code or wire change.
 
 
 
