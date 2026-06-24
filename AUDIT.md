@@ -65,6 +65,22 @@ BOM manages 10.1.55+.
   manages 3.17.0).
 - Code change of any kind. This is a deps-only release.
 
+**Release-boundary addendum (2026-06-24).** The "Not in scope" notes above
+describe the original Tomcat-only PR #179 (2026-05-25). By the time v0.1.25.42
+was actually cut, the same unreleased `revision` had also absorbed two further
+dependency bumps that landed on `main` after v0.1.25.41; both are deps-only
+with no code or wire change:
+- **Jedis 6.2.0 → 7.5.0** (major, #154, 2026-04-28). Redis-client major
+  bump; all call sites use stable APIs and CI's full 782+-test suite passes
+  on 7.5.0.
+- **Spring Boot 3.5.14 → 3.5.15** (patch, #186, 2026-06-14). Supersedes the
+  "SB 3.5.14 stays" note above. The `commons-lang3 3.18.0` override is still
+  required — SB 3.5.15's BOM continues to manage 3.17.0 (CVE-2025-48924
+  unfixed there) — and the `tomcat 10.1.55` override is likewise retained
+  (revisit whether SB 3.5.15's BOM makes it redundant on the next bump).
+- **Container log rotation** (#189, 2026-06-23): `json-file` driver with
+  `max-size: 10m` / `max-file: 5` across all four compose files. Ops-only.
+
 
 
 ### 2026-04-23 — v0.1.25.39: Webhook lifecycle events (spec v0.1.25.33)
