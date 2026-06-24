@@ -64,7 +64,14 @@ public class WebhookRepository {
                 jedis.set("webhook:secret:" + subscriptionId, cryptoService.encrypt(signingSecret));
             }
         } catch (Exception e) {
-            LOG.error("Failed to save webhook subscription", e);
+            LOG.error("Failed to save webhook subscription: subscription_id={} tenant_id={} status={} event_types={} event_categories={} secret_present={}",
+                sub != null ? sub.getSubscriptionId() : null,
+                sub != null ? sub.getTenantId() : null,
+                sub != null ? sub.getStatus() : null,
+                sub != null ? sub.getEventTypes() : null,
+                sub != null ? sub.getEventCategories() : null,
+                sub != null && sub.getSigningSecret() != null,
+                e);
             throw new RuntimeException("Failed to save webhook subscription", e);
         }
     }
@@ -86,7 +93,7 @@ public class WebhookRepository {
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
-            LOG.error("Failed to find webhook: {}", subscriptionId, e);
+            LOG.error("Failed to find webhook subscription: subscription_id={}", subscriptionId, e);
             throw new RuntimeException("Failed to find webhook subscription", e);
         }
     }
@@ -123,8 +130,8 @@ public class WebhookRepository {
                     jedis.set("webhook:" + id, objectMapper.writeValueAsString(sub));
                     outcomes.add(new CascadeDisableOutcome(id, sub.getName(), prior));
                 } catch (Exception e) {
-                    LOG.warn("Cascade-disable skipped webhook {} for tenant {}: {}",
-                        id, tenantId, e.getMessage());
+                    LOG.warn("Cascade-disable skipped webhook subscription: subscription_id={} tenant_id={} error={}",
+                        id, tenantId, e.getMessage(), e);
                 }
             }
         }
@@ -142,7 +149,14 @@ public class WebhookRepository {
             String json = objectMapper.writeValueAsString(updated);
             jedis.set("webhook:" + subscriptionId, json);
         } catch (Exception e) {
-            LOG.error("Failed to update webhook: {}", subscriptionId, e);
+            LOG.error("Failed to update webhook subscription: subscription_id={} tenant_id={} status={} event_types={} event_categories={} secret_present={}",
+                subscriptionId,
+                updated != null ? updated.getTenantId() : null,
+                updated != null ? updated.getStatus() : null,
+                updated != null ? updated.getEventTypes() : null,
+                updated != null ? updated.getEventCategories() : null,
+                updated != null && updated.getSigningSecret() != null,
+                e);
             throw new RuntimeException("Failed to update webhook subscription", e);
         }
     }
@@ -164,7 +178,7 @@ public class WebhookRepository {
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
-            LOG.error("Failed to delete webhook: {}", subscriptionId, e);
+            LOG.error("Failed to delete webhook subscription: subscription_id={}", subscriptionId, e);
             throw new RuntimeException("Failed to delete webhook subscription", e);
         }
     }
@@ -288,7 +302,8 @@ public class WebhookRepository {
                     if (!matchesScope(sub, scope)) continue;
                     matching.add(sub);
                 } catch (Exception e) {
-                    LOG.warn("Failed to parse webhook subscription: {}", id, e);
+                    LOG.warn("Failed to parse webhook subscription while matching event: subscription_id={} tenant_id={} event_type={} scope={}",
+                        id, tenantId, eventType != null ? eventType.getValue() : null, scope, e);
                 }
             }
             return matching;
@@ -394,7 +409,7 @@ public class WebhookRepository {
             if (data == null) return null;
             return objectMapper.readValue(data, WebhookSubscription.class);
         } catch (Exception e) {
-            LOG.warn("Failed to parse webhook subscription: {}", id, e);
+            LOG.warn("Failed to parse webhook subscription row: subscription_id={}", id, e);
             return null;
         }
     }

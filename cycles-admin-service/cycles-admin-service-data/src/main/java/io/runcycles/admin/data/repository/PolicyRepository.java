@@ -86,7 +86,7 @@ public class PolicyRepository {
     // because every other admin write path is Jackson-in-Java with no CAS.
 
     public Policy update(String tenantId, String policyId, PolicyUpdateRequest request) {
-        LOG.info("Updating policy: {}", policyId);
+        LOG.info("Updating policy: policy_id={} tenant_id={}", policyId, tenantId);
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "policy:" + policyId;
             String json = jedis.get(key);
@@ -152,7 +152,8 @@ public class PolicyRepository {
                 try {
                     String data = jedis.get("policy:" + id);
                     if (data == null) {
-                        LOG.warn("Policy data missing for id: {}", id);
+                        LOG.warn("Policy index points to missing row: policy_id={} tenant_id={} index_key={} status_filter={} scope_pattern_filter={}",
+                            id, tenantId, "policies:" + tenantId, status, scopePattern);
                         continue;
                     }
                     Policy p = objectMapper.readValue(data, Policy.class);
@@ -161,7 +162,8 @@ public class PolicyRepository {
                     policies.add(p);
                     if (policies.size() >= limit) break;
                 } catch (Exception e) {
-                    LOG.warn("Failed to parse policy: {}", id, e);
+                    LOG.warn("Failed to parse policy row: policy_id={} tenant_id={} index_key={} status_filter={} scope_pattern_filter={}",
+                        id, tenantId, "policies:" + tenantId, status, scopePattern, e);
                 }
             }
             return policies;

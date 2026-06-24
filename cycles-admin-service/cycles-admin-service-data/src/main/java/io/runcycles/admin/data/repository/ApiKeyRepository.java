@@ -158,7 +158,8 @@ public class ApiKeyRepository {
             try {
                 String data = jedis.get("apikey:" + id);
                 if (data == null) {
-                    LOG.warn("API key data missing for id: {}", id);
+                    LOG.warn("API key index points to missing row: key_id={} tenant_id={} index_key={} status_filter={}",
+                        id, tenantId, "apikeys:" + tenantId, statusFilter);
                     continue;
                 }
                 ApiKey key = objectMapper.readValue(data, ApiKey.class);
@@ -167,7 +168,8 @@ public class ApiKeyRepository {
                 keys.add(key);
                 if (keys.size() >= limit) break;
             } catch (Exception e) {
-                LOG.warn("Failed to parse key: {}", id, e);
+                LOG.warn("Failed to parse API key row: key_id={} tenant_id={} index_key={} status_filter={}",
+                    id, tenantId, "apikeys:" + tenantId, statusFilter, e);
             }
         }
         return keys;
@@ -185,7 +187,8 @@ public class ApiKeyRepository {
                 if (!matchesSearch(key, search)) continue;
                 all.add(key);
             } catch (Exception e) {
-                LOG.warn("Failed to parse key: {}", id, e);
+                LOG.warn("Failed to parse API key row: key_id={} tenant_id={} index_key={} status_filter={}",
+                    id, tenantId, "apikeys:" + tenantId, statusFilter, e);
             }
         }
         all.sort(apiKeyComparator(sortSpec));
@@ -337,12 +340,16 @@ public class ApiKeyRepository {
                     if (!matchesSearch(key, search)) continue;
                     all.add(key);
                 } catch (Exception e) {
-                    LOG.warn("Failed to parse key: {}", keyId, e);
+                    LOG.warn("Failed to parse API key row during cross-tenant sorted list: key_id={} tenant_id={} status_filter={} sort_field={} search_present={}",
+                        keyId, tenantId, statusFilter, sortSpec != null ? sortSpec.field() : null,
+                        search != null && !search.isBlank(), e);
                 }
             }
         }
         if (capped) {
-            LOG.warn("listAllTenants sort hydration capped at {} keys; narrow filters to see beyond the cap", SORTED_HYDRATE_CAP);
+            LOG.warn("API key cross-tenant sorted hydration capped: cap={} status_filter={} sort_field={} search_present={}",
+                SORTED_HYDRATE_CAP, statusFilter, sortSpec != null ? sortSpec.field() : null,
+                search != null && !search.isBlank());
         }
         all.sort(apiKeyComparator(sortSpec));
         List<ApiKey> result = new ArrayList<>();
@@ -385,7 +392,8 @@ public class ApiKeyRepository {
             try {
                 String data = jedis.get("apikey:" + id);
                 if (data == null) {
-                    LOG.warn("API key data missing for id: {}", id);
+                    LOG.warn("API key index points to missing row: key_id={} tenant_id={} index_key={} status_filter={}",
+                        id, tenantId, "apikeys:" + tenantId, statusFilter);
                     continue;
                 }
                 ApiKey key = objectMapper.readValue(data, ApiKey.class);
@@ -394,7 +402,8 @@ public class ApiKeyRepository {
                 keys.add(key);
                 if (keys.size() >= limit) break;
             } catch (Exception e) {
-                LOG.warn("Failed to parse key: {}", id, e);
+                LOG.warn("Failed to parse API key row: key_id={} tenant_id={} index_key={} status_filter={}",
+                    id, tenantId, "apikeys:" + tenantId, statusFilter, e);
             }
         }
         return keys;
@@ -491,8 +500,8 @@ public class ApiKeyRepository {
                 jedis.set("apikey:" + k.getKeyId(), objectMapper.writeValueAsString(k));
                 outcomes.add(new CascadeRevokeOutcome(k.getKeyId(), k.getName(), prior));
             } catch (Exception e) {
-                LOG.warn("Cascade-revoke skipped key {} for tenant {}: {}",
-                    k.getKeyId(), tenantId, e.getMessage());
+                LOG.warn("Cascade-revoke skipped API key: key_id={} tenant_id={} reason={} error={}",
+                    k.getKeyId(), tenantId, reason, e.getMessage(), e);
             }
         }
         return outcomes;

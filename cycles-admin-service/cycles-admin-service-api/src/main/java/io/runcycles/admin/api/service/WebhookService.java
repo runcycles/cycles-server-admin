@@ -152,7 +152,9 @@ public class WebhookService {
         try {
             payload = objectMapper.writeValueAsString(testEvent);
         } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
-            LOG.error("Failed to serialize test event for {}: {}", subscriptionId, e.getMessage());
+            LOG.error("Failed to serialize webhook test event: subscription_id={} tenant_id={} event_id={} event_type={} error={}",
+                    subscriptionId, sub.getTenantId(), testEventId, testEvent.getEventType().getValue(),
+                    e.getMessage(), e);
             return WebhookTestResponse.builder()
                 .success(false)
                 .responseTimeMs(0)
@@ -160,9 +162,11 @@ public class WebhookService {
                 .eventId(testEventId)
                 .build();
         }
+        java.net.URI targetUri = null;
         try {
+            targetUri = java.net.URI.create(sub.getUrl());
             java.net.http.HttpRequest.Builder reqBuilder = java.net.http.HttpRequest.newBuilder()
-                .uri(java.net.URI.create(sub.getUrl()))
+                .uri(targetUri)
                 .header("Content-Type", "application/json")
                 .header("User-Agent", "cycles-server-admin/test")
                 .header("X-Cycles-Event-Id", testEventId)
@@ -185,7 +189,10 @@ public class WebhookService {
                 .build();
         } catch (Exception e) {
             int elapsed = (int) (System.currentTimeMillis() - start);
-            LOG.warn("Webhook test delivery failed for {}: {}", subscriptionId, e.getMessage());
+            LOG.warn("Webhook test delivery failed: subscription_id={} tenant_id={} event_id={} event_type={} target_host={} latency_ms={} exception_class={} error={}",
+                    subscriptionId, sub.getTenantId(), testEventId, testEvent.getEventType().getValue(),
+                    targetUri != null ? targetUri.getHost() : null, elapsed, e.getClass().getName(),
+                    e.getMessage(), e);
             return WebhookTestResponse.builder()
                 .success(false)
                 .responseTimeMs(elapsed)
@@ -281,7 +288,10 @@ public class WebhookService {
                     dispatchService.dispatchToSubscription(event, sub);
                     queued++;
                 } catch (Exception e) {
-                    LOG.warn("Failed to queue replay delivery for event {}: {}", event.getEventId(), e.getMessage());
+                    LOG.warn("Failed to queue webhook replay delivery: replay_id={} subscription_id={} tenant_id={} event_id={} event_type={} correlation_id={} request_id={} trace_id={} error={}",
+                            replayId, subscriptionId, sub.getTenantId(), event.getEventId(),
+                            event.getEventType() != null ? event.getEventType().getValue() : null,
+                            event.getCorrelationId(), event.getRequestId(), event.getTraceId(), e.getMessage(), e);
                 }
             }
             return ReplayResponse.builder()

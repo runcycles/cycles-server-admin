@@ -256,7 +256,6 @@ public class AuthInterceptor implements HandlerInterceptor {
             return false;
         }
         if (adminApiKey == null || adminApiKey.isBlank()) {
-            LOG.error("Admin API key is not configured — rejecting admin request");
             writeError(request, response, 500, ErrorCode.INTERNAL_ERROR, "Server misconfiguration: admin API key not set");
             return false;
         }
@@ -345,6 +344,7 @@ public class AuthInterceptor implements HandlerInterceptor {
         // if it ever fails internally it increments the outcome=error counter
         // and logs a warning but never propagates, so the error response is
         // guaranteed to reach the client even if audit-write is broken.
+        logAuthRejection(request, status, code, message);
         auditFailure.logFailure(request, status, code, message, null);
         response.setStatus(status);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
@@ -357,5 +357,46 @@ public class AuthInterceptor implements HandlerInterceptor {
             .traceId(traceId != null ? traceId.toString() : null)
             .build();
         response.getWriter().write(objectMapper.writeValueAsString(error));
+    }
+
+    private void logAuthRejection(HttpServletRequest request, int status, ErrorCode code, String message) {
+        String reqId = resolveRequestId(request);
+        String traceId = resolveTraceId(request);
+        Object tenantId = request.getAttribute("authenticated_tenant_id");
+        Object keyId = request.getAttribute("authenticated_key_id");
+        boolean adminHeaderPresent = hasNonBlankHeader(request, ADMIN_KEY_HEADER);
+        boolean apiKeyHeaderPresent = hasNonBlankHeader(request, API_KEY_HEADER);
+        String logMessage = "Admin auth request rejected: method={} path={} servlet_path={} status={} error={} request_id={} trace_id={} source_ip={} admin_key_present={} api_key_present={} tenant_id={} key_id={} reason={}";
+        if (status >= 500) {
+            LOG.error(logMessage,
+                    request.getMethod(), request.getRequestURI(), request.getServletPath(), status, code,
+                    reqId, traceId, request.getRemoteAddr(), adminHeaderPresent, apiKeyHeaderPresent,
+                    tenantId, keyId, message);
+        } else {
+            LOG.warn(logMessage,
+                    request.getMethod(), request.getRequestURI(), request.getServletPath(), status, code,
+                    reqId, traceId, request.getRemoteAddr(), adminHeaderPresent, apiKeyHeaderPresent,
+                    tenantId, keyId, message);
+        }
+    }
+
+    private boolean hasNonBlankHeader(HttpServletRequest request, String headerName) {
+        String value = request.getHeader(headerName);
+        return value != null && !value.isBlank();
+    }
+
+    private String resolveRequestId(HttpServletRequest request) {
+        Object attr = request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE);
+        if (attr != null) {
+            return attr.toString();
+        }
+        String generated = UUID.randomUUID().toString();
+        request.setAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE, generated);
+        return generated;
+    }
+
+    private String resolveTraceId(HttpServletRequest request) {
+        Object attr = request.getAttribute(TraceContextFilter.TRACE_ID_ATTRIBUTE);
+        return attr != null ? attr.toString() : null;
     }
 }

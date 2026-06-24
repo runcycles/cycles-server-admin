@@ -37,7 +37,10 @@ public class AuthController {
                         .sourceIp(httpRequest.getRemoteAddr()).build(), Map.class),
                     null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
             } catch (Exception e) {
-                LOG.warn("Failed to emit event: {}", e.getMessage());
+                LOG.warn("Failed to emit API key auth failure event: event_type={} tenant_id={} key_id={} reason={} request_id={} trace_id={} source_ip={} error={}",
+                    EventType.API_KEY_AUTH_FAILED.getValue(), response.getTenantId(), response.getKeyId(),
+                    response.getReason(), attr(httpRequest, "requestId"), attr(httpRequest, "traceId"),
+                    httpRequest.getRemoteAddr(), e.getMessage(), e);
             }
         }
         return ResponseEntity.ok(response);
@@ -169,5 +172,10 @@ public class AuthController {
             }
         }
         return false;
+    }
+
+    private static String attr(HttpServletRequest request, String name) {
+        Object value = request.getAttribute(name);
+        return value != null ? value.toString() : null;
     }
 }

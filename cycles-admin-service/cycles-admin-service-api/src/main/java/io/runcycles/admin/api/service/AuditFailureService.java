@@ -174,7 +174,17 @@ public class AuditFailureService {
             // anything here still throws (e.g. MeterRegistry wedged), don't
             // propagate — the real error response MUST go out.
             recordWrite("failure", "error");
-            LOG.warn("Failed to write failure audit entry (non-fatal): {}", e.getMessage());
+            LOG.warn("Failed to write failure audit entry; continuing with response: method={} path={} status={} error={} request_id={} trace_id={} source_ip={} exception_class={} error_message={}",
+                    request != null ? request.getMethod() : null,
+                    request != null ? request.getRequestURI() : null,
+                    status,
+                    code,
+                    resolveAttr(request, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
+                    resolveAttr(request, TraceContextFilter.TRACE_ID_ATTRIBUTE),
+                    request != null ? request.getRemoteAddr() : null,
+                    e.getClass().getName(),
+                    e.getMessage(),
+                    e);
         }
     }
 

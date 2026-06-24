@@ -58,13 +58,29 @@ public class WebhookDispatchService {
                     createDelivery(event, sub);
                     recordDispatch("queued");
                 } catch (Exception e) {
-                    LOG.error("Failed to create delivery for subscription {}: {}",
-                        sub.getSubscriptionId(), e.getMessage());
+                    LOG.error("Failed to create webhook delivery: event_id={} event_type={} tenant_id={} scope={} subscription_id={} correlation_id={} request_id={} trace_id={} error={}",
+                            event != null ? event.getEventId() : null,
+                            event != null && event.getEventType() != null ? event.getEventType().getValue() : null,
+                            event != null ? event.getTenantId() : null,
+                            event != null ? event.getScope() : null,
+                            sub != null ? sub.getSubscriptionId() : null,
+                            event != null ? event.getCorrelationId() : null,
+                            event != null ? event.getRequestId() : null,
+                            event != null ? event.getTraceId() : null,
+                            e.getMessage(), e);
                     recordDispatch("failure");
                 }
             }
         } catch (Exception e) {
-            LOG.error("Failed to dispatch event {}: {}", event.getEventId(), e.getMessage());
+            LOG.error("Failed to dispatch admin event to webhooks: event_id={} event_type={} tenant_id={} scope={} correlation_id={} request_id={} trace_id={} error={}",
+                    event != null ? event.getEventId() : null,
+                    event != null && event.getEventType() != null ? event.getEventType().getValue() : null,
+                    event != null ? event.getTenantId() : null,
+                    event != null ? event.getScope() : null,
+                    event != null ? event.getCorrelationId() : null,
+                    event != null ? event.getRequestId() : null,
+                    event != null ? event.getTraceId() : null,
+                    e.getMessage(), e);
             recordDispatch("failure");
         }
     }
@@ -103,7 +119,10 @@ public class WebhookDispatchService {
         try (Jedis jedis = jedisPool.getResource()) {
             jedis.lpush("dispatch:pending", delivery.getDeliveryId());
         } catch (Exception e) {
-            LOG.warn("Failed to enqueue delivery {} to dispatch:pending: {}", delivery.getDeliveryId(), e.getMessage());
+            LOG.warn("Failed to enqueue webhook delivery: delivery_id={} event_id={} event_type={} subscription_id={} tenant_id={} queue=dispatch:pending trace_id={} error={}",
+                    delivery.getDeliveryId(), delivery.getEventId(),
+                    delivery.getEventType() != null ? delivery.getEventType().getValue() : null,
+                    delivery.getSubscriptionId(), sub.getTenantId(), delivery.getTraceId(), e.getMessage(), e);
         }
     }
 

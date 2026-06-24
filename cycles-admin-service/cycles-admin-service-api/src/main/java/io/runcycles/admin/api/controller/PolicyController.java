@@ -83,7 +83,8 @@ public class PolicyController {
                     .scopePattern(request.getScopePattern()).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
-            LOG.warn("Failed to emit event: {}", e.getMessage());
+            logEventEmissionFailure(EventType.POLICY_CREATED, tenantId,
+                policy.getPolicyId(), request.getScopePattern(), httpRequest, e);
         }
         return ResponseEntity.status(201).body(policy);
     }
@@ -127,7 +128,8 @@ public class PolicyController {
                     .policyId(policyId).scopePattern(scopePattern).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
-            LOG.warn("Failed to emit event: {}", e.getMessage());
+            logEventEmissionFailure(EventType.POLICY_UPDATED, subjectTenantId,
+                policyId, scopePattern, httpRequest, e);
         }
         return ResponseEntity.ok(policy);
     }
@@ -200,5 +202,14 @@ public class PolicyController {
     private static String attr(HttpServletRequest request, String name) {
         Object v = request.getAttribute(name);
         return v != null ? v.toString() : null;
+    }
+
+    private void logEventEmissionFailure(EventType eventType, String tenantId, String policyId,
+                                          String scopePattern, HttpServletRequest request, Exception e) {
+        LOG.warn("Failed to emit admin policy event: event_type={} tenant_id={} policy_id={} scope_pattern={} request_id={} trace_id={} exception_class={} error={}",
+            eventType, tenantId, policyId, scopePattern,
+            attr(request, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
+            attr(request, TraceContextFilter.TRACE_ID_ATTRIBUTE),
+            e.getClass().getSimpleName(), e.getMessage(), e);
     }
 }

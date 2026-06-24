@@ -96,7 +96,16 @@ public class AuditRepository {
                 List.of(json, score, logId, String.valueOf(ttlSeconds)));
         } catch (Exception e) {
             // Audit log failure should not break the business operation that triggered it
-            LOG.error("Failed to write audit log (non-fatal)", e);
+            LOG.error("Failed to write audit log; business operation continues: tenant_id={} operation={} resource_type={} resource_id={} status={} error_code={} request_id={} trace_id={}",
+                entry != null ? entry.getTenantId() : null,
+                entry != null ? entry.getOperation() : null,
+                entry != null ? entry.getResourceType() : null,
+                entry != null ? entry.getResourceId() : null,
+                entry != null ? entry.getStatus() : null,
+                entry != null ? entry.getErrorCode() : null,
+                entry != null ? entry.getRequestId() : null,
+                entry != null ? entry.getTraceId() : null,
+                e);
         }
     }
 
@@ -185,13 +194,13 @@ public class AuditRepository {
                 }
                 cursor = scan.getCursor();
             } while (!ScanParams.SCAN_POINTER_START.equals(cursor));
-            LOG.info("Audit index sweep completed — removed {} global + {} per-tenant stale pointers "
-                            + "older than {} ms",
-                    removedGlobal, removedTenants, cutoffMillis);
+            LOG.info("Audit index sweep completed: removed_global={} removed_per_tenant={} cutoff_ms={} authenticated_retention_days={}",
+                    removedGlobal, removedTenants, cutoffMillis, authenticatedRetentionDays);
         } catch (Exception e) {
             // Sweep is best-effort — a failed tick does not impact business
             // operations. The next scheduled run retries.
-            LOG.error("Audit index sweep failed (non-fatal — next tick will retry)", e);
+            LOG.error("Audit index sweep failed; next tick will retry: authenticated_retention_days={} unauthenticated_retention_days={}",
+                authenticatedRetentionDays, unauthenticatedRetentionDays, e);
         }
     }
 
@@ -345,7 +354,8 @@ public class AuditRepository {
                 logs.add(entry);
                 if (logs.size() >= limit) break;
             } catch (Exception e) {
-                LOG.warn("Failed to parse log: {}", id, e);
+                LOG.warn("Failed to parse audit log entry: log_id={} index_key={} tenant_id={} request_id_filter={} trace_id_filter={}",
+                    id, indexKey, tenantId, requestId, traceId, e);
             }
         }
         return logs;
@@ -375,7 +385,8 @@ public class AuditRepository {
                 if (!matchesSearch(entry, search)) continue;
                 all.add(entry);
             } catch (Exception e) {
-                LOG.warn("Failed to parse log: {}", id, e);
+                LOG.warn("Failed to parse audit log entry: log_id={} index_key={} tenant_id={} request_id_filter={} trace_id_filter={}",
+                    id, indexKey, tenantId, requestId, traceId, e);
             }
         }
         all.sort(auditLogComparator(sortSpec));

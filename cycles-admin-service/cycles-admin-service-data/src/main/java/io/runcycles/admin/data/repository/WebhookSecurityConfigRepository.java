@@ -20,7 +20,7 @@ public class WebhookSecurityConfigRepository {
             }
             return objectMapper.readValue(data, WebhookSecurityConfig.class);
         } catch (Exception e) {
-            LOG.error("Failed to read webhook security config", e);
+            LOG.error("Failed to read webhook security config: config_key={}", CONFIG_KEY, e);
             throw new RuntimeException("Failed to read webhook security config", e);
         }
     }
@@ -30,7 +30,12 @@ public class WebhookSecurityConfigRepository {
             String json = objectMapper.writeValueAsString(config);
             jedis.set(CONFIG_KEY, json);
         } catch (Exception e) {
-            LOG.error("Failed to save webhook security config", e);
+            LOG.error("Failed to save webhook security config: config_key={} allow_http={} blocked_cidr_count={} allowed_url_pattern_count={}",
+                CONFIG_KEY,
+                config != null ? config.getAllowHttp() : null,
+                config != null && config.getBlockedCidrRanges() != null ? config.getBlockedCidrRanges().size() : null,
+                config != null && config.getAllowedUrlPatterns() != null ? config.getAllowedUrlPatterns().size() : null,
+                e);
             throw new RuntimeException("Failed to save webhook security config", e);
         }
     }

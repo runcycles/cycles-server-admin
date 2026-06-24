@@ -57,7 +57,15 @@ public class EventRepository {
             String ttlSeconds = String.valueOf(eventTtlDays * 86400L);
             jedis.eval(SAVE_EVENT_LUA, keys, List.of(json, score, id, ttlSeconds));
         } catch (Exception e) {
-            LOG.error("Failed to save event", e);
+            LOG.error("Failed to save admin event: event_id={} event_type={} tenant_id={} scope={} correlation_id={} request_id={} trace_id={}",
+                event != null ? event.getEventId() : null,
+                event != null && event.getEventType() != null ? event.getEventType().getValue() : null,
+                event != null ? event.getTenantId() : null,
+                event != null ? event.getScope() : null,
+                event != null ? event.getCorrelationId() : null,
+                event != null ? event.getRequestId() : null,
+                event != null ? event.getTraceId() : null,
+                e);
             throw new RuntimeException("Failed to save event", e);
         }
     }
@@ -72,7 +80,7 @@ public class EventRepository {
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
-            LOG.error("Failed to find event: {}", eventId, e);
+            LOG.error("Failed to find admin event: event_id={}", eventId, e);
             throw new RuntimeException("Failed to find event", e);
         }
     }
@@ -179,7 +187,8 @@ public class EventRepository {
             try {
                 String data = jedis.get("event:" + id);
                 if (data == null) {
-                    LOG.warn("Event data missing for id: {}", id);
+                    LOG.warn("Admin event index points to missing row: event_id={} index_key={} tenant_id={} event_type_filter={} category_filter={} scope_filter={} request_id_filter={} trace_id_filter={}",
+                        id, indexKey, tenantId, eventType, category, scope, requestId, traceId);
                     continue;
                 }
                 Event event = objectMapper.readValue(data, Event.class);
@@ -188,7 +197,8 @@ public class EventRepository {
                 events.add(event);
                 if (events.size() >= limit) break;
             } catch (Exception e) {
-                LOG.warn("Failed to parse event: {}", id, e);
+                LOG.warn("Failed to parse admin event row: event_id={} index_key={} tenant_id={} event_type_filter={} category_filter={} scope_filter={} request_id_filter={} trace_id_filter={}",
+                    id, indexKey, tenantId, eventType, category, scope, requestId, traceId, e);
             }
         }
         return events;
@@ -213,7 +223,8 @@ public class EventRepository {
                 if (!matchesSearch(event, search)) continue;
                 all.add(event);
             } catch (Exception e) {
-                LOG.warn("Failed to parse event: {}", id, e);
+                LOG.warn("Failed to parse admin event row: event_id={} index_key={} tenant_id={} event_type_filter={} category_filter={} scope_filter={} request_id_filter={} trace_id_filter={}",
+                    id, indexKey, tenantId, eventType, category, scope, requestId, traceId, e);
             }
         }
         all.sort(eventComparator(sortSpec));
@@ -314,7 +325,8 @@ public class EventRepository {
                 if (!matchesSearch(event, search)) continue;
                 events.add(event);
             } catch (Exception e) {
-                LOG.warn("Failed to parse event: {}", id, e);
+                LOG.warn("Failed to parse admin event row: event_id={} correlation_id={} tenant_id={} event_type_filter={} category_filter={} scope_filter={} request_id_filter={} trace_id_filter={}",
+                    id, correlationId, tenantId, eventType, category, scope, requestId, traceId, e);
             }
         }
         if (sortSpec != null) {

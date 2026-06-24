@@ -78,7 +78,8 @@ public class TenantController {
                     .tenantId(request.getTenantId()).newStatus(io.runcycles.admin.model.tenant.TenantStatus.ACTIVE).changedFields(List.of()).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
-            LOG.warn("Failed to emit event: {}", e.getMessage());
+            logEventEmissionFailure(EventType.TENANT_CREATED, request.getTenantId(),
+                null, httpRequest, e);
         }
         return ResponseEntity.status(httpStatus).body(result.tenant());
     }
@@ -145,26 +146,8 @@ public class TenantController {
             .status(200)
             .metadata(enrichWithCascade(buildUpdateTenantMeta(request), cascadeResult))
             .build());
+        EventType eventType = tenantUpdateEventType(request, isFreshClose);
         try {
-            EventType eventType = EventType.TENANT_UPDATED;
-            if (request.getStatus() != null) {
-                switch (request.getStatus()) {
-                    case SUSPENDED: eventType = EventType.TENANT_SUSPENDED; break;
-                    case ACTIVE: eventType = EventType.TENANT_REACTIVATED; break;
-                    case CLOSED:
-                        // Rule 1(c) convergence: emit TENANT_CLOSED only on
-                        // the freshwire transition. Retry PATCHes against an
-                        // already-CLOSED tenant re-run the cascade (to pick
-                        // up stragglers) but fall through to TENANT_UPDATED
-                        // at the parent event level — no duplicate
-                        // TENANT_CLOSED. Any stragglers picked up by the
-                        // retry still emit their own *_via_tenant_cascade
-                        // events via the cascade service.
-                        eventType = isFreshClose ? EventType.TENANT_CLOSED : EventType.TENANT_UPDATED;
-                        break;
-                    default: break;
-                }
-            }
             @SuppressWarnings("unchecked")
             Map<String, Object> eventData = objectMapper.convertValue(EventDataTenantLifecycle.builder()
                 .tenantId(tenantId)
@@ -182,7 +165,7 @@ public class TenantController {
                 cascadeCorrelationId,
                 httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
-            LOG.warn("Failed to emit event: {}", e.getMessage());
+            logEventEmissionFailure(eventType, tenantId, cascadeCorrelationId, httpRequest, e);
         }
         return ResponseEntity.ok(updated);
     }
@@ -445,7 +428,10 @@ public class TenantController {
                 .errorCode(classifyFailureCode(e))
                 .message(e.getMessage()).build());
         } catch (Exception e) {
-            LOG.warn("Bulk-action row failed for tenant {}: {}", id, e.getMessage());
+            LOG.warn("Tenant bulk-action row failed: action={} tenant_id={} target_status={} correlation_id={} request_id={} trace_id={} exception_class={} error={}",
+                action, id, target, correlationId, requestId,
+                attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE),
+                e.getClass().getSimpleName(), e.getMessage(), e);
             failed.add(BulkActionRowOutcome.builder()
                 .id(id).errorCode("INTERNAL_ERROR").message("Internal error").build());
         }
@@ -464,24 +450,9 @@ public class TenantController {
                                       TenantCloseCascadeService.CascadeResult cascadeResult,
                                       HttpServletRequest httpRequest,
                                       String correlationId, String requestId) {
+        EventType eventType = eventTypeForTenantAction(action);
+        TenantStatus newStatus = targetStatus(action);
         try {
-            EventType eventType;
-            TenantStatus newStatus;
-            switch (action) {
-                case SUSPEND:
-                    eventType = EventType.TENANT_SUSPENDED;
-                    newStatus = TenantStatus.SUSPENDED;
-                    break;
-                case REACTIVATE:
-                    eventType = EventType.TENANT_REACTIVATED;
-                    newStatus = TenantStatus.ACTIVE;
-                    break;
-                case CLOSE:
-                    eventType = EventType.TENANT_CLOSED;
-                    newStatus = TenantStatus.CLOSED;
-                    break;
-                default: return;
-            }
             @SuppressWarnings("unchecked")
             Map<String, Object> eventData = objectMapper.convertValue(
                 EventDataTenantLifecycle.builder()
@@ -500,8 +471,42 @@ public class TenantController {
                 eventData,
                 correlationId, requestId);
         } catch (Exception e) {
-            LOG.warn("Failed to emit bulk-action event: {}", e.getMessage());
+            logEventEmissionFailure(eventType, tenantId, correlationId, httpRequest, e);
         }
+    }
+
+    private static EventType tenantUpdateEventType(TenantUpdateRequest request, boolean isFreshClose) {
+        if (request.getStatus() == null) {
+            return EventType.TENANT_UPDATED;
+        }
+        switch (request.getStatus()) {
+            case SUSPENDED: return EventType.TENANT_SUSPENDED;
+            case ACTIVE: return EventType.TENANT_REACTIVATED;
+            case CLOSED:
+                // Rule 1(c) convergence: emit TENANT_CLOSED only on the
+                // freshwire transition. Retry PATCHes still run cascade but
+                // fall through to TENANT_UPDATED at the parent level.
+                return isFreshClose ? EventType.TENANT_CLOSED : EventType.TENANT_UPDATED;
+            default: return EventType.TENANT_UPDATED;
+        }
+    }
+
+    private static EventType eventTypeForTenantAction(TenantBulkAction action) {
+        switch (action) {
+            case SUSPEND: return EventType.TENANT_SUSPENDED;
+            case REACTIVATE: return EventType.TENANT_REACTIVATED;
+            case CLOSE: return EventType.TENANT_CLOSED;
+            default: throw new IllegalStateException("Unreachable action: " + action);
+        }
+    }
+
+    private void logEventEmissionFailure(EventType eventType, String tenantId, String correlationId,
+                                          HttpServletRequest request, Exception e) {
+        LOG.warn("Failed to emit admin tenant event: event_type={} tenant_id={} correlation_id={} request_id={} trace_id={} exception_class={} error={}",
+            eventType, tenantId, correlationId,
+            attr(request, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
+            attr(request, TraceContextFilter.TRACE_ID_ATTRIBUTE),
+            e.getClass().getSimpleName(), e.getMessage(), e);
     }
 
     private static String classifyFailureCode(GovernanceException e) {

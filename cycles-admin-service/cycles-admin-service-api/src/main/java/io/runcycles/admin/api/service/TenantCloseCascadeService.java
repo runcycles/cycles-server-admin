@@ -129,8 +129,9 @@ public class TenantCloseCascadeService {
             emitApiKeyEvent(k, tenantId, correlationId, requestId);
         }
 
-        LOG.info("Tenant-close cascade: tenant={} budgets={} webhooks={} api_keys={} reserved_released={}",
-            tenantId, budgets.size(), webhooks.size(), keys.size(), reservationsReleased);
+        LOG.info("Tenant-close cascade completed: tenant_id={} budgets_closed={} webhooks_disabled={} api_keys_revoked={} reserved_released={} correlation_id={} request_id={} trace_id={} source_ip={}",
+            tenantId, budgets.size(), webhooks.size(), keys.size(), reservationsReleased,
+            correlationId, requestId, traceId, httpRequest != null ? httpRequest.getRemoteAddr() : null);
         return new CascadeResult(budgets.size(), webhooks.size(), keys.size(), reservationsReleased);
     }
 
