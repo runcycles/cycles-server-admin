@@ -14,6 +14,40 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.42] — 2026-06-24
+
+Security and dependency-hygiene rollup accumulated since v0.1.25.41. No code
+or wire-format changes — pom, CI, and ops only. The headline is the Apache
+Tomcat CVE patch; the same release boundary also rolls up a Jedis major bump,
+a Spring Boot patch, and supply-chain/CI hardening.
+
+### Changed
+
+- **Tomcat 10.1.54 → 10.1.55** (security). Re-introduced the
+  `<tomcat.version>10.1.55</tomcat.version>` override to close 3 CRITICAL +
+  3 HIGH + 1 LOW `tomcat-embed-core` CVEs (CVE-2026-43515 / -43512 / -41293
+  CRITICAL; -43513 / -42498 / -41284 HIGH; -43514 LOW) that Trivy flagged
+  against Spring Boot 3.5.14's managed 10.1.54. Same override pattern as the
+  retained `commons-lang3` pin; remove once Spring Boot's BOM manages
+  10.1.55+. Full CVE breakdown in [`AUDIT.md`](AUDIT.md).
+- **Jedis 6.2.0 → 7.5.0** (major). Redis-client major bump aligning the
+  admin service with the rest of the fleet. All call sites use stable APIs;
+  CI's full suite (782+ tests) passes on 7.5.0.
+- **Spring Boot 3.5.14 → 3.5.15** (patch). Upstream patch release. The
+  `commons-lang3 3.18.0` override is retained — SB 3.5.15's BOM still manages
+  3.17.0, where CVE-2025-48924 is unfixed.
+- **Container log rotation.** All four `docker-compose*.yml` files gain a
+  shared `json-file` logging anchor (`max-size: 10m`, `max-file: 5`), capping
+  each container at 50 MB to prevent unbounded `*-json.log` growth on
+  long-running deployments.
+
+### Security / CI
+
+- Supply-chain hardening: OpenSSF Scorecard workflow, all third-party GitHub
+  Action SHAs pinned, workflow token permissions tightened, Alpine `gnutls`
+  CVE-2026-33845 patched in the image, and a two-phase Trivy-gated release
+  build (scan before push).
+
 ## [0.1.25.41] — 2026-04-26
 
 Dependency hygiene aligning all three Cycles services (events / server /
