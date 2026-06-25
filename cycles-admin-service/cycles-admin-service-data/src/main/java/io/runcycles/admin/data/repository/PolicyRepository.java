@@ -7,6 +7,7 @@ import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Repository;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.logging.LogSanitizer;
 import io.runcycles.admin.model.policy.PolicyUpdateRequest;
 import redis.clients.jedis.*;
 import java.time.Instant;
@@ -86,7 +87,7 @@ public class PolicyRepository {
     // because every other admin write path is Jackson-in-Java with no CAS.
 
     public Policy update(String tenantId, String policyId, PolicyUpdateRequest request) {
-        LOG.info("Updating policy: {}", policyId);
+        LOG.info("Updating policy: policy_id={} tenant_id={}", LogSanitizer.safe(policyId), LogSanitizer.safe(tenantId));
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "policy:" + policyId;
             String json = jedis.get(key);
@@ -152,7 +153,8 @@ public class PolicyRepository {
                 try {
                     String data = jedis.get("policy:" + id);
                     if (data == null) {
-                        LOG.warn("Policy data missing for id: {}", id);
+                        LOG.warn("Policy index points to missing row: policy_id={} tenant_id={} index_key={} status_filter={} scope_pattern_filter={}",
+                            LogSanitizer.safe(id), LogSanitizer.safe(tenantId), LogSanitizer.safe("policies:" + tenantId), status, LogSanitizer.safe(scopePattern));
                         continue;
                     }
                     Policy p = objectMapper.readValue(data, Policy.class);
@@ -161,7 +163,8 @@ public class PolicyRepository {
                     policies.add(p);
                     if (policies.size() >= limit) break;
                 } catch (Exception e) {
-                    LOG.warn("Failed to parse policy: {}", id, e);
+                    LOG.warn("Failed to parse policy row: policy_id={} tenant_id={} index_key={} status_filter={} scope_pattern_filter={}",
+                        LogSanitizer.safe(id), LogSanitizer.safe(tenantId), LogSanitizer.safe("policies:" + tenantId), status, LogSanitizer.safe(scopePattern), e);
                 }
             }
             return policies;

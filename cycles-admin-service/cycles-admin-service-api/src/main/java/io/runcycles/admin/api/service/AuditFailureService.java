@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.service;
 
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
+
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.runcycles.admin.api.filter.RequestIdFilter;
@@ -174,7 +176,17 @@ public class AuditFailureService {
             // anything here still throws (e.g. MeterRegistry wedged), don't
             // propagate — the real error response MUST go out.
             recordWrite("failure", "error");
-            LOG.warn("Failed to write failure audit entry (non-fatal): {}", e.getMessage());
+            LOG.warn("Failed to write failure audit entry; continuing with response: method={} path={} status={} error={} request_id={} trace_id={} source_ip={} exception_class={} error_message={}",
+                    request != null ? request.getMethod() : null,
+                    safe(request != null ? request.getRequestURI() : null),
+                    status,
+                    code,
+                    resolveAttr(request, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
+                    resolveAttr(request, TraceContextFilter.TRACE_ID_ATTRIBUTE),
+                    safe(request != null ? request.getRemoteAddr() : null),
+                    e.getClass().getName(),
+                    safe(e.getMessage()),
+                    e);
         }
     }
 
@@ -199,17 +211,17 @@ public class AuditFailureService {
 
     private String resolveRequestId(HttpServletRequest request) {
         Object attr = resolveAttrRaw(request, RequestIdFilter.REQUEST_ID_ATTRIBUTE);
-        return attr != null ? attr.toString() : UUID.randomUUID().toString();
+        return attr != null ? safe(attr) : UUID.randomUUID().toString();
     }
 
     private String resolveTraceId(HttpServletRequest request) {
         Object attr = resolveAttrRaw(request, TraceContextFilter.TRACE_ID_ATTRIBUTE);
-        return attr != null ? attr.toString() : null;
+        return safe(attr);
     }
 
     private String resolveAttr(HttpServletRequest request, String name) {
         Object v = resolveAttrRaw(request, name);
-        return v != null ? v.toString() : null;
+        return safe(v);
     }
 
     private Object resolveAttrRaw(HttpServletRequest request, String name) {

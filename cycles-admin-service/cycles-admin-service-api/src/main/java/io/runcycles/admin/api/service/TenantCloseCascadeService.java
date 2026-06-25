@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.service;
 
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
+
 import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
@@ -129,8 +131,9 @@ public class TenantCloseCascadeService {
             emitApiKeyEvent(k, tenantId, correlationId, requestId);
         }
 
-        LOG.info("Tenant-close cascade: tenant={} budgets={} webhooks={} api_keys={} reserved_released={}",
-            tenantId, budgets.size(), webhooks.size(), keys.size(), reservationsReleased);
+        LOG.info("Tenant-close cascade completed: tenant_id={} budgets_closed={} webhooks_disabled={} api_keys_revoked={} reserved_released={} correlation_id={} request_id={} trace_id={} source_ip={}",
+            tenantId, budgets.size(), webhooks.size(), keys.size(), reservationsReleased,
+            correlationId, requestId, traceId, httpRequest != null ? httpRequest.getRemoteAddr() : null);
         return new CascadeResult(budgets.size(), webhooks.size(), keys.size(), reservationsReleased);
     }
 
@@ -269,6 +272,6 @@ public class TenantCloseCascadeService {
     private static String attr(HttpServletRequest request, String name) {
         if (request == null) return null;
         Object v = request.getAttribute(name);
-        return v != null ? v.toString() : null;
+        return safe(v);
     }
 }

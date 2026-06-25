@@ -1,5 +1,6 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.logging.LogSanitizer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.model.shared.CommitOveragePolicy;
 import io.runcycles.admin.model.shared.SearchSpec;
@@ -46,7 +47,8 @@ public class TenantRepository {
     public record TenantCreateResult(Tenant tenant, boolean created) {}
 
     public TenantCreateResult create(TenantCreateRequest request) {
-        LOG.info("Creating tenant: {}", request.getTenantId());
+        LOG.info("Creating tenant: tenant_id={} parent_tenant_id={} default_commit_overage_policy={}",
+            LogSanitizer.safe(request.getTenantId()), LogSanitizer.safe(request.getParentTenantId()), request.getDefaultCommitOveragePolicy());
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "tenant:" + request.getTenantId();
             Tenant tenant = Tenant.builder()
@@ -127,14 +129,18 @@ public class TenantRepository {
                 try {
                     String data = jedis.get("tenant:" + id);
                     if (data == null) {
-                        LOG.warn("Tenant data missing for id: {}", id);
+                        LOG.warn("Tenant index points to missing row: tenant_id={} index_key=tenants status_filter={} parent_tenant_id_filter={} search_present={} sort_field={}",
+                            LogSanitizer.safe(id), status, LogSanitizer.safe(parentTenantId), search != null && !search.isBlank(),
+                            sortSpec != null ? sortSpec.field() : null);
                         continue;
                     }
                     Tenant t = objectMapper.readValue(data, Tenant.class);
                     if (!matchesFilters(t, status, parentTenantId, search)) continue;
                     hydrated.add(t);
                 } catch (Exception e) {
-                    LOG.warn("Failed to load tenant: {}", id, e);
+                    LOG.warn("Failed to parse tenant row: tenant_id={} index_key=tenants status_filter={} parent_tenant_id_filter={} search_present={} sort_field={}",
+                        LogSanitizer.safe(id), status, LogSanitizer.safe(parentTenantId), search != null && !search.isBlank(),
+                        sortSpec != null ? sortSpec.field() : null, e);
                 }
             }
             hydrated.sort(tenantComparator(sortSpec));
@@ -167,7 +173,8 @@ public class TenantRepository {
             try {
                 String data = jedis.get("tenant:" + id);
                 if (data == null) {
-                    LOG.warn("Tenant data missing for id: {}", id);
+                    LOG.warn("Tenant index points to missing row: tenant_id={} index_key=tenants status_filter={} parent_tenant_id_filter={} search_present={}",
+                        LogSanitizer.safe(id), status, LogSanitizer.safe(parentTenantId), search != null && !search.isBlank());
                     continue;
                 }
                 Tenant t = objectMapper.readValue(data, Tenant.class);
@@ -175,7 +182,8 @@ public class TenantRepository {
                 tenants.add(t);
                 if (tenants.size() >= limit) break;
             } catch (Exception e) {
-                LOG.warn("Failed to load tenant: {}", id, e);
+                LOG.warn("Failed to parse tenant row: tenant_id={} index_key=tenants status_filter={} parent_tenant_id_filter={} search_present={}",
+                    LogSanitizer.safe(id), status, LogSanitizer.safe(parentTenantId), search != null && !search.isBlank(), e);
             }
         }
         return tenants;
@@ -258,7 +266,8 @@ public class TenantRepository {
                     matches.add(t);
                     if (matches.size() >= ceiling) break;
                 } catch (Exception e) {
-                    LOG.warn("Failed to load tenant: {}", id, e);
+                    LOG.warn("Failed to parse tenant row during bulk match: tenant_id={} status_filter={} parent_tenant_id_filter={} search_present={}",
+                        LogSanitizer.safe(id), status, LogSanitizer.safe(parentTenantId), search != null && !search.isBlank(), e);
                 }
             }
             return matches;

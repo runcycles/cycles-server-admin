@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.service;
 
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -68,8 +70,17 @@ public class EventService {
             webhookDispatchService.dispatch(event);
             recordEmitted(event.getEventType(), "success");
         } catch (Exception e) {
-            LOG.error("Failed to emit event {}: {}", event.getEventType(), e.getMessage(), e);
-            recordEmitted(event.getEventType(), "failure");
+            LOG.error("Failed to emit admin event: event_id={} event_type={} tenant_id={} scope={} correlation_id={} request_id={} trace_id={} source={} error={}",
+                    safe(event != null ? event.getEventId() : null),
+                    event != null && event.getEventType() != null ? event.getEventType().getValue() : null,
+                    safe(event != null ? event.getTenantId() : null),
+                    safe(event != null ? event.getScope() : null),
+                    safe(event != null ? event.getCorrelationId() : null),
+                    safe(event != null ? event.getRequestId() : null),
+                    safe(event != null ? event.getTraceId() : null),
+                    safe(event != null ? event.getSource() : null),
+                    safe(e.getMessage()), e);
+            recordEmitted(event != null ? event.getEventType() : null, "failure");
         }
     }
 
@@ -92,13 +103,16 @@ public class EventService {
         try {
             payloadMapper.convertValue(event.getData(), expected);
         } catch (IllegalArgumentException e) {
-            LOG.warn("Event payload shape mismatch for {} (event_id={}): payload does not "
-                    + "round-trip through {}. Producer bug — event will still be persisted "
-                    + "and dispatched. Cause: {}",
+            LOG.warn("Admin event payload shape mismatch: event_id={} event_type={} tenant_id={} scope={} correlation_id={} request_id={} trace_id={} expected_class={} action=event_will_still_persist_and_dispatch cause={}",
+                    safe(event.getEventId()),
                     event.getEventType().getValue(),
-                    event.getEventId(),
+                    safe(event.getTenantId()),
+                    safe(event.getScope()),
+                    safe(event.getCorrelationId()),
+                    safe(event.getRequestId()),
+                    safe(event.getTraceId()),
                     expected.getSimpleName(),
-                    e.getMessage());
+                    safe(e.getMessage()));
             Counter.builder("cycles_admin_events_payload_invalid_total")
                     .description("Count of event emissions where the data payload did not "
                             + "round-trip through the EventPayloadTypeMapping-assigned class.")

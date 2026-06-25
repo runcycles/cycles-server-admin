@@ -1,5 +1,6 @@
 package io.runcycles.admin.api.filter;
 
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
 import jakarta.servlet.*;
 import jakarta.servlet.http.*;
 import org.springframework.core.annotation.Order;
@@ -21,6 +22,7 @@ public class RequestIdFilter extends OncePerRequestFilter {
         if (requestId == null || requestId.isBlank()) {
             requestId = UUID.randomUUID().toString();
         }
+        requestId = safe(requestId);
         request.setAttribute(REQUEST_ID_ATTRIBUTE, requestId);
         response.setHeader(REQUEST_ID_HEADER, requestId);
         filterChain.doFilter(request, response);

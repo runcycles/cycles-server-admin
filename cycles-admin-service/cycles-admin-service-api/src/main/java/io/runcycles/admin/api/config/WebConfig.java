@@ -41,7 +41,8 @@ public class WebConfig implements WebMvcConfigurer {
             .map(String::trim)
             .filter(s -> !s.isEmpty())
             .toArray(String[]::new);
-        LOG.info("CORS configured for origins: {}", String.join(", ", origins));
+        LOG.info("Admin CORS configured: path=/v1/** origin_count={} origins={} allowed_methods=GET,POST,PUT,PATCH,DELETE,OPTIONS",
+            origins.length, String.join(",", origins));
         registry.addMapping("/v1/**")
             .allowedOrigins(origins)
             // PUT must be in this list because PUT /v1/admin/config/webhook-security

@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.controller;
 
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
+
 import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.api.service.BulkActionAuditMetadataBuilder;
@@ -275,7 +277,7 @@ public class WebhookAdminController {
 
     private static String attr(HttpServletRequest request, String name) {
         Object v = request.getAttribute(name);
-        return v != null ? v.toString() : null;
+        return safe(v);
     }
 
     /**
@@ -470,7 +472,10 @@ public class WebhookAdminController {
                 .errorCode(classifyFailureCode(e))
                 .message(e.getMessage()).build());
         } catch (Exception e) {
-            LOG.warn("Bulk-action row failed for subscription {}: {}", id, e.getMessage());
+            LOG.warn("Webhook bulk-action row failed: action={} subscription_id={} tenant_id={} status={} correlation_id={} request_id={} trace_id={} exception_class={} error={}",
+                action, safe(id), safe(matched.getTenantId()), matched.getStatus(), safe(correlationId), requestId,
+                attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE),
+                e.getClass().getSimpleName(), safe(e.getMessage()), e);
             failed.add(BulkActionRowOutcome.builder()
                 .id(id).errorCode("INTERNAL_ERROR").message("Internal error").build());
         }
@@ -511,8 +516,12 @@ public class WebhookAdminController {
                 correlationId,
                 attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE));
         } catch (Exception e) {
-            LOG.warn("Failed to emit webhook lifecycle event {} for {}: {}",
-                eventType, subscriptionId, e.getMessage());
+            LOG.warn("Failed to emit admin webhook event: event_type={} subscription_id={} tenant_id={} previous_status={} new_status={} changed_field_count={} correlation_id={} request_id={} trace_id={} exception_class={} error={}",
+                eventType, safe(subscriptionId), safe(tenantId), previousStatus, newStatus,
+                changedFields != null ? changedFields.size() : 0, safe(correlationId),
+                attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
+                attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE),
+                e.getClass().getSimpleName(), safe(e.getMessage()), e);
         }
     }
 
@@ -529,24 +538,9 @@ public class WebhookAdminController {
                                        WebhookStatus previousStatus,
                                        HttpServletRequest httpRequest,
                                        String correlationId, String requestId) {
+        EventType eventType = eventTypeForWebhookAction(action);
+        WebhookStatus newStatus = newStatusForWebhookAction(action);
         try {
-            EventType eventType;
-            WebhookStatus newStatus;
-            switch (action) {
-                case PAUSE:
-                    eventType = EventType.WEBHOOK_PAUSED;
-                    newStatus = WebhookStatus.PAUSED;
-                    break;
-                case RESUME:
-                    eventType = EventType.WEBHOOK_RESUMED;
-                    newStatus = WebhookStatus.ACTIVE;
-                    break;
-                case DELETE:
-                    eventType = EventType.WEBHOOK_DELETED;
-                    newStatus = null;
-                    break;
-                default: return;
-            }
             @SuppressWarnings("unchecked")
             Map<String, Object> eventData = objectMapper.convertValue(
                 EventDataWebhookLifecycle.builder()
@@ -562,8 +556,28 @@ public class WebhookAdminController {
                 eventData,
                 correlationId, requestId);
         } catch (Exception e) {
-            LOG.warn("Failed to emit bulk webhook event {} for {}: {}",
-                action, subscriptionId, e.getMessage());
+            LOG.warn("Failed to emit admin webhook bulk event: action={} event_type={} subscription_id={} tenant_id={} previous_status={} new_status={} correlation_id={} request_id={} trace_id={} exception_class={} error={}",
+                action, eventType, safe(subscriptionId), safe(tenantId), previousStatus, newStatus,
+                safe(correlationId), requestId, attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE),
+                e.getClass().getSimpleName(), safe(e.getMessage()), e);
+        }
+    }
+
+    private static EventType eventTypeForWebhookAction(WebhookBulkAction action) {
+        switch (action) {
+            case PAUSE: return EventType.WEBHOOK_PAUSED;
+            case RESUME: return EventType.WEBHOOK_RESUMED;
+            case DELETE: return EventType.WEBHOOK_DELETED;
+            default: throw new IllegalStateException("Unreachable action: " + action);
+        }
+    }
+
+    private static WebhookStatus newStatusForWebhookAction(WebhookBulkAction action) {
+        switch (action) {
+            case PAUSE: return WebhookStatus.PAUSED;
+            case RESUME: return WebhookStatus.ACTIVE;
+            case DELETE: return null;
+            default: throw new IllegalStateException("Unreachable action: " + action);
         }
     }
 

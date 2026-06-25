@@ -1,5 +1,6 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.logging.LogSanitizer;
 import io.runcycles.admin.model.webhook.DeliveryStatus;
 import io.runcycles.admin.model.webhook.WebhookDelivery;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -45,7 +46,14 @@ public class WebhookDeliveryRepository {
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
-            LOG.error("Failed to save webhook delivery", e);
+            LOG.error("Failed to save webhook delivery: delivery_id={} subscription_id={} event_id={} event_type={} status={} trace_id={}",
+                delivery != null ? LogSanitizer.safe(delivery.getDeliveryId()) : null,
+                delivery != null ? LogSanitizer.safe(delivery.getSubscriptionId()) : null,
+                delivery != null ? LogSanitizer.safe(delivery.getEventId()) : null,
+                delivery != null && delivery.getEventType() != null ? delivery.getEventType().getValue() : null,
+                delivery != null ? delivery.getStatus() : null,
+                delivery != null ? delivery.getTraceId() : null,
+                e);
             throw new RuntimeException("Failed to save webhook delivery", e);
         }
     }
@@ -62,7 +70,7 @@ public class WebhookDeliveryRepository {
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
-            LOG.error("Failed to read webhook delivery: {}", deliveryId, e);
+            LOG.error("Failed to read webhook delivery: delivery_id={}", LogSanitizer.safe(deliveryId), e);
             throw new RuntimeException("Failed to read webhook delivery", e);
         }
     }
@@ -91,7 +99,8 @@ public class WebhookDeliveryRepository {
                 try {
                     String data = jedis.get("delivery:" + id);
                     if (data == null) {
-                        LOG.warn("Delivery data missing for id: {}", id);
+                        LOG.warn("Webhook delivery index points to missing row: delivery_id={} subscription_id={} index_key={} status_filter={}",
+                            LogSanitizer.safe(id), LogSanitizer.safe(subscriptionId), LogSanitizer.safe(indexKey), status);
                         continue;
                     }
                     WebhookDelivery delivery = objectMapper.readValue(data, WebhookDelivery.class);
@@ -100,7 +109,8 @@ public class WebhookDeliveryRepository {
                     deliveries.add(delivery);
                     if (deliveries.size() >= limit) break;
                 } catch (Exception e) {
-                    LOG.warn("Failed to parse delivery: {}", id, e);
+                    LOG.warn("Failed to parse webhook delivery row: delivery_id={} subscription_id={} index_key={} status_filter={}",
+                        LogSanitizer.safe(id), LogSanitizer.safe(subscriptionId), LogSanitizer.safe(indexKey), status, e);
                 }
             }
             return deliveries;
@@ -125,7 +135,15 @@ public class WebhookDeliveryRepository {
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
-            LOG.error("Failed to update webhook delivery: {}", delivery.getDeliveryId(), e);
+            LOG.error("Failed to update webhook delivery: delivery_id={} subscription_id={} event_id={} event_type={} status={} attempts={} trace_id={}",
+                delivery != null ? LogSanitizer.safe(delivery.getDeliveryId()) : null,
+                delivery != null ? LogSanitizer.safe(delivery.getSubscriptionId()) : null,
+                delivery != null ? LogSanitizer.safe(delivery.getEventId()) : null,
+                delivery != null && delivery.getEventType() != null ? delivery.getEventType().getValue() : null,
+                delivery != null ? delivery.getStatus() : null,
+                delivery != null ? delivery.getAttempts() : null,
+                delivery != null ? delivery.getTraceId() : null,
+                e);
             throw new RuntimeException("Failed to update webhook delivery", e);
         }
     }

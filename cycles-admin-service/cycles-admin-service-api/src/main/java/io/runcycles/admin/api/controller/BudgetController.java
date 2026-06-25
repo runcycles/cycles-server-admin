@@ -1,4 +1,5 @@
 package io.runcycles.admin.api.controller;
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.idempotency.IdempotencyStore;
 import io.runcycles.admin.data.repository.AuditRepository;
@@ -119,7 +120,8 @@ public class BudgetController {
                     .unit(request.getUnit()).operation(BudgetOperation.CREATE).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
-            LOG.warn("Failed to emit event: {}", e.getMessage());
+            logEventEmissionFailure(EventType.BUDGET_CREATED, tenantId, ledger.getLedgerId(),
+                request.getScope(), request.getUnit(), null, httpRequest, e);
         }
         return ResponseEntity.status(201).body(ledger);
     }
@@ -259,9 +261,9 @@ public class BudgetController {
             .status(200)
             .metadata(buildUpdateBudgetMeta(scope, unit, request))
             .build());
+        // Derive tenant from the budget's stored tenant_id for event emission.
+        String eventTenantId = tenantId != null ? tenantId : ledger.getTenantId();
         try {
-            // Derive tenant from the budget's stored tenant_id for event emission
-            String eventTenantId = tenantId != null ? tenantId : ledger.getTenantId();
             ActorType actorType = tenantId != null ? ActorType.API_KEY : ActorType.ADMIN;
             String keyId = (String) httpRequest.getAttribute("authenticated_key_id");
             eventService.emit(EventType.BUDGET_UPDATED, eventTenantId, scope, "cycles-admin",
@@ -271,7 +273,8 @@ public class BudgetController {
                     .unit(unit).operation(BudgetOperation.UPDATE).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
-            LOG.warn("Failed to emit event: {}", e.getMessage());
+            logEventEmissionFailure(EventType.BUDGET_UPDATED, eventTenantId, ledger.getLedgerId(),
+                scope, unit, null, httpRequest, e);
         }
         return ResponseEntity.ok(ledger);
     }
@@ -324,16 +327,8 @@ public class BudgetController {
             .status(200)
             .metadata(buildFundMetadata(scope, unit, request, response))
             .build());
+        EventType fundEventType = fundEventType(request.getOperation());
         try {
-            EventType fundEventType;
-            switch (request.getOperation()) {
-                case CREDIT: fundEventType = EventType.BUDGET_FUNDED; break;
-                case DEBIT: fundEventType = EventType.BUDGET_DEBITED; break;
-                case RESET: fundEventType = EventType.BUDGET_RESET; break;
-                case RESET_SPENT: fundEventType = EventType.BUDGET_RESET_SPENT; break;
-                case REPAY_DEBT: fundEventType = EventType.BUDGET_DEBT_REPAID; break;
-                default: fundEventType = EventType.BUDGET_FUNDED; break;
-            }
             ActorType actorType = httpRequest.getAttribute("authenticated_tenant_id") != null ? ActorType.API_KEY : ActorType.ADMIN;
 
             // Pre/post state snapshots. For RESET_SPENT we populate the new spent
@@ -370,7 +365,8 @@ public class BudgetController {
                 objectMapper.convertValue(payloadBuilder.build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
-            LOG.warn("Failed to emit event: {}", e.getMessage());
+            logEventEmissionFailure(fundEventType, tenantId, scope + ":" + unit.name(),
+                scope, unit, null, httpRequest, e);
         }
         return ResponseEntity.ok(response);
     }
@@ -400,7 +396,8 @@ public class BudgetController {
                     .reason(request != null ? request.getReason() : null).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
-            LOG.warn("Failed to emit event: {}", e.getMessage());
+            logEventEmissionFailure(EventType.BUDGET_FROZEN, auditTenantId, ledger.getLedgerId(),
+                scope, unit, null, httpRequest, e);
         }
         return ResponseEntity.ok(ledger);
     }
@@ -430,7 +427,8 @@ public class BudgetController {
                     .reason(request != null ? request.getReason() : null).build(), Map.class),
                 null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
         } catch (Exception e) {
-            LOG.warn("Failed to emit event: {}", e.getMessage());
+            logEventEmissionFailure(EventType.BUDGET_UNFROZEN, auditTenantId, ledger.getLedgerId(),
+                scope, unit, null, httpRequest, e);
         }
         return ResponseEntity.ok(ledger);
     }
@@ -643,7 +641,10 @@ public class BudgetController {
                 .errorCode(classifyBudgetFailureCode(e))
                 .message(e.getMessage()).build());
         } catch (Exception e) {
-            LOG.warn("Bulk-action row failed for budget {}: {}", id, e.getMessage());
+            LOG.warn("Budget bulk-action row failed: action={} budget_id={} tenant_id={} scope={} unit={} correlation_id={} request_id={} trace_id={} exception_class={} error={}",
+                bulk.getAction(), safe(id), safe(ledger.getTenantId()), safe(ledger.getScope()), ledger.getUnit(),
+                safe(correlationId), requestId, attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE),
+                e.getClass().getSimpleName(), safe(e.getMessage()), e);
             failed.add(BulkActionRowOutcome.builder()
                 .id(id).errorCode("INTERNAL_ERROR").message("Internal error").build());
         }
@@ -665,16 +666,8 @@ public class BudgetController {
                                     HttpServletRequest httpRequest,
                                     String correlationId, String requestId) {
         if (response == null) return;
+        EventType eventType = fundEventType(bulk.getAction());
         try {
-            EventType eventType;
-            switch (bulk.getAction()) {
-                case CREDIT: eventType = EventType.BUDGET_FUNDED; break;
-                case DEBIT: eventType = EventType.BUDGET_DEBITED; break;
-                case RESET: eventType = EventType.BUDGET_RESET; break;
-                case RESET_SPENT: eventType = EventType.BUDGET_RESET_SPENT; break;
-                case REPAY_DEBT: eventType = EventType.BUDGET_DEBT_REPAID; break;
-                default: eventType = EventType.BUDGET_FUNDED; break;
-            }
             EventDataBudgetLifecycle.BudgetState previousState = EventDataBudgetLifecycle.BudgetState.builder()
                 .allocated(response.getPreviousAllocated() != null ? response.getPreviousAllocated().getAmount() : null)
                 .remaining(response.getPreviousRemaining() != null ? response.getPreviousRemaining().getAmount() : null)
@@ -709,7 +702,8 @@ public class BudgetController {
                 objectMapper.convertValue(payloadBuilder.build(), Map.class),
                 correlationId, requestId);
         } catch (Exception e) {
-            LOG.warn("Failed to emit bulk-action event: {}", e.getMessage());
+            logEventEmissionFailure(eventType, ledger.getTenantId(), ledger.getLedgerId(),
+                ledger.getScope(), ledger.getUnit(), correlationId, httpRequest, e);
         }
     }
 
@@ -741,6 +735,27 @@ public class BudgetController {
             default:
                 return "INTERNAL_ERROR";
         }
+    }
+
+    private static EventType fundEventType(FundingOperation operation) {
+        switch (operation) {
+            case CREDIT: return EventType.BUDGET_FUNDED;
+            case DEBIT: return EventType.BUDGET_DEBITED;
+            case RESET: return EventType.BUDGET_RESET;
+            case RESET_SPENT: return EventType.BUDGET_RESET_SPENT;
+            case REPAY_DEBT: return EventType.BUDGET_DEBT_REPAID;
+            default: return EventType.BUDGET_FUNDED;
+        }
+    }
+
+    private void logEventEmissionFailure(EventType eventType, String tenantId, String budgetId,
+                                          String scope, UnitEnum unit, String correlationId,
+                                          HttpServletRequest request, Exception e) {
+        LOG.warn("Failed to emit admin budget event: event_type={} tenant_id={} budget_id={} scope={} unit={} correlation_id={} request_id={} trace_id={} exception_class={} error={}",
+            eventType, safe(tenantId), safe(budgetId), safe(scope), unit, safe(correlationId),
+            attr(request, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
+            attr(request, TraceContextFilter.TRACE_ID_ATTRIBUTE),
+            e.getClass().getSimpleName(), safe(e.getMessage()), e);
     }
 
     private void validateCreateUnits(BudgetCreateRequest request) {
@@ -798,6 +813,6 @@ public class BudgetController {
 
     private static String attr(HttpServletRequest request, String name) {
         Object v = request.getAttribute(name);
-        return v != null ? v.toString() : null;
+        return safe(v);
     }
 }

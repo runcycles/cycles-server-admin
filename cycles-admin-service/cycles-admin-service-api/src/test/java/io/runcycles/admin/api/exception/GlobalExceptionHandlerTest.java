@@ -1,11 +1,16 @@
 package io.runcycles.admin.api.exception;
 
+import io.runcycles.admin.api.filter.RequestIdFilter;
+import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.api.service.AuditFailureService;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.ErrorResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -15,6 +20,7 @@ import org.springframework.core.MethodParameter;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.HandlerMapping;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolation;
@@ -36,6 +42,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+@ExtendWith(OutputCaptureExtension.class)
 class GlobalExceptionHandlerTest {
 
     private GlobalExceptionHandler handler;
@@ -59,6 +66,31 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getBody().getError()).isEqualTo(ErrorCode.TENANT_NOT_FOUND);
         assertThat(response.getBody().getMessage()).contains("tenant-1");
         assertThat(response.getBody().getRequestId()).isNotNull();
+    }
+
+    @Test
+    void handleGovernanceException_logsOperatorContext(CapturedOutput output) {
+        when(mockRequest.getMethod()).thenReturn("POST");
+        when(mockRequest.getRequestURI()).thenReturn("/v1/admin/tenants/tenant-1");
+        when(mockRequest.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE))
+                .thenReturn("/v1/admin/tenants/{tenant_id}");
+        when(mockRequest.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE)).thenReturn("req-ops-1");
+        when(mockRequest.getAttribute(TraceContextFilter.TRACE_ID_ATTRIBUTE))
+                .thenReturn("0123456789abcdef0123456789abcdef");
+        GovernanceException ex = GovernanceException.tenantNotFound("tenant-1");
+
+        handler.handleGovernanceException(ex, mockRequest);
+
+        assertThat(output.getOut())
+                .contains("Governance exception handled")
+                .contains("method=POST")
+                .contains("path=/v1/admin/tenants/tenant-1")
+                .contains("route=/v1/admin/tenants/{tenant_id}")
+                .contains("status=404")
+                .contains("error=TENANT_NOT_FOUND")
+                .contains("request_id=req-ops-1")
+                .contains("trace_id=0123456789abcdef0123456789abcdef")
+                .contains("exception_class=io.runcycles.admin.data.exception.GovernanceException");
     }
 
     @Test

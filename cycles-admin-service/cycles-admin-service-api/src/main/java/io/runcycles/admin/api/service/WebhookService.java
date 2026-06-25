@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.service;
 
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
+
 import io.runcycles.admin.data.repository.WebhookDeliveryRepository;
 import io.runcycles.admin.data.repository.WebhookRepository;
 import io.runcycles.admin.data.repository.WebhookSecurityConfigRepository;
@@ -152,7 +154,9 @@ public class WebhookService {
         try {
             payload = objectMapper.writeValueAsString(testEvent);
         } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
-            LOG.error("Failed to serialize test event for {}: {}", subscriptionId, e.getMessage());
+            LOG.error("Failed to serialize webhook test event: subscription_id={} tenant_id={} event_id={} event_type={} error={}",
+                    safe(subscriptionId), safe(sub.getTenantId()), testEventId, testEvent.getEventType().getValue(),
+                    safe(e.getMessage()), e);
             return WebhookTestResponse.builder()
                 .success(false)
                 .responseTimeMs(0)
@@ -160,9 +164,11 @@ public class WebhookService {
                 .eventId(testEventId)
                 .build();
         }
+        java.net.URI targetUri = null;
         try {
+            targetUri = java.net.URI.create(sub.getUrl());
             java.net.http.HttpRequest.Builder reqBuilder = java.net.http.HttpRequest.newBuilder()
-                .uri(java.net.URI.create(sub.getUrl()))
+                .uri(targetUri)
                 .header("Content-Type", "application/json")
                 .header("User-Agent", "cycles-server-admin/test")
                 .header("X-Cycles-Event-Id", testEventId)
@@ -185,7 +191,10 @@ public class WebhookService {
                 .build();
         } catch (Exception e) {
             int elapsed = (int) (System.currentTimeMillis() - start);
-            LOG.warn("Webhook test delivery failed for {}: {}", subscriptionId, e.getMessage());
+            LOG.warn("Webhook test delivery failed: subscription_id={} tenant_id={} event_id={} event_type={} target_host={} latency_ms={} exception_class={} error={}",
+                    safe(subscriptionId), safe(sub.getTenantId()), testEventId, testEvent.getEventType().getValue(),
+                    safe(targetUri != null ? targetUri.getHost() : null), elapsed, e.getClass().getName(),
+                    safe(e.getMessage()), e);
             return WebhookTestResponse.builder()
                 .success(false)
                 .responseTimeMs(elapsed)
@@ -281,7 +290,10 @@ public class WebhookService {
                     dispatchService.dispatchToSubscription(event, sub);
                     queued++;
                 } catch (Exception e) {
-                    LOG.warn("Failed to queue replay delivery for event {}: {}", event.getEventId(), e.getMessage());
+                    LOG.warn("Failed to queue webhook replay delivery: replay_id={} subscription_id={} tenant_id={} event_id={} event_type={} correlation_id={} request_id={} trace_id={} error={}",
+                            safe(replayId), safe(subscriptionId), safe(sub.getTenantId()), safe(event.getEventId()),
+                            safe(event.getEventType() != null ? event.getEventType().getValue() : null),
+                            safe(event.getCorrelationId()), safe(event.getRequestId()), safe(event.getTraceId()), safe(e.getMessage()), e);
                 }
             }
             return ReplayResponse.builder()

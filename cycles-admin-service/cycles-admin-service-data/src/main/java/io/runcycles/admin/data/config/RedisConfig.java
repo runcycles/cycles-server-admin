@@ -13,7 +13,8 @@ public class RedisConfig {
     @Value("${redis.password:}") private String password;
     @Bean
     public JedisPool jedisPool() {
-        LOG.info("Budget Governance - Initializing Redis: {}:{}", host, port);
+        LOG.info("Cycles Admin Redis pool initializing: host={} port={} password_configured={}",
+            host, port, password != null && !password.isBlank());
         JedisPoolConfig config = new JedisPoolConfig();
         config.setMaxTotal(50);
         config.setMaxIdle(10);

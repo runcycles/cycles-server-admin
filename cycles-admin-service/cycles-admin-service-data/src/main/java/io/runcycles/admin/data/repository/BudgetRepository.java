@@ -1,6 +1,7 @@
 package io.runcycles.admin.data.repository;
 
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.logging.LogSanitizer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.model.budget.*;
 import io.runcycles.admin.model.shared.Amount;
@@ -169,7 +170,7 @@ public class BudgetRepository {
 
     public BudgetLedger create(String tenantId, BudgetCreateRequest request) {
         String normalizedScope = normalizeScope(request.getScope());
-        LOG.info("Creating budget: scope={}, unit={}", normalizedScope, request.getUnit());
+        LOG.info("Creating budget: tenant_id={} scope={} unit={}", LogSanitizer.safe(tenantId), LogSanitizer.safe(normalizedScope), request.getUnit());
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "budget:" + normalizedScope + ":" + request.getUnit();
             String indexKey = "budgets:" + tenantId;
@@ -243,7 +244,8 @@ public class BudgetRepository {
             if (resultCode == 0) {
                 throw GovernanceException.duplicateResource("Budget", request.getScope());
             }
-            LOG.info("Created budget as HASH: {}", key);
+            LOG.info("Created budget: tenant_id={} ledger_id={} scope={} unit={} redis_type=hash",
+                LogSanitizer.safe(tenantId), LogSanitizer.safe(ledger.getLedgerId()), LogSanitizer.safe(ledger.getScope()), ledger.getUnit());
 
             return ledger;
         } catch (GovernanceException e) {
@@ -295,7 +297,7 @@ public class BudgetRepository {
 
     public BudgetLedger update(String tenantId, String scope, UnitEnum unit, BudgetUpdateRequest request) {
         scope = normalizeScope(scope);
-        LOG.info("Updating budget: scope={}, unit={}", scope, unit);
+        LOG.info("Updating budget: tenant_id={} scope={} unit={}", LogSanitizer.safe(tenantId), LogSanitizer.safe(scope), unit);
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "budget:" + scope + ":" + unit;
             String now = String.valueOf(Instant.now().toEpochMilli());
@@ -424,8 +426,8 @@ public class BudgetRepository {
                         BudgetStatus.valueOf(result.get(1)),
                         released));
                 } catch (Exception e) {
-                    LOG.warn("Cascade-close skipped budget {} for tenant {}: {}",
-                        key, tenantId, e.getMessage());
+                    LOG.warn("Cascade-close skipped budget: budget_key={} tenant_id={} error={}",
+                        LogSanitizer.safe(key), LogSanitizer.safe(tenantId), LogSanitizer.safe(e.getMessage()), e);
                 }
             }
         }
@@ -434,7 +436,7 @@ public class BudgetRepository {
 
     private BudgetLedger transitionStatus(String scope, UnitEnum unit, String targetStatus) {
         scope = normalizeScope(scope);
-        LOG.info("Transitioning budget status: scope={}, unit={}, target={}", scope, unit, targetStatus);
+        LOG.info("Transitioning budget status: scope={} unit={} target_status={}", LogSanitizer.safe(scope), unit, targetStatus);
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "budget:" + scope + ":" + unit;
             String now = String.valueOf(Instant.now().toEpochMilli());
@@ -504,7 +506,8 @@ public class BudgetRepository {
             try {
                 Map<String, String> hash = jedis.hgetAll(key);
                 if (hash.isEmpty()) {
-                    LOG.warn("Budget data missing for key: {}, cleaning index", key);
+                    LOG.warn("Budget index points to missing row; cleaning index: budget_key={} tenant_id={} index_key={} sort_field={}",
+                        LogSanitizer.safe(key), LogSanitizer.safe(tenantId), LogSanitizer.safe("budgets:" + tenantId), sortSpec != null ? sortSpec.field() : null);
                     jedis.srem("budgets:" + tenantId, key);
                     continue;
                 }
@@ -512,7 +515,8 @@ public class BudgetRepository {
                 if (!effective.matches(ledger)) continue;
                 all.add(ledger);
             } catch (Exception e) {
-                LOG.warn("Failed to parse budget: {}", key, e);
+                LOG.warn("Failed to parse budget row: budget_key={} tenant_id={} index_key={} sort_field={}",
+                    LogSanitizer.safe(key), LogSanitizer.safe(tenantId), LogSanitizer.safe("budgets:" + tenantId), sortSpec != null ? sortSpec.field() : null, e);
             }
         }
         all.sort(budgetComparator(sortSpec));
@@ -683,12 +687,15 @@ public class BudgetRepository {
                     if (!effective.matches(ledger)) continue;
                     all.add(ledger);
                 } catch (Exception e) {
-                    LOG.warn("Failed to parse budget: {}", key, e);
+                    LOG.warn("Failed to parse budget row during cross-tenant sorted list: budget_key={} tenant_id={} sort_field={}",
+                        LogSanitizer.safe(key), LogSanitizer.safe(tenantId), sortSpec != null ? sortSpec.field() : null, e);
                 }
             }
         }
         if (capped) {
-            LOG.warn("listAllTenants sort hydration capped at {} budgets; narrow filters to see beyond the cap", SORTED_HYDRATE_CAP);
+            LOG.warn("Budget cross-tenant sorted hydration capped: cap={} sort_field={} cursor_present={}",
+                SORTED_HYDRATE_CAP, sortSpec != null ? sortSpec.field() : null,
+                cursor != null && !cursor.isBlank());
         }
         all.sort(budgetComparator(sortSpec));
         List<BudgetLedger> result = new ArrayList<>();
@@ -728,7 +735,8 @@ public class BudgetRepository {
             try {
                 Map<String, String> hash = jedis.hgetAll(key);
                 if (hash.isEmpty()) {
-                    LOG.warn("Budget data missing for key: {}, cleaning index", key);
+                    LOG.warn("Budget index points to missing row; cleaning index: budget_key={} tenant_id={} index_key={} cursor_present={}",
+                        LogSanitizer.safe(key), LogSanitizer.safe(tenantId), LogSanitizer.safe("budgets:" + tenantId), cursor != null && !cursor.isBlank());
                     jedis.srem("budgets:" + tenantId, key);
                     continue;
                 }
@@ -741,7 +749,8 @@ public class BudgetRepository {
                 ledgers.add(ledger);
                 if (ledgers.size() >= limit) break;
             } catch (Exception e) {
-                LOG.warn("Failed to parse budget: {}", key, e);
+                LOG.warn("Failed to parse budget row: budget_key={} tenant_id={} index_key={} cursor_present={}",
+                    LogSanitizer.safe(key), LogSanitizer.safe(tenantId), LogSanitizer.safe("budgets:" + tenantId), cursor != null && !cursor.isBlank(), e);
             }
         }
         return ledgers;
@@ -771,7 +780,8 @@ public class BudgetRepository {
                 try {
                     Map<String, String> hash = jedis.hgetAll(key);
                     if (hash.isEmpty()) {
-                        LOG.warn("Budget data missing for key: {}, cleaning index", key);
+                        LOG.warn("Budget index points to missing row during bulk match; cleaning index: budget_key={} tenant_id={} index_key={} cap={}",
+                            LogSanitizer.safe(key), LogSanitizer.safe(tenantId), LogSanitizer.safe("budgets:" + tenantId), cap);
                         jedis.srem("budgets:" + tenantId, key);
                         continue;
                     }
@@ -780,7 +790,8 @@ public class BudgetRepository {
                     matched.add(ledger);
                     if (matched.size() > cap) break;
                 } catch (Exception e) {
-                    LOG.warn("Failed to parse budget: {}", key, e);
+                    LOG.warn("Failed to parse budget row during bulk match: budget_key={} tenant_id={} index_key={} cap={}",
+                        LogSanitizer.safe(key), LogSanitizer.safe(tenantId), LogSanitizer.safe("budgets:" + tenantId), cap, e);
                 }
             }
         }
@@ -799,7 +810,9 @@ public class BudgetRepository {
 
     public BudgetFundingResponse fund(String tenantId, String scope, UnitEnum unit, BudgetFundingRequest request) {
         scope = normalizeScope(scope);
-        LOG.info("Funding budget: scope={}, unit={}, op={}, tenant={}", scope, unit, request.getOperation(), tenantId);
+        LOG.info("Funding budget: tenant_id={} scope={} unit={} operation={} idempotency_key_present={}",
+            LogSanitizer.safe(tenantId), LogSanitizer.safe(scope), unit, request.getOperation(),
+            request.getIdempotencyKey() != null && !request.getIdempotencyKey().isBlank());
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "budget:" + scope + ":" + unit;
             long changeAmount = request.getAmount().getAmount();
@@ -891,7 +904,8 @@ public class BudgetRepository {
                 .timestamp(Instant.now())
                 .build();
 
-            LOG.info("Funded budget atomically: key={}, op={}", key, request.getOperation());
+            LOG.info("Funded budget atomically: tenant_id={} scope={} unit={} operation={} idempotency_key_present={}",
+                LogSanitizer.safe(tenantId), LogSanitizer.safe(scope), unit, request.getOperation(), !idempotencyKey.isEmpty());
             return response;
         } catch (GovernanceException e) {
             throw e;
@@ -930,7 +944,8 @@ public class BudgetRepository {
             byte[] hash = digest.digest(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(hash);
         } catch (Exception e) {
-            LOG.warn("Failed to compute payload hash, skipping mismatch detection", e);
+            LOG.warn("Failed to compute budget funding payload hash; idempotency mismatch detection skipped: request_type={}",
+                request != null ? request.getClass().getSimpleName() : null, e);
             return "";
         }
     }

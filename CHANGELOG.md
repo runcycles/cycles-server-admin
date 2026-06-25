@@ -14,6 +14,53 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.44] — 2026-06-24
+
+### Fixed
+
+- Added common CR/LF flattening for dynamic operator-log fields across
+  exception, auth rejection, controller side-effect, bulk-row, event dispatch,
+  webhook test/replay, webhook security config, and audit fallback logs.
+- Extended the same flattening to the data-plane repository, idempotency, and
+  config logs (api-key, audit, budget, event, policy, tenant, webhook,
+  webhook-delivery) via a shared `LogSanitizer`, so request-derived strings
+  logged below the controller layer cannot inject log lines either.
+- Flattened caller-supplied `X-Request-Id` at filter ingress and sanitized
+  request-attribute helper methods before those values are reused in auth,
+  exception, audit, and controller logs.
+- Kept the v0.1.25.43 operational context while preventing request/config/
+  exception strings from injecting misleading log lines.
+
+### Compatibility
+
+- No admin HTTP request/response, Redis key/value, Lua, event payload, webhook
+  wire, or spec change.
+
+## [0.1.25.43] — 2026-06-24
+
+### Changed
+
+- **Ops logging context review.** Admin API exception, auth rejection,
+  controller side-effect, webhook replay/test, event dispatch, idempotency,
+  audit, and Redis repository logs now include stable operational identifiers
+  such as method/path/route, status/error code, tenant, key id, budget/policy/
+  webhook/event/delivery ids, request id, trace id, correlation id, queue names,
+  and exception class where available.
+- Replaced the ambiguous `Landed in governance exception handler` log with a
+  structured `Governance exception handled` record that names the endpoint,
+  error code, status, request id, trace id, and exception class.
+- Startup, CORS, Redis, and webhook security config logs now use structured
+  fields instead of banner-style or context-poor text.
+- Sensitive or noisy values are avoided in logs: API-key/idempotency secrets are
+  not emitted, idempotency keys are fingerprinted, and webhook test delivery
+  failures log `target_host` instead of the full subscriber URL.
+
+### Compatibility
+
+- No admin HTTP request/response shape change.
+- No Redis key, queue, Lua, or payload-shape change.
+- No cycles-protocol spec change.
+
 ## [0.1.25.42] — 2026-06-24
 
 Security and dependency-hygiene rollup accumulated since v0.1.25.41. No code

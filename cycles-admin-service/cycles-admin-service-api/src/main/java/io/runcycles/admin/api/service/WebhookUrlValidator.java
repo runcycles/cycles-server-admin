@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.service;
 
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
+
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.WebhookSecurityConfigRepository;
 import io.runcycles.admin.model.webhook.WebhookSecurityConfig;
@@ -104,12 +106,14 @@ public class WebhookUrlValidator {
                 int maxPrefix = addr.getAddress().length * 8;
                 int prefix = parts.length > 1 ? Integer.parseInt(parts[1]) : maxPrefix;
                 if (prefix < 0 || prefix > maxPrefix) {
-                    LOG.warn("Invalid prefix length in CIDR '{}', skipping", cidr);
+                    LOG.warn("Invalid webhook CIDR config skipped: config_field=blocked_cidr_ranges cidr={} prefix_length={} max_prefix_length={}",
+                        safe(cidr), prefix, maxPrefix);
                     return null;
                 }
                 return new CidrRange(addr.getAddress(), prefix, addr instanceof Inet4Address);
             } catch (Exception e) {
-                LOG.warn("Invalid CIDR range '{}', skipping", cidr);
+                LOG.warn("Invalid webhook CIDR config skipped: config_field=blocked_cidr_ranges cidr={} exception_class={} error={}",
+                    safe(cidr), e.getClass().getSimpleName(), safe(e.getMessage()));
                 return null;
             }
         }

@@ -89,6 +89,16 @@ class RequestIdFilterTest {
     }
 
     @Test
+    void doFilterInternal_flattensCrLfInClientProvidedRequestId() throws Exception {
+        request.addHeader("X-Request-Id", "client-trace-123\r\nforged=true");
+        filter.doFilterInternal(request, response, filterChain);
+
+        String requestId = request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE).toString();
+        assertThat(requestId).isEqualTo("client-trace-123  forged=true");
+        assertThat(response.getHeader("X-Request-Id")).isEqualTo("client-trace-123  forged=true");
+    }
+
+    @Test
     void doFilterInternal_ignoresBlankClientRequestId() throws Exception {
         request.addHeader("X-Request-Id", "   ");
         filter.doFilterInternal(request, response, filterChain);

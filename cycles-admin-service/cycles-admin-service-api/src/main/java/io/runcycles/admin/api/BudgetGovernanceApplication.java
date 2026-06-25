@@ -27,11 +27,9 @@ public class BudgetGovernanceApplication {
 
         @Override
         public void run(String... args) {
-            LOG.info("===========================================================");
             String version = buildProperties != null ? buildProperties.getVersion() : "unknown";
-            LOG.info("Complete Budget Governance System v{}", version);
-            LOG.info("ALL 17 Endpoints Implemented");
-            LOG.info("===========================================================");
+            LOG.info("Cycles Admin service started: version={} scheduling_enabled=true api_prefix=/v1",
+                version);
         }
     }
 }
