@@ -87,6 +87,20 @@ class CryptoServiceTest {
     }
 
     @Test
+    void constructor_requiredEncryptionWithoutKey_throws() {
+        assertThatThrownBy(() -> new CryptoService("", true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("encryption key is required");
+    }
+
+    @Test
+    void constructor_requiredEncryptionWithKey_enablesEncryption() {
+        CryptoService service = new CryptoService(generateKey(), true);
+
+        assertThat(service.isEnabled()).isTrue();
+    }
+
+    @Test
     void isEnabled_trueWithKey() {
         CryptoService service = new CryptoService(generateKey());
         assertThat(service.isEnabled()).isTrue();

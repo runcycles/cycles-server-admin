@@ -5,8 +5,9 @@ Covers metrics, alerting recipes, configuration, and an incident playbook.
 
 Assumes you are already deploying via the published Docker image
 (`ghcr.io/runcycles/cycles-server-admin:<version>`) with Prometheus
-scraping `/actuator/prometheus`. If you haven't set that up yet, see the
-Monitoring section of [`README.md`](README.md) first.
+scraping `/actuator/prometheus` with `X-Admin-API-Key`. If you haven't
+set that up yet, see the Monitoring section of [`README.md`](README.md)
+first.
 
 `cycles-server-admin` is the **governance / admin plane** for the Cycles
 Protocol on port `7979` — it owns tenant, budget, policy, API-key, webhook,
@@ -482,15 +483,19 @@ with env overrides.
 | `admin.api-key` | `ADMIN_API_KEY` | (unset — server refuses admin requests) | Shared secret for `X-Admin-API-Key` header on admin-plane endpoints. **Required in production.** |
 | `redis.host` | `REDIS_HOST` | `localhost` | Redis host. |
 | `redis.port` | `REDIS_PORT` | `6379` | Redis port. |
-| `redis.password` | `REDIS_PASSWORD` | (unset) | Redis AUTH password. |
-| `webhook.secret.encryption-key` | `WEBHOOK_SECRET_ENCRYPTION_KEY` | (unset) | Base64 AES-256 key used to encrypt webhook signing secrets at rest. Must match the value on `cycles-server-events`. Rotate by generating a new value, re-encrypting existing secrets, and deploying in lockstep with the events service. |
+| `redis.password` | `REDIS_PASSWORD` | (unset) | Redis AUTH password. **Required by production Compose**, which starts Redis with `requirepass` and does not publish Redis on the host. |
+| `webhook.secret.encryption-key` | `WEBHOOK_SECRET_ENCRYPTION_KEY` | (unset) | Base64 AES-256 key used to encrypt webhook signing secrets at rest. Must match the value on `cycles-server-events`. Production Compose requires it. Rotate by generating a new value, re-encrypting existing secrets, and deploying in lockstep with the events service. |
+| `webhook.secret.encryption-required` | `WEBHOOK_SECRET_ENCRYPTION_REQUIRED` | `false` | Fail startup if the webhook encryption key is missing. Production Compose sets this to `true`; leave `false` only for local/dev plaintext compatibility. |
 | `events.retention.event-ttl-days` | `EVENT_TTL_DAYS` | `90` | Retention for emitted events in Redis. Tune down in high-volume deployments to bound memory. |
 | `events.retention.delivery-ttl-days` | `DELIVERY_TTL_DAYS` | `14` | Retention for webhook-delivery attempt records. |
 | `audit.retention.authenticated.days` | `AUDIT_RETENTION_AUTHENTICATED_DAYS` | `400` | Retention (days) for authenticated audit entries (success + authenticated failure). Default 400 = SOC2 Type II 12-month lookback + 1-month buffer. **Set to `0` for indefinite** (legal hold, HIPAA-adjacent, forever-retain deployments, or when archiving externally). See [Audit retention tuning](#audit-retention-tuning) below. |
 | `audit.retention.unauthenticated.days` | `AUDIT_RETENTION_UNAUTHENTICATED_DAYS` | `30` | Retention for pre-auth failure audit entries (sentinel `tenant_id=__unauth__`; also applied to legacy `<unauthenticated>` rows from v0.1.25.20..v0.1.25.27). Enough for brute-force / credential-stuffing forensic window. Set to `0` for indefinite. Admin-plane entries (sentinel `__admin__`, v0.1.25.28+) ride the **authenticated** tier, not this one. |
-| `audit.sample.unauthenticated` | `AUDIT_SAMPLE_UNAUTHENTICATED` | `1` | Sampling rate for unauthenticated-tier entries — record 1 in N. Default `1` = record every attempt (full fidelity). Tune to `100` in DDoS-exposed deployments to cut Redis write volume 100×. Aggregate volume remains visible via the `cycles_admin_audit_writes_total` counter. Authenticated entries are **never** sampled regardless of this setting. Values `≤ 0` treated as `1` (misconfig safety). |
+| `audit.sample.unauthenticated` | `AUDIT_SAMPLE_UNAUTHENTICATED` | `1` | Sampling rate for unauthenticated-tier entries — record 1 in N. Default `1` = record every attempt (full fidelity). Production Compose defaults to `100` to cut Redis write volume 100x on exposed deployments. Aggregate volume remains visible via the `cycles_admin_audit_writes_total` counter. Authenticated entries are **never** sampled regardless of this setting. Values `≤ 0` treated as `1` (misconfig safety). |
+| `auth.failure-rate-limit.enabled` | `AUTH_FAILURE_RATE_LIMIT_ENABLED` | `false` | Enable per-source throttling for repeated 401/403 responses. Production Compose sets this to `true`. |
+| `auth.failure-rate-limit.max-per-minute` | `AUTH_FAILURE_RATE_LIMIT_MAX_PER_MINUTE` | `300` | Failed-auth threshold per source/path class before responses become `429 LIMIT_EXCEEDED` and no extra failure audit row is written. |
 | `audit.sweep.cron` | `AUDIT_SWEEP_CRON` | `0 0 3 * * *` | Cron schedule for the daily audit index sweep (`ZREMRANGEBYSCORE` on expired pointers). Default 03:00 server time. Sweep is best-effort; skipped entirely when `audit.retention.authenticated.days=0` (indefinite — nothing to sweep). |
 | `dashboard.cors.origin` | `DASHBOARD_CORS_ORIGIN` | `http://localhost:5173` | CORS allowed origin(s). Comma-separated. **In production, set to your dashboard URL** — the default only works against the local Vite dev server. |
+| `springdoc.api-docs.enabled` | `API_DOCS_ENABLED` | `false` | Enable generated OpenAPI JSON. When enabled, `/api-docs`, `/v3/api-docs`, and Swagger paths require `X-Admin-API-Key`. |
 | `contract.validation.enabled` | `CONTRACT_VALIDATION_ENABLED` | `true` (tests) / `false` (runtime) | Fetch and validate against the live admin spec at build time. Disable for offline / air-gapped builds. Does not affect runtime — enforcement happens only in the test harness. |
 
 ### Audit retention tuning
@@ -722,7 +727,7 @@ fourth-segment same-day follow-up convention).
 
 - **`smoke-test-published` job green.** This job runs inside
   `release.yml`: pulls `ghcr.io/runcycles/cycles-server-admin:X.Y.Z.W`,
-  runs the container, probes `/actuator/health`, confirms the
+  runs the container, probes `/actuator/health/readiness`, confirms the
   version matches the tag, probes an unauthenticated endpoint for the
   401 shape. A red smoke-test means a broken image was published — do
   not announce the release until it's fixed (either hotfix with a

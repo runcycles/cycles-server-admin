@@ -210,7 +210,9 @@ class OpenApiContractDiffTest {
 
     private String fetchApiDocs() throws Exception {
         for (String path : new String[]{"/api-docs", "/v3/api-docs"}) {
-            var result = mockMvc.perform(get(path)).andReturn();
+            var result = mockMvc.perform(get(path)
+                    .header("X-Admin-API-Key", "test-admin-key"))
+                    .andReturn();
             if (result.getResponse().getStatus() == 200) {
                 return result.getResponse().getContentAsString();
             }

@@ -167,6 +167,7 @@ public class WebhookService {
         java.net.URI targetUri = null;
         try {
             targetUri = java.net.URI.create(sub.getUrl());
+            urlValidator.validate(sub.getUrl());
             java.net.http.HttpRequest.Builder reqBuilder = java.net.http.HttpRequest.newBuilder()
                 .uri(targetUri)
                 .header("Content-Type", "application/json")
@@ -188,6 +189,18 @@ public class WebhookService {
                 .responseTimeMs(elapsed)
                 .eventId(testEventId)
                 .errorMessage(success ? null : "HTTP " + response.statusCode())
+                .build();
+        } catch (GovernanceException e) {
+            int elapsed = (int) (System.currentTimeMillis() - start);
+            LOG.warn("Webhook test blocked by current URL security policy: subscription_id={} tenant_id={} event_id={} event_type={} target_host={} latency_ms={} error_code={} error={}",
+                    safe(subscriptionId), safe(sub.getTenantId()), testEventId, testEvent.getEventType().getValue(),
+                    safe(targetUri != null ? targetUri.getHost() : null), elapsed, e.getErrorCode(),
+                    safe(e.getMessage()));
+            return WebhookTestResponse.builder()
+                .success(false)
+                .responseTimeMs(elapsed)
+                .errorMessage("Webhook URL rejected by current security policy")
+                .eventId(testEventId)
                 .build();
         } catch (Exception e) {
             int elapsed = (int) (System.currentTimeMillis() - start);

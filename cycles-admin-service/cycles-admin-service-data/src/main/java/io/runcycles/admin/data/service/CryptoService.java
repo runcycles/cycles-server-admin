@@ -2,6 +2,7 @@ package io.runcycles.admin.data.service;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -28,8 +29,14 @@ public class CryptoService {
 
     private final SecretKeySpec key;
 
-    public CryptoService(@Value("${webhook.secret.encryption-key:}") String base64Key) {
+    @Autowired
+    public CryptoService(@Value("${webhook.secret.encryption-key:}") String base64Key,
+                         @Value("${webhook.secret.encryption-required:false}") boolean encryptionRequired) {
         if (base64Key == null || base64Key.isBlank()) {
+            if (encryptionRequired) {
+                throw new IllegalStateException(
+                    "Webhook secret encryption key is required when webhook.secret.encryption-required=true");
+            }
             this.key = null;
             LOG.info("Webhook secret encryption disabled (no key configured)");
         } else {
@@ -40,6 +47,10 @@ public class CryptoService {
             this.key = new SecretKeySpec(keyBytes, "AES");
             LOG.info("Webhook secret encryption enabled (AES-256-GCM)");
         }
+    }
+
+    public CryptoService(String base64Key) {
+        this(base64Key, false);
     }
 
     /**
