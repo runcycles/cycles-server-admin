@@ -14,6 +14,40 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.45] — 2026-06-25
+
+### Security
+
+- Hardened production Compose Redis defaults: Redis no longer publishes
+  `6379`, requires `REDIS_PASSWORD`, authenticates health checks, and restarts
+  unless stopped.
+- Protected aggregate actuator, OpenAPI, and Swagger endpoints with
+  `X-Admin-API-Key`; exact liveness and readiness probe endpoints remain open.
+- Production Compose now requires `WEBHOOK_SECRET_ENCRYPTION_KEY` and starts
+  the admin service with `WEBHOOK_SECRET_ENCRYPTION_REQUIRED=true`, causing
+  startup to fail closed when webhook secret encryption is required but no key
+  is configured.
+- Webhook test delivery now re-validates stored target URLs against the
+  current SSRF policy before opening an outbound connection.
+
+### Changed
+
+- Production health checks and release smoke tests now use
+  `/actuator/health/readiness`, which includes Redis readiness.
+- Generated API docs are disabled by default unless `API_DOCS_ENABLED=true`.
+- Production Compose enables per-source, per-process throttling for repeated
+  401/403 authentication failures; throttled responses return
+  `429 LIMIT_EXCEEDED` without writing another failure audit row.
+- Production Compose image tags now point at `0.1.25.45`.
+
+### Compatibility
+
+- No admin request/response body, Redis key/value, Lua, event payload, webhook
+  payload, or cycles-protocol spec change.
+- Operational tooling that reads protected actuator or docs endpoints must send
+  `X-Admin-API-Key`. Kubernetes-style liveness/readiness probes do not need an
+  admin key.
+
 ## [0.1.25.44] — 2026-06-24
 
 ### Fixed

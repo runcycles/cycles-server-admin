@@ -145,8 +145,8 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 | `SWAGGER_ENABLED` | No | `false` | Enable Swagger UI at `/swagger-ui.html` |
 | `EVENT_TTL_DAYS` | No | `90` | Event retention in Redis (days) |
 | `DELIVERY_TTL_DAYS` | No | `14` | Webhook delivery retention in Redis (days) |
-| `AUTH_FAILURE_RATE_LIMIT_ENABLED` | No | `false` | Enable per-source throttling for repeated 401/403 responses. Production Compose enables it. |
-| `AUTH_FAILURE_RATE_LIMIT_MAX_PER_MINUTE` | No | `300` | Per-minute failed-auth threshold before responses become `429 LIMIT_EXCEEDED` without writing extra audit rows. |
+| `AUTH_FAILURE_RATE_LIMIT_ENABLED` | No | `false` | Enable per-source, per-process throttling for repeated 401/403 responses. Production Compose enables it. |
+| `AUTH_FAILURE_RATE_LIMIT_MAX_PER_MINUTE` | No | `300` | Per-minute failed-auth threshold before responses become `429 LIMIT_EXCEEDED` without writing extra audit rows. The limiter is in-process and does not coordinate across replicas. |
 | `DASHBOARD_CORS_ORIGIN` | No | `http://localhost:5173` | Comma-separated list of origins allowed to call `/v1/**` from a browser. **Must be set in production** to your dashboard URL (e.g. `https://dash.example.com`). The default is the Vite dev server and will NOT work for prod dashboard deployments. |
 
 ### Webhook Secret Encryption
