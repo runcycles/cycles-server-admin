@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.service;
 
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
+
 import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
@@ -270,6 +272,6 @@ public class TenantCloseCascadeService {
     private static String attr(HttpServletRequest request, String name) {
         if (request == null) return null;
         Object v = request.getAttribute(name);
-        return v != null ? v.toString() : null;
+        return safe(v);
     }
 }

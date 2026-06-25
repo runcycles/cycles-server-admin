@@ -202,7 +202,7 @@ public class PolicyController {
 
     private static String attr(HttpServletRequest request, String name) {
         Object v = request.getAttribute(name);
-        return v != null ? v.toString() : null;
+        return safe(v);
     }
 
     private void logEventEmissionFailure(EventType eventType, String tenantId, String policyId,

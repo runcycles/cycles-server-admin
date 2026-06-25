@@ -33,7 +33,7 @@ public class GlobalExceptionHandler {
     private String resolveRequestId(HttpServletRequest request) {
         Object attr = request != null ? request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE) : null;
         if (attr != null) {
-            return attr.toString();
+            return safe(attr);
         }
         String generated = UUID.randomUUID().toString();
         if (request != null) {
@@ -44,7 +44,7 @@ public class GlobalExceptionHandler {
 
     private String resolveTraceId(HttpServletRequest request) {
         Object attr = request != null ? request.getAttribute(TraceContextFilter.TRACE_ID_ATTRIBUTE) : null;
-        return attr != null ? attr.toString() : null;
+        return safe(attr);
     }
 
     private ErrorResponse.ErrorResponseBuilder errorBuilder(HttpServletRequest request) {
@@ -58,12 +58,12 @@ public class GlobalExceptionHandler {
     }
 
     private String path(HttpServletRequest request) {
-        return request != null ? request.getRequestURI() : null;
+        return safe(request != null ? request.getRequestURI() : null);
     }
 
     private String route(HttpServletRequest request) {
         Object attr = request != null ? request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE) : null;
-        return attr != null ? attr.toString() : null;
+        return safe(attr);
     }
 
     private void logRequestError(HttpServletRequest request, int status, ErrorCode error, String message) {

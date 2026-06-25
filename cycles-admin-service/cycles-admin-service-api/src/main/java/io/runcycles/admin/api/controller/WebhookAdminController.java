@@ -277,7 +277,7 @@ public class WebhookAdminController {
 
     private static String attr(HttpServletRequest request, String name) {
         Object v = request.getAttribute(name);
-        return v != null ? v.toString() : null;
+        return safe(v);
     }
 
     /**

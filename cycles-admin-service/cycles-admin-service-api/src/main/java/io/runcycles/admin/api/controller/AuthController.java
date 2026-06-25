@@ -177,6 +177,6 @@ public class AuthController {
 
     private static String attr(HttpServletRequest request, String name) {
         Object value = request.getAttribute(name);
-        return value != null ? value.toString() : null;
+        return safe(value);
     }
 }

@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.config;
 
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
+
 import io.runcycles.admin.api.service.AuditFailureService;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.model.auth.ApiKeyValidationResponse;
@@ -389,7 +391,7 @@ public class AuthInterceptor implements HandlerInterceptor {
     private String resolveRequestId(HttpServletRequest request) {
         Object attr = request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE);
         if (attr != null) {
-            return attr.toString();
+            return safe(attr);
         }
         String generated = UUID.randomUUID().toString();
         request.setAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE, generated);
@@ -398,6 +400,6 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     private String resolveTraceId(HttpServletRequest request) {
         Object attr = request.getAttribute(TraceContextFilter.TRACE_ID_ATTRIBUTE);
-        return attr != null ? attr.toString() : null;
+        return safe(attr);
     }
 }

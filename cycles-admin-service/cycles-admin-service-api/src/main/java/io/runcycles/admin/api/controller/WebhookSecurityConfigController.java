@@ -1,5 +1,7 @@
 package io.runcycles.admin.api.controller;
 
+import static io.runcycles.admin.api.logging.LogSanitizer.safe;
+
 import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.data.repository.AuditRepository;
@@ -42,7 +44,7 @@ public class WebhookSecurityConfigController {
 
     private static String attr(HttpServletRequest request, String name) {
         Object v = request.getAttribute(name);
-        return v != null ? v.toString() : null;
+        return safe(v);
     }
 
     private java.util.Map<String, Object> buildConfigMeta(WebhookSecurityConfig config) {

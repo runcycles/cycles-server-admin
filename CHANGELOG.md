@@ -25,6 +25,9 @@ new optional request fields) are **not** considered breaking.
   config logs (api-key, audit, budget, event, policy, tenant, webhook,
   webhook-delivery) via a shared `LogSanitizer`, so request-derived strings
   logged below the controller layer cannot inject log lines either.
+- Flattened caller-supplied `X-Request-Id` at filter ingress and sanitized
+  request-attribute helper methods before those values are reused in auth,
+  exception, audit, and controller logs.
 - Kept the v0.1.25.43 operational context while preventing request/config/
   exception strings from injecting misleading log lines.
 

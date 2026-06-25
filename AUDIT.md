@@ -19,6 +19,13 @@ webhook replay, webhook CIDR config, and audit-fallback logs. Response bodies
 and stored event/audit payloads are unchanged; this is operator-log hardening
 only.
 
+Final review follow-up closes the client-correlation gap: `RequestIdFilter`
+now flattens caller-supplied `X-Request-Id` before storing it on the request or
+echoing it in the response, and the auth/exception/audit/controller helper
+methods sanitize request attributes before they are reused in logs. A focused
+`RequestIdFilterTest` assertion covers CR/LF flattening on caller-provided
+request ids.
+
 The first pass put the helper in the API module and so missed the **data
 plane**: repository, idempotency, and crypto/config logs
 (`ApiKeyRepository`, `AuditRepository`, `BudgetRepository`, `EventRepository`,
