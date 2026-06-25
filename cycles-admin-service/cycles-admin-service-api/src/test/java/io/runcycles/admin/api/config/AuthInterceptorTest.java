@@ -1029,6 +1029,27 @@ class AuthInterceptorTest {
     }
 
     @Test
+    void preHandle_repeatedAuthFailures_rateLimitedWithoutExtraAuditWrite() throws Exception {
+        ReflectionTestUtils.setField(interceptor, "authFailureRateLimitEnabled", true);
+        ReflectionTestUtils.setField(interceptor, "authFailureRateLimitMaxPerMinute", 1);
+
+        request.setMethod("POST");
+        request.setRequestURI("/v1/admin/tenants");
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(401);
+
+        MockHttpServletRequest secondRequest = new MockHttpServletRequest();
+        MockHttpServletResponse secondResponse = new MockHttpServletResponse();
+        secondRequest.setMethod("POST");
+        secondRequest.setRequestURI("/v1/admin/tenants");
+
+        assertThat(interceptor.preHandle(secondRequest, secondResponse, new Object())).isFalse();
+        assertThat(secondResponse.getStatus()).isEqualTo(429);
+        assertThat(secondResponse.getContentAsString()).contains("LIMIT_EXCEEDED");
+        verify(auditFailure, times(1)).logFailure(any(), eq(401), eq(ErrorCode.UNAUTHORIZED), anyString(), isNull());
+    }
+
+    @Test
     void preHandle_adminKeyValid_noFailureAuditWritten() throws Exception {
         // Single-write invariant sanity check — success paths never trigger
         // a failure-side write. Controllers do their own (richer) success

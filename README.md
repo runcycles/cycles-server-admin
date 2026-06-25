@@ -136,13 +136,17 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 |----------|----------|---------|-------------|
 | `REDIS_HOST` | Yes | — | Redis hostname |
 | `REDIS_PORT` | Yes | — | Redis port |
-| `REDIS_PASSWORD` | Yes | — | Redis password (empty for no auth) |
+| `REDIS_PASSWORD` | Yes in prod | — | Redis password. Production Compose requires it and starts Redis with `requirepass`; local Compose may run without auth. |
 | `ADMIN_API_KEY` | Yes | — | Master admin API key for `X-Admin-API-Key` header |
-| `WEBHOOK_SECRET_ENCRYPTION_KEY` | No | (empty) | AES-256-GCM encryption key for webhook signing secrets at rest. Base64-encoded 32 bytes. If empty, secrets stored in plaintext (dev mode). |
+| `WEBHOOK_SECRET_ENCRYPTION_KEY` | Yes in prod | (empty) | AES-256-GCM encryption key for webhook signing secrets at rest. Base64-encoded 32 bytes. If empty and encryption is not required, secrets are stored in plaintext for dev mode. |
+| `WEBHOOK_SECRET_ENCRYPTION_REQUIRED` | No | `false` | Set `true` in production to fail startup when `WEBHOOK_SECRET_ENCRYPTION_KEY` is missing. |
 | `LOG_LEVEL` | No | `INFO` | Application logging level (`DEBUG`, `INFO`, `WARN`, `ERROR`) |
+| `API_DOCS_ENABLED` | No | `false` | Enable generated OpenAPI JSON at `/api-docs`; protected by `X-Admin-API-Key` when enabled. |
 | `SWAGGER_ENABLED` | No | `false` | Enable Swagger UI at `/swagger-ui.html` |
 | `EVENT_TTL_DAYS` | No | `90` | Event retention in Redis (days) |
 | `DELIVERY_TTL_DAYS` | No | `14` | Webhook delivery retention in Redis (days) |
+| `AUTH_FAILURE_RATE_LIMIT_ENABLED` | No | `false` | Enable per-source, per-process throttling for repeated 401/403 responses. Production Compose enables it. |
+| `AUTH_FAILURE_RATE_LIMIT_MAX_PER_MINUTE` | No | `300` | Per-minute failed-auth threshold before responses become `429 LIMIT_EXCEEDED` without writing extra audit rows. The limiter is in-process and does not coordinate across replicas. |
 | `DASHBOARD_CORS_ORIGIN` | No | `http://localhost:5173` | Comma-separated list of origins allowed to call `/v1/**` from a browser. **Must be set in production** to your dashboard URL (e.g. `https://dash.example.com`). The default is the Vite dev server and will NOT work for prod dashboard deployments. |
 
 ### Webhook Secret Encryption
@@ -538,13 +542,13 @@ All errors return a standard `ErrorResponse`:
 
 | Endpoint | Use |
 |----------|-----|
-| `GET /actuator/health` | Aggregate health (use for debugging) |
-| `GET /actuator/health/liveness` | K8s liveness probe — is the JVM alive? |
-| `GET /actuator/health/readiness` | K8s readiness probe — is the app ready to serve traffic? |
-| `GET /actuator/info` | Build info (version, git commit) |
-| `GET /actuator/prometheus` | Prometheus scrape endpoint |
+| `GET /actuator/health` | Aggregate health (requires `X-Admin-API-Key`; use for debugging) |
+| `GET /actuator/health/liveness` | K8s liveness probe — open, JVM process state only |
+| `GET /actuator/health/readiness` | K8s readiness probe — open, includes Redis connectivity |
+| `GET /actuator/info` | Build info (requires `X-Admin-API-Key`) |
+| `GET /actuator/prometheus` | Prometheus scrape endpoint (requires `X-Admin-API-Key`) |
 
-Docker healthchecks hit `/actuator/health/liveness` (not the aggregate endpoint) so a degraded readiness state doesn't restart the container.
+Production Docker healthchecks hit `/actuator/health/readiness` so Redis outages mark the container unhealthy without exposing protected actuator data.
 
 **Metrics:**
 
@@ -563,7 +567,7 @@ Browser clients (the dashboard) call `/v1/**` via CORS. The server allowlists:
 
 | | Values |
 |---|---|
-| Methods | `GET`, `POST`, `PATCH`, `DELETE`, `OPTIONS` |
+| Methods | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` |
 | Request headers | `X-Admin-API-Key`, `X-Cycles-API-Key`, `X-Request-Id`, `Content-Type` |
 | Exposed response headers | `X-Request-Id` (for correlation) |
 | Origins | `DASHBOARD_CORS_ORIGIN` env var (comma-separated), default `http://localhost:5173` |

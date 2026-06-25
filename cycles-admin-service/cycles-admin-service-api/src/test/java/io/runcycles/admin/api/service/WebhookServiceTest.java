@@ -395,6 +395,23 @@ class WebhookServiceTest {
     }
 
     @Test
+    void test_currentUrlSecurityRejection_blocksOutboundSend() throws Exception {
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
+        sub.setUrl("https://127.0.0.1/webhook");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.getSigningSecret("whsub_1")).thenReturn("secret");
+        when(objectMapper.writeValueAsString(any())).thenReturn("{\"test\":true}");
+        doThrow(GovernanceException.webhookUrlInvalid(sub.getUrl(), "Resolves to blocked IP: 127.0.0.1"))
+            .when(urlValidator).validate(sub.getUrl());
+
+        WebhookTestResponse response = webhookService.test("whsub_1");
+
+        assertThat(response.isSuccess()).isFalse();
+        assertThat(response.getErrorMessage()).isEqualTo("Webhook URL rejected by current security policy");
+        assertThat(response.getEventId()).startsWith("evt_test_");
+    }
+
+    @Test
     void replay_withEventTypeFilter_filtersCorrectly() {
         WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);

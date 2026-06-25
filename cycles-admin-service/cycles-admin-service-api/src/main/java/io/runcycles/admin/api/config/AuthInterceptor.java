@@ -19,14 +19,16 @@ import org.springframework.web.servlet.HandlerInterceptor;
 
 import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
-import static io.runcycles.admin.api.logging.LogSanitizer.safe;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Clock;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 @Component
 public class AuthInterceptor implements HandlerInterceptor {
@@ -112,6 +114,15 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     @Value("${admin.api-key:}")
     private String adminApiKey;
+
+    @Value("${auth.failure-rate-limit.enabled:false}")
+    private boolean authFailureRateLimitEnabled;
+
+    @Value("${auth.failure-rate-limit.max-per-minute:300}")
+    private int authFailureRateLimitMaxPerMinute;
+
+    private final ConcurrentMap<String, FailureWindow> authFailureWindows = new ConcurrentHashMap<>();
+    private final Clock clock = Clock.systemUTC();
 
     private final ApiKeyRepository apiKeyRepository;
     private final ObjectMapper objectMapper;
@@ -343,12 +354,21 @@ public class AuthInterceptor implements HandlerInterceptor {
     }
 
     private void writeError(HttpServletRequest request, HttpServletResponse response, int status, ErrorCode code, String message) throws Exception {
+        boolean audit = true;
+        if (shouldThrottleAuthFailure(request, status)) {
+            status = 429;
+            code = ErrorCode.LIMIT_EXCEEDED;
+            message = "Too many failed authentication attempts; retry later";
+            audit = false;
+        }
         // v0.1.25.20: audit first, respond second. logFailure is non-throwing —
         // if it ever fails internally it increments the outcome=error counter
         // and logs a warning but never propagates, so the error response is
         // guaranteed to reach the client even if audit-write is broken.
         logAuthRejection(request, status, code, message);
-        auditFailure.logFailure(request, status, code, message, null);
+        if (audit) {
+            auditFailure.logFailure(request, status, code, message, null);
+        }
         response.setStatus(status);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         Object reqId = request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE);
@@ -361,6 +381,40 @@ public class AuthInterceptor implements HandlerInterceptor {
             .build();
         response.getWriter().write(objectMapper.writeValueAsString(error));
     }
+
+    private boolean shouldThrottleAuthFailure(HttpServletRequest request, int status) {
+        if (!authFailureRateLimitEnabled || authFailureRateLimitMaxPerMinute <= 0) {
+            return false;
+        }
+        if (status != 401 && status != 403) {
+            return false;
+        }
+        String source = request != null ? request.getRemoteAddr() : "unknown";
+        String key = source + ":" + authFailurePathClass(request != null ? request.getRequestURI() : null);
+        long windowMinute = clock.millis() / 60_000L;
+        FailureWindow window = authFailureWindows.compute(key, (ignored, current) -> {
+            if (current == null || current.windowMinute != windowMinute) {
+                return new FailureWindow(windowMinute, 1);
+            }
+            return new FailureWindow(windowMinute, current.count + 1);
+        });
+        return window.count > authFailureRateLimitMaxPerMinute;
+    }
+
+    private String authFailurePathClass(String path) {
+        if (path == null || path.isBlank()) {
+            return "unknown";
+        }
+        if (path.startsWith("/v1/admin")) {
+            return "admin";
+        }
+        if (path.startsWith("/v1/auth")) {
+            return "auth";
+        }
+        return "tenant";
+    }
+
+    private record FailureWindow(long windowMinute, int count) {}
 
     private void logAuthRejection(HttpServletRequest request, int status, ErrorCode code, String message) {
         String reqId = resolveRequestId(request);
