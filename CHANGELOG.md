@@ -14,6 +14,19 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.46] — 2026-06-26
+
+### Changed
+
+- **Jedis 7.5.0 → 7.5.2** — aligns the admin service with `cycles-server` (already
+  on 7.5.2) and picks up the latest 7.5.x Redis-client patches.
+- **springdoc-openapi 2.8.16 → 2.8.17** — latest 2.8.x, matching `cycles-server`.
+
+### Compatibility
+
+- Dependency-currency only. No HTTP request/response, Redis data model, Lua,
+  event, webhook-wire, or spec change.
+
 ## [0.1.25.45] — 2026-06-25
 
 ### Security
