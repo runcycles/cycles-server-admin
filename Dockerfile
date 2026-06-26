@@ -37,4 +37,8 @@ RUN chown appuser:appuser app.jar
 
 USER appuser
 EXPOSE 7979
-ENTRYPOINT ["java", "-jar", "app.jar"]
+
+HEALTHCHECK --interval=15s --timeout=5s --retries=3 \
+    CMD wget -qO- http://localhost:7979/actuator/health/readiness || exit 1
+
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar app.jar"]
