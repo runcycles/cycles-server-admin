@@ -26,7 +26,7 @@ new optional request fields) are **not** considered breaking.
 - Production Compose now sets conservative JVM options for the admin container
   through `JAVA_OPTS`.
 - Full-stack production Compose now references current published sibling images:
-  `cycles-server:0.1.25.43` and `cycles-server-events:0.1.25.19`.
+  `cycles-server:0.1.25.44` and `cycles-server-events:0.1.25.20`.
 - Full-stack production Compose now passes `ADMIN_API_KEY` to the runtime
   service, disables runtime public SpringDoc/Swagger and tenant-labelled custom
   Prometheus metrics, and probes runtime readiness rather than aggregate health.

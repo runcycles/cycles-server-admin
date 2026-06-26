@@ -41,8 +41,8 @@ the full-stack production file still referenced much older runtime/events images
 (`cycles-server:0.1.25.17`, `cycles-server-events:0.1.25.10`) with aggregate
 health probes. This release bumps the admin artifact to `0.1.25.47`, points
 admin production Compose at that tag, and updates full-stack production Compose
-to the latest published sibling tags available during this review:
-`cycles-server:0.1.25.43` and `cycles-server-events:0.1.25.19`.
+to the in-flight fleet sibling releases:
+`cycles-server:0.1.25.44` and `cycles-server-events:0.1.25.20`.
 
 Full-stack production Compose now mirrors the sibling production posture: the
 runtime service receives `ADMIN_API_KEY`, disables public SpringDoc/Swagger,
