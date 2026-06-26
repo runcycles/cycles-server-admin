@@ -14,6 +14,34 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.47] — 2026-06-26
+
+### Fixed
+
+- Production Compose image tags now point at `cycles-server-admin:0.1.25.47`.
+- The admin runtime image now includes a built-in readiness healthcheck and
+  starts Java through `exec java $JAVA_OPTS -jar app.jar`, so the JVM receives
+  container SIGTERM directly and operators can tune JVM flags through
+  `JAVA_OPTS`.
+- Production Compose now sets conservative JVM options for the admin container
+  through `JAVA_OPTS`.
+- Full-stack production Compose now references current published sibling images:
+  `cycles-server:0.1.25.43` and `cycles-server-events:0.1.25.19`.
+- Full-stack production Compose now passes `ADMIN_API_KEY` to the runtime
+  service, disables runtime public SpringDoc/Swagger and tenant-labelled custom
+  Prometheus metrics, and probes runtime readiness rather than aggregate health.
+- Full-stack production Compose now publishes the events management port `9980`
+  and probes `/actuator/health/readiness`; the worker app port `7980` remains
+  internal.
+- README/OPERATIONS deployment docs now reflect required production Compose
+  environment variables, current Spring Boot/Jedis versions, protected docs
+  defaults, `JAVA_OPTS`, and the events management-port split.
+
+### Compatibility
+
+- Deployment and documentation hardening only. No admin HTTP schema, Redis data
+  model, event payload, webhook wire, Lua, or cycles-protocol spec change.
+
 ## [0.1.25.46] — 2026-06-26
 
 ### Changed
@@ -1411,6 +1439,18 @@ should switch to treating 409 as success-equivalent.
 - Multiple spec-compliance hardening fixes across controllers and error
   contracts (see `AUDIT.md` for the full list).
 
+[0.1.25.47]: https://github.com/runcycles/cycles-server-admin/releases/tag/v0.1.25.47
+[0.1.25.46]: https://github.com/runcycles/cycles-server-admin/releases/tag/v0.1.25.46
+[0.1.25.45]: https://github.com/runcycles/cycles-server-admin/releases/tag/v0.1.25.45
+[0.1.25.44]: https://github.com/runcycles/cycles-server-admin/releases/tag/v0.1.25.44
+[0.1.25.43]: https://github.com/runcycles/cycles-server-admin/releases/tag/v0.1.25.43
+[0.1.25.42]: https://github.com/runcycles/cycles-server-admin/releases/tag/v0.1.25.42
+[0.1.25.41]: https://github.com/runcycles/cycles-server-admin/releases/tag/v0.1.25.41
+[0.1.25.40]: https://github.com/runcycles/cycles-server-admin/releases/tag/v0.1.25.40
+[0.1.25.39]: https://github.com/runcycles/cycles-server-admin/releases/tag/v0.1.25.39
+[0.1.25.38]: https://github.com/runcycles/cycles-server-admin/releases/tag/v0.1.25.38
+[0.1.25.37]: https://github.com/runcycles/cycles-server-admin/releases/tag/v0.1.25.37
+[0.1.25.36]: https://github.com/runcycles/cycles-server-admin/releases/tag/v0.1.25.36
 [0.1.25.35]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.35
 [0.1.25.34]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.34
 [0.1.25.33]: https://github.com/runcycles/cycles-server-admin/releases/tag/0.1.25.33

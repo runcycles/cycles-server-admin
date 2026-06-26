@@ -6,7 +6,7 @@
 
 **Administrative API for managing tenants, budgets, API keys, and policies in a Cycles deployment.** Configures the AI agent budget and action enforcement that the [Cycles Server](https://github.com/runcycles/cycles-server) applies at runtime.
 
-Multi-tenant by default, with four integrated planes: tenant lifecycle and budget ledgers, API key authentication and permission enforcement, runtime reservation control, and event/webhook delivery for observability. Aligned with [Cycles Protocol v0.1.25.33](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml).
+Multi-tenant by default, with four integrated planes: tenant lifecycle and budget ledgers, API key authentication and permission enforcement, runtime reservation control, and event/webhook delivery for observability. Aligned with [Cycles Protocol v0.1.25.34](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml).
 
 ## Documentation
 
@@ -35,9 +35,9 @@ cycles-admin-service/
 ```
 
 - **Language:** Java 21
-- **Framework:** Spring Boot 3.5.11
-- **Data Store:** Redis (via Jedis 5.2.0)
-- **API Docs:** SpringDoc OpenAPI (Swagger UI)
+- **Framework:** Spring Boot 3.5.15
+- **Data Store:** Redis (via Jedis 7.5.2)
+- **API Docs:** SpringDoc OpenAPI (disabled by default; enable behind `X-Admin-API-Key` protection)
 - **Testing:** JUnit 5 + TestContainers (Redis)
 
 ## Quick Start with Docker
@@ -46,15 +46,23 @@ The fastest way to run the admin server — no Java or Maven required:
 
 ```bash
 # Using pre-built image from GHCR
+export REDIS_PASSWORD=$(openssl rand -base64 32)
+export ADMIN_API_KEY=$(openssl rand -base64 32)
+export WEBHOOK_SECRET_ENCRYPTION_KEY=$(openssl rand -base64 32)
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-The server starts at `http://localhost:7979`. Swagger UI: http://localhost:7979/swagger-ui.html
+The server starts at `http://localhost:7979`. Generated API docs and Swagger UI
+are disabled by default in production; set `API_DOCS_ENABLED=true` and
+`SWAGGER_ENABLED=true` only behind trusted access. When enabled, docs endpoints
+require `X-Admin-API-Key`.
 
 To run the full stack (Admin + Runtime + Events + Redis):
 
 ```bash
 # Generate encryption key for webhook signing secrets (shared across all services)
+export REDIS_PASSWORD=$(openssl rand -base64 32)
+export ADMIN_API_KEY=$(openssl rand -base64 32)
 export WEBHOOK_SECRET_ENCRYPTION_KEY=$(openssl rand -base64 32)
 
 # Development (builds from source)
@@ -69,7 +77,7 @@ docker compose -f docker-compose.full-stack.prod.yml up -d
 | Redis | 6379 | Shared state store |
 | Admin (`cycles-server-admin`) | 7979 | Tenant/budget/webhook CRUD, event persistence |
 | Runtime (`cycles-server`) | 7878 | Reserve/commit/release, sub-10ms enforcement |
-| Events (`cycles-server-events`) | 7980 | Async webhook delivery with HMAC signing |
+| Events (`cycles-server-events`) | 9980 in production full-stack | Management/readiness surface for async webhook delivery; worker port `7980` remains internal |
 
 The events service is optional — if not deployed, admin and runtime continue operating normally. Events and deliveries accumulate in Redis (with TTL) until the events service is started.
 
@@ -97,7 +105,8 @@ cd cycles-admin-service/cycles-admin-service-api
 mvn spring-boot:run
 ```
 
-The server starts at `http://localhost:7979`. Swagger UI is available at `/swagger-ui.html`.
+The server starts at `http://localhost:7979`. Swagger UI is disabled by default;
+enable it with `SWAGGER_ENABLED=true` when needed.
 
 ### Run with Integration Tests
 
@@ -141,8 +150,9 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 | `WEBHOOK_SECRET_ENCRYPTION_KEY` | Yes in prod | (empty) | AES-256-GCM encryption key for webhook signing secrets at rest. Base64-encoded 32 bytes. If empty and encryption is not required, secrets are stored in plaintext for dev mode. |
 | `WEBHOOK_SECRET_ENCRYPTION_REQUIRED` | No | `false` | Set `true` in production to fail startup when `WEBHOOK_SECRET_ENCRYPTION_KEY` is missing. |
 | `LOG_LEVEL` | No | `INFO` | Application logging level (`DEBUG`, `INFO`, `WARN`, `ERROR`) |
+| `JAVA_OPTS` | No | (empty) | JVM options consumed by the Docker image entrypoint. Production Compose sets conservative G1/heap-percentage defaults. |
 | `API_DOCS_ENABLED` | No | `false` | Enable generated OpenAPI JSON at `/api-docs`; protected by `X-Admin-API-Key` when enabled. |
-| `SWAGGER_ENABLED` | No | `false` | Enable Swagger UI at `/swagger-ui.html` |
+| `SWAGGER_ENABLED` | No | `false` | Enable Swagger UI at `/swagger-ui.html`; protected by `X-Admin-API-Key` when enabled. |
 | `EVENT_TTL_DAYS` | No | `90` | Event retention in Redis (days) |
 | `DELIVERY_TTL_DAYS` | No | `14` | Webhook delivery retention in Redis (days) |
 | `AUTH_FAILURE_RATE_LIMIT_ENABLED` | No | `false` | Enable per-source, per-process throttling for repeated 401/403 responses. Production Compose enables it. |
@@ -534,7 +544,7 @@ All errors return a standard `ErrorResponse`:
 |-------|-------------|
 | **Single-service** | All four pillars in one deployment |
 | **Split-plane** | Admin + events separate from runtime enforcement |
-| **Full stack** | Admin (7979) + Runtime (7878) + Events (7980) + Redis |
+| **Full stack** | Admin (7979) + Runtime (7878) + Events management/readiness (9980 in production) + Redis |
 
 ## Observability
 

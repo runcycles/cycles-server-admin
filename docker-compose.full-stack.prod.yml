@@ -22,7 +22,7 @@ services:
 
   cycles-admin:
     logging: *default-logging
-    image: ghcr.io/runcycles/cycles-server-admin:0.1.25.45
+    image: ghcr.io/runcycles/cycles-server-admin:0.1.25.47
     restart: unless-stopped
     ports:
       - "7979:7979"
@@ -38,6 +38,7 @@ services:
       AUDIT_SAMPLE_UNAUTHENTICATED: ${AUDIT_SAMPLE_UNAUTHENTICATED:-100}
       AUTH_FAILURE_RATE_LIMIT_ENABLED: "true"
       AUTH_FAILURE_RATE_LIMIT_MAX_PER_MINUTE: ${AUTH_FAILURE_RATE_LIMIT_MAX_PER_MINUTE:-300}
+      JAVA_OPTS: "-XX:MaxRAMPercentage=75 -XX:+UseG1GC -XX:+UseStringDeduplication"
       # Dashboard CORS origin(s). Comma-separated list. Set to your production
       # dashboard URL, e.g. https://dash.example.com. Default localhost:5173 is
       # the Vite dev server and will NOT work in production.
@@ -54,7 +55,7 @@ services:
 
   cycles-server:
     logging: *default-logging
-    image: ghcr.io/runcycles/cycles-server:0.1.25.17
+    image: ghcr.io/runcycles/cycles-server:0.1.25.43
     restart: unless-stopped
     ports:
       - "7878:7878"
@@ -62,9 +63,14 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?ADMIN_API_KEY must be set}
       WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:?WEBHOOK_SECRET_ENCRYPTION_KEY must be set}
+      CYCLES_METRICS_TENANT_TAG_ENABLED: "false"
+      SPRINGDOC_API_DOCS_ENABLED: "false"
+      SPRINGDOC_SWAGGER_UI_ENABLED: "false"
+      JAVA_OPTS: "-XX:MaxRAMPercentage=75 -XX:+UseG1GC -XX:+UseStringDeduplication"
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7878/actuator/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7878/actuator/health/readiness"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -75,17 +81,18 @@ services:
 
   cycles-events:
     logging: *default-logging
-    image: ghcr.io/runcycles/cycles-server-events:0.1.25.10
+    image: ghcr.io/runcycles/cycles-server-events:0.1.25.19
     restart: unless-stopped
     ports:
-      - "7980:7980"
+      - "9980:9980"
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+      MANAGEMENT_PORT: 9980
       WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:?WEBHOOK_SECRET_ENCRYPTION_KEY must be set}
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7980/actuator/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9980/actuator/health/readiness"]
       interval: 10s
       timeout: 5s
       retries: 3

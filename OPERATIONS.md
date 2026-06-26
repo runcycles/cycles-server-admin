@@ -493,10 +493,16 @@ with env overrides.
 | `audit.sample.unauthenticated` | `AUDIT_SAMPLE_UNAUTHENTICATED` | `1` | Sampling rate for unauthenticated-tier entries — record 1 in N. Default `1` = record every attempt (full fidelity). Production Compose defaults to `100` to cut Redis write volume 100x on exposed deployments. Aggregate volume remains visible via the `cycles_admin_audit_writes_total` counter. Authenticated entries are **never** sampled regardless of this setting. Values `≤ 0` treated as `1` (misconfig safety). |
 | `auth.failure-rate-limit.enabled` | `AUTH_FAILURE_RATE_LIMIT_ENABLED` | `false` | Enable per-source, per-process throttling for repeated 401/403 responses. Production Compose sets this to `true`. |
 | `auth.failure-rate-limit.max-per-minute` | `AUTH_FAILURE_RATE_LIMIT_MAX_PER_MINUTE` | `300` | Failed-auth threshold per source/path class before responses become `429 LIMIT_EXCEEDED` and no extra failure audit row is written. The limiter is in-process and does not coordinate across replicas. |
+| JVM options | `JAVA_OPTS` | (unset) | Extra JVM flags consumed by the Docker image entrypoint. Production Compose sets G1, `MaxRAMPercentage=75`, and string deduplication defaults. |
 | `audit.sweep.cron` | `AUDIT_SWEEP_CRON` | `0 0 3 * * *` | Cron schedule for the daily audit index sweep (`ZREMRANGEBYSCORE` on expired pointers). Default 03:00 server time. Sweep is best-effort; skipped entirely when `audit.retention.authenticated.days=0` (indefinite — nothing to sweep). |
 | `dashboard.cors.origin` | `DASHBOARD_CORS_ORIGIN` | `http://localhost:5173` | CORS allowed origin(s). Comma-separated. **In production, set to your dashboard URL** — the default only works against the local Vite dev server. |
 | `springdoc.api-docs.enabled` | `API_DOCS_ENABLED` | `false` | Enable generated OpenAPI JSON. When enabled, `/api-docs`, `/v3/api-docs`, and Swagger paths require `X-Admin-API-Key`. |
+| `springdoc.swagger-ui.enabled` | `SWAGGER_ENABLED` | `false` | Enable Swagger UI. When enabled, Swagger paths require `X-Admin-API-Key`. |
 | `contract.validation.enabled` | `CONTRACT_VALIDATION_ENABLED` | `true` (tests) / `false` (runtime) | Fetch and validate against the live admin spec at build time. Disable for offline / air-gapped builds. Does not affect runtime — enforcement happens only in the test harness. |
+
+In `docker-compose.full-stack.prod.yml`, the events service exposes management
+port `9980` for health/readiness. Do not publish its internal worker port
+`7980` on ingress.
 
 ### Audit retention tuning
 
