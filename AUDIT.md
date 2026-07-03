@@ -2,7 +2,7 @@
 
 **Spec:**
 [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml)
-(OpenAPI 3.1.0, info.version `0.1.25.34`; adds CASCADE SEMANTICS — Rule 1 `POST
+(OpenAPI 3.1.0, info.version `0.1.25.35`; adds CASCADE SEMANTICS — Rule 1 `POST
 /admin/tenants/{id}` PATCH→CLOSED cascades owned budgets (→CLOSED), webhook
 subscriptions (→DISABLED), and API keys (→REVOKED) under a shared correlation_id
 — Rule 1 permits **Mode A (atomic)** or **Mode B
@@ -19,7 +19,9 @@ introduces six webhook lifecycle EventTypes (`webhook.created` / `.updated` /
 `bulkActionWebhooks` + the three single-op webhook operations + the dispatcher
 auto-disable path; v0.1.25.34 closes a same-release enum gap by adding `webhook`
 to the `EventCategory` enum so Event responses carrying the new EventTypes
-validate) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
+validate; v0.1.25.35 closes the sibling cascade enum gap by adding the four
+`*_via_tenant_cascade` values to `EventType` so cascade Events validate) in
+[cycles-protocol](https://github.com/runcycles/cycles-protocol)
 
 **Server:** Spring Boot 3.5.15 / Java 21 / Jedis 7.5.2 · commons-lang3 3.18.0
 pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
