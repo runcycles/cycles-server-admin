@@ -2,7 +2,7 @@
 
 **Spec:**
 [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml)
-(OpenAPI 3.1.0, info.version `0.1.25.34`; adds CASCADE SEMANTICS — Rule 1 `POST
+(OpenAPI 3.1.0, info.version `0.1.25.35`; adds CASCADE SEMANTICS — Rule 1 `POST
 /admin/tenants/{id}` PATCH→CLOSED cascades owned budgets (→CLOSED), webhook
 subscriptions (→DISABLED), and API keys (→REVOKED) under a shared correlation_id
 — Rule 1 permits **Mode A (atomic)** or **Mode B
@@ -19,12 +19,39 @@ introduces six webhook lifecycle EventTypes (`webhook.created` / `.updated` /
 `bulkActionWebhooks` + the three single-op webhook operations + the dispatcher
 auto-disable path; v0.1.25.34 closes a same-release enum gap by adding `webhook`
 to the `EventCategory` enum so Event responses carrying the new EventTypes
-validate) in [cycles-protocol](https://github.com/runcycles/cycles-protocol)
+validate; v0.1.25.35 closes the sibling cascade enum gap by adding the four
+`*_via_tenant_cascade` values to `EventType` so cascade Events validate) in
+[cycles-protocol](https://github.com/runcycles/cycles-protocol)
 
 **Server:** Spring Boot 3.5.15 / Java 21 / Jedis 7.5.2 · commons-lang3 3.18.0
 pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
+
+### 2026-07-03 — spec-conformance audit vs cycles-governance-admin v0.1.25.34/.35 + ContractSpecLoader file:// fix (test-only, no version change)
+
+End-to-end audit of the admin API surface against the governance spec at
+`cycles-protocol@main` found the server conformant across all 46 operations —
+endpoints, status codes (incl. 201/200 idempotent create, 204 deletes, 202
+replay), DTO constraints, `limit` bounds, the 29-value ErrorCode enum, dual-auth
+allowlists, audit sentinels, and cascade Rules 1/2. Full suite green:
+`mvn verify -Pintegration-tests` — 802 tests, spec coverage 46/46, JaCoCo ≥95%.
+
+Two findings, neither a server-code change:
+
+1. **Spec gap (fixed upstream, runcycles/cycles-protocol#121 → spec
+   v0.1.25.35):** the four `*_via_tenant_cascade` kinds this server has emitted
+   as `Event.event_type` since v0.1.25.35 (see the cascade entry below) were
+   never added to the spec's closed `EventType` enum — same defect class as the
+   v0.1.25.34 `EventCategory`/`webhook` gap. Cascade Events in `listEvents`
+   responses failed contract validation until the enum re-opened. No server
+   change needed; contract tests verified green against spec v0.1.25.35.
+2. **`ContractSpecLoader` could not load a local spec** despite its own error
+   message advertising `-Dcontract.spec.url=file:///…`: `fetch()` passed every
+   URL to `java.net.http.HttpClient` (http/https only), and a fresh on-disk
+   cache shadowed an explicit override. Fixed to mirror the runtime repo's
+   loader: `file:` URLs read via `Files.readString`, and an explicit override
+   always wins over the cache. Test-infra only — no production code touched.
 
 ### 2026-06-26 — v0.1.25.47: production deployment hardening follow-up
 

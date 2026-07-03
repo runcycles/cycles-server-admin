@@ -39,12 +39,19 @@ public final class ContractSpecLoader {
     public static synchronized String loadSpec() {
         if (cached != null) return cached;
         try {
+            // An explicit override always wins over the on-disk cache — a developer
+            // pinning a local spec must not be shadowed by a fresh cached download.
+            // Matches the runtime repo's ContractSpecLoader precedence.
+            String specUrl = System.getProperty("contract.spec.url");
+            if (specUrl != null) {
+                cached = fetch(specUrl);
+                return cached;
+            }
             if (isCacheFresh()) {
                 cached = Files.readString(CACHE_PATH);
                 return cached;
             }
-            String specUrl = System.getProperty("contract.spec.url", DEFAULT_SPEC_URL);
-            cached = fetch(specUrl);
+            cached = fetch(DEFAULT_SPEC_URL);
             Files.createDirectories(CACHE_PATH.getParent());
             Files.writeString(CACHE_PATH, cached,
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
@@ -63,6 +70,11 @@ public final class ContractSpecLoader {
     }
 
     private static String fetch(String url) throws IOException, InterruptedException {
+        // java.net.http.HttpClient supports only http/https — read file: URLs
+        // directly so the documented file:/// override actually works.
+        if (url.startsWith("file:")) {
+            return Files.readString(Path.of(URI.create(url)));
+        }
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(15))
                 .build();
