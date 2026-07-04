@@ -33,6 +33,11 @@ new optional request fields) are **not** considered breaking.
 ### Compatibility
 
 - No HTTP request/response, Redis, event-wire, or spec-surface change.
+- Release prep: prod compose self-pin → `0.1.25.48`; bundled full-stack
+  pins bumped to the 2026-07-04 security releases (`cycles-server`
+  `0.1.25.46` — public-endpoint 429 rate limiting; `cycles-server-events`
+  `0.1.25.22` — delivery-time SSRF guard; see those releases' notes for
+  the `allow_http`/CIDR operator note on webhook targets).
 
 ## [0.1.25.47] — 2026-06-26
 
