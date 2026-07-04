@@ -28,6 +28,17 @@ pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-07-04 — full-stack prod compose: stop host-publishing events management port (no version bump)
+
+`docker-compose.full-stack.prod.yml` published the events worker's 9980 to
+the host — an unauthenticated actuator surface (health + Prometheus), the
+exposure class this server's own operational-endpoint hardening closed. The
+events worker's isolation mechanism is its separate management port on an
+internal network (see cycles-server-events OPERATIONS.md); the container
+healthcheck probes in-container and Prometheus scrapes over the compose
+network, so the publish served nothing. Removed, with an inline comment
+recording the posture.
+
 ### 2026-07-03 — spec-conformance audit vs cycles-governance-admin v0.1.25.34/.35 + ContractSpecLoader file:// fix (test-only, no version change)
 
 End-to-end audit of the admin API surface against the governance spec at
