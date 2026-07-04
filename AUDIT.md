@@ -1,4 +1,4 @@
-# Complete Budget Governance v0.1.25.47 — Admin Server Audit
+# Complete Budget Governance v0.1.25.48 — Admin Server Audit
 
 **Spec:**
 [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml)
@@ -37,7 +37,22 @@ events worker's isolation mechanism is its separate management port on an
 internal network (see cycles-server-events OPERATIONS.md); the container
 healthcheck probes in-container and Prometheus scrapes over the compose
 network, so the publish served nothing. Removed, with an inline comment
-recording the posture.
+recording the posture. (Lands after v0.1.25.48.)
+
+### 2026-07-04 — v0.1.25.48: EventDataTenantCascade payload mapping
+
+Follow-up from the 2026-07-03 audit. The four cascade EventTypes were mapped
+in `EventPayloadTypeMapping` to nearest-fit lifecycle classes with a comment
+promising a typed back-fill; the spec has since defined the
+`EventDataTenantCascade` schema (v0.1.25.35) matching what
+`TenantCloseCascadeService` actually emits. Added the matching model class
+(statuses as strings — the transition spans three status vocabularies;
+`released_amount` on the ledger-level reservation aggregate) and remapped
+all four kinds. Side benefit: the strict `convertValue` round-trip in the
+payload-shape validator no longer flags every cascade emission as a shape
+warning, since the emitted flat map now has a class it actually fits.
+`EventPayloadContractTest` covers the new mapping automatically; full suite
+green. No wire change.
 
 ### 2026-07-03 — spec-conformance audit vs cycles-governance-admin v0.1.25.34/.35 + ContractSpecLoader file:// fix (test-only, no version change)
 

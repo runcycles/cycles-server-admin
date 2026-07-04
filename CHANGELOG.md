@@ -14,6 +14,26 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.48] — 2026-07-04
+
+### Fixed
+
+- **Cascade event payloads now map to their own typed class.** The four
+  `*_via_tenant_cascade` EventTypes were registered in
+  `EventPayloadTypeMapping` against nearest-fit lifecycle classes
+  (`EventDataBudgetLifecycle` / `EventDataSystem` / `EventDataApiKey`), but
+  the payload `TenantCloseCascadeService` actually emits (flat
+  `prior_status` / `new_status` / `cascade_reason` + object identity) fits
+  none of them — so the warn-only payload-shape validator flagged every
+  cascade emission. New `EventDataTenantCascade` model class mirrors the
+  spec schema of the same name (governance spec v0.1.25.35); all four kinds
+  remap to it. No wire change — `Event.data` was and remains the same
+  emitted map; only the internal validation/registry class changed.
+
+### Compatibility
+
+- No HTTP request/response, Redis, event-wire, or spec-surface change.
+
 ## [0.1.25.47] — 2026-06-26
 
 ### Fixed
