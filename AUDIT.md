@@ -52,7 +52,9 @@ all four kinds. Side benefit: the strict `convertValue` round-trip in the
 payload-shape validator no longer flags every cascade emission as a shape
 warning, since the emitted flat map now has a class it actually fits.
 `EventPayloadContractTest` covers the new mapping automatically; full suite
-green. No wire change.
+green. No wire change. Release prep (same version): prod compose self-pin
+→ `.48`; bundled full-stack pins → server `.46` / events `.22` (the
+2026-07-04 security releases).
 
 ### 2026-07-03 — spec-conformance audit vs cycles-governance-admin v0.1.25.34/.35 + ContractSpecLoader file:// fix (test-only, no version change)
 
