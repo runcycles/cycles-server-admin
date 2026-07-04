@@ -1,4 +1,4 @@
-# Complete Budget Governance v0.1.25.47 — Admin Server Audit
+# Complete Budget Governance v0.1.25.48 — Admin Server Audit
 
 **Spec:**
 [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml)
@@ -27,6 +27,21 @@ validate; v0.1.25.35 closes the sibling cascade enum gap by adding the four
 pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
+
+### 2026-07-04 — v0.1.25.48: EventDataTenantCascade payload mapping
+
+Follow-up from the 2026-07-03 audit. The four cascade EventTypes were mapped
+in `EventPayloadTypeMapping` to nearest-fit lifecycle classes with a comment
+promising a typed back-fill; the spec has since defined the
+`EventDataTenantCascade` schema (v0.1.25.35) matching what
+`TenantCloseCascadeService` actually emits. Added the matching model class
+(statuses as strings — the transition spans three status vocabularies;
+`released_amount` on the ledger-level reservation aggregate) and remapped
+all four kinds. Side benefit: the strict `convertValue` round-trip in the
+payload-shape validator no longer flags every cascade emission as a shape
+warning, since the emitted flat map now has a class it actually fits.
+`EventPayloadContractTest` covers the new mapping automatically; full suite
+green. No wire change.
 
 ### 2026-07-03 — spec-conformance audit vs cycles-governance-admin v0.1.25.34/.35 + ContractSpecLoader file:// fix (test-only, no version change)
 
