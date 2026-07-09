@@ -337,17 +337,20 @@ public class WebhookRepository {
      *   <li>{@code null}/blank filter — matches every event, including events
      *       with a null scope (no restriction).</li>
      *   <li>Bare {@code "*"} — matches every event that <b>has</b> a scope;
-     *       null-scope events are excluded.</li>
+     *       null-scope and blank-scope events are excluded.</li>
      *   <li>Filter ending in {@code "*"} (e.g. {@code "tenant:acme-corp/*"}) —
      *       prefix match on the filter minus the trailing {@code "*"}: the
-     *       event scope must start with {@code "tenant:acme-corp/"}. The bare
-     *       base scope {@code "tenant:acme-corp"} does <b>not</b> match — the
+     *       event scope must start with {@code "tenant:acme-corp/"} <b>and</b>
+     *       carry a non-empty remainder after the prefix. The bare base scope
+     *       {@code "tenant:acme-corp"} does <b>not</b> match, nor does the
+     *       degenerate {@code "tenant:acme-corp/"} (empty child segment) — the
      *       spec says "all scopes <b>under</b> acme-corp" (children only).</li>
      *   <li>Filter without a trailing {@code "*"} — <b>exact</b> match only.
      *       Child scopes do not match. Any non-trailing {@code "*"} is a
-     *       literal character.</li>
-     *   <li>Non-blank filter + null event scope — no match: unscoped events
-     *       are not delivered to scope-filtered subscriptions.</li>
+     *       literal character. Matching is case-sensitive.</li>
+     *   <li>Non-blank filter + null or blank event scope — no match: unscoped
+     *       events are not delivered to scope-filtered subscriptions (a blank
+     *       scope is treated as unscoped).</li>
      * </ul>
      *
      * <p><b>BEHAVIOR CHANGE</b> from the previous implementation, which did
@@ -359,16 +362,22 @@ public class WebhookRepository {
      * matched nothing. Such prefix-style filters must now be written with the
      * spec wildcard form {@code "tenant:acme-corp/*"} to match child scopes.
      *
-     * <p>Package-visible (like {@link #webhookComparator}) for direct unit
-     * testing.
+     * <p>Public and static: this is the single scope_filter matcher for every
+     * delivery path — live dispatch ({@link #findMatchingSubscriptions}) and
+     * the api-module replay path ({@code WebhookService#replay}) both call it,
+     * so live and replayed deliveries cannot drift.
+     *
+     * @param sub   the subscription whose {@code scope_filter} applies
+     * @param scope the event's scope path, may be null/blank (= unscoped)
      */
-    static boolean matchesScope(WebhookSubscription sub, String scope) {
+    public static boolean matchesScope(WebhookSubscription sub, String scope) {
         String filter = sub.getScopeFilter();
         if (filter == null || filter.isBlank()) return true;
-        if (scope == null) return false;
+        if (scope == null || scope.isBlank()) return false;
         if (filter.equals("*")) return true;
         if (filter.endsWith("*")) {
-            return scope.startsWith(filter.substring(0, filter.length() - 1));
+            String prefix = filter.substring(0, filter.length() - 1);
+            return scope.length() > prefix.length() && scope.startsWith(prefix);
         }
         return scope.equals(filter);
     }

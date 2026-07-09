@@ -578,6 +578,48 @@ class WebhookRepositoryTest {
     }
 
     @Test
+    void matchesScope_bareWildcard_excludesBlankScope() {
+        // A blank scope is treated as unscoped — even the bare "*" wildcard
+        // (which requires the event to HAVE a scope) must not match it.
+        assertThat(WebhookRepository.matchesScope(withFilter("*"), "")).isFalse();
+        assertThat(WebhookRepository.matchesScope(withFilter("*"), "   ")).isFalse();
+    }
+
+    @Test
+    void matchesScope_nonBlankFilter_excludesBlankScope() {
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a"), "")).isFalse();
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a/*"), "")).isFalse();
+    }
+
+    @Test
+    void matchesScope_trailingWildcard_excludesEmptyChildSegment() {
+        // "tenant:a/*" means children UNDER tenant:a — the degenerate scope
+        // "tenant:a/" (prefix with nothing after it) is not a child.
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a/*"), "tenant:a/")).isFalse();
+    }
+
+    @Test
+    void matchesScope_slashStarFilter_requiresNonEmptyRemainder() {
+        assertThat(WebhookRepository.matchesScope(withFilter("/*"), "/")).isFalse();
+        assertThat(WebhookRepository.matchesScope(withFilter("/*"), "/x")).isTrue();
+    }
+
+    @Test
+    void matchesScope_trailingSlashNoStar_isExactMatchOnly() {
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a/"), "tenant:a/")).isTrue();
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a/"), "tenant:a/workspace:b")).isFalse();
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a/"), "tenant:a")).isFalse();
+    }
+
+    @Test
+    void matchesScope_isCaseSensitive() {
+        assertThat(WebhookRepository.matchesScope(
+            withFilter("tenant:A/*"), "tenant:a/workspace:b")).isFalse();
+        assertThat(WebhookRepository.matchesScope(
+            withFilter("tenant:a"), "Tenant:a")).isFalse();
+    }
+
+    @Test
     void listByTenant_withCursor_skipsIdsUpToCursor() throws Exception {
         Set<String> ids = new LinkedHashSet<>(List.of("whsub_1", "whsub_2", "whsub_3"));
         when(jedis.smembers("webhooks:tenant-1")).thenReturn(ids);

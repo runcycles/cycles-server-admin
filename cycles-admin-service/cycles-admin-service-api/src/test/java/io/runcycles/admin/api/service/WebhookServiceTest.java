@@ -366,6 +366,142 @@ class WebhookServiceTest {
         verify(eventRepository).list(isNull(), any(), any(), any(), any(), any(), any(), any(), anyInt());
     }
 
+    // ---- replay scope_filter conformance (same matcher as live dispatch) ----
+
+    private io.runcycles.admin.model.event.Event scopedEvent(String eventId, String scope) {
+        return io.runcycles.admin.model.event.Event.builder()
+            .eventId(eventId).eventType(EventType.BUDGET_CREATED)
+            .category(io.runcycles.admin.model.event.EventCategory.BUDGET)
+            .tenantId("tenant-1").source("admin").scope(scope)
+            .timestamp(Instant.now()).build();
+    }
+
+    @Test
+    void replay_scopeFilteredSubscription_deliversOnlyMatchingScopes() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
+        sub.setScopeFilter("tenant:a/*");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
+
+        io.runcycles.admin.model.event.Event matching = scopedEvent("evt_match", "tenant:a/workspace:b");
+        io.runcycles.admin.model.event.Event otherScope = scopedEvent("evt_other", "tenant:b/workspace:c");
+        io.runcycles.admin.model.event.Event unscoped = scopedEvent("evt_null", null);
+        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+            .thenReturn(List.of(matching, otherScope, unscoped));
+
+        ReplayRequest request = ReplayRequest.builder()
+            .from(Instant.now().minusSeconds(3600))
+            .to(Instant.now())
+            .build();
+
+        ReplayResponse response = webhookService.replay("whsub_1", request);
+
+        // Only the event whose scope matches the subscription's scope_filter
+        // is re-delivered; the foreign-scope and null-scope events are not.
+        assertThat(response.getEventsQueued()).isEqualTo(1);
+        verify(dispatchService).dispatchToSubscription(matching, sub);
+        verify(dispatchService, never()).dispatchToSubscription(eq(otherScope), any());
+        verify(dispatchService, never()).dispatchToSubscription(eq(unscoped), any());
+    }
+
+    @Test
+    void replay_nullScopeEvent_excludedFromScopeFilteredSubscription() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
+        sub.setScopeFilter("tenant:a/workspace:b");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
+        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+            .thenReturn(List.of(scopedEvent("evt_null", null)));
+
+        ReplayRequest request = ReplayRequest.builder()
+            .from(Instant.now().minusSeconds(3600))
+            .to(Instant.now())
+            .build();
+
+        ReplayResponse response = webhookService.replay("whsub_1", request);
+
+        assertThat(response.getEventsQueued()).isEqualTo(0);
+        verify(dispatchService, never()).dispatchToSubscription(any(), any());
+    }
+
+    @Test
+    void replay_bareWildcardSubscription_deliversScopedButNotUnscopedEvents() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
+        sub.setScopeFilter("*");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
+
+        io.runcycles.admin.model.event.Event scoped = scopedEvent("evt_scoped", "tenant:a/workspace:b");
+        io.runcycles.admin.model.event.Event unscoped = scopedEvent("evt_null", null);
+        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+            .thenReturn(List.of(scoped, unscoped));
+
+        ReplayRequest request = ReplayRequest.builder()
+            .from(Instant.now().minusSeconds(3600))
+            .to(Instant.now())
+            .build();
+
+        ReplayResponse response = webhookService.replay("whsub_1", request);
+
+        assertThat(response.getEventsQueued()).isEqualTo(1);
+        verify(dispatchService).dispatchToSubscription(scoped, sub);
+        verify(dispatchService, never()).dispatchToSubscription(eq(unscoped), any());
+    }
+
+    @Test
+    void replay_noScopeFilter_deliversScopedAndUnscopedEvents() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1"); // no scope_filter
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
+
+        io.runcycles.admin.model.event.Event scoped = scopedEvent("evt_scoped", "tenant:a/workspace:b");
+        io.runcycles.admin.model.event.Event unscoped = scopedEvent("evt_null", null);
+        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+            .thenReturn(List.of(scoped, unscoped));
+
+        ReplayRequest request = ReplayRequest.builder()
+            .from(Instant.now().minusSeconds(3600))
+            .to(Instant.now())
+            .build();
+
+        ReplayResponse response = webhookService.replay("whsub_1", request);
+
+        assertThat(response.getEventsQueued()).isEqualTo(2);
+        verify(dispatchService).dispatchToSubscription(scoped, sub);
+        verify(dispatchService).dispatchToSubscription(unscoped, sub);
+    }
+
+    @Test
+    void replay_scopeFilterAndEventTypeFilter_bothApply() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
+        sub.setScopeFilter("tenant:a/*");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
+
+        // Matches scope but not the requested event type:
+        io.runcycles.admin.model.event.Event wrongType = io.runcycles.admin.model.event.Event.builder()
+            .eventId("evt_wrong_type").eventType(EventType.TENANT_CREATED)
+            .category(io.runcycles.admin.model.event.EventCategory.TENANT)
+            .tenantId("tenant-1").source("admin").scope("tenant:a/workspace:b")
+            .timestamp(Instant.now()).build();
+        // Matches both:
+        io.runcycles.admin.model.event.Event matchesBoth = scopedEvent("evt_both", "tenant:a/workspace:b");
+        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+            .thenReturn(List.of(wrongType, matchesBoth));
+
+        ReplayRequest request = ReplayRequest.builder()
+            .from(Instant.now().minusSeconds(3600))
+            .to(Instant.now())
+            .eventTypes(List.of(EventType.BUDGET_CREATED))
+            .build();
+
+        ReplayResponse response = webhookService.replay("whsub_1", request);
+
+        assertThat(response.getEventsQueued()).isEqualTo(1);
+        verify(dispatchService).dispatchToSubscription(matchesBoth, sub);
+        verify(dispatchService, never()).dispatchToSubscription(eq(wrongType), any());
+    }
+
     @Test
     void test_withNoSigningSecret_stillWorks() throws Exception {
         WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");

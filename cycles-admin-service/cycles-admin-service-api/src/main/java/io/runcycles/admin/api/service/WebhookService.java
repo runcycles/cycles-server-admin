@@ -296,6 +296,13 @@ public class WebhookService {
                     .filter(e -> request.getEventTypes().contains(e.getEventType()))
                     .toList();
             }
+            // Apply the subscription's scope_filter — same matcher as live
+            // dispatch (WebhookRepository.findMatchingSubscriptions), so a
+            // replay never delivers events the subscription would not have
+            // received live.
+            events = events.stream()
+                .filter(e -> WebhookRepository.matchesScope(sub, e.getScope()))
+                .toList();
             // Queue each matching event for re-delivery to this subscription
             int queued = 0;
             for (Event event : events) {
