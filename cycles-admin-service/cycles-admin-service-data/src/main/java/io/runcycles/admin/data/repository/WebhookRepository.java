@@ -325,11 +325,52 @@ public class WebhookRepository {
             && (sub.getEventCategories() == null || sub.getEventCategories().isEmpty());
     }
 
-    private boolean matchesScope(WebhookSubscription sub, String scope) {
-        if (sub.getScopeFilter() == null || sub.getScopeFilter().isBlank()) return true;
-        if (scope == null) return true;
-        // Scope filter uses prefix matching (e.g., "workspace:eng" matches "workspace:eng:project1")
-        return scope.startsWith(sub.getScopeFilter()) || sub.getScopeFilter().equals("*");
+    /**
+     * Spec-conformant {@code scope_filter} matcher. The admin OpenAPI spec
+     * (WebhookCreateRequest/WebhookUpdateRequest {@code scope_filter}) is the
+     * authority: <i>"Optional scope pattern to narrow event matching. Supports
+     * wildcards: "tenant:acme-corp/*" matches all scopes under acme-corp. If
+     * omitted, matches all scopes within the tenant."</i>
+     *
+     * <p>Semantics:
+     * <ul>
+     *   <li>{@code null}/blank filter — matches every event, including events
+     *       with a null scope (no restriction).</li>
+     *   <li>Bare {@code "*"} — matches every event that <b>has</b> a scope;
+     *       null-scope events are excluded.</li>
+     *   <li>Filter ending in {@code "*"} (e.g. {@code "tenant:acme-corp/*"}) —
+     *       prefix match on the filter minus the trailing {@code "*"}: the
+     *       event scope must start with {@code "tenant:acme-corp/"}. The bare
+     *       base scope {@code "tenant:acme-corp"} does <b>not</b> match — the
+     *       spec says "all scopes <b>under</b> acme-corp" (children only).</li>
+     *   <li>Filter without a trailing {@code "*"} — <b>exact</b> match only.
+     *       Child scopes do not match. Any non-trailing {@code "*"} is a
+     *       literal character.</li>
+     *   <li>Non-blank filter + null event scope — no match: unscoped events
+     *       are not delivered to scope-filtered subscriptions.</li>
+     * </ul>
+     *
+     * <p><b>BEHAVIOR CHANGE</b> from the previous implementation, which did
+     * literal prefix matching ({@code scope.startsWith(filter)}) and matched
+     * every filter when the event scope was null. Under the old matcher a
+     * filter like {@code "tenant:acme-corp"} also matched
+     * {@code "tenant:acme-corp/workspace:prod"} (and even
+     * {@code "tenant:acme-corpX"}), while a spec-style {@code "tenant:acme-corp/*"}
+     * matched nothing. Such prefix-style filters must now be written with the
+     * spec wildcard form {@code "tenant:acme-corp/*"} to match child scopes.
+     *
+     * <p>Package-visible (like {@link #webhookComparator}) for direct unit
+     * testing.
+     */
+    static boolean matchesScope(WebhookSubscription sub, String scope) {
+        String filter = sub.getScopeFilter();
+        if (filter == null || filter.isBlank()) return true;
+        if (scope == null) return false;
+        if (filter.equals("*")) return true;
+        if (filter.endsWith("*")) {
+            return scope.startsWith(filter.substring(0, filter.length() - 1));
+        }
+        return scope.equals(filter);
     }
 
     private List<WebhookSubscription> listFromSet(String setKey, String status, String eventType,

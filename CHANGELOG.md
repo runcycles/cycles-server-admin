@@ -14,6 +14,45 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [Unreleased]
+
+### Changed
+
+- **BEHAVIOR CHANGE — webhook `scope_filter` matching is now spec-conformant
+  (wildcard semantics).** `WebhookRepository.matchesScope` previously did
+  literal prefix matching: any event scope that `startsWith(scope_filter)`
+  matched, a spec-style trailing-`/*` filter matched nothing (the `*` was
+  compared literally), and events with a **null** scope matched every filter.
+  The admin OpenAPI spec (`scope_filter`: *"Optional scope pattern to narrow
+  event matching. Supports wildcards: "tenant:acme-corp/*" matches all scopes
+  under acme-corp. If omitted, matches all scopes within the tenant."*) is the
+  authority, so the matcher now implements:
+  - null/blank filter — matches every event, including null-scope events
+    (unchanged);
+  - bare `*` — matches every event that **has** a scope; null-scope events are
+    excluded;
+  - trailing `*` (e.g. `tenant:acme-corp/*`) — prefix match on the filter
+    minus the `*`; matches all scopes **under** the base (children only — the
+    bare base scope `tenant:acme-corp` itself does not match);
+  - no trailing `*` — **exact** match only; child scopes no longer match; any
+    non-trailing `*` is a literal character;
+  - non-blank filter + null event scope — **not** delivered.
+
+  **Migration:** prefix-style filters written for the old matcher, such as
+  `tenant:acme-corp` or `tenant:acme-corp/`, must be rewritten as
+  `tenant:acme-corp/*` to keep matching child scopes — without the wildcard
+  they now match only an exactly-equal event scope. Subscriptions that relied
+  on receiving **unscoped** (null-scope) events despite having a `scope_filter`
+  must drop the filter (or add a second, unfiltered subscription) to keep
+  receiving them.
+
+### Compatibility
+
+- No HTTP request/response schema, Redis data model, or Lua change. The
+  change is in event→subscription matching at delivery time only
+  (`findMatchingSubscriptions`); which subscriptions receive a given event can
+  change as described above.
+
 ## [0.1.25.48] — 2026-07-04
 
 ### Fixed

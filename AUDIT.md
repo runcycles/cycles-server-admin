@@ -28,6 +28,49 @@ pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-07-09 — webhook scope_filter matcher brought to spec (wildcard semantics; unreleased)
+
+Spec-conformance fix. `WebhookRepository.matchesScope` implemented literal
+prefix matching (`scope.startsWith(scope_filter)`, bare `"*"` special-cased,
+null event scope matched every filter), while the governance spec's
+`scope_filter` description defines wildcard semantics: *"Optional scope
+pattern to narrow event matching. Supports wildcards: "tenant:acme-corp/*"
+matches all scopes under acme-corp. If omitted, matches all scopes within the
+tenant."* (verified verbatim against `cycles-governance-admin-v0.1.25.yaml`
+at cycles-protocol@main, info.version 0.1.25.36 — spec is the authority).
+Three user-visible consequences of the old matcher: spec-style trailing-`/*`
+filters matched nothing (the `*` was compared literally), a filter without
+`*` acted as an unbounded character-wise prefix (`tenant:acme-corp` also
+matched `tenant:acme-corpX`), and unscoped (null-scope) events were delivered
+to scope-filtered subscriptions.
+
+New semantics (javadoc on `matchesScope` records them and flags the behavior
+change): null/blank filter matches everything including null-scope events;
+bare `"*"` matches any event that has a scope but excludes null-scope events;
+a trailing `*` strips to a prefix match ("all scopes **under**" — children
+only, the bare base scope does not match `base/*`); otherwise exact match
+with any non-trailing `*` literal; a non-blank filter never matches a
+null-scope event. Two decisions the spec sentence leaves open, resolved per
+the spec-normative docs page (cycles-docs `protocol/webhook-scope-filter-syntax.md`):
+bare `"*"` (undefined by the spec) keeps its match-everything-scoped intent
+but stops matching null-scope events, and `base/*` excludes the exact base
+scope (the docs' table says "scopes starting with `tenant:acme-corp/`").
+
+Method visibility widened from `private` to package-private static (same
+convention as `webhookComparator`) for direct unit testing. Rewrote the two
+`WebhookRepositoryTest` cases that encoded the old behavior
+(`findMatchingSubscriptions_scopeFilterMatching` now uses the `/*` form;
+`findMatchingSubscriptions_nullScopeWithScopeFilter_matches` →
+`_excluded`, asserting exclusion) and added eleven direct `matchesScope`
+tests covering null/blank filters, bare `*` incl. null-scope exclusion,
+trailing-`*` children/base/sibling-prefix/null-scope cases, exact-match
+boundaries, and mid-string-`*` literalness. Full suite green:
+`mvn verify` — data module 555 tests, api module 797 tests
+(`-Dcontract.spec.url=file://` local spec pin, network-restricted
+environment); JaCoCo ≥95% met (data 95.52% line, `WebhookRepository`
+98.39%). CHANGELOG carries the BEHAVIOR CHANGE + migration note
+(prefix-style filters must be rewritten `base` → `base/*`).
+
 ### 2026-07-04 — full-stack prod compose: stop host-publishing events management port (no version bump)
 
 `docker-compose.full-stack.prod.yml` published the events worker's 9980 to
