@@ -77,7 +77,7 @@ services:
       REDIS_PASSWORD: ""
       WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7980/actuator/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9980/actuator/health"]
       interval: 10s
       timeout: 5s
       retries: 3

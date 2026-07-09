@@ -3113,3 +3113,11 @@ The admin server is **fully compliant** with the Complete Budget Governance spec
 ## Audit History
 
 For historical audit rounds 1-4 against spec v0.1.23 (19 issues found and fixed), see [AUDIT-history.md](./AUDIT-history.md).
+
+### Compose healthcheck port fix (2026-07-09, same PR)
+
+`docker-compose.full-stack.yml` healthchecked the events service at
+`7980/actuator/health`; actuators moved to the management port (9980)
+in cycles-server-events v0.1.25.9, so the check could never pass.
+Updated to `9980/actuator/health`. Found by the cycles-docs
+deployment-docs audit.
