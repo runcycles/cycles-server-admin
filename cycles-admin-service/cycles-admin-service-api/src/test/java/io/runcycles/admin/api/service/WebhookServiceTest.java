@@ -197,6 +197,26 @@ class WebhookServiceTest {
     }
 
     @Test
+    void update_clearingEventCategoriesWithEventTypesPresent_succeeds() {
+        // The realistic repair path for a smuggled ADMIN_CATEGORIES row:
+        // strip event_categories to [] (event_types omitted, so it survives) -
+        // event_types remains, so it is NOT empty-both and the update proceeds.
+        WebhookSubscription existing = buildSubscription("whsub_1", "tenant-1");
+        existing.setEventCategories(List.of(io.runcycles.admin.model.event.EventCategory.API_KEY));
+        when(webhookRepository.findById("whsub_1")).thenReturn(existing);
+
+        WebhookUpdateRequest request = WebhookUpdateRequest.builder()
+            .eventCategories(List.of())
+            .build();
+
+        webhookService.update("whsub_1", request);
+
+        assertThat(existing.getEventCategories()).isEmpty();
+        assertThat(existing.getEventTypes()).isNotEmpty();
+        verify(webhookRepository).update(eq("whsub_1"), any());
+    }
+
+    @Test
     void update_clearingEventTypesWithCategoriesPresent_succeeds() {
         // Category-only subscriptions remain legal: clearing event_types is
         // fine as long as at least one event_category survives.

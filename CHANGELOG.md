@@ -35,14 +35,37 @@ new optional request fields) are **not** considered breaking.
 
   **Operator note — audit existing subscriptions:** on 0.1.25.49 and
   earlier, tenant-created subscriptions may already carry admin-only
-  categories. Audit tenant-plane subscriptions and strip/delete offenders,
-  e.g. against your Redis store:
-  `redis-cli --scan --pattern 'webhook:*' | xargs -L1 redis-cli GET | jq -r
-  'select(.event_categories != null) | select(.event_categories - ["budget","reservation","tenant"] | length > 0) | .subscription_id + " " + .tenant_id + " " + (.event_categories|tostring)'`
-  (subscriptions created via `/v1/admin/webhooks` by operators are
-  legitimate carriers of admin categories — check `tenant_id` provenance
-  against your admin-provisioned list, or the `createTenantWebhook` audit
-  log entries.)
+  categories, and a legacy PATCH could also leave a subscription with
+  **both** `event_types` and `event_categories` empty, which matches
+  **every** event class (delivery-side wildcard). Both classes are still
+  deliverable until repaired. This single pass flags both — it scans only
+  subscription keys (`webhook:whsub_*`; secrets live under
+  `webhook:secret:*` and indexes under `webhooks:*`, neither of which
+  matches) and tolerates any non-JSON value via `fromjson?`:
+
+  ```bash
+  redis-cli --scan --pattern 'webhook:whsub_*' \
+    | while read -r k; do redis-cli GET "$k"; done \
+    | jq -rR 'fromjson? // empty
+        | (.event_categories // []) as $cats
+        | (.event_types // []) as $types
+        | ($cats - ["budget","reservation","tenant"]) as $admin
+        | if ($admin | length) > 0 then
+            "ADMIN_CATEGORIES \(.subscription_id) \(.tenant_id) \($admin)"
+          elif ($types | length) == 0 and ($cats | length) == 0 then
+            "MATCH_ALL \(.subscription_id) \(.tenant_id)"
+          else empty end'
+  ```
+
+  `ADMIN_CATEGORIES` rows carry admin-only categories; `MATCH_ALL` rows are
+  the empty-both wildcards. Repair each with a `PATCH /v1/webhooks/{id}`
+  that sets a valid `event_types`/`event_categories` (this release rejects
+  the offending shapes), or delete it. Subscriptions created via
+  `/v1/admin/webhooks` by operators are legitimate carriers of admin
+  categories — check `tenant_id` provenance against your admin-provisioned
+  list, or the `createTenantWebhook` (tenant-plane) vs
+  `createWebhookSubscription` (admin-plane) audit-log entries — before
+  repairing an `ADMIN_CATEGORIES` hit.
 
 ### Fixed
 

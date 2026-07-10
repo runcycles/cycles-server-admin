@@ -85,8 +85,36 @@ Fix and decisions:
   canonical boundary for typed call sites.
 
 Operator follow-up (also in CHANGELOG): audit existing tenant-plane
-subscriptions on <=0.1.25.49 for admin-only categories; recipe in the
-CHANGELOG security note.
+subscriptions on <=0.1.25.49 for admin-only categories AND legacy
+empty-both match-all rows; single copy-pasteable recipe in the
+CHANGELOG security note (scans only `webhook:whsub_*` subscription
+keys - not `webhook:secret:*` / `webhooks:*` - and tolerates non-JSON
+values via `fromjson?`; flags ADMIN_CATEGORIES and MATCH_ALL rows).
+
+Codex security round 2 (REVISE-MINOR; core fix confirmed sound - no
+bypass routes, boundary derivation correct, unknown/mixed-case enum
+values already 400 at Jackson binding, delivery-time enforcement
+correctly rejected as it would break legit admin-created rows):
+- Operator recipe corrected (the original `webhook:*` scan also
+  matched encrypted `webhook:secret:*` values and broke the jq
+  pipeline; it also missed the empty-both match-all class). Recipe
+  logic re-verified against the stored JSON shape (event_categories is
+  NON_NULL - absent when null, `[]` when empty; event_types always
+  serialized) and the key layout before writing.
+- Tests added: admin-plane create/update WITH admin-only categories
+  still 201/200 (proves the boundary is tenant-plane-only, not a
+  global tightening); exhaustive EventCategory.isTenantAccessible()
+  over all enum values + every EventType delegating to its category
+  (future-drift guard); category-only repair path (clear
+  event_categories to [] with event_types omitted -> survives).
+- Open question (recorded decision, no code change): a tenant-plane
+  PATCH on a legacy/admin-created row that already holds admin-only
+  categories validates only the PROVIDED arrays, so a tenant could
+  keep pre-existing admin categories by PATCHing an unrelated field.
+  Current behavior matches the spec (validate the request, not the
+  stored state); a tenant taking over an admin-created tenant-scoped
+  subscription is a separate provenance/ownership threat model, out of
+  scope for this patch. Not expanded here.
 
 Tests: controller — smuggle on create -> 400 (service never called),
 smuggle on update -> 400, admin-on-behalf-of PATCH with admin category

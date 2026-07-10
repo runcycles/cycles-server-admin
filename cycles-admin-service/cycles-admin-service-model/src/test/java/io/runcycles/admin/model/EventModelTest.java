@@ -111,6 +111,30 @@ class EventModelTest {
         assertFalse(EventType.SYSTEM_WEBHOOK_TEST.isTenantAccessible());
     }
 
+    // v0.1.25.50: the webhook event_categories boundary derives from
+    // EventCategory.isTenantAccessible(); EventType.isTenantAccessible()
+    // delegates to it. Exhaustive over BOTH enums so adding a future
+    // category or type can't silently widen the tenant boundary.
+
+    @Test
+    void eventCategory_isTenantAccessible_exactlyBudgetReservationTenant() {
+        for (EventCategory c : EventCategory.values()) {
+            boolean expected = c == EventCategory.BUDGET
+                    || c == EventCategory.RESERVATION
+                    || c == EventCategory.TENANT;
+            assertEquals(expected, c.isTenantAccessible(),
+                    "EventCategory." + c + " tenant-accessibility");
+        }
+    }
+
+    @Test
+    void eventType_isTenantAccessible_delegatesToCategoryForEveryType() {
+        for (EventType t : EventType.values()) {
+            assertEquals(t.getCategory().isTenantAccessible(), t.isTenantAccessible(),
+                    "EventType." + t + " must delegate to its category's accessibility");
+        }
+    }
+
     @Test
     void eventType_jsonValue_serializesToDotNotation() throws Exception {
         String json = mapper.writeValueAsString(EventType.BUDGET_CREATED);
