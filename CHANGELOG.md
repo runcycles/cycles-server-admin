@@ -14,7 +14,7 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
-## [Unreleased]
+## [0.1.25.49] — 2026-07-10
 
 ### Changed
 
@@ -79,6 +79,11 @@ new optional request fields) are **not** considered breaking.
   (`findMatchingSubscriptions`) and in replay event selection; which
   subscriptions receive a given event (live or replayed) can change as
   described above.
+- Release prep: prod compose self-pin → `0.1.25.49`; bundled full-stack
+  `cycles-server` pin → `0.1.25.47` (runtime TENANT_CLOSED Rule 2 guard +
+  webhook matcher parity — the runtime half of the matcher convergence this
+  release completes; see that release's notes). `cycles-server-events` stays
+  `0.1.25.22`.
 
 ## [0.1.25.48] — 2026-07-04
 
