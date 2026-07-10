@@ -1,4 +1,4 @@
-# Complete Budget Governance v0.1.25.48 — Admin Server Audit
+# Complete Budget Governance v0.1.25.49 — Admin Server Audit
 
 **Spec:**
 [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml)
@@ -74,7 +74,7 @@ README now declares v0.1.25.37 with a one-line summary of what .35–.37 added;
 this file's header spec paragraph extended to cover .36/.37. No version bump,
 no release.
 
-### 2026-07-09 — webhook scope_filter matcher brought to spec (wildcard semantics; unreleased)
+### 2026-07-09 — webhook scope_filter matcher brought to spec (wildcard semantics; released in 0.1.25.49)
 
 Spec-conformance fix. `WebhookRepository.matchesScope` implemented literal
 prefix matching (`scope.startsWith(scope_filter)`, bare `"*"` special-cased,
