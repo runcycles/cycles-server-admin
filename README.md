@@ -6,7 +6,7 @@
 
 **Administrative API for managing tenants, budgets, API keys, and policies in a Cycles deployment.** Configures the AI agent budget and action enforcement that the [Cycles Server](https://github.com/runcycles/cycles-server) applies at runtime.
 
-Multi-tenant by default, with four integrated planes: tenant lifecycle and budget ledgers, API key authentication and permission enforcement, runtime reservation control, and event/webhook delivery for observability. Aligned with [Cycles Protocol v0.1.25.34](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml).
+Multi-tenant by default, with four integrated planes: tenant lifecycle and budget ledgers, API key authentication and permission enforcement, runtime reservation control, and event/webhook delivery for observability. Aligned with [Cycles Protocol v0.1.25.37](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml) (v0.1.25.35–.37 added the four cascade EventTypes + `EventDataTenantCascade` payload schema, the `admin_on_behalf_of` actor type, and `TENANT_CLOSED` in the reservation-denied reason-code documentation — all implemented or documentation-only here).
 
 ## Documentation
 

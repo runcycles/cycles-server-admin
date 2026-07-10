@@ -1,8 +1,8 @@
-# Complete Budget Governance v0.1.25.48 — Admin Server Audit
+# Complete Budget Governance v0.1.25.49 — Admin Server Audit
 
 **Spec:**
 [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml)
-(OpenAPI 3.1.0, info.version `0.1.25.35`; adds CASCADE SEMANTICS — Rule 1 `POST
+(OpenAPI 3.1.0, info.version `0.1.25.37`; adds CASCADE SEMANTICS — Rule 1 `POST
 /admin/tenants/{id}` PATCH→CLOSED cascades owned budgets (→CLOSED), webhook
 subscriptions (→DISABLED), and API keys (→REVOKED) under a shared correlation_id
 — Rule 1 permits **Mode A (atomic)** or **Mode B
@@ -20,7 +20,12 @@ introduces six webhook lifecycle EventTypes (`webhook.created` / `.updated` /
 auto-disable path; v0.1.25.34 closes a same-release enum gap by adding `webhook`
 to the `EventCategory` enum so Event responses carrying the new EventTypes
 validate; v0.1.25.35 closes the sibling cascade enum gap by adding the four
-`*_via_tenant_cascade` values to `EventType` so cascade Events validate) in
+`*_via_tenant_cascade` values to `EventType` so cascade Events validate, and
+adds the `EventDataTenantCascade` payload schema those events conform to;
+v0.1.25.36 adds `admin_on_behalf_of` to the `Event.actor.type` enum so events
+from admin-key dual-auth operations validate; v0.1.25.37 adds `TENANT_CLOSED`
+to the `EventDataReservationDenied.reason_code` documented known values —
+documentation-only on an open string field) in
 [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 
 **Server:** Spring Boot 3.5.15 / Java 21 / Jedis 7.5.2 · commons-lang3 3.18.0
@@ -28,7 +33,48 @@ pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
-### 2026-07-09 — webhook scope_filter matcher brought to spec (wildcard semantics; unreleased)
+### 2026-07-10 — spec-alignment declaration corrected to governance v0.1.25.37 (docs only; no behavior change)
+
+Declaration correction, not a behavior change: no code, wire, or config is
+touched. The README claimed "Aligned with Cycles Protocol v0.1.25.34" and this
+file's header pinned info.version `0.1.25.35`, but the declarations had gone
+stale in both directions — admin v0.1.25.48's own CHANGELOG records
+implementing the `EventDataTenantCascade` schema *from governance v0.1.25.35*
+while the README still declared .34, and the governance document has since
+advanced to revision 0.1.25.37. cycles-docs mirrors the declared alignment,
+so the stale claim propagated to the docs site (flagged repeatedly in docs
+review).
+
+Per-revision verification performed against source before re-declaring:
+
+- **v0.1.25.35** (cascade EventTypes + `EventDataTenantCascade` schema):
+  implemented. The four `*_via_tenant_cascade` kinds have been emitted since
+  admin v0.1.25.35; `EventDataTenantCascade` (added in admin v0.1.25.48)
+  mirrors the spec schema field-for-field — all ten properties (`ledger_id` /
+  `subscription_id` / `key_id` exactly-one identity via NON_NULL, `name`,
+  `scope`, `unit`, `prior_status`, `new_status`, `released_amount` int64,
+  `cascade_reason`), strict `ignoreUnknown = false` per the admin-owned-schema
+  convention.
+- **v0.1.25.36** (`admin_on_behalf_of` on `Event.actor.type`): implemented —
+  and admin was ahead of the spec here. `ActorType.ADMIN_ON_BEHALF_OF`
+  ("admin_on_behalf_of" on the wire) has existed since admin v0.1.25.14 and
+  flows into `Actor.builder().type(...)` on Event emission at exactly the
+  dual-auth sites the spec names: createBudget (`BudgetController`),
+  createPolicy/updatePolicy (`PolicyController`), and tenant-webhook mutations
+  (`WebhookTenantController`). Spec .36 admitted the value into the closed
+  enum so those events validate.
+- **v0.1.25.37** (`TENANT_CLOSED` in `EventDataReservationDenied.reason_code`
+  documented known values): documentation-only revision on an OPEN string
+  field — nothing to implement. Verified nothing in admin contradicts it:
+  `EventDataReservationDenied.reasonCode` is a plain `String` with no closed
+  validation, and admin's own Rule 2 guard has returned 409 `TENANT_CLOSED`
+  since v0.1.25.35/.36, consistent with the reason string.
+
+README now declares v0.1.25.37 with a one-line summary of what .35–.37 added;
+this file's header spec paragraph extended to cover .36/.37. No version bump,
+no release.
+
+### 2026-07-09 — webhook scope_filter matcher brought to spec (wildcard semantics; released in 0.1.25.49)
 
 Spec-conformance fix. `WebhookRepository.matchesScope` implemented literal
 prefix matching (`scope.startsWith(scope_filter)`, bare `"*"` special-cased,
