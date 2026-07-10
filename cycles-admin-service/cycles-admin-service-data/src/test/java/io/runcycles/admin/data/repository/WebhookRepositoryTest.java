@@ -324,11 +324,12 @@ class WebhookRepositoryTest {
         when(jedis.smembers("webhooks:tenant-1")).thenReturn(tenantIds);
         when(jedis.smembers("webhooks:__system__")).thenReturn(Set.of());
 
+        // Spec wildcard form: "org/eng/*" matches all scopes under org/eng.
         WebhookSubscription sub = WebhookSubscription.builder()
                 .subscriptionId("whsub_1").tenantId("tenant-1").url("https://a.com")
                 .status(WebhookStatus.ACTIVE)
                 .eventTypes(List.of(EventType.BUDGET_CREATED))
-                .scopeFilter("org/eng")
+                .scopeFilter("org/eng/*")
                 .createdAt(Instant.now()).consecutiveFailures(0).build();
         String subJson = objectMapper.writeValueAsString(sub);
         when(jedis.get("webhook:whsub_1")).thenReturn(subJson);
@@ -446,7 +447,7 @@ class WebhookRepositoryTest {
     }
 
     @Test
-    void findMatchingSubscriptions_nullScopeWithScopeFilter_matches() throws Exception {
+    void findMatchingSubscriptions_nullScopeWithScopeFilter_excluded() throws Exception {
         Set<String> tenantIds = new LinkedHashSet<>(List.of("whsub_1"));
         when(jedis.smembers("webhooks:tenant-1")).thenReturn(tenantIds);
         when(jedis.smembers("webhooks:__system__")).thenReturn(Set.of());
@@ -460,10 +461,11 @@ class WebhookRepositoryTest {
         String subJson = objectMapper.writeValueAsString(sub);
         when(jedis.get("webhook:whsub_1")).thenReturn(subJson);
 
-        // null scope should match (matchesScope returns true when scope is null)
+        // Spec semantics: an event with a null scope is NOT delivered to a
+        // subscription with a non-blank scope_filter.
         List<WebhookSubscription> result = repository.findMatchingSubscriptions("tenant-1", EventType.BUDGET_CREATED, null);
 
-        assertThat(result).hasSize(1);
+        assertThat(result).isEmpty();
     }
 
     @Test
@@ -484,6 +486,137 @@ class WebhookRepositoryTest {
         List<WebhookSubscription> result = repository.findMatchingSubscriptions("tenant-1", EventType.BUDGET_CREATED, "any/scope");
 
         assertThat(result).hasSize(1);
+    }
+
+    // ---- matchesScope (spec scope_filter wildcard semantics) ----
+    // Spec authority (admin OpenAPI, WebhookCreateRequest.scope_filter):
+    // "Optional scope pattern to narrow event matching. Supports wildcards:
+    //  \"tenant:acme-corp/*\" matches all scopes under acme-corp. If omitted,
+    //  matches all scopes within the tenant."
+
+    private static WebhookSubscription withFilter(String scopeFilter) {
+        return WebhookSubscription.builder().scopeFilter(scopeFilter).build();
+    }
+
+    @Test
+    void matchesScope_nullFilter_matchesScopedAndNullScope() {
+        assertThat(WebhookRepository.matchesScope(withFilter(null), "tenant:a/workspace:b")).isTrue();
+        assertThat(WebhookRepository.matchesScope(withFilter(null), null)).isTrue();
+    }
+
+    @Test
+    void matchesScope_blankFilter_matchesScopedAndNullScope() {
+        assertThat(WebhookRepository.matchesScope(withFilter("   "), "tenant:a/workspace:b")).isTrue();
+        assertThat(WebhookRepository.matchesScope(withFilter(""), null)).isTrue();
+    }
+
+    @Test
+    void matchesScope_bareWildcard_matchesAnyScopedEvent() {
+        assertThat(WebhookRepository.matchesScope(withFilter("*"), "tenant:a")).isTrue();
+        assertThat(WebhookRepository.matchesScope(withFilter("*"), "tenant:a/workspace:b/agent:c")).isTrue();
+    }
+
+    @Test
+    void matchesScope_bareWildcard_excludesNullScope() {
+        assertThat(WebhookRepository.matchesScope(withFilter("*"), null)).isFalse();
+    }
+
+    @Test
+    void matchesScope_trailingWildcard_matchesChildScopes() {
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a/*"), "tenant:a/workspace:b")).isTrue();
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a/*"), "tenant:a/workspace:b/agent:c")).isTrue();
+    }
+
+    @Test
+    void matchesScope_trailingWildcard_excludesExactBaseScope() {
+        // Spec: "tenant:acme-corp/*" matches all scopes UNDER acme-corp —
+        // children only; the bare base scope itself does not match.
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a/*"), "tenant:a")).isFalse();
+    }
+
+    @Test
+    void matchesScope_trailingWildcard_excludesSiblingWithSharedPrefix() {
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a/*"), "tenant:aX")).isFalse();
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a/*"), "tenant:aX/workspace:b")).isFalse();
+    }
+
+    @Test
+    void matchesScope_trailingWildcard_excludesNullScope() {
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a/*"), null)).isFalse();
+    }
+
+    @Test
+    void matchesScope_exactFilter_matchesOnlyExactScope() {
+        assertThat(WebhookRepository.matchesScope(
+            withFilter("tenant:a/workspace:b"), "tenant:a/workspace:b")).isTrue();
+        // No wildcard = exact match: child scopes do NOT match (old prefix
+        // behavior would have matched both of these).
+        assertThat(WebhookRepository.matchesScope(
+            withFilter("tenant:a/workspace:b"), "tenant:a/workspace:b/agent:c")).isFalse();
+        assertThat(WebhookRepository.matchesScope(
+            withFilter("tenant:a/workspace:b"), "tenant:a/workspace:bX")).isFalse();
+    }
+
+    @Test
+    void matchesScope_exactFilter_excludesNullScope() {
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a"), null)).isFalse();
+    }
+
+    @Test
+    void matchesScope_midStringWildcard_isLiteralNotWildcard() {
+        // "*" is only meaningful at the end of the filter; elsewhere it is a
+        // literal character in an exact-match comparison.
+        assertThat(WebhookRepository.matchesScope(
+            withFilter("tenant:*/workspace:b"), "tenant:a/workspace:b")).isFalse();
+        assertThat(WebhookRepository.matchesScope(
+            withFilter("tenant:*/workspace:b"), "tenant:*/workspace:b")).isTrue();
+        // Mid-string "*" stays literal even when the filter also ends in "*".
+        assertThat(WebhookRepository.matchesScope(
+            withFilter("tenant:*/ws:*"), "tenant:*/ws:prod")).isTrue();
+        assertThat(WebhookRepository.matchesScope(
+            withFilter("tenant:*/ws:*"), "tenant:a/ws:prod")).isFalse();
+    }
+
+    @Test
+    void matchesScope_bareWildcard_excludesBlankScope() {
+        // A blank scope is treated as unscoped — even the bare "*" wildcard
+        // (which requires the event to HAVE a scope) must not match it.
+        assertThat(WebhookRepository.matchesScope(withFilter("*"), "")).isFalse();
+        assertThat(WebhookRepository.matchesScope(withFilter("*"), "   ")).isFalse();
+    }
+
+    @Test
+    void matchesScope_nonBlankFilter_excludesBlankScope() {
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a"), "")).isFalse();
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a/*"), "")).isFalse();
+    }
+
+    @Test
+    void matchesScope_trailingWildcard_excludesEmptyChildSegment() {
+        // "tenant:a/*" means children UNDER tenant:a — the degenerate scope
+        // "tenant:a/" (prefix with nothing after it) is not a child.
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a/*"), "tenant:a/")).isFalse();
+    }
+
+    @Test
+    void matchesScope_slashStarFilter_requiresNonEmptyRemainder() {
+        assertThat(WebhookRepository.matchesScope(withFilter("/*"), "/")).isFalse();
+        assertThat(WebhookRepository.matchesScope(withFilter("/*"), "/x")).isTrue();
+    }
+
+    @Test
+    void matchesScope_trailingSlashNoStar_isExactMatchOnly() {
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a/"), "tenant:a/")).isTrue();
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a/"), "tenant:a/workspace:b")).isFalse();
+        assertThat(WebhookRepository.matchesScope(withFilter("tenant:a/"), "tenant:a")).isFalse();
+    }
+
+    @Test
+    void matchesScope_isCaseSensitive() {
+        assertThat(WebhookRepository.matchesScope(
+            withFilter("tenant:A/*"), "tenant:a/workspace:b")).isFalse();
+        assertThat(WebhookRepository.matchesScope(
+            withFilter("tenant:a"), "Tenant:a")).isFalse();
     }
 
     @Test

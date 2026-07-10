@@ -14,6 +14,72 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [Unreleased]
+
+### Changed
+
+- **BEHAVIOR CHANGE — webhook `scope_filter` matching is now spec-conformant
+  (wildcard semantics).** `WebhookRepository.matchesScope` previously did
+  literal prefix matching: any event scope that `startsWith(scope_filter)`
+  matched, a spec-style trailing-`/*` filter matched nothing (the `*` was
+  compared literally), and events with a **null** scope matched every filter.
+  The admin OpenAPI spec (`scope_filter`: *"Optional scope pattern to narrow
+  event matching. Supports wildcards: "tenant:acme-corp/*" matches all scopes
+  under acme-corp. If omitted, matches all scopes within the tenant."*) is the
+  authority, so the matcher now implements:
+  - null/blank filter — matches every event, including null-scope events
+    (unchanged);
+  - bare `*` — matches every event that **has** a scope; null-scope and
+    blank-scope events are excluded;
+  - trailing `*` (e.g. `tenant:acme-corp/*`) — prefix match on the filter
+    minus the `*`; matches all scopes **under** the base (children only — the
+    bare base scope `tenant:acme-corp` does not match, nor does the degenerate
+    `tenant:acme-corp/` with an empty child segment);
+  - no trailing `*` — **exact** match only (case-sensitive); child scopes no
+    longer match; any non-trailing `*` is a literal character;
+  - non-blank filter + null **or blank** event scope — **not** delivered
+    (a blank scope is treated as unscoped).
+
+  **Migration:**
+  - *Descendants only:* a prefix-style filter such as `tenant:acme-corp` or
+    `tenant:acme-corp/` must be rewritten as `tenant:acme-corp/*` to keep
+    matching child scopes — without the wildcard it now matches only an
+    exactly-equal event scope.
+  - *Base scope + descendants:* the old prefix matcher **also matched the
+    exact base scope** (`tenant:acme-corp` matched an event scoped exactly
+    `tenant:acme-corp`), so migrating to `tenant:acme-corp/*` alone **drops
+    base-scope events**. A single `scope_filter` cannot express "base plus
+    descendants" — to preserve the old coverage, create **two**
+    subscriptions: one with the exact filter `tenant:acme-corp` and one with
+    the wildcard `tenant:acme-corp/*`.
+  - *Sibling prefixes:* the old character-wise matching also caught
+    lexical-sibling scopes such as `tenant:acme-corpX` or
+    `tenant:acme-corp-eu`. Those matches were accidental; anyone relying on
+    them must now add explicit filters (exact or `…/*`) for each such scope.
+  - *Unscoped events:* subscriptions that relied on receiving **unscoped**
+    (null-scope) events despite having a `scope_filter` must drop the filter
+    (or add a second, unfiltered subscription) to keep receiving them.
+
+### Fixed
+
+- **Webhook replay now honors `scope_filter`.** `POST
+  /v1/admin/webhooks/{subscription_id}/replay` queued every event in the
+  requested time range (after the request's `event_types` filter) directly to
+  the subscription, bypassing scope matching entirely — a replay could
+  deliver events the subscription would never have received live. Replay now
+  applies the same spec-conformant matcher as live dispatch
+  (`WebhookRepository.matchesScope`, exposed publicly for exactly this reuse)
+  before queuing; the replay request's `event_types` filtering behavior is
+  unchanged.
+
+### Compatibility
+
+- No HTTP request/response schema, Redis data model, or Lua change. The
+  changes are in event→subscription matching at delivery time
+  (`findMatchingSubscriptions`) and in replay event selection; which
+  subscriptions receive a given event (live or replayed) can change as
+  described above.
+
 ## [0.1.25.48] — 2026-07-04
 
 ### Fixed

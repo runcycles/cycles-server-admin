@@ -28,6 +28,80 @@ pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-07-09 — webhook scope_filter matcher brought to spec (wildcard semantics; unreleased)
+
+Spec-conformance fix. `WebhookRepository.matchesScope` implemented literal
+prefix matching (`scope.startsWith(scope_filter)`, bare `"*"` special-cased,
+null event scope matched every filter), while the governance spec's
+`scope_filter` description defines wildcard semantics: *"Optional scope
+pattern to narrow event matching. Supports wildcards: "tenant:acme-corp/*"
+matches all scopes under acme-corp. If omitted, matches all scopes within the
+tenant."* (verified verbatim against `cycles-governance-admin-v0.1.25.yaml`
+at cycles-protocol@main, info.version 0.1.25.36 — spec is the authority).
+Three user-visible consequences of the old matcher: spec-style trailing-`/*`
+filters matched nothing (the `*` was compared literally), a filter without
+`*` acted as an unbounded character-wise prefix (`tenant:acme-corp` also
+matched `tenant:acme-corpX`), and unscoped (null-scope) events were delivered
+to scope-filtered subscriptions.
+
+New semantics (javadoc on `matchesScope` records them and flags the behavior
+change): null/blank filter matches everything including null-scope events;
+bare `"*"` matches any event that has a scope but excludes null-scope events;
+a trailing `*` strips to a prefix match ("all scopes **under**" — children
+only, the bare base scope does not match `base/*`); otherwise exact match
+with any non-trailing `*` literal; a non-blank filter never matches a
+null-scope event. Two decisions the spec sentence leaves open, resolved per
+the spec-normative docs page (cycles-docs `protocol/webhook-scope-filter-syntax.md`):
+bare `"*"` (undefined by the spec) keeps its match-everything-scoped intent
+but stops matching null-scope events, and `base/*` excludes the exact base
+scope (the docs' table says "scopes starting with `tenant:acme-corp/`").
+
+External review (codex, REVISE-MINOR) tightened the first cut in three ways,
+all applied:
+
+1. **Blank scope = unscoped.** A blank (`""`/whitespace) event scope is now
+   rejected on every filtered path — previously only `null` was; in
+   particular bare `"*"` no longer matches `scope=""`. (Supersedes the docs
+   page's earlier "empty string scope is not treated as missing" edge note.)
+2. **Trailing-`*` requires a non-empty remainder.** `tenant:a/*` no longer
+   matches the degenerate scope `tenant:a/` (empty child segment):
+   the prefix match additionally requires
+   `scope.length() > prefix.length()`.
+3. **Replay path conformance (the substantive find).** `WebhookService.replay`
+   queued every event in the requested window (after the request's
+   `event_types` filter) straight to `dispatchToSubscription`, bypassing
+   `scope_filter` entirely — a pre-existing bug that became a spec violation
+   once the matcher went spec-conformant, and a drift risk (live vs replayed
+   deliveries disagreeing). Fix: `matchesScope` widened from package-private
+   to **`public static` on `WebhookRepository`** (the api module already
+   depends on the data module and on this class; a new shared utility class
+   would have added surface for a 10-line matcher) and the replay path now
+   filters events through it before dispatch. Replay `event_types` behavior
+   is unchanged.
+
+Tests: rewrote the two `WebhookRepositoryTest` cases that encoded the old
+behavior (`findMatchingSubscriptions_scopeFilterMatching` now uses the `/*`
+form; `findMatchingSubscriptions_nullScopeWithScopeFilter_matches` →
+`_excluded`, asserting exclusion); added seventeen direct `matchesScope`
+tests (null/blank filters, bare `*` incl. null- and blank-scope exclusion,
+trailing-`*` children/base/empty-child/sibling-prefix/null-scope, `/*`
+remainder rule, trailing-slash-no-star exact-only, exact-match boundaries,
+case sensitivity, mid-string-`*` literalness) and five `WebhookServiceTest`
+replay tests (scoped-filter subscription delivers only matching scopes;
+null-scope event excluded from filtered subscription; bare-`*` subscription
+delivers scoped but not unscoped; no-filter subscription delivers both;
+scope filter composes with the request's `event_types` filter). Full suite
+green: `mvn verify` — data module 561 tests, api module 802 tests
+(`-Dcontract.spec.url=file://` local spec pin, network-restricted
+environment); JaCoCo ≥95% met (data 95.52% line, `WebhookRepository` 98.39%;
+api 95.39%). CHANGELOG carries the BEHAVIOR CHANGE with a four-part
+migration note — descendants-only rewrites (`base` → `base/*`), the
+base+descendants trap (old prefix matching also matched the exact base
+scope, so `base/*` alone drops base-scope events; a single filter cannot
+express both — use two subscriptions, exact + wildcard), accidental
+sibling-prefix matches (`tenant:acme-corpX`) now needing explicit filters,
+and unscoped-event delivery — plus a Fixed entry for the replay path.
+
 ### 2026-07-04 — full-stack prod compose: stop host-publishing events management port (no version bump)
 
 `docker-compose.full-stack.prod.yml` published the events worker's 9980 to
@@ -3039,3 +3113,11 @@ The admin server is **fully compliant** with the Complete Budget Governance spec
 ## Audit History
 
 For historical audit rounds 1-4 against spec v0.1.23 (19 issues found and fixed), see [AUDIT-history.md](./AUDIT-history.md).
+
+### Compose healthcheck port fix (2026-07-09, same PR)
+
+`docker-compose.full-stack.yml` healthchecked the events service at
+`7980/actuator/health`; actuators moved to the management port (9980)
+in cycles-server-events v0.1.25.9, so the check could never pass.
+Updated to `9980/actuator/health`. Found by the cycles-docs
+deployment-docs audit.
