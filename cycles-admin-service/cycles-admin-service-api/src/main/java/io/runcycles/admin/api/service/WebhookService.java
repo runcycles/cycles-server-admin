@@ -107,6 +107,22 @@ public class WebhookService {
         if (request.getDescription() != null) existing.setDescription(request.getDescription());
         if (request.getEventTypes() != null) existing.setEventTypes(request.getEventTypes());
         if (request.getEventCategories() != null) existing.setEventCategories(request.getEventCategories());
+        // A subscription must always name at least one event_type or
+        // event_category. Create enforces @NotEmpty event_types, but PATCH
+        // could previously clear event_types to [] with no categories -
+        // and WebhookRepository.matchesEventType treats empty-both as
+        // match-ALL, which would silently subscribe to every event class
+        // (on the tenant plane that bypasses the admin-only boundary
+        // entirely). Guard the only path that could produce it, on BOTH
+        // planes: match-all subscriptions are not creatable, so they must
+        // not be reachable by update either. (governance revision
+        // v0.1.25.38)
+        boolean noEventTypes = existing.getEventTypes() == null || existing.getEventTypes().isEmpty();
+        boolean noEventCategories = existing.getEventCategories() == null || existing.getEventCategories().isEmpty();
+        if (noEventTypes && noEventCategories) {
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                "Subscription must retain at least one event_type or event_category", 400);
+        }
         if (request.getScopeFilter() != null) existing.setScopeFilter(request.getScopeFilter());
         if (request.getThresholds() != null) existing.setThresholds(request.getThresholds());
         if (request.getSigningSecret() != null) existing.setSigningSecret(request.getSigningSecret());

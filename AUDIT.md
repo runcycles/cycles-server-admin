@@ -1,4 +1,4 @@
-# Complete Budget Governance v0.1.25.49 — Admin Server Audit
+# Complete Budget Governance v0.1.25.50 — Admin Server Audit
 
 **Spec:**
 [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml)
@@ -32,6 +32,70 @@ documentation-only on an open string field) in
 pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
+
+### 2026-07-10 — v0.1.25.50: tenant webhook event_categories boundary + match-ALL update guard (security)
+
+Confirmed authorization gap on the tenant webhook plane.
+`WebhookTenantController.validateTenantEventTypes` enforces the
+tenant-accessible boundary (budget.*/reservation.*/tenant.*) on
+`event_types` for create and update, but `event_categories` was never
+validated on that plane — and `WebhookRepository.matchesEventType`
+treats categories as an ADDITIVE union with types. Exploit: a tenant
+API key creates (or PATCHes) a subscription with one allowed
+`event_type` plus `"event_categories": ["api_key"]` (or policy /
+webhook / system) and receives admin-only event classes for its tenant
+— API-key lifecycle, policy changes, webhook lifecycle, system events.
+Governance spec revision v0.1.25.38 (pending, prepared in parallel)
+adds the normative rule: tenant-plane create AND update MUST validate
+event_categories against the same boundary, 400 INVALID_REQUEST.
+
+Fix and decisions:
+- New `validateTenantEventCategories` alongside the event_types check,
+  applied on BOTH create and update. The boundary is derived from a new
+  `EventCategory.isTenantAccessible()` (BUDGET/RESERVATION/TENANT) and
+  `EventType.isTenantAccessible()` now DELEGATES to it — one source of
+  truth, the type-level and category-level checks cannot drift.
+- **Admin-on-behalf-of decision:** the check runs unconditionally on
+  the tenant-plane endpoints, admin callers included — exactly how
+  `validateTenantEventTypes` already behaves on the dual-auth PATCH
+  path (create is tenant-key-only by design, spec v0.1.25.14). The
+  boundary belongs to the ENDPOINT, not the caller: admin-provisioned
+  subscriptions with admin categories are minted and managed on
+  `/v1/admin/webhooks/*`, and letting admin PATCH admin categories
+  onto a tenant-plane subscription would recreate the smuggle with
+  extra steps (tenant retains the endpoint + signing secret).
+- **Empty-both edge (verified reachable, guarded):** create requires
+  `@NotEmpty event_types`, but `WebhookService.update` applied
+  `"event_types": []` verbatim; with no categories the result matched
+  `matchesEventType`'s empty-both branch = match-ALL — every event
+  class, on either plane, admin-only included. Update now 400s when a
+  PATCH would leave both `event_types` and `event_categories` empty
+  ("Subscription must retain at least one event_type or
+  event_category"), on both planes: a match-all subscription is not
+  creatable, so it must not be reachable by update. Category-only
+  subscriptions (clear types, keep categories) remain legal. Legacy
+  empty-both rows (only producible via the old update bug) now 400 on
+  any PATCH until the request re-establishes at least one event field —
+  deliberate: such a row is a match-all landmine and must be repaired,
+  not silently carried forward.
+- The events-list plane already had a category boundary
+  (`EventTenantController.TENANT_ACCESSIBLE_CATEGORIES`, string-based);
+  webhooks lacked it. Left the events-list implementation untouched
+  (raw query-param handling differs); the enum method is now the
+  canonical boundary for typed call sites.
+
+Operator follow-up (also in CHANGELOG): audit existing tenant-plane
+subscriptions on <=0.1.25.49 for admin-only categories; recipe in the
+CHANGELOG security note.
+
+Tests: controller — smuggle on create -> 400 (service never called),
+smuggle on update -> 400, admin-on-behalf-of PATCH with admin category
+-> 400 (endpoint-bound boundary pinned), tenant-accessible categories
+pass on create (all three) and update; service — clearing event_types
+with no categories -> 400, clearing both in one PATCH -> 400,
+category-only survivor -> allowed; pure admin-plane
+`/v1/admin/webhooks` endpoints unaffected (no new validation there;
+existing suite green). Version/revision 0.1.25.49 -> 0.1.25.50.
 
 ### 2026-07-10 — spec-alignment declaration corrected to governance v0.1.25.37 (docs only; no behavior change)
 

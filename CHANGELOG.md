@@ -14,6 +14,47 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.50] — 2026-07-10
+
+### Security
+
+- **Tenant-plane webhook `event_categories` are now validated against the
+  tenant-accessible boundary.** `POST /v1/webhooks` and
+  `PATCH /v1/webhooks/{id}` validated `event_types` (budget.*,
+  reservation.*, tenant.* only) but never `event_categories` — and event
+  matching treats categories as an ADDITIVE union with types. A tenant API
+  key could therefore create or update a subscription with one allowed
+  `event_type` plus an admin-only category (`api_key`, `policy`, `webhook`,
+  `system`) and receive admin-only event classes for its tenant (e.g.
+  `api_key.created` payloads). Both paths now reject admin-only categories
+  with 400 `INVALID_REQUEST`, same message style as the `event_types` check
+  (governance spec revision v0.1.25.38, pending). The boundary applies to
+  the tenant-plane endpoint regardless of caller — admin-on-behalf-of PATCH
+  included — matching the existing `event_types` behavior; admin categories
+  belong on `/v1/admin/webhooks/*`.
+
+  **Operator note — audit existing subscriptions:** on 0.1.25.49 and
+  earlier, tenant-created subscriptions may already carry admin-only
+  categories. Audit tenant-plane subscriptions and strip/delete offenders,
+  e.g. against your Redis store:
+  `redis-cli --scan --pattern 'webhook:*' | xargs -L1 redis-cli GET | jq -r
+  'select(.event_categories != null) | select(.event_categories - ["budget","reservation","tenant"] | length > 0) | .subscription_id + " " + .tenant_id + " " + (.event_categories|tostring)'`
+  (subscriptions created via `/v1/admin/webhooks` by operators are
+  legitimate carriers of admin categories — check `tenant_id` provenance
+  against your admin-provisioned list, or the `createTenantWebhook` audit
+  log entries.)
+
+### Fixed
+
+- **PATCH can no longer produce a match-ALL subscription.** Create requires
+  a non-empty `event_types`, but update accepted `"event_types": []` — and
+  a subscription with BOTH `event_types` and `event_categories` empty
+  matches every event class (delivery-side wildcard). Update now returns
+  400 `INVALID_REQUEST` ("Subscription must retain at least one event_type
+  or event_category") on both the tenant and admin planes when a PATCH
+  would leave both empty. Category-only subscriptions (clearing
+  `event_types` while categories remain) are still legal.
+
 ## [0.1.25.49] — 2026-07-10
 
 ### Changed

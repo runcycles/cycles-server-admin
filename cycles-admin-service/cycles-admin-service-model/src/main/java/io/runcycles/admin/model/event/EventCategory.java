@@ -23,6 +23,19 @@ public enum EventCategory {
         return value;
     }
 
+    /**
+     * The tenant-plane accessibility boundary: tenants can subscribe to /
+     * query {@code budget.*}, {@code reservation.*}, {@code tenant.*} only;
+     * API_KEY / POLICY / WEBHOOK / SYSTEM are admin-only (governance spec;
+     * revision v0.1.25.38 extends the rule to webhook
+     * {@code event_categories}). Single source of truth for the boundary -
+     * {@link EventType#isTenantAccessible()} delegates here, so the
+     * type-level and category-level checks can never drift.
+     */
+    public boolean isTenantAccessible() {
+        return this == BUDGET || this == RESERVATION || this == TENANT;
+    }
+
     @JsonCreator
     public static EventCategory fromValue(String value) {
         for (EventCategory c : values()) {
