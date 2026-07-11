@@ -233,21 +233,21 @@ class WebhookReplayPaginationIntegrationTest {
     }
 
     // (4) scan ceiling hit → WARN logged (no silent truncation).
-    // (4a) Window candidate count EXCEEDS the scan ceiling and fewer than
-    //      max_events deliverable events were found within the scanned set → the
-    //      search is genuinely incomplete → 400 returned BEFORE any enqueue (the
-    //      truncation must be caller-visible, not a silent partial + WARN).
+    // (4) ALL-OR-NARROW: the window's candidate count exceeds the server scan
+    //     limit, so completeness over the unscanned tail can't be guaranteed →
+    //     400 (narrow the window), NOTHING enqueued. max_events is NOT a
+    //     resumable cursor, so there is no "continue" — either it fits or you
+    //     narrow.
     @Test
-    void replay_windowExceedsScanCeiling_incomplete_returns400_nothingEnqueued() {
+    void replay_windowExceedsScanLimit_returns400_narrow_nothingEnqueued() {
         ReflectionTestUtils.setField(webhookService, "replayMaxScan", 50);
         Instant base = Instant.parse("2026-07-11T00:00:00Z");
-        for (int i = 0; i < 60; i++) { // 60 deliverable matches; candidate count 60 > ceiling 50
+        for (int i = 0; i < 60; i++) { // candidate count 60 > scan limit 50
             seedEvent(String.format("evt_%04d", i), EventType.BUDGET_CREATED, EventCategory.BUDGET, null,
                     base.plusMillis(i));
         }
         seedBudgetSub();
 
-        // max_events (1000) not filled within the 50 scanned → incomplete → 400.
         org.assertj.core.api.Assertions.assertThatThrownBy(
                         () -> replay(1000, base.minusSeconds(1), base.plusSeconds(1)))
                 .isInstanceOf(io.runcycles.admin.data.exception.GovernanceException.class)
@@ -256,7 +256,8 @@ class WebhookReplayPaginationIntegrationTest {
                     assertThat(ge.getHttpStatus()).isEqualTo(400);
                     assertThat(ge.getErrorCode())
                             .isEqualTo(io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST);
-                    assertThat(ge.getMessage()).contains("replay window too large").contains("narrow");
+                    assertThat(ge.getMessage()).contains("exceeds the replay scan limit").contains("narrow");
+                    assertThat(ge.getMessage()).doesNotContain("lower max_events"); // no continuation guidance
                 });
 
         // NOTHING enqueued — fail-fast before the dispatch loop, no partial side effects.
@@ -265,22 +266,58 @@ class WebhookReplayPaginationIntegrationTest {
         assertThat(webhookRepository.acquireReplayLock("whsub_1", "probe")).isTrue();
     }
 
-    // (4b) Ceiling reached, but max_events WAS filled within the scanned set →
-    //      that is the caller's explicit pagination cap, NOT truncation → success.
+    // (5a) ALL-OR-NARROW: the FULLY-SCANNED window holds MORE than max_events
+    //      deliverable events → 400 (narrow, or raise max_events up to 1000),
+    //      NOTHING enqueued (no partial).
     @Test
-    void replay_windowExceedsCeiling_butMaxEventsFilledWithin_succeeds() {
-        ReflectionTestUtils.setField(webhookService, "replayMaxScan", 50);
+    void replay_windowExceedsMaxEventsDeliverable_returns400_nothingEnqueued() {
         Instant base = Instant.parse("2026-07-11T00:00:00Z");
-        for (int i = 0; i < 60; i++) { // candidate count 60 > ceiling 50
+        for (int i = 0; i < 20; i++) { // 20 deliverable; candidate count << default scan limit
             seedEvent(String.format("evt_%04d", i), EventType.BUDGET_CREATED, EventCategory.BUDGET, null,
                     base.plusMillis(i));
         }
         seedBudgetSub();
 
-        ReplayResponse r = replay(10, base.minusSeconds(1), base.plusSeconds(1)); // cap 10 < 50 scanned
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> replay(10, base.minusSeconds(1), base.plusSeconds(1))) // 20 > max_events 10
+                .isInstanceOf(io.runcycles.admin.data.exception.GovernanceException.class)
+                .satisfies(ex -> {
+                    var ge = (io.runcycles.admin.data.exception.GovernanceException) ex;
+                    assertThat(ge.getHttpStatus()).isEqualTo(400);
+                    assertThat(ge.getErrorCode())
+                            .isEqualTo(io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST);
+                    assertThat(ge.getMessage()).contains("more than max_events").contains("raise max_events");
+                });
 
-        assertThat(r.getEventsQueued()).isEqualTo(10); // filled the cap within the ceiling
-        verify(dispatchService, times(10)).dispatchToSubscription(any(), any());
+        verify(dispatchService, org.mockito.Mockito.never()).dispatchToSubscription(any(), any());
+        assertThat(webhookRepository.acquireReplayLock("whsub_1", "probe")).isTrue();
+    }
+
+    // (5b) The reviewer's same-timestamp concern under all-or-narrow: a
+    //      same-MILLISECOND cluster larger than max_events cannot be narrowed
+    //      below 1ms → 400; raising max_events to >= the cluster size makes a
+    //      SINGLE replay deliver ALL of them EXACTLY ONCE (no dup, no miss).
+    @Test
+    void replay_sameMsClusterOverMaxEvents_400_thenRaiseMaxEvents_deliversAllOnce() {
+        Instant ts = Instant.parse("2026-07-11T00:00:00Z");
+        for (int i = 0; i < 15; i++) { // 15 deliverable, ALL at the same millisecond
+            seedEvent(String.format("evt_%04d", i), EventType.BUDGET_CREATED, EventCategory.BUDGET, null, ts);
+        }
+        seedBudgetSub();
+
+        // max_events 10 < 15 in a 1ms cluster → 400, nothing enqueued.
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> replay(10, ts.minusSeconds(1), ts.plusSeconds(1)))
+                .isInstanceOf(io.runcycles.admin.data.exception.GovernanceException.class)
+                .satisfies(ex -> assertThat(
+                        ((io.runcycles.admin.data.exception.GovernanceException) ex).getHttpStatus())
+                        .isEqualTo(400));
+        verify(dispatchService, org.mockito.Mockito.never()).dispatchToSubscription(any(), any());
+
+        // Raise max_events >= cluster size → ONE replay delivers all 15 exactly once.
+        ReplayResponse r = replay(20, ts.minusSeconds(1), ts.plusSeconds(1));
+        assertThat(r.getEventsQueued()).isEqualTo(15);
+        assertThat(capturedDeliveries(15)).extracting(Event::getEventId).doesNotHaveDuplicates();
     }
 
     // (5) chronological delivery order preserved ACROSS page boundaries (>500).
@@ -305,27 +342,28 @@ class WebhookReplayPaginationIntegrationTest {
         assertThat(delivered.get(599).getEventId()).isEqualTo("evt_0599");
     }
 
-    // (6) max_events counts DELIVERABLE events (after all filters), and they are
-    //     the earliest matching ones in chronological order.
+    // (6) A fully-scanned window with <= max_events DELIVERABLE events — INCLUDING
+    //     a same-millisecond cluster — delivers ALL of them exactly once, with
+    //     non-matching events filtered out (deliverable-after-filters, complete).
     @Test
-    void replay_maxEvents_countsDeliverableAfterFilters() {
-        Instant base = Instant.parse("2026-07-11T00:00:00Z");
-        for (int i = 0; i < 20; i++) {
-            // interleave one matching + one non-matching at increasing timestamps
-            seedEvent(String.format("evt_ok_%04d", i), EventType.BUDGET_CREATED, EventCategory.BUDGET, null,
-                    base.plusMillis(2 * i));
-            seedEvent(String.format("evt_no_%04d", i), EventType.TENANT_CREATED, EventCategory.TENANT, null,
-                    base.plusMillis(2 * i + 1));
+    void replay_windowWithinMaxEvents_inclSameMsCluster_allDeliveredOnce() {
+        Instant ts = Instant.parse("2026-07-11T00:00:00Z");
+        // 8 deliverable + 4 non-matching, ALL at the same millisecond.
+        for (int i = 0; i < 8; i++) {
+            seedEvent(String.format("evt_ok_%04d", i), EventType.BUDGET_CREATED, EventCategory.BUDGET, null, ts);
+        }
+        for (int i = 0; i < 4; i++) {
+            seedEvent(String.format("evt_no_%04d", i), EventType.TENANT_CREATED, EventCategory.TENANT, null, ts);
         }
         seedBudgetSub();
 
-        ReplayResponse r = replay(5, base.minusSeconds(1), base.plusSeconds(1));
+        ReplayResponse r = replay(10, ts.minusSeconds(1), ts.plusSeconds(1)); // 8 deliverable <= 10
 
-        assertThat(r.getEventsQueued()).isEqualTo(5); // 5 DELIVERABLE, not 5 scanned
-        List<Event> delivered = capturedDeliveries(5);
-        assertThat(delivered).allMatch(e -> e.getEventType() == EventType.BUDGET_CREATED);
-        assertThat(delivered).extracting(Event::getEventId)
-                .containsExactly("evt_ok_0000", "evt_ok_0001", "evt_ok_0002",
-                        "evt_ok_0003", "evt_ok_0004"); // earliest 5 matches, chronological
+        assertThat(r.getEventsQueued()).isEqualTo(8);
+        List<Event> delivered = capturedDeliveries(8);
+        assertThat(delivered).allMatch(e -> e.getEventType() == EventType.BUDGET_CREATED); // non-matching filtered
+        assertThat(delivered).extracting(Event::getEventId).doesNotHaveDuplicates()
+                .containsExactlyInAnyOrder("evt_ok_0000", "evt_ok_0001", "evt_ok_0002", "evt_ok_0003",
+                        "evt_ok_0004", "evt_ok_0005", "evt_ok_0006", "evt_ok_0007");
     }
 }

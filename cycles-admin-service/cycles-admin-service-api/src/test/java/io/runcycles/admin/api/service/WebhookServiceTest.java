@@ -484,26 +484,55 @@ class WebhookServiceTest {
     // WebhookReplayPaginationIntegrationTest — mocked pages cannot exercise the
     // ZRANGEBYSCORE contract those bugs live in.
 
-    // Cap counts MATCHING events; delivery preserves chronological order.
+    // All-or-narrow: MORE than max_events deliverable in the window → 400,
+    // NOTHING dispatched, replay lock released (max_events is not a partial cap).
     @Test
-    void replay_capsAtMaxEventsMatching_preservesChronologicalOrder() {
+    void replay_moreThanMaxEventsDeliverable_throws400_nothingDispatched() {
         WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
         io.runcycles.admin.model.event.Event a = evt("evt_a", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
         io.runcycles.admin.model.event.Event b = evt("evt_b", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
         io.runcycles.admin.model.event.Event c = evt("evt_c", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
-        stubReplayWindow(List.of(a, b, c)); // chronological order
+        stubReplayWindow(List.of(a, b, c)); // 3 deliverable
+
+        assertThatThrownBy(() -> webhookService.replay("whsub_1",
+                ReplayRequest.builder().from(Instant.now().minusSeconds(3600)).to(Instant.now())
+                    .maxEvents(2).build())) // 3 > max_events 2
+            .isInstanceOf(GovernanceException.class)
+            .satisfies(ex -> {
+                GovernanceException ge = (GovernanceException) ex;
+                assertThat(ge.getHttpStatus()).isEqualTo(400);
+                assertThat(ge.getErrorCode())
+                    .isEqualTo(io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST);
+                assertThat(ge.getMessage()).contains("more than max_events").contains("raise max_events");
+            });
+
+        verify(dispatchService, never()).dispatchToSubscription(any(), any()); // nothing dispatched
+        verify(webhookRepository).releaseReplayLock(eq("whsub_1"), any());       // lock released
+    }
+
+    // All-or-narrow, within the cap: all deliverable events (<= max_events) are
+    // delivered, in chronological (id-list) order.
+    @Test
+    void replay_allDeliverableWithinMax_deliveredInOrder() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
+        io.runcycles.admin.model.event.Event a = evt("evt_a", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        io.runcycles.admin.model.event.Event b = evt("evt_b", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        io.runcycles.admin.model.event.Event c = evt("evt_c", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        stubReplayWindow(List.of(a, b, c));
 
         ReplayResponse response = webhookService.replay("whsub_1",
             ReplayRequest.builder().from(Instant.now().minusSeconds(3600)).to(Instant.now())
-                .maxEvents(2).build());
+                .maxEvents(5).build()); // 3 <= 5 → deliver all
 
-        assertThat(response.getEventsQueued()).isEqualTo(2);
+        assertThat(response.getEventsQueued()).isEqualTo(3);
         org.mockito.InOrder inOrder = org.mockito.Mockito.inOrder(dispatchService);
         inOrder.verify(dispatchService).dispatchToSubscription(a, sub);
         inOrder.verify(dispatchService).dispatchToSubscription(b, sub);
-        verify(dispatchService, never()).dispatchToSubscription(eq(c), any());
+        inOrder.verify(dispatchService).dispatchToSubscription(c, sub);
     }
 
     // The fail-closed ownership boundary is applied DURING collection, so an

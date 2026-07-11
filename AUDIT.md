@@ -38,6 +38,63 @@ pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-07-11 — v0.1.25.51 reviewer round: replay is ALL-OR-NARROW (no fake continuation) (#209)
+
+Reviewer REVISE-MINOR: the prior scan-limit fix left a broken claim — it framed
+`max_events` as a RESUMABLE pagination cap ("lower max_events to page", "advance
+from") but `ReplayResponse` has NO continuation position (`replay_id`,
+`events_queued`, `estimated_completion_seconds` only). So a partial can't be
+resumed losslessly: distinct timestamps → the caller never learns the last
+replayed timestamp; same-millisecond events → an inclusive `from` repeats the
+page, advancing it skips the rest. The guidance was unusable.
+
+**Decision (chosen over adding a cursor — no schema change, lossless): REPLAY IS
+ALL-OR-NARROW.** A successful replay delivers EVERY deliverable event in the
+window; it never returns a partial with an implied "continue".
+
+Final `collectDeliverableReplayEvents` logic:
+- Fetch `replayMaxScan + 1` candidate ids. If `ids.size() > replayMaxScan` (window
+  not fully scannable) → **400** BEFORE any enqueue.
+- Else fully scanned: collect all deliverable events (request event_types ∩
+  subscription selectors ∩ scope ∩ ownership boundary), one past `max_events`
+  (`break` when `collected.size() > maxEvents`). If `collected.size() > maxEvents`
+  → **400** BEFORE any enqueue.
+- Else (fully scanned, ≤ `max_events`) → return ALL, delivered chronologically.
+This cleanly REPLACES the prior "ceiling reached AND < max_events → 400": now
+`> replayMaxScan candidates` OR `> max_events deliverable` → 400; else deliver all.
+
+**Error code: `INVALID_REQUEST` (400)** for both. Exact messages:
+- scan limit: "replay window too large: it exceeds the replay scan limit of N
+  events; narrow the from/to range"
+- too-many-deliverable: "replay window contains more than max_events (N)
+  deliverable events; narrow the from/to range, or raise max_events (up to 1000)"
+
+**Removed continuation guidance:** the old message tail "(or lower max_events to
+page within the limit)" and the code comment "eventsQueued == max_events signals
+'there may be more'" / "explicit pagination cap" framing are gone; the javadoc now
+states `max_events` is NOT a resumable cursor.
+
+Tests: replaced the two prior ceiling tests (4a/4b, which encoded the silent
+partial and a "cap filled within ceiling → success" that is now a scan-limit 400)
+and rewrote the old max_events-cap test. New integration tests (real Redis):
+window > scan limit → 400 (narrow, nothing enqueued, lock released); fully-scanned
+window > max_events deliverable → 400 (nothing enqueued); same-MILLISECOND cluster
+of 15 with max_events 10 → 400, then raising max_events to 20 → ONE replay delivers
+all 15 exactly once (the reviewer's same-timestamp concern, handled in the model);
+window ≤ max_events incl. a same-ms cluster → all delivered once, non-matching
+filtered. The four approach-B ordering/no-dup correctness tests are intact. Unit
+(WebhookServiceTest): `> max_events deliverable → 400, nothing dispatched, lock
+released` and `≤ max_events → all delivered in order`.
+
+**Spec reconciliation (report):** governance `replayEvents` (line 7096) already
+declares a `400 "Invalid replay request"` (`ErrorResponse`), so both 400s are
+within its declared responses — schema-conformant. The all-or-narrow SEMANTIC and
+the two messages must match the parallel governance PR #130 rewrite; final
+semantics/messages reported above for the coordinator to reconcile.
+
+All gates green: api unit 862, data unit 543 (LINE 0.9572, unchanged), api
+integration 877, data integration 593 (unchanged).
+
 ### 2026-07-11 — v0.1.25.51 reviewer round: over-large replay window → caller-visible 400 (#209)
 
 Reviewer P2 (un-parked the PR): replay capped the candidate scan at

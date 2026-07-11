@@ -111,19 +111,27 @@ new optional request fields) are **not** considered breaking.
     misread as range exhaustion, and duplicate pages when a cursor member had
     vanished. No change to `EventRepository.list()` or its cursor, so other
     event-listing callers are unaffected.
-  - **Over-large replay window is a caller-visible 400 (no silent partial).** The
-    scan is bounded by `webhook.replay.max-scan` (default 20000). Returning fewer
-    than `max_events` would read to the caller as "these are ALL the matching
-    events in my window" — but if the window's candidate count exceeds that
-    ceiling the search was truncated and more may exist beyond it. Replay now
-    fetches one candidate past the ceiling to detect this and, when the ceiling
-    is reached AND fewer than `max_events` deliverable events were found within
-    the scanned set, returns **400 `INVALID_REQUEST`** BEFORE enqueuing any
-    delivery (message: *"replay window too large: it exceeds the replay scan
-    limit of N events; narrow the from/to range"*) — no partial side effects.
-    When `max_events` IS filled within the ceiling that is the caller's explicit
-    pagination cap (not truncation) and replay proceeds normally
-    (`events_queued == max_events` signals "there may be more").
+  - **Replay is ALL-OR-NARROW (a success is complete for its window).**
+    `max_events` is NOT a resumable pagination cursor — `ReplayResponse` carries
+    no continuation position, so a partial result could not be resumed losslessly
+    (distinct timestamps: the caller never learns the last replayed timestamp;
+    same-millisecond events: an inclusive `from` would repeat or skip). So a
+    SUCCESSFUL replay delivers EVERY deliverable event in `[from,to]`; it never
+    returns a partial with an implied "continue". Two fail-fast **400
+    `INVALID_REQUEST`** cases (thrown BEFORE any delivery is enqueued — no partial
+    side effects; the replay lock is released):
+    - the window's candidate count exceeds the server scan limit
+      (`webhook.replay.max-scan`, default 20000) — completeness can't be
+      guaranteed over the unscanned tail — *"replay window too large: it exceeds
+      the replay scan limit of N events; narrow the from/to range"*; or
+    - the fully-scanned window holds MORE than `max_events` deliverable events —
+      *"replay window contains more than max_events (N) deliverable events;
+      narrow the from/to range, or raise max_events (up to 1000)"*.
+
+    Otherwise (fully scanned, ≤ `max_events` deliverable) ALL are delivered,
+    chronologically. There is no "advance `from` to continue" / "lower
+    `max_events` to page" guidance — `max_events` bounds the window size, it is
+    not a continuation cursor.
 
 - **Bulk RESUME routed through boundary validation (#209).**
   `POST /v1/admin/webhooks/bulk-action` with `action: RESUME` reached `ACTIVE`
