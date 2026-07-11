@@ -27,12 +27,29 @@ new optional request fields) are **not** considered breaking.
   (`WebhookDispatchService`) and replay (`dispatchToSubscription`), an event is
   skipped **per event** when the subscription is concrete-tenant-owned
   (`isSystemOwner == false`) AND the event is admin-only (reusing the
-  `WebhookCategoryBoundaryValidator` boundary). This is fail-closed and does not
-  depend on the reconciler having run, on stored-selector correctness, or on
-  status transitions — a concrete-tenant subscription can never receive an
-  admin-only event. It filters per event, so a mixed subscription still receives
-  its tenant-accessible events; only the admin-only ones are withheld (counted
-  as `boundary_skipped`). `__system__`-owned subscriptions are unaffected.
+  `WebhookCategoryBoundaryValidator` boundary). The predicate is strictly
+  fail-closed: it blocks if EITHER the event's TYPE **or** its (independent,
+  cross-plane) CATEGORY is admin-only, and it blocks an unclassifiable record
+  (type and category both null) — `Event.category` is not always derived from
+  the type, so a malformed or type/category-inconsistent record can't slip
+  through to a tenant endpoint. This does not depend on the reconciler having
+  run, on stored-selector correctness, or on status transitions — a
+  concrete-tenant subscription can never receive an admin-only event. It filters
+  per event, so a mixed subscription still receives its tenant-accessible
+  events; only the admin-only ones are withheld (counted as `boundary_skipped`).
+  `__system__`-owned subscriptions are unaffected.
+  - **`/test` exception (documented).** `POST /v1/webhooks/{id}/test` and its
+    admin twin POST a spec-defined `system.webhook_test` ping DIRECTLY to the
+    subscription URL (not via the dispatch queue), so a tenant-owned
+    subscription's own test delivers an admin-category (`system`) synthetic
+    event. This is a narrow, explicit EXCEPTION to the invariant: the governance
+    spec (the authority) defines the test event as `system.webhook_test`, the
+    payload is an owner-triggered probe (`{subscription_id, test:true}`) carrying
+    NO real governance/security telemetry, and reclassifying the wire envelope
+    would both diverge from the spec and produce the type/category-inconsistent
+    record the dispatch boundary now blocks. Confidentiality is intact (no real
+    admin telemetry reaches a tenant endpoint); only a synthetic self-test
+    carries the `system` label. The spec-side exception is tracked separately.
 
 - **Admin-plane webhook boundary — closes the CARRIER source (#209).**
   `POST /v1/admin/webhooks?tenant_id=X` and `PATCH /v1/admin/webhooks/{id}`
@@ -76,6 +93,18 @@ new optional request fields) are **not** considered breaking.
   status TOCTOU). The fail-closed dispatch boundary above also applies on the
   replay path, so even an ACTIVE offender delivers none of its admin-only
   historical events.
+  - **Cap-then-filter under-delivery fixed.** Replay previously fetched a single
+    page capped at `max_events` and then applied the selector/scope/type filters
+    AS post-hoc stream filters — so if the first `max_events` (default 100)
+    events in the `[from,to]` window didn't match but later ones did, replay
+    queued ZERO despite matching events existing. Replay now PAGES the window
+    chronologically (bounded batches) and applies every filter — request
+    `event_types` ∩ the subscription's own selectors ∩ `scope_filter` ∩ the
+    ownership boundary — DURING pagination, accumulating up to `max_events`
+    **deliverable** events (so the cap counts deliverable events, not scanned
+    ones), then delivers them in chronological order (spec `replayEvents`). A
+    total scan ceiling bounds cost on very sparse windows and logs a warning if
+    hit before the cap is filled (never a silent truncation).
 
 - **Bulk RESUME routed through boundary validation (#209).**
   `POST /v1/admin/webhooks/bulk-action` with `action: RESUME` reached `ACTIVE`
@@ -114,7 +143,9 @@ new optional request fields) are **not** considered breaking.
   enforces. **This is not the security mechanism** — the fail-closed dispatch
   boundary (above) is; the reconciler is best-effort cleanup and, because
   dispatch already blocks the leak, admin-only selectors on a concrete-tenant
-  row are already non-functional. Per row (skips already-`DISABLED` rows):
+  row are already non-functional. The strip/disable actions skip already
+  -`DISABLED` rows (idempotent); the NORMALIZE and INDEX actions run regardless
+  of status. Per row:
   - **Concrete-tenant rows carrying admin-only types/categories:** the
     admin-only selectors are **STRIPPED** and tenant-accessible ones kept
     (`STRIPPED_ADMIN_SELECTORS`). Because dispatch already withholds those
@@ -128,12 +159,18 @@ new optional request fields) are **not** considered breaking.
   - **Null-owner rows** (corruption): normalized to the `__system__` owner and
     added to the `webhooks:__system__` dispatch index (`NORMALIZED_NULL_OWNER`),
     removing the limbo state (exempt from repair yet absent from every dispatch
-    index) rather than leaving them un-indexed.
+    index) rather than leaving them un-indexed. The owner rewrite (SET) and the
+    index add (SADD) run in ONE atomic Lua op, so a partial failure can never
+    persist the owner while leaving the row un-indexed. This runs even for a
+    DISABLED null-owner row.
+  - **System-owned rows MISSING from the index** (e.g. left behind by a prior
+    partial normalization): membership repaired via an idempotent SADD,
+    independent of status (`INDEXED_SYSTEM_MEMBER`).
 
   Every action is loudly logged. **Robustness:** it `SSCAN`s the index in
-  batches (bounded memory), writes via an atomic compare-and-set (never
-  clobbers a concurrent operator update — a CAS miss is a counted failure and
-  retried), and runs on a **managed daemon executor** that is interrupted and
+  batches (bounded memory), writes via an atomic compare-and-set + index add
+  (never clobbers a concurrent operator update — a CAS miss is a counted failure
+  and retried), and runs on a **managed daemon executor** that is interrupted and
   awaited on Spring context shutdown (`@PreDestroy`) so it stops cleanly instead
   of leaking a thread sleeping through a retry backoff. Startup/readiness is
   never blocked; an incomplete pass (row error or CAS miss) is retried with
@@ -145,6 +182,13 @@ new optional request fields) are **not** considered breaking.
   REPORTS the actions in the logs without mutating anything). Operators can
   also find offenders with the `redis-cli`/`jq` recipe from the [0.1.25.50]
   Security note.
+
+- **Replay `events_queued` no longer over-reports (#209).** `dispatchToSubscription`
+  returned `true` even when the delivery row was persisted but the `LPUSH` onto
+  `dispatch:pending` failed (the enqueue error was swallowed), so replay counted
+  a delivery the worker would never pick up. `createDelivery` now returns whether
+  the row was actually ENQUEUED, and `dispatchToSubscription` (and the live
+  dispatch metric) propagate it — `events_queued` counts only real enqueues.
 
 ## [0.1.25.50] — 2026-07-10
 

@@ -38,6 +38,76 @@ pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-07-11 — v0.1.25.51 codex round 3: replay cap-then-filter + boundary/atomicity/honesty hardening (#209)
+
+Round-3 findings verified against source (2bb2467) and fixed. The BIGGEST
+round-3 item — enforcing the boundary in the separate `cycles-server-events`
+delivery worker — is handled in that repo by a different change; this entry
+covers only the admin-service findings.
+
+**P2 (replay cap-then-filter under-delivery).** `WebhookService.replay` fetched
+ONE page capped at `max_events` then applied the request-type / subscription
+-selector (`matchesEventType`) / `scope_filter` (`matchesScope`) filters as
+post-hoc stream filters — so if the first `max_events` events in `[from,to]`
+didn't match but later ones did, replay queued ZERO. Round-3's two added
+post-cap filters made this more acute. Fix: new `collectDeliverableReplayEvents`
+pages the window in timestamp-ASC batches (`REPLAY_PAGE_SIZE=500`) via the
+`EventRepository.list` cursor, applies ALL filters PLUS the ownership boundary
+(`dispatchService.isBlockedByOwnershipBoundary`, made public) DURING pagination,
+accumulating up to `max_events` DELIVERABLE events, then delivers chronologically
+(spec `replayEvents`). A `REPLAY_MAX_SCAN=20_000` ceiling bounds cost on sparse
+windows and logs (not silently truncates) if hit. Verified `EventRepository.list`
+timestamp-ASC uses `zrangeByScore` with a score-advancing cursor (chronological).
+
+**Finding 1 (LOW — category + unclassifiable).** `isBlockedByOwnershipBoundary`
+checked only `event.getEventType()`. `Event.category` is independent (EventService
+preserves a supplied category), so a tenant-accessible TYPE with an admin-only
+CATEGORY, or a typeless record, slipped through. Now blocks if type OR category
+is admin-only, AND blocks an unclassifiable (both-null) record for a concrete
+owner. Added `WebhookCategoryBoundaryValidator.isAdminOnly(EventCategory)`.
+
+**Finding 2 (MEDIUM — normalize atomicity + disabled/unindexed).** The null-owner
+SET (CAS Lua) and the `SADD webhooks:__system__` were separate commands — a crash
+between them left the row normalized-but-unindexed, and the retry saw
+`nullOwner=false & changed=false` and never repaired the membership; also the
+blanket DISABLED-skip meant disabled null-owner rows were never normalized. Fix:
+one `CAS_SET_AND_INDEX_LUA` folds the conditional SET and the SADD into a single
+atomic op; the reconciler computes `needsIndex` via `SISMEMBER` INDEPENDENTLY of
+status (repairs a DISABLED null-owner row, and a system row missing from the
+index → new `INDEXED_SYSTEM_MEMBER` action via idempotent SADD). Strip/disable
+still skip already-DISABLED rows.
+
+**Finding 3 (MEDIUM — /test bypass). DECISION: documented exception (route b).**
+`WebhookService.test` POSTs a spec-defined `system.webhook_test` (admin category)
+ping DIRECTLY to the subscription URL, so a tenant-owned sub's `/test` delivers
+an admin-classified event. I did NOT reclassify the envelope because (1) the yaml
+spec is the authority and defines the test event as `system.webhook_test` — the
+enum has no tenant-accessible test type; and (2) keeping the type while relabelling
+the category would create exactly the type/category-inconsistent record finding 1
+now blocks. Instead documented it as a narrow, explicit invariant EXCEPTION
+(owner-triggered synthetic probe, payload `{subscription_id, test:true}`, no
+governance telemetry, bypasses the dispatch queue) in code comment + CHANGELOG +
+this AUDIT. **The governance spec needs the /test exception noted spec-side —
+flagged to the coordinator.**
+
+**Finding 4 (LOW — honest boolean).** `createDelivery` swallowed an `LPUSH`
+failure yet `dispatchToSubscription` returned `true`, so replay over-counted.
+`createDelivery` now returns enqueue success; `dispatchToSubscription` and the
+live dispatch metric propagate it.
+
+**Finding 5 (test hardening).** Real-Redis CAS test now evals the ACTUAL
+production script (`WebhookRepository.reconcileCasSetAndIndexScript()`), not a
+hand-copied string; the 600-row SSCAN test asserts `>1` cursor round-trips at the
+production COUNT; the concurrency re-read test asserts the fresh `findById`
+re-read actually drove the skip; added tests for category/unclassifiable blocking,
+disabled-null-owner normalization + system-unindexed membership repair (unit +
+real-Redis), /test envelope pinning, and enqueue-failure → false. Also fixed the
+integration `seed` helper to mirror production `save()` (per-tenant index), so
+seeded `__system__` rows are correctly indexed.
+
+Full foreground build, all gates green: api unit 863, data unit 538 (LINE 0.9567,
+gate 0.95), data integration 588, api integration 870.
+
 ### 2026-07-11 — v0.1.25.51 codex round 2 REVISE-MAJOR: fail-closed dispatch boundary + strip cleanup (#209)
 
 Codex round 2 verified the write gate, effective-merge, reconciler

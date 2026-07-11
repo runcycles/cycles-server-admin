@@ -24,6 +24,8 @@ import org.testcontainers.utility.DockerImageName;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
+import redis.clients.jedis.params.ScanParams;
+import redis.clients.jedis.resps.ScanResult;
 
 import java.lang.reflect.Field;
 import java.time.Instant;
@@ -92,6 +94,9 @@ class WebhookCategoryBoundaryReconcileIntegrationTest {
         try (Jedis jedis = jedisPool.getResource()) {
             jedis.set("webhook:" + id, objectMapper.writeValueAsString(sub));
             jedis.sadd("webhooks:_all", id);
+            // Mirror production save(): also index by owning tenant (incl.
+            // __system__). Null owner is the corruption case — left unindexed.
+            if (tenantId != null) jedis.sadd("webhooks:" + tenantId, id);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -207,6 +212,20 @@ class WebhookCategoryBoundaryReconcileIntegrationTest {
         seed("wh_off_a", "tenant-y", List.of(EventType.API_KEY_CREATED), null, WebhookStatus.ACTIVE);
         seed("wh_off_b", "tenant-z", List.of(), null, WebhookStatus.ACTIVE);
 
+        // Assert the index genuinely spans MULTIPLE SSCAN cursors at the
+        // production COUNT — otherwise a single-batch bug wouldn't be caught.
+        int roundTrips = 0;
+        String cur = ScanParams.SCAN_POINTER_START;
+        try (Jedis jedis = jedisPool.getResource()) {
+            ScanParams p = new ScanParams().count(WebhookRepository.reconcileScanBatch());
+            do {
+                ScanResult<String> s = jedis.sscan("webhooks:_all", cur, p);
+                cur = s.getCursor();
+                roundTrips++;
+            } while (!cur.equals(ScanParams.SCAN_POINTER_START));
+        }
+        assertThat(roundTrips).isGreaterThan(1);
+
         ReconcileResult result = webhookRepository.reconcileTenantCategoryBoundary(false);
 
         assertThat(result.isComplete()).isTrue();
@@ -233,12 +252,14 @@ class WebhookCategoryBoundaryReconcileIntegrationTest {
             jedis.set("webhook:wh_cas", stale.replace("https://example.com/", "https://changed.example.com/"));
         }
         // A reconcile pass now reads the CHANGED value, so its CAS old-value
-        // matches current → it WOULD write. To exercise the miss path we prove
-        // the Lua directly: CAS with the stale value must return 0 and not write.
+        // matches current → it WOULD write. To exercise the miss path we invoke
+        // the ACTUAL production script (not a hand-copied string, so drift is
+        // caught): CAS with the stale value must return 0 and not write.
         try (Jedis jedis = jedisPool.getResource()) {
             Object res = jedis.eval(
-                "if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('SET', KEYS[1], ARGV[2]) return 1 else return 0 end",
-                List.of("webhook:wh_cas"), List.of(stale, "{}"));
+                WebhookRepository.reconcileCasSetAndIndexScript(),
+                List.of("webhook:wh_cas", "webhooks:__system__"),
+                List.of(stale, "{}", "0", "wh_cas"));
             assertThat(res).isEqualTo(0L);
             assertThat(jedis.get("webhook:wh_cas")).contains("https://changed.example.com/"); // not clobbered
         }
@@ -261,6 +282,56 @@ class WebhookCategoryBoundaryReconcileIntegrationTest {
                 .isEqualTo(CategoryBoundaryAction.STRIPPED_ADMIN_SELECTORS);
         assertThat(read("wh_blank").getEventCategories()).isNullOrEmpty();
         assertThat(read("wh_blank").getEventTypes()).containsExactly(EventType.BUDGET_CREATED);
+    }
+
+    // #209 finding 2 (real Redis): a DISABLED null-owner row is still normalized
+    // to __system__ and indexed atomically, and stays DISABLED.
+    @Test
+    void reconcile_disabledNullOwner_normalizedAndIndexed_staysDisabled() {
+        seed("wh_dnull", null, List.of(EventType.API_KEY_CREATED),
+                List.of(EventCategory.API_KEY), WebhookStatus.DISABLED);
+
+        ReconcileResult result = webhookRepository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(outcomeFor(result.repaired(), "wh_dnull").action())
+                .isEqualTo(CategoryBoundaryAction.NORMALIZED_NULL_OWNER);
+        WebhookSubscription w = read("wh_dnull");
+        assertThat(w.getTenantId()).isEqualTo("__system__");
+        assertThat(w.getStatus()).isEqualTo(WebhookStatus.DISABLED);
+        try (Jedis jedis = jedisPool.getResource()) {
+            assertThat(jedis.sismember("webhooks:__system__", "wh_dnull")).isTrue();
+        }
+    }
+
+    // #209 finding 2 (real Redis): a system-owned row present in webhooks:_all
+    // but MISSING from webhooks:__system__ (a prior partial normalization) has
+    // its index membership repaired, independent of status.
+    @Test
+    void reconcile_systemRowMissingFromIndex_membershipRepaired() {
+        // Seed directly into _all WITHOUT the __system__ index (simulate the
+        // partial-failure state the old non-atomic code could leave behind).
+        WebhookSubscription sub = WebhookSubscription.builder()
+                .subscriptionId("wh_orphan").tenantId("__system__")
+                .url("https://example.com/wh_orphan")
+                .eventCategories(List.of(EventCategory.API_KEY))
+                .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.set("webhook:wh_orphan", objectMapper.writeValueAsString(sub));
+            jedis.sadd("webhooks:_all", "wh_orphan");
+            assertThat(jedis.sismember("webhooks:__system__", "wh_orphan")).isFalse();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        ReconcileResult result = webhookRepository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(outcomeFor(result.repaired(), "wh_orphan").action())
+                .isEqualTo(CategoryBoundaryAction.INDEXED_SYSTEM_MEMBER);
+        try (Jedis jedis = jedisPool.getResource()) {
+            assertThat(jedis.sismember("webhooks:__system__", "wh_orphan")).isTrue();
+        }
+        // Idempotent: a second pass sees it indexed and does nothing.
+        assertThat(webhookRepository.reconcileTenantCategoryBoundary(false).repaired()).isEmpty();
     }
 
     @Test

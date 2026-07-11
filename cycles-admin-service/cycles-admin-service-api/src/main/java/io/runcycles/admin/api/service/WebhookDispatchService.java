@@ -60,14 +60,35 @@ public class WebhookDispatchService {
      * offenders and the reconciler is best-effort hygiene, but THIS is the
      * guarantee. Per-event: a mixed subscription still receives its
      * tenant-accessible events; only the admin-only ones are skipped.
+     *
+     * <p>Public so the replay collector ({@code WebhookService.replay}) can
+     * apply the SAME predicate while paginating — it must not spend its
+     * {@code max_events} budget on events {@code dispatchToSubscription} would
+     * skip, otherwise the cap would count non-deliverable events. Delivery
+     * still re-applies this guard (defense in depth); exposing it only makes the
+     * cap count DELIVERABLE events.
      */
-    private boolean isBlockedByOwnershipBoundary(Event event, WebhookSubscription sub) {
-        boolean blocked = !WebhookSubscription.isSystemOwner(sub.getTenantId())
-            && categoryBoundaryValidator.isAdminOnly(event.getEventType());
+    public boolean isBlockedByOwnershipBoundary(Event event, WebhookSubscription sub) {
+        if (WebhookSubscription.isSystemOwner(sub.getTenantId())) {
+            return false; // system-owned subs receive everything
+        }
+        // Concrete owner: fail-closed. Block if EITHER the type OR the
+        // (independent, cross-plane) category is admin-only, AND block an
+        // unclassifiable record (both type and category null) — Event.category
+        // is not always derived from the type (EventService preserves a supplied
+        // category), so a record with a tenant-accessible type but an admin-only
+        // category, or a malformed/typeless record, must NOT reach a tenant
+        // endpoint. I/O-free.
+        boolean typeAdmin = categoryBoundaryValidator.isAdminOnly(event.getEventType());
+        boolean categoryAdmin = categoryBoundaryValidator.isAdminOnly(event.getCategory());
+        boolean unclassifiable = event.getEventType() == null && event.getCategory() == null;
+        boolean blocked = typeAdmin || categoryAdmin || unclassifiable;
         if (blocked) {
-            LOG.debug("Webhook delivery blocked by ownership boundary (#209): subscription_id={} tenant_id={} event_type={} — a concrete-tenant subscription cannot receive admin-only events",
+            LOG.debug("Webhook delivery blocked by ownership boundary (#209): subscription_id={} tenant_id={} event_type={} category={} type_admin={} category_admin={} unclassifiable={} — a concrete-tenant subscription cannot receive admin-only or unclassifiable events",
                 safe(sub.getSubscriptionId()), safe(sub.getTenantId()),
-                event.getEventType() != null ? event.getEventType().getValue() : null);
+                event.getEventType() != null ? event.getEventType().getValue() : null,
+                event.getCategory() != null ? event.getCategory().getValue() : null,
+                typeAdmin, categoryAdmin, unclassifiable);
         }
         return blocked;
     }
@@ -90,8 +111,8 @@ public class WebhookDispatchService {
                     continue;
                 }
                 try {
-                    createDelivery(event, sub);
-                    recordDispatch("queued");
+                    boolean enqueued = createDelivery(event, sub);
+                    recordDispatch(enqueued ? "queued" : "failure");
                 } catch (Exception e) {
                     LOG.error("Failed to create webhook delivery: event_id={} event_type={} tenant_id={} scope={} subscription_id={} correlation_id={} request_id={} trace_id={} error={}",
                             safe(event != null ? event.getEventId() : null),
@@ -161,11 +182,18 @@ public class WebhookDispatchService {
                 current != null ? current.getStatus() : null);
             return false;
         }
-        createDelivery(event, sub);
-        return true;
+        // Honest boolean: true only if the delivery was actually enqueued.
+        return createDelivery(event, sub);
     }
 
-    private void createDelivery(Event event, WebhookSubscription sub) {
+    /**
+     * Persist a delivery row and enqueue it for {@code cycles-server-events}.
+     * Returns {@code true} only when the row was actually ENQUEUED
+     * ({@code LPUSH} succeeded) — a saved-but-not-enqueued delivery returns
+     * {@code false} so callers (replay counting, dispatch metrics) don't
+     * over-report a delivery the worker will never pick up.
+     */
+    private boolean createDelivery(Event event, WebhookSubscription sub) {
         TraceSnapshot trace = currentTraceSnapshot(event);
         WebhookDelivery delivery = WebhookDelivery.builder()
             .deliveryId("del_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16))
@@ -183,12 +211,14 @@ public class WebhookDispatchService {
         // Enqueue for cycles-server-events to pick up via BRPOP
         try (Jedis jedis = jedisPool.getResource()) {
             jedis.lpush("dispatch:pending", delivery.getDeliveryId());
+            return true;
         } catch (Exception e) {
             LOG.warn("Failed to enqueue webhook delivery: delivery_id={} event_id={} event_type={} subscription_id={} tenant_id={} queue=dispatch:pending trace_id={} error={}",
                     safe(delivery.getDeliveryId()), safe(delivery.getEventId()),
                     delivery.getEventType() != null ? delivery.getEventType().getValue() : null,
                     safe(delivery.getSubscriptionId()), safe(sub.getTenantId()),
                     safe(delivery.getTraceId()), safe(e.getMessage()), e);
+            return false;
         }
     }
 

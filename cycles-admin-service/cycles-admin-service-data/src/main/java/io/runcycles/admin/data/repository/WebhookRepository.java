@@ -143,15 +143,19 @@ public class WebhookRepository {
     }
 
     /**
-     * Atomic compare-and-set: only overwrite the row if it still holds exactly
-     * the value we read (ARGV[1]), so a reconcile write can never clobber a
-     * concurrent operator update between our GET and SET. Returns 1 on write,
-     * 0 if the row changed underneath us (treated as a concurrent-skip and
-     * retried on the next pass).
+     * Atomic compare-and-set + optional index membership, in ONE server-side op.
+     * Only overwrites the row if it still holds exactly the value we read
+     * (ARGV[1]) — so a reconcile write can never clobber a concurrent operator
+     * update between our GET and SET. When ARGV[3] == "1" it ALSO adds the id to
+     * the system index (KEYS[2]) inside the same atomic script, so a null-owner
+     * normalization can never persist the owner rewrite while leaving the row
+     * un-indexed (there is no window between SET and SADD). Returns 1 on write,
+     * 0 if the row changed underneath us (a concurrent-skip, retried next pass).
      */
-    private static final String CAS_SET_LUA =
+    private static final String CAS_SET_AND_INDEX_LUA =
         "if redis.call('GET', KEYS[1]) == ARGV[1] then\n" +
         "  redis.call('SET', KEYS[1], ARGV[2])\n" +
+        "  if ARGV[3] == '1' then redis.call('SADD', KEYS[2], ARGV[4]) end\n" +
         "  return 1\n" +
         "else\n" +
         "  return 0\n" +
@@ -159,6 +163,14 @@ public class WebhookRepository {
 
     /** Batch size for the SSCAN over the global webhook index. */
     private static final int RECONCILE_SCAN_BATCH = 200;
+
+    /**
+     * Exposes the exact production CAS+index Lua and SSCAN batch so integration
+     * tests exercise the real script/constant rather than a hand-copied string
+     * that could silently drift from production.
+     */
+    public static String reconcileCasSetAndIndexScript() { return CAS_SET_AND_INDEX_LUA; }
+    public static int reconcileScanBatch() { return RECONCILE_SCAN_BATCH; }
 
     /** What the category-boundary reconciler did (or would do) to one row. */
     public enum CategoryBoundaryAction {
@@ -169,7 +181,14 @@ public class WebhookRepository {
         /** Legacy empty-both (match-ALL) row → DISABLED (the 0.1.25.50 rule). */
         DISABLED_EMPTY_BOTH,
         /** Null-owner (corruption) row normalized to the __system__ owner + index. */
-        NORMALIZED_NULL_OWNER
+        NORMALIZED_NULL_OWNER,
+        /**
+         * System-owned row that was MISSING from the {@code webhooks:__system__}
+         * dispatch index (e.g. a prior partial normalization that set the owner
+         * but crashed before the SADD) — membership repaired. Independent of
+         * status (a DISABLED system row still must be indexed).
+         */
+        INDEXED_SYSTEM_MEMBER
     }
 
     /** {@code strippedSelectors} = the admin-only type/category wire values removed (empty for pure disable/normalize). */
@@ -200,14 +219,20 @@ public class WebhookRepository {
      * brought in line with the effective delivery behavior; NOT a behavior
      * change, and no collateral on legitimate tenant-accessible deliveries).
      *
-     * <p>Per row (skips already-{@code DISABLED} rows — idempotent):
+     * <p>The strip/disable actions are idempotent — they skip already-{@code
+     * DISABLED} rows. The NORMALIZE and INDEX actions run regardless of status
+     * (a DISABLED null-owner or unindexed system row still needs fixing). Per row:
      * <ul>
      *   <li><b>Null-owner</b> (corruption): normalized to the {@code __system__}
      *       owner and added to the {@code webhooks:__system__} dispatch index so
      *       it is a well-classified system subscription rather than limbo
-     *       (exempt from repair yet absent from every dispatch index).
-     *       {@code NORMALIZED_NULL_OWNER}. (If it is also empty-both it is
-     *       disabled in the same write.)</li>
+     *       (exempt from repair yet absent from every dispatch index). The owner
+     *       rewrite (SET) and the index add (SADD) execute in ONE atomic Lua op,
+     *       so a partial failure can never persist the owner while leaving the
+     *       row un-indexed. {@code NORMALIZED_NULL_OWNER}.</li>
+     *   <li><b>System-owned but MISSING from the index</b> (e.g. a prior partial
+     *       normalization): membership repaired via an idempotent SADD,
+     *       independent of status. {@code INDEXED_SYSTEM_MEMBER}.</li>
      *   <li><b>Concrete-tenant</b> (owner not null/{@code __system__}, per
      *       {@link WebhookSubscription#isSystemOwner}) carrying admin-only
      *       {@code event_types} and/or {@code event_categories}: those admin
@@ -243,64 +268,85 @@ public class WebhookRepository {
                         String data = jedis.get("webhook:" + id);
                         if (data == null) continue;
                         WebhookSubscription sub = objectMapper.readValue(data, WebhookSubscription.class);
-                        if (sub.getStatus() == WebhookStatus.DISABLED) continue; // idempotent
 
                         boolean nullOwner = sub.getTenantId() == null;
                         // Normalize null owner → __system__ (corruption fix); the row is then
                         // system-owned for the boundary logic below.
                         String effectiveOwner = nullOwner ? WebhookSubscription.SYSTEM_TENANT : sub.getTenantId();
                         boolean system = WebhookSubscription.isSystemOwner(effectiveOwner);
+                        boolean disabledRow = sub.getStatus() == WebhookStatus.DISABLED;
+
+                        // Index-membership repair, computed INDEPENDENTLY of status: a
+                        // system-owned row (incl. a just-normalized null-owner, or one left
+                        // un-indexed by a prior partial normalization — even if DISABLED)
+                        // must be a member of the system dispatch index.
+                        boolean needsIndex = system
+                            && !jedis.sismember("webhooks:" + WebhookSubscription.SYSTEM_TENANT, id);
 
                         // Concrete-tenant rows: strip admin-only selectors (dispatch already
-                        // blocks their delivery, so this only reconciles storage).
+                        // blocks their delivery, so this only reconciles storage). Skipped for
+                        // already-DISABLED rows (idempotent — nothing is delivered anyway).
                         List<String> stripped = new ArrayList<>();
-                        if (!system) {
-                            List<EventType> types = sub.getEventTypes();
-                            List<EventCategory> cats = sub.getEventCategories();
-                            List<EventType> keptTypes = new ArrayList<>();
-                            List<EventCategory> keptCats = new ArrayList<>();
-                            if (types != null) for (EventType t : types) {
-                                if (t.isTenantAccessible()) keptTypes.add(t); else stripped.add(t.getValue());
+                        boolean disable = false;
+                        if (!disabledRow) {
+                            if (!system) {
+                                List<EventType> types = sub.getEventTypes();
+                                List<EventCategory> cats = sub.getEventCategories();
+                                List<EventType> keptTypes = new ArrayList<>();
+                                List<EventCategory> keptCats = new ArrayList<>();
+                                if (types != null) for (EventType t : types) {
+                                    if (t.isTenantAccessible()) keptTypes.add(t); else stripped.add(t.getValue());
+                                }
+                                if (cats != null) for (EventCategory c : cats) {
+                                    if (c.isTenantAccessible()) keptCats.add(c); else stripped.add(c.getValue());
+                                }
+                                if (!stripped.isEmpty()) {
+                                    sub.setEventTypes(keptTypes.isEmpty() ? null : keptTypes);
+                                    sub.setEventCategories(keptCats.isEmpty() ? null : keptCats);
+                                }
                             }
-                            if (cats != null) for (EventCategory c : cats) {
-                                if (c.isTenantAccessible()) keptCats.add(c); else stripped.add(c.getValue());
-                            }
-                            if (!stripped.isEmpty()) {
-                                sub.setEventTypes(keptTypes.isEmpty() ? null : keptTypes);
-                                sub.setEventCategories(keptCats.isEmpty() ? null : keptCats);
-                            }
+                            // Empty-both computed on the RESULTING selectors (after any strip).
+                            List<EventType> t2 = sub.getEventTypes();
+                            List<EventCategory> c2 = sub.getEventCategories();
+                            boolean emptyBoth = (t2 == null || t2.isEmpty()) && (c2 == null || c2.isEmpty());
+                            disable = emptyBoth;
                         }
                         boolean didStrip = !stripped.isEmpty();
 
-                        // Empty-both computed on the RESULTING selectors (after any strip).
-                        List<EventType> t2 = sub.getEventTypes();
-                        List<EventCategory> c2 = sub.getEventCategories();
-                        boolean emptyBoth = (t2 == null || t2.isEmpty()) && (c2 == null || c2.isEmpty());
-                        boolean disable = emptyBoth; // was ACTIVE/PAUSED (DISABLED skipped above)
-
-                        boolean changed = nullOwner || didStrip || disable;
-                        if (!changed) continue; // clean row
+                        // A JSON write is needed for owner rewrite / strip / disable; a pure
+                        // index-membership repair needs only an (idempotent) SADD.
+                        boolean jsonChange = nullOwner || didStrip || disable;
+                        if (!jsonChange && !needsIndex) continue; // clean row
 
                         CategoryBoundaryAction action;
                         if (didStrip && disable) action = CategoryBoundaryAction.STRIPPED_AND_DISABLED;
                         else if (didStrip)       action = CategoryBoundaryAction.STRIPPED_ADMIN_SELECTORS;
                         else if (disable)        action = CategoryBoundaryAction.DISABLED_EMPTY_BOTH;
-                        else                     action = CategoryBoundaryAction.NORMALIZED_NULL_OWNER;
+                        else if (nullOwner)      action = CategoryBoundaryAction.NORMALIZED_NULL_OWNER;
+                        else                     action = CategoryBoundaryAction.INDEXED_SYSTEM_MEMBER;
 
                         if (!dryRun) {
-                            if (nullOwner) sub.setTenantId(WebhookSubscription.SYSTEM_TENANT);
-                            if (disable) sub.setStatus(WebhookStatus.DISABLED);
-                            sub.setUpdatedAt(Instant.now());
-                            String newJson = objectMapper.writeValueAsString(sub);
-                            Object casRes = jedis.eval(CAS_SET_LUA, List.of("webhook:" + id),
-                                List.of(data, newJson));
-                            if (!Long.valueOf(1L).equals(casRes)) {
-                                failures++;
-                                LOG.warn("category-boundary reconcile CAS miss (concurrent update), will retry: subscription_id={} tenant_id={}",
-                                    LogSanitizer.safe(id), LogSanitizer.safe(effectiveOwner));
-                                continue;
+                            if (jsonChange) {
+                                if (nullOwner) sub.setTenantId(WebhookSubscription.SYSTEM_TENANT);
+                                if (disable) sub.setStatus(WebhookStatus.DISABLED);
+                                sub.setUpdatedAt(Instant.now());
+                                String newJson = objectMapper.writeValueAsString(sub);
+                                // SADD folded into the SAME atomic op when the row must be indexed.
+                                boolean doIndex = nullOwner || needsIndex;
+                                Object casRes = jedis.eval(CAS_SET_AND_INDEX_LUA,
+                                    List.of("webhook:" + id, "webhooks:" + WebhookSubscription.SYSTEM_TENANT),
+                                    List.of(data, newJson, doIndex ? "1" : "0", id));
+                                if (!Long.valueOf(1L).equals(casRes)) {
+                                    failures++;
+                                    LOG.warn("category-boundary reconcile CAS miss (concurrent update), will retry: subscription_id={} tenant_id={}",
+                                        LogSanitizer.safe(id), LogSanitizer.safe(effectiveOwner));
+                                    continue;
+                                }
+                            } else {
+                                // Pure index repair: SADD is idempotent and cannot clobber the
+                                // row, so no CAS is needed.
+                                jedis.sadd("webhooks:" + WebhookSubscription.SYSTEM_TENANT, id);
                             }
-                            if (nullOwner) jedis.sadd("webhooks:" + WebhookSubscription.SYSTEM_TENANT, id);
                         }
 
                         repaired.add(new CategoryBoundaryRepairOutcome(id, effectiveOwner, action, stripped));

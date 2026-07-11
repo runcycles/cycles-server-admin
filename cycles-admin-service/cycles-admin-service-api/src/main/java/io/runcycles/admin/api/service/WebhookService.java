@@ -10,6 +10,7 @@ import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.event.*;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.SortSpec;
+import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.webhook.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -153,6 +154,22 @@ public class WebhookService {
     }
 
     public WebhookTestResponse test(String subscriptionId) {
+        // #209 — NARROW, EXPLICIT invariant EXCEPTION. The webhook category
+        // boundary otherwise forbids delivering an admin-classified event to a
+        // concrete-tenant subscription. /test is exempt because:
+        //   (1) the governance spec (the authority) defines the test ping as the
+        //       admin-category event type `system.webhook_test` — reclassifying
+        //       the wire envelope here would diverge from the spec, and keeping
+        //       the type while relabelling the category would produce exactly the
+        //       type/category-inconsistent record the dispatch boundary now
+        //       blocks (WebhookDispatchService#isBlockedByOwnershipBoundary);
+        //   (2) this is a SYNTHETIC, owner-triggered connectivity probe (the
+        //       subscription owner tests their OWN endpoint) whose payload is
+        //       {subscription_id, test:true} — it carries NO real governance or
+        //       security telemetry, so the confidentiality guarantee is intact.
+        // It also POSTs DIRECTLY (not via the dispatch queue / events worker), so
+        // no dispatch-side boundary applies. Documented in CHANGELOG/AUDIT; the
+        // spec-side exception is tracked separately.
         WebhookSubscription sub = webhookRepository.findById(subscriptionId);
         String secret = webhookRepository.getSigningSecret(subscriptionId);
         String testEventId = "evt_test_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
@@ -311,32 +328,13 @@ public class WebhookService {
         }
         try {
             int maxEvents = request.getMaxEvents() != null ? Math.min(request.getMaxEvents(), 1000) : 100;
-            // Query events in the requested time range. isSystemOwner is null-safe
-            // (a null owner classifies as system → query all tenants), avoiding an
-            // NPE on a null-owned row.
-            List<Event> events = eventRepository.list(
-                WebhookSubscription.isSystemOwner(sub.getTenantId()) ? null : sub.getTenantId(),
-                null, null, null, null,
-                request.getFrom(), request.getTo(), null, maxEvents);
-            // Filter by event types if specified in replay request
-            if (request.getEventTypes() != null && !request.getEventTypes().isEmpty()) {
-                events = events.stream()
-                    .filter(e -> request.getEventTypes().contains(e.getEventType()))
-                    .toList();
-            }
-            // #209: intersect with the SUBSCRIPTION's own event_types /
-            // event_categories — the same matcher as live dispatch
-            // (WebhookRepository.findMatchingSubscriptions). Spec (replayEvents):
-            // "If omitted, replays all event types the subscription is subscribed
-            // to." Without this, a concrete-tenant budget-only subscription could
-            // replay historical ADMIN-only events (api_key.*/policy.*/…) to its
-            // tenant-controlled endpoint — bypassing the category boundary this
-            // release establishes. Also apply the subscription's scope_filter so
-            // replay never delivers an event live dispatch would have skipped.
-            events = events.stream()
-                .filter(e -> WebhookRepository.matchesEventType(sub, e.getEventType()))
-                .filter(e -> WebhookRepository.matchesScope(sub, e.getScope()))
-                .toList();
+            // #209 P2: collect up to maxEvents DELIVERABLE events by paging the
+            // window chronologically and filtering DURING pagination — never a
+            // single capped fetch then post-hoc filter, which would drop matching
+            // events that fall past the cap when the first page is all
+            // non-matching ("scanned 100, queued 0"). Chronological order is
+            // preserved for delivery (spec replayEvents).
+            List<Event> events = collectDeliverableReplayEvents(sub, request, maxEvents);
             // Queue each matching event for re-delivery to this subscription
             int queued = 0;
             for (Event event : events) {
@@ -362,6 +360,79 @@ public class WebhookService {
         } finally {
             webhookRepository.releaseReplayLock(subscriptionId, replayId);
         }
+    }
+
+    /** Per-fetch page size while paging the replay window (bounded memory). */
+    private static final int REPLAY_PAGE_SIZE = 500;
+    /**
+     * Total scanned-event ceiling for one replay. A very sparse window (few
+     * matching events among many) can't scan unbounded; if this bound is hit
+     * before {@code maxEvents} matches are collected, collection stops and logs
+     * — NOT a silent truncation.
+     */
+    private static final int REPLAY_MAX_SCAN = 20_000;
+
+    /**
+     * Collect up to {@code maxEvents} DELIVERABLE events from the replay window
+     * in CHRONOLOGICAL (ascending) order, applying every filter live
+     * dispatch/replay would apply, paginated in bounded batches:
+     * <ul>
+     *   <li>the request's optional {@code event_types} filter;</li>
+     *   <li>the subscription's OWN {@code event_types}/{@code event_categories}
+     *       ({@link WebhookRepository#matchesEventType}) and {@code scope_filter}
+     *       ({@link WebhookRepository#matchesScope}) — spec {@code replayEvents}:
+     *       "replays all event types the subscription is subscribed to"; and</li>
+     *   <li>the fail-closed ownership boundary
+     *       ({@link WebhookDispatchService#isBlockedByOwnershipBoundary}) so the
+     *       cap counts only events {@code dispatchToSubscription} will actually
+     *       deliver (a concrete-tenant sub never spends budget on admin-only
+     *       events).</li>
+     * </ul>
+     * Pages via the timestamp-ASC cursor of {@link EventRepository#list} until
+     * {@code maxEvents} matches are collected, the window is exhausted, or the
+     * {@link #REPLAY_MAX_SCAN} scan ceiling is reached.
+     */
+    private List<Event> collectDeliverableReplayEvents(WebhookSubscription sub,
+                                                        ReplayRequest request, int maxEvents) {
+        // isSystemOwner is null-safe (null owner → system → query all tenants).
+        String queryTenant = WebhookSubscription.isSystemOwner(sub.getTenantId())
+            ? null : sub.getTenantId();
+        SortSpec chronological = SortSpec.of("timestamp", SortDirection.ASC);
+        boolean hasRequestTypeFilter =
+            request.getEventTypes() != null && !request.getEventTypes().isEmpty();
+
+        List<Event> collected = new ArrayList<>();
+        String cursor = null;
+        int scanned = 0;
+        while (collected.size() < maxEvents && scanned < REPLAY_MAX_SCAN) {
+            List<Event> page = eventRepository.list(
+                queryTenant, null, null, null, null,
+                request.getFrom(), request.getTo(), cursor, REPLAY_PAGE_SIZE, chronological);
+            if (page.isEmpty()) {
+                break; // window exhausted
+            }
+            for (Event e : page) {
+                scanned++;
+                if (hasRequestTypeFilter && !request.getEventTypes().contains(e.getEventType())) {
+                    continue;
+                }
+                if (!WebhookRepository.matchesEventType(sub, e.getEventType())) continue;
+                if (!WebhookRepository.matchesScope(sub, e.getScope())) continue;
+                // Don't spend cap budget on an event delivery will skip.
+                if (dispatchService.isBlockedByOwnershipBoundary(e, sub)) continue;
+                collected.add(e);
+                if (collected.size() >= maxEvents) break;
+            }
+            if (page.size() < REPLAY_PAGE_SIZE) {
+                break; // last (partial) page — window exhausted
+            }
+            cursor = page.get(page.size() - 1).getEventId();
+        }
+        if (collected.size() < maxEvents && scanned >= REPLAY_MAX_SCAN) {
+            LOG.warn("Webhook replay hit the scan ceiling before filling max_events: subscription_id={} tenant_id={} scanned={} collected={} max_events={} — window may hold more matching events past the scan bound",
+                safe(sub.getSubscriptionId()), safe(sub.getTenantId()), scanned, collected.size(), maxEvents);
+        }
+        return collected;
     }
 
     /**

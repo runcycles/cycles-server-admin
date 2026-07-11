@@ -1348,6 +1348,16 @@ class WebhookRepositoryTest {
     @org.junit.jupiter.api.BeforeEach
     void stubCasSuccessByDefault() {
         lenient().when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        // Default: system-owned rows are already members of the dispatch index,
+        // so the index-membership repair is a no-op unless a test says otherwise.
+        lenient().when(jedis.sismember(anyString(), anyString())).thenReturn(true);
+    }
+
+    @Test
+    void reconcile_scriptAndBatchAccessors_exposeProductionConstants() {
+        assertThat(WebhookRepository.reconcileCasSetAndIndexScript())
+                .contains("SADD").contains("SET").contains("GET");
+        assertThat(WebhookRepository.reconcileScanBatch()).isEqualTo(200);
     }
 
     @Test
@@ -1455,7 +1465,16 @@ class WebhookRepositoryTest {
         // system-owned now → admin selectors NOT stripped
         assertThat(w.getEventCategories()).containsExactly(EventCategory.API_KEY);
         assertThat(w.getStatus()).isEqualTo(WebhookStatus.ACTIVE);
-        verify(jedis).sadd("webhooks:__system__", "wh_null");
+        // #209 finding 2: the SADD is folded into the SAME atomic Lua op as the
+        // owner rewrite (no separate sadd), so a partial failure can't persist
+        // the owner while leaving the row un-indexed.
+        verify(jedis, never()).sadd(anyString(), anyString());
+        org.mockito.ArgumentCaptor<java.util.List> keys = org.mockito.ArgumentCaptor.forClass(java.util.List.class);
+        org.mockito.ArgumentCaptor<java.util.List> argv = org.mockito.ArgumentCaptor.forClass(java.util.List.class);
+        verify(jedis).eval(anyString(), keys.capture(), argv.capture());
+        assertThat(keys.getValue()).containsExactly("webhook:wh_null", "webhooks:__system__");
+        assertThat((String) argv.getValue().get(2)).isEqualTo("1");       // doIndex flag
+        assertThat((String) argv.getValue().get(3)).isEqualTo("wh_null"); // id added to index
     }
 
     @Test
@@ -1466,6 +1485,58 @@ class WebhookRepositoryTest {
 
         assertThat(repository.reconcileTenantCategoryBoundary(false).repaired()).isEmpty();
         verify(jedis, never()).eval(anyString(), anyList(), anyList());
+    }
+
+    // #209 finding 2: a DISABLED null-owner row still needs normalizing +
+    // indexing (the blanket DISABLED-skip previously left it in limbo).
+    @Test
+    void reconcile_disabledNullOwner_normalizedAndIndexed_staysDisabled() throws Exception {
+        stubScan("wh_dnull");
+        stubGet("wh_dnull", rowJson("wh_dnull", null, List.of(EventType.API_KEY_CREATED),
+                List.of(EventCategory.API_KEY), WebhookStatus.DISABLED));
+
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(r.repaired().get(0).action()).isEqualTo(WebhookRepository.CategoryBoundaryAction.NORMALIZED_NULL_OWNER);
+        WebhookSubscription w = written("wh_dnull");
+        assertThat(w.getTenantId()).isEqualTo("__system__");
+        assertThat(w.getStatus()).isEqualTo(WebhookStatus.DISABLED); // stays disabled
+        // Owner rewrite + SADD are one atomic op (no separate sadd).
+        verify(jedis, never()).sadd(anyString(), anyString());
+        org.mockito.ArgumentCaptor<java.util.List> argv = org.mockito.ArgumentCaptor.forClass(java.util.List.class);
+        verify(jedis).eval(anyString(), anyList(), argv.capture());
+        assertThat((String) argv.getValue().get(2)).isEqualTo("1"); // doIndex
+    }
+
+    // #209 finding 2: a system-owned row that is MISSING from the dispatch index
+    // (e.g. a prior partial normalization) gets its membership repaired,
+    // independent of status, via an idempotent SADD (no CAS write needed).
+    @Test
+    void reconcile_systemUnindexed_membershipRepaired_noJsonWrite() throws Exception {
+        stubScan("wh_sys_unx");
+        stubGet("wh_sys_unx", rowJson("wh_sys_unx", "__system__", List.of(EventType.API_KEY_CREATED),
+                List.of(EventCategory.API_KEY), WebhookStatus.ACTIVE));
+        when(jedis.sismember("webhooks:__system__", "wh_sys_unx")).thenReturn(false); // not indexed
+
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(r.repaired().get(0).action()).isEqualTo(WebhookRepository.CategoryBoundaryAction.INDEXED_SYSTEM_MEMBER);
+        verify(jedis).sadd("webhooks:__system__", "wh_sys_unx"); // pure index repair
+        verify(jedis, never()).eval(anyString(), anyList(), anyList()); // no JSON change
+    }
+
+    // A DISABLED system row missing from the index is still indexed (status-independent).
+    @Test
+    void reconcile_disabledSystemUnindexed_membershipRepaired() throws Exception {
+        stubScan("wh_dsys");
+        stubGet("wh_dsys", rowJson("wh_dsys", "__system__", List.of(EventType.API_KEY_CREATED),
+                null, WebhookStatus.DISABLED));
+        when(jedis.sismember("webhooks:__system__", "wh_dsys")).thenReturn(false);
+
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(r.repaired().get(0).action()).isEqualTo(WebhookRepository.CategoryBoundaryAction.INDEXED_SYSTEM_MEMBER);
+        verify(jedis).sadd("webhooks:__system__", "wh_dsys");
     }
 
     @Test

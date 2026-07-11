@@ -238,8 +238,13 @@ class WebhookDispatchServiceTest {
 
     @Test
     void dispatchToSubscription_disabledConcurrently_reReadsStatus_skips() {
-        // Stale snapshot is ACTIVE, but the row is now DISABLED (concurrent disable).
-        WebhookSubscription staleActive = buildSubscription("whsub_1"); // ACTIVE, tenant-accessible event
+        // The INPUT snapshot is ACTIVE; the fresh re-read at dispatch time returns
+        // the now-DISABLED row (a concurrent disable). This exercises the re-read
+        // gate meaningfully — the decision comes from the re-read, not the stale
+        // snapshot. (The durable close under true interleaving lives in the
+        // cycles-server-events delivery worker's own status re-check.)
+        WebhookSubscription staleActive = buildSubscription("whsub_1"); // ACTIVE snapshot
+        assertThat(staleActive.getStatus()).isEqualTo(WebhookStatus.ACTIVE);
         WebhookSubscription nowDisabled = buildSubscription("whsub_1");
         nowDisabled.setStatus(WebhookStatus.DISABLED);
         when(webhookRepository.findById("whsub_1")).thenReturn(nowDisabled);
@@ -247,6 +252,7 @@ class WebhookDispatchServiceTest {
         boolean queued = webhookDispatchService.dispatchToSubscription(buildEvent(), staleActive);
 
         assertThat(queued).isFalse();
+        verify(webhookRepository).findById("whsub_1"); // the re-read actually happened
         verify(deliveryRepository, never()).save(any());
     }
 
@@ -275,6 +281,65 @@ class WebhookDispatchServiceTest {
 
         assertThat(queued).isTrue();
         verify(deliveryRepository).save(any());
+    }
+
+    // #209 finding 1: the boundary checks the (independent) CATEGORY too, and
+    // fail-closes an unclassifiable record — not only the event TYPE.
+    @Test
+    void dispatchToSubscription_concreteTenant_tenantTypeButAdminCategory_blocked() {
+        WebhookSubscription concrete = sub("whsub_c", "tenant-1", WebhookStatus.ACTIVE);
+        // Inconsistent record: tenant-accessible TYPE, admin-only CATEGORY.
+        Event inconsistent = Event.builder().eventId("evt_incon")
+            .eventType(EventType.BUDGET_CREATED).category(EventCategory.API_KEY)
+            .tenantId("tenant-1").timestamp(Instant.now()).build();
+
+        boolean queued = webhookDispatchService.dispatchToSubscription(inconsistent, concrete);
+
+        assertThat(queued).isFalse();
+        verify(deliveryRepository, never()).save(any());
+        verify(webhookRepository, never()).findById(anyString()); // short-circuits
+    }
+
+    @Test
+    void dispatchToSubscription_concreteTenant_unclassifiableEvent_blocked() {
+        WebhookSubscription concrete = sub("whsub_c", "tenant-1", WebhookStatus.ACTIVE);
+        Event unclassifiable = Event.builder().eventId("evt_null")
+            .eventType(null).category(null)
+            .tenantId("tenant-1").timestamp(Instant.now()).build();
+
+        boolean queued = webhookDispatchService.dispatchToSubscription(unclassifiable, concrete);
+
+        assertThat(queued).isFalse();
+        verify(deliveryRepository, never()).save(any());
+    }
+
+    @Test
+    void dispatchToSubscription_systemSub_inconsistentEvent_stillDelivered() {
+        WebhookSubscription system = sub("whsub_s", "__system__", WebhookStatus.ACTIVE);
+        when(webhookRepository.findById("whsub_s")).thenReturn(system);
+        Event inconsistent = Event.builder().eventId("evt_incon")
+            .eventType(EventType.BUDGET_CREATED).category(EventCategory.API_KEY)
+            .tenantId("tenant-1").timestamp(Instant.now()).build();
+
+        boolean queued = webhookDispatchService.dispatchToSubscription(inconsistent, system);
+
+        assertThat(queued).isTrue(); // system-owned: boundary does not apply
+        verify(deliveryRepository).save(any());
+    }
+
+    // #209 finding 4: an honest boolean — a saved-but-not-enqueued delivery
+    // (LPUSH failed) returns false so replay's eventsQueued does not over-report.
+    @Test
+    void dispatchToSubscription_enqueueFails_returnsFalse_evenThoughSaved() {
+        WebhookSubscription sub = buildSubscription("whsub_1"); // ACTIVE, tenant-accessible event
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(jedis.lpush(eq("dispatch:pending"), anyString()))
+            .thenThrow(new RuntimeException("redis down"));
+
+        boolean queued = webhookDispatchService.dispatchToSubscription(buildEvent(), sub);
+
+        assertThat(queued).isFalse();       // not enqueued → honest false
+        verify(deliveryRepository).save(any()); // row still persisted
     }
 
     @Test

@@ -86,6 +86,16 @@ public class WebhookCategoryBoundaryValidator {
         return type != null && !type.isTenantAccessible();
     }
 
+    /**
+     * True when this event category is admin-only. Companion to
+     * {@link #isAdminOnly(EventType)} — {@code Event.category} is an independent
+     * cross-plane field (not always derived from the type), so the fail-closed
+     * dispatch boundary checks BOTH.
+     */
+    public boolean isAdminOnly(EventCategory category) {
+        return category != null && !category.isTenantAccessible();
+    }
+
     /** Reject any admin-only event type. Null list is a no-op. */
     public void validateEventTypes(List<EventType> eventTypes) {
         if (eventTypes == null) return;
