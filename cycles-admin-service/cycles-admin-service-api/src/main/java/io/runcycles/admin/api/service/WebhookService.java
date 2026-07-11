@@ -402,9 +402,20 @@ public class WebhookService {
      * {@link #REPLAY_MAX_SCAN}) and hydrates + filters in fixed batches over it.
      * The id list is the exact ordered member set, so hydration drops (expired /
      * corrupt / unknown-enum rows) never look like exhaustion and there is no
-     * score cursor to skip or duplicate. If the window holds more than
-     * {@code REPLAY_MAX_SCAN} events the ceiling caps the scan and we log (never
-     * silently truncate).
+     * score cursor to skip or duplicate.
+     *
+     * <p><b>An over-large window is a caller-visible 400, not a silent partial.</b>
+     * The scan is bounded by {@link #replayMaxScan}. Returning fewer than
+     * {@code max_events} would read to the caller as "these are ALL the matching
+     * events in my window" — but if the window's candidate count exceeds the
+     * ceiling the search was truncated and more may exist in the unscanned tail.
+     * So we fetch {@code replayMaxScan + 1} candidate ids to detect that, and if
+     * the ceiling is reached AND fewer than {@code max_events} deliverable events
+     * were collected within the scanned set, we throw a 400 {@code INVALID_REQUEST}
+     * BEFORE any delivery is enqueued (the search is genuinely incomplete — the
+     * caller must narrow {@code from}/{@code to}). If {@code max_events} WAS
+     * reached within the ceiling, that is the caller's explicit pagination cap
+     * (not truncation) and we deliver normally.
      */
     private List<Event> collectDeliverableReplayEvents(WebhookSubscription sub,
                                                         ReplayRequest request, int maxEvents) {
@@ -414,13 +425,17 @@ public class WebhookService {
         boolean hasRequestTypeFilter =
             request.getEventTypes() != null && !request.getEventTypes().isEmpty();
 
-        // One bounded, ordered, de-duplicated id list for the whole window.
+        // One bounded, ordered, de-duplicated id list. Fetch ONE past the ceiling
+        // so we can distinguish "window fits within the scan limit" from "window
+        // overflows it" (an over-large window is a caller-visible 400, below).
         List<String> ids = eventRepository.listEventIdsInRange(
-            queryTenant, request.getFrom(), request.getTo(), replayMaxScan);
+            queryTenant, request.getFrom(), request.getTo(), replayMaxScan + 1);
+        boolean ceilingReached = ids.size() > replayMaxScan;
+        int scanLimit = Math.min(ids.size(), replayMaxScan); // only scan within the ceiling
 
         List<Event> collected = new ArrayList<>();
-        for (int start = 0; start < ids.size() && collected.size() < maxEvents; start += REPLAY_PAGE_SIZE) {
-            int end = Math.min(start + REPLAY_PAGE_SIZE, ids.size());
+        for (int start = 0; start < scanLimit && collected.size() < maxEvents; start += REPLAY_PAGE_SIZE) {
+            int end = Math.min(start + REPLAY_PAGE_SIZE, scanLimit);
             List<Event> page = eventRepository.hydrateByIds(ids.subList(start, end));
             for (Event e : page) {
                 if (hasRequestTypeFilter && !request.getEventTypes().contains(e.getEventType())) {
@@ -434,11 +449,17 @@ public class WebhookService {
                 if (collected.size() >= maxEvents) break;
             }
         }
-        // Ceiling: the id list was capped at replayMaxScan, so a full-cap list
-        // that did not fill max_events may have more deliverable events beyond it.
-        if (collected.size() < maxEvents && ids.size() >= replayMaxScan) {
-            LOG.warn("Webhook replay hit the scan ceiling before filling max_events: subscription_id={} tenant_id={} scanned={} collected={} max_events={} — window may hold more matching events past the scan bound",
-                safe(sub.getSubscriptionId()), safe(sub.getTenantId()), ids.size(), collected.size(), maxEvents);
+        // Genuinely-incomplete search → fail-fast BEFORE enqueuing anything, so
+        // the truncation is caller-VISIBLE (a log is not). If max_events WAS
+        // filled within the ceiling, that is the caller's explicit pagination cap
+        // (eventsQueued == max_events signals "there may be more"), NOT truncation.
+        if (ceilingReached && collected.size() < maxEvents) {
+            LOG.warn("Webhook replay window exceeds the scan ceiling: subscription_id={} tenant_id={} scan_limit={} collected={} max_events={} — returning 400, no deliveries enqueued",
+                safe(sub.getSubscriptionId()), safe(sub.getTenantId()), replayMaxScan, collected.size(), maxEvents);
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                "replay window too large: it exceeds the replay scan limit of " + replayMaxScan
+                    + " events; narrow the from/to range (or lower max_events to page within the limit)",
+                400);
         }
         return collected;
     }

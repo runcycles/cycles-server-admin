@@ -109,10 +109,21 @@ new optional request fields) are **not** considered breaking.
     avoids three cursor hazards on the ms-scored index: equal-timestamp members
     skipped when the cursor advanced by `score+1`, a hydration-thinned short page
     misread as range exhaustion, and duplicate pages when a cursor member had
-    vanished. The scan is bounded by `webhook.replay.max-scan` (default 20000);
-    hitting the ceiling before the cap is filled logs a warning (never a silent
-    truncation). No change to `EventRepository.list()` or its cursor, so other
+    vanished. No change to `EventRepository.list()` or its cursor, so other
     event-listing callers are unaffected.
+  - **Over-large replay window is a caller-visible 400 (no silent partial).** The
+    scan is bounded by `webhook.replay.max-scan` (default 20000). Returning fewer
+    than `max_events` would read to the caller as "these are ALL the matching
+    events in my window" — but if the window's candidate count exceeds that
+    ceiling the search was truncated and more may exist beyond it. Replay now
+    fetches one candidate past the ceiling to detect this and, when the ceiling
+    is reached AND fewer than `max_events` deliverable events were found within
+    the scanned set, returns **400 `INVALID_REQUEST`** BEFORE enqueuing any
+    delivery (message: *"replay window too large: it exceeds the replay scan
+    limit of N events; narrow the from/to range"*) — no partial side effects.
+    When `max_events` IS filled within the ceiling that is the caller's explicit
+    pagination cap (not truncation) and replay proceeds normally
+    (`events_queued == max_events` signals "there may be more").
 
 - **Bulk RESUME routed through boundary validation (#209).**
   `POST /v1/admin/webhooks/bulk-action` with `action: RESUME` reached `ACTIVE`

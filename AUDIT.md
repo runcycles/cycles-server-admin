@@ -38,6 +38,63 @@ pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-07-11 — v0.1.25.51 reviewer round: over-large replay window → caller-visible 400 (#209)
+
+Reviewer P2 (un-parked the PR): replay capped the candidate scan at
+`replayMaxScan` and, if matching events existed BEYOND the ceiling, returned a
+SUCCESSFUL response with `events_queued < max_events` plus a server-side WARN.
+To the caller that reads as "I got all matching events in my window" — but the
+search was truncated and the log is not caller-visible. The round-5 scan-ceiling
+test even codified the silent partial (50 of 60 + warning).
+
+**Fix — fail-fast, caller-visible (chosen over a truncation flag: no
+response-schema change, uses existing error semantics).** Precise semantics, only
+the genuinely-incomplete case fails:
+- `collectDeliverableReplayEvents` fetches `replayMaxScan + 1` candidate ids (one
+  past the ceiling) so it can tell "window fits" from "window overflows";
+  `ceilingReached = ids.size() > replayMaxScan`; it scans only the first
+  `replayMaxScan`.
+- If `ceilingReached` AND fewer than `max_events` DELIVERABLE events were
+  collected within the scanned set → the search is incomplete → throw
+  `GovernanceException(ErrorCode.INVALID_REQUEST, 400)` BEFORE the dispatch loop
+  (the collector runs before any enqueue, so there are NO partial side effects;
+  the replay lock is released by `replay()`'s `finally`). Message: "replay window
+  too large: it exceeds the replay scan limit of N events; narrow the from/to
+  range (or lower max_events to page within the limit)".
+- If `max_events` WAS filled within the ceiling → deliver normally (explicit
+  pagination cap, not truncation; `events_queued == max_events` signals "more may
+  exist").
+
+**Error code chosen: `INVALID_REQUEST` (400).** `LIMIT_EXCEEDED` is the 429
+rate-limit code (wrong status); there is no replay-window-specific code, and
+`INVALID_REQUEST/400` matches the existing webhook validators. Verified against
+`ErrorCode`.
+
+**Spec check (report — do NOT edit spec):** governance
+`cycles-governance-admin-v0.1.25.yaml` `replayEvents` (line 7096) ALREADY declares
+a `400 "Invalid replay request"` response (schema `ErrorResponse`), so returning
+`INVALID_REQUEST/400` for an over-large window is WITHIN its declared error
+responses — schema-conformant, no new error-response needed. What is NOT
+documented: the SEMANTIC that exceeding a server-side replay scan limit yields
+400 (the spec's LIMITS note only says "Maximum 1000 events per replay request"
+and "Use from/to to control the replay window", and documents `max_events`
+min1/max1000/default100 — nothing about a scan ceiling or over-large-window 400).
+Recommend a PROSE clause in the `replayEvents` description/LIMITS documenting the
+over-large-window 400 for governance PR #130. (Prose only — the 400 response
+object already exists.)
+
+Tests: rewrote the round-5 scan-ceiling test (which asserted the silent partial)
+into `replay_windowExceedsScanCeiling_incomplete_returns400_nothingEnqueued`
+(candidate 60 > ceiling 50, max_events 1000 unfilled → 400, `dispatchToSubscription`
+never called, replay lock released) and added
+`replay_windowExceedsCeiling_butMaxEventsFilledWithin_succeeds` (candidate 60 >
+ceiling 50 but max_events 10 filled within → success, 10 delivered, no false
+failure). The six approach-B correctness tests are intact. Ceiling injected via
+`webhook.replay.max-scan` (ReflectionTestUtils), so no 20000-row seeding.
+
+All gates green: api unit 861, data unit 543 (LINE 0.9572, unchanged), api
+integration 875, data integration 593 (unchanged).
+
 ### 2026-07-11 — v0.1.25.51 codex round 5: strengthen two replay regression tests (test-only) (#209)
 
 Round 5 confirmed the approach-B replay PRODUCTION fix sound (REVISE-MINOR,
