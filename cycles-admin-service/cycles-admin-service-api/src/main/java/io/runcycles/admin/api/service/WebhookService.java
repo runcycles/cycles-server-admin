@@ -327,12 +327,13 @@ public class WebhookService {
         }
         try {
             int maxEvents = request.getMaxEvents() != null ? Math.min(request.getMaxEvents(), 1000) : 100;
-            // #209 P2: collect up to maxEvents DELIVERABLE events by paging the
-            // window chronologically and filtering DURING pagination — never a
-            // single capped fetch then post-hoc filter, which would drop matching
-            // events that fall past the cap when the first page is all
-            // non-matching ("scanned 100, queued 0"). Chronological order is
-            // preserved for delivery (spec replayEvents).
+            // #209 P2: ALL-OR-NARROW — collect EVERY deliverable event in the
+            // window, filtered against the same predicates as live dispatch, in
+            // chronological order (spec replayEvents). This is not paging toward a
+            // continuation: an over-large window (candidates beyond the scan
+            // limit, or more than maxEvents deliverable) fails with a 400 BEFORE
+            // any delivery is enqueued (see collectDeliverableReplayEvents), so a
+            // success delivers the COMPLETE set for its window.
             List<Event> events = collectDeliverableReplayEvents(sub, request, maxEvents);
             // Queue each matching event for re-delivery to this subscription
             int queued = 0;
@@ -361,16 +362,18 @@ public class WebhookService {
         }
     }
 
-    /** Per-fetch page size while paging the replay window (bounded memory). */
+    /** Hydration BATCH size — how many event ids are hydrated from the ordered
+     *  window id list per {@code hydrateByIds} call (bounds memory). NOT a
+     *  pagination unit: the whole window is scanned within one replay. */
     private static final int REPLAY_PAGE_SIZE = 500;
     /**
-     * Total scanned-event ceiling for one replay — the max size of the ordered
-     * id list pulled for the window. A very sparse window (few matching events
-     * among many) can't scan unbounded; if this bound is hit before
-     * {@code maxEvents} matches are collected, collection stops and logs — NOT a
-     * silent truncation. Configurable (`webhook.replay.max-scan`) so the ceiling
-     * is exercisable; the field initializer is the default used when no property
-     * is bound (e.g. plain unit construction).
+     * Scan limit for one replay — the max size of the ordered id list pulled for
+     * the window. Replay is ALL-OR-NARROW: if the window's candidate count
+     * exceeds this bound the window cannot be fully scanned, so replay returns a
+     * 400 {@code INVALID_REQUEST} ("window too large — narrow from/to"), NOT a
+     * silent partial. Configurable (`webhook.replay.max-scan`) so the limit is
+     * exercisable; the field initializer is the default used when no property is
+     * bound (e.g. plain unit construction).
      */
     @org.springframework.beans.factory.annotation.Value("${webhook.replay.max-scan:20000}")
     private int replayMaxScan = 20_000;
@@ -442,8 +445,8 @@ public class WebhookService {
         collect:
         for (int start = 0; start < ids.size(); start += REPLAY_PAGE_SIZE) {
             int end = Math.min(start + REPLAY_PAGE_SIZE, ids.size());
-            List<Event> page = eventRepository.hydrateByIds(ids.subList(start, end));
-            for (Event e : page) {
+            List<Event> batch = eventRepository.hydrateByIds(ids.subList(start, end));
+            for (Event e : batch) {
                 if (hasRequestTypeFilter && !request.getEventTypes().contains(e.getEventType())) {
                     continue;
                 }

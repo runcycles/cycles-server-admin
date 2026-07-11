@@ -38,6 +38,37 @@ pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-07-11 — v0.1.25.51 codex confirm: replay all-or-narrow doc sweep (comment-only) (#209)
+
+Codex confirmed the all-or-narrow LOGIC correct/clean; one P2 DOC-ONLY — stale
+pagination-framing comments that contradicted the new behavior. No code-behavior
+change (one local var rename `page`→`batch`; no test change). Fixed + swept the
+whole replay path case-insensitively (`pagin|paging|page|cursor|continue|advance
+from|there may be more|stops and logs|truncat|max_events`), zero survivors:
+- `WebhookService.replay` comment (~330): "collect … by paging … DURING
+  pagination" → all-or-narrow (collect EVERY deliverable event; over-large window
+  is a 400 before enqueue).
+- `WebhookService` `REPLAY_PAGE_SIZE` javadoc: "page size while paging" →
+  "Hydration BATCH size … NOT a pagination unit: the whole window is scanned
+  within one replay".
+- `WebhookService` `replayMaxScan` javadoc: "collection stops and logs — NOT a
+  silent truncation" → "returns a 400 INVALID_REQUEST (window too large — narrow
+  from/to), NOT a silent partial".
+- `WebhookService.collectDeliverableReplayEvents` local `page` → `batch`.
+- `WebhookDispatchService.isBlockedByOwnershipBoundary` javadoc: "apply the SAME
+  predicate while paginating … must not spend its max_events budget … the cap
+  would count" → "when selecting the deliverable events for a window … the
+  deliverable total drives the completeness check".
+- `EventRepository.listEventIdsInRange` javadoc: "replay pages hydration over" →
+  "replay hydrates fixed BATCHES over".
+Confirmed-correct (kept): the all-or-narrow negations in `WebhookService`
+(~332/367/402-408, "NOT a resumable pagination cursor", "no continuation", "never
+a partial with 'continue'"); the approach-B contrast in `EventRepository`
+(the three OLD `list()` cursor hazards it AVOIDS); and the unrelated
+cursor-paginated `listByTenant`/`listAll`/`listDeliveries` APIs and the `continue`
+loop keyword. No behavior/comment mismatch beyond wording was found. Gates green:
+api unit 862, data unit 543 (LINE 0.9572), model 192.
+
 ### 2026-07-11 — v0.1.25.51 reviewer round: replay is ALL-OR-NARROW (no fake continuation) (#209)
 
 Reviewer REVISE-MINOR: the prior scan-limit fix left a broken claim — it framed

@@ -62,11 +62,12 @@ public class WebhookDispatchService {
      * tenant-accessible events; only the admin-only ones are skipped.
      *
      * <p>Public so the replay collector ({@code WebhookService.replay}) can
-     * apply the SAME predicate while paginating — it must not spend its
-     * {@code max_events} budget on events {@code dispatchToSubscription} would
-     * skip, otherwise the cap would count non-deliverable events. Delivery
-     * still re-applies this guard (defense in depth); exposing it only makes the
-     * cap count DELIVERABLE events.
+     * apply the SAME predicate when selecting the deliverable events for a
+     * window — an event this boundary would skip is NOT a deliverable event, so
+     * it must not count toward the window's deliverable total (replay is
+     * all-or-narrow: the deliverable total drives the completeness check).
+     * Delivery still re-applies this guard (defense in depth); exposing it only
+     * keeps the collector's notion of "deliverable" identical to dispatch's.
      */
     public boolean isBlockedByOwnershipBoundary(Event event, WebhookSubscription sub) {
         if (WebhookSubscription.isSystemOwner(sub.getTenantId())) {

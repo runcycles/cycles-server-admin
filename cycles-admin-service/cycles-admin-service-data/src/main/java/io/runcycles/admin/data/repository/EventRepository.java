@@ -158,9 +158,10 @@ public class EventRepository {
      * bounded {@code ZRANGEBYSCORE} — the exact, de-duplicated member set in
      * ascending (score, member) order.
      *
-     * <p>Provided for webhook replay (governance #209, approach B): replay pages
-     * hydration over this FIXED id list instead of walking {@link #list}'s
-     * score-cursor, which sidesteps three cursor hazards on a millisecond-scored
+     * <p>Provided for webhook replay (governance #209, approach B): replay
+     * hydrates fixed BATCHES over this whole id list instead of walking
+     * {@link #list}'s score-cursor, which sidesteps three cursor hazards on a
+     * millisecond-scored
      * ZSET — equal-timestamp members skipped when the cursor advances by
      * {@code score+1}, a hydration-thinned short page misread as range
      * exhaustion, and duplicate pages when a cursor member has vanished. The ZSET
