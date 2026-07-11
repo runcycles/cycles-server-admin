@@ -158,6 +158,81 @@ class WebhookServiceTest {
             .hasMessageContaining("DISABLED");
     }
 
+    // v0.1.25.50 (governance revision v0.1.25.38): a subscription must always
+    // name at least one event_type or event_category. Create enforces
+    // @NotEmpty event_types, and WebhookRepository.matchesEventType treats
+    // empty-both as match-ALL - not creatable, so it must not be reachable
+    // via PATCH on any plane either.
+    @Test
+    void update_clearingEventTypesWithNoCategories_throws400() {
+        WebhookSubscription existing = buildSubscription("whsub_1", "tenant-1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(existing);
+
+        WebhookUpdateRequest request = WebhookUpdateRequest.builder()
+            .eventTypes(List.of())
+            .build();
+
+        assertThatThrownBy(() -> webhookService.update("whsub_1", request))
+            .isInstanceOf(GovernanceException.class)
+            .hasFieldOrPropertyWithValue("httpStatus", 400)
+            .hasMessageContaining("at least one event_type or event_category");
+        verify(webhookRepository, never()).update(anyString(), any());
+    }
+
+    @Test
+    void update_clearingBothEventFieldsInOneRequest_throws400() {
+        WebhookSubscription existing = buildSubscription("whsub_1", "tenant-1");
+        existing.setEventCategories(List.of(io.runcycles.admin.model.event.EventCategory.BUDGET));
+        when(webhookRepository.findById("whsub_1")).thenReturn(existing);
+
+        WebhookUpdateRequest request = WebhookUpdateRequest.builder()
+            .eventTypes(List.of())
+            .eventCategories(List.of())
+            .build();
+
+        assertThatThrownBy(() -> webhookService.update("whsub_1", request))
+            .isInstanceOf(GovernanceException.class)
+            .hasFieldOrPropertyWithValue("httpStatus", 400);
+        verify(webhookRepository, never()).update(anyString(), any());
+    }
+
+    @Test
+    void update_clearingEventCategoriesWithEventTypesPresent_succeeds() {
+        // The realistic repair path for a smuggled ADMIN_CATEGORIES row:
+        // strip event_categories to [] (event_types omitted, so it survives) -
+        // event_types remains, so it is NOT empty-both and the update proceeds.
+        WebhookSubscription existing = buildSubscription("whsub_1", "tenant-1");
+        existing.setEventCategories(List.of(io.runcycles.admin.model.event.EventCategory.API_KEY));
+        when(webhookRepository.findById("whsub_1")).thenReturn(existing);
+
+        WebhookUpdateRequest request = WebhookUpdateRequest.builder()
+            .eventCategories(List.of())
+            .build();
+
+        webhookService.update("whsub_1", request);
+
+        assertThat(existing.getEventCategories()).isEmpty();
+        assertThat(existing.getEventTypes()).isNotEmpty();
+        verify(webhookRepository).update(eq("whsub_1"), any());
+    }
+
+    @Test
+    void update_clearingEventTypesWithCategoriesPresent_succeeds() {
+        // Category-only subscriptions remain legal: clearing event_types is
+        // fine as long as at least one event_category survives.
+        WebhookSubscription existing = buildSubscription("whsub_1", "tenant-1");
+        existing.setEventCategories(List.of(io.runcycles.admin.model.event.EventCategory.BUDGET));
+        when(webhookRepository.findById("whsub_1")).thenReturn(existing);
+
+        WebhookUpdateRequest request = WebhookUpdateRequest.builder()
+            .eventTypes(List.of())
+            .build();
+
+        webhookService.update("whsub_1", request);
+
+        verify(webhookRepository).update(eq("whsub_1"), any());
+    }
+
     @Test
     void update_validatesUrlIfProvided() {
         WebhookSubscription existing = buildSubscription("whsub_1", "tenant-1");

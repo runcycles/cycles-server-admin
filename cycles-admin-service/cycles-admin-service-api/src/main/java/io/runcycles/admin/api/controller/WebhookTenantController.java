@@ -40,6 +40,7 @@ public class WebhookTenantController {
             @Valid @RequestBody WebhookCreateRequest request, HttpServletRequest httpRequest) {
         String tenantId = getAuthenticatedTenantId(httpRequest);
         validateTenantEventTypes(request.getEventTypes());
+        validateTenantEventCategories(request.getEventCategories());
         mutationGuard.assertTenantOpen(tenantId);
         WebhookCreateResponse response = webhookService.create(tenantId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
@@ -100,6 +101,9 @@ public class WebhookTenantController {
         enforceTenantOwnership(httpRequest, existing);
         if (request.getEventTypes() != null) {
             validateTenantEventTypes(request.getEventTypes());
+        }
+        if (request.getEventCategories() != null) {
+            validateTenantEventCategories(request.getEventCategories());
         }
         // Spec v0.1.25.29 Rule 2: any mutation on a webhook owned by a CLOSED
         // tenant returns 409 TENANT_CLOSED. This is the layer that makes
@@ -228,6 +232,32 @@ public class WebhookTenantController {
             if (!type.isTenantAccessible()) {
                 throw new GovernanceException(ErrorCode.INVALID_REQUEST,
                     "Event type " + type.getValue() + " is admin-only; tenants can subscribe to budget.*, reservation.*, tenant.* only", 400);
+            }
+        }
+    }
+
+    /**
+     * Tenant-plane {@code event_categories} boundary (governance revision
+     * v0.1.25.38): {@code WebhookRepository.matchesEventType} treats
+     * categories as an ADDITIVE union with {@code event_types}, so an
+     * unvalidated category smuggles admin-only event classes past
+     * {@link #validateTenantEventTypes} (e.g. one allowed event_type plus
+     * {@code "event_categories": ["api_key"]}). Same boundary, same 400,
+     * derived from the same source ({@code EventCategory.isTenantAccessible},
+     * which {@code EventType.isTenantAccessible} delegates to).
+     *
+     * <p>Like {@link #validateTenantEventTypes}, this runs unconditionally on
+     * the tenant-plane paths — including admin-on-behalf-of PATCH through
+     * {@code /v1/webhooks/*}: the boundary belongs to the ENDPOINT, not the
+     * caller. Admin-provisioned subscriptions with admin categories are
+     * created and managed via {@code /v1/admin/webhooks/*}.
+     */
+    private void validateTenantEventCategories(List<io.runcycles.admin.model.event.EventCategory> eventCategories) {
+        if (eventCategories == null) return;
+        for (io.runcycles.admin.model.event.EventCategory category : eventCategories) {
+            if (!category.isTenantAccessible()) {
+                throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                    "Event category " + category.getValue() + " is admin-only; tenants can subscribe to budget.*, reservation.*, tenant.* only", 400);
             }
         }
     }

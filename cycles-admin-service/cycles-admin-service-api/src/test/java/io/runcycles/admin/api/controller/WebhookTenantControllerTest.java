@@ -85,6 +85,44 @@ class WebhookTenantControllerTest {
                 .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
     }
 
+    // v0.1.25.50 (governance revision v0.1.25.38): event_categories must pass
+    // the same tenant-accessible boundary as event_types on the tenant plane.
+    // matchesEventType treats categories as an ADDITIVE union, so before this
+    // check a tenant could smuggle admin-only event classes with one allowed
+    // event_type plus an admin category.
+    @Test
+    void createWebhook_withAdminOnlyEventCategory_returns400() throws Exception {
+        setupApiKeyAuth();
+
+        mockMvc.perform(post("/v1/webhooks")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://example.com/wh\",\"event_types\":[\"budget.created\"],\"event_categories\":[\"api_key\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(webhookService, never()).create(anyString(), any());
+    }
+
+    @Test
+    void createWebhook_withTenantAccessibleEventCategories_returns201() throws Exception {
+        setupApiKeyAuth();
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_cat").tenantId("tenant-1").url("https://example.com/wh")
+            .eventTypes(List.of(EventType.BUDGET_CREATED)).status(WebhookStatus.ACTIVE)
+            .createdAt(Instant.now()).build();
+        WebhookCreateResponse response = WebhookCreateResponse.builder()
+            .subscription(sub).signingSecret("whsec_abc").build();
+        when(webhookService.create(eq("tenant-1"), any())).thenReturn(response);
+
+        mockMvc.perform(post("/v1/webhooks")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://example.com/wh\",\"event_types\":[\"budget.created\"],\"event_categories\":[\"budget\",\"reservation\",\"tenant\"]}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.subscription.subscription_id").value("whsub_cat"));
+    }
+
     @Test
     void getWebhook_ownWebhook_returns200() throws Exception {
         setupApiKeyAuth();
@@ -221,6 +259,61 @@ class WebhookTenantControllerTest {
                         .content("{\"event_types\":[\"api_key.created\"]}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void updateWebhook_withAdminOnlyEventCategory_returns400() throws Exception {
+        setupApiKeyAuth();
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(sub);
+
+        mockMvc.perform(patch("/v1/webhooks/whsub_1")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"event_categories\":[\"policy\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(webhookService, never()).update(anyString(), any());
+    }
+
+    @Test
+    void updateWebhook_withTenantAccessibleEventCategory_returns200() throws Exception {
+        setupApiKeyAuth();
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(sub);
+        when(webhookService.update(eq("whsub_1"), any())).thenReturn(sub);
+
+        mockMvc.perform(patch("/v1/webhooks/whsub_1")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"event_categories\":[\"reservation\"]}"))
+                .andExpect(status().isOk());
+    }
+
+    // The category boundary belongs to the tenant-plane ENDPOINT, not the
+    // caller: admin-on-behalf-of PATCH through /v1/webhooks/* is bound by it
+    // too (consistent with validateTenantEventTypes; admin categories are
+    // managed via /v1/admin/webhooks/*).
+    @Test
+    void updateWebhook_withAdminKey_adminOnlyEventCategory_returns400() throws Exception {
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(sub);
+
+        mockMvc.perform(patch("/v1/webhooks/whsub_1")
+                        .header("X-Admin-API-Key", "test-admin-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"event_categories\":[\"system\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(webhookService, never()).update(anyString(), any());
     }
 
     @Test

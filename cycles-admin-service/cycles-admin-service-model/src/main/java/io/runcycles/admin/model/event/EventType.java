@@ -78,9 +78,7 @@ public enum EventType {
     public EventCategory getCategory() { return category; }
 
     public boolean isTenantAccessible() {
-        return category == EventCategory.BUDGET ||
-               category == EventCategory.RESERVATION ||
-               category == EventCategory.TENANT;
+        return category.isTenantAccessible();
     }
 
     @JsonCreator
