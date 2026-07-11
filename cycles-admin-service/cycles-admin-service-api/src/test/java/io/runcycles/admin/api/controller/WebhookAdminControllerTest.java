@@ -280,6 +280,62 @@ class WebhookAdminControllerTest {
         verify(webhookService).update(eq("whsub_1"), any());
     }
 
+    // #209 finding 2: a status-only PATCH (null selector arrays) must validate
+    // the EFFECTIVE result (stored ∪ request), so it cannot reactivate a
+    // disabled concrete-tenant offender that still holds admin-only selectors.
+    @Test
+    void updateWebhook_statusOnlyReactivation_ofStoredAdminCategoryOffender_returns400() throws Exception {
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_off").tenantId("tenant-1").url("https://example.com/wh")
+            .eventTypes(List.of(EventType.BUDGET_CREATED))
+            .eventCategories(List.of(EventCategory.API_KEY)) // stored admin-only category
+            .status(WebhookStatus.DISABLED).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_off")).thenReturn(prior);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_off")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"ACTIVE\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(webhookService, never()).update(anyString(), any());
+    }
+
+    @Test
+    void updateWebhook_statusOnlyReactivation_ofSystemAdminCategoryRow_returns200() throws Exception {
+        // __system__ owner is exempt — an admin-category system row can be reactivated.
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_sys").tenantId("__system__").url("https://example.com/wh")
+            .eventCategories(List.of(EventCategory.API_KEY))
+            .status(WebhookStatus.DISABLED).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_sys")).thenReturn(prior);
+        when(webhookService.update(eq("whsub_sys"), any())).thenReturn(prior);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_sys")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"ACTIVE\"}"))
+                .andExpect(status().isOk());
+
+        verify(webhookService).update(eq("whsub_sys"), any());
+    }
+
+    // #209 finding 5: a blank (whitespace-only) tenant_id is NOT system-exempt —
+    // admin-only selectors on a blank owner are validated (rejected).
+    @Test
+    void createWebhook_blankTenantId_adminCategory_returns400() throws Exception {
+        mockMvc.perform(post("/v1/admin/webhooks")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("tenant_id", "   ")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://example.com/wh\",\"event_types\":[\"budget.created\"],\"event_categories\":[\"api_key\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(webhookService, never()).create(anyString(), any());
+    }
+
     @Test
     void deleteWebhook_returns204() throws Exception {
         WebhookSubscription sub = WebhookSubscription.builder()

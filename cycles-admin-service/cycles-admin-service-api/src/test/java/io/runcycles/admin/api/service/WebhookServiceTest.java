@@ -418,6 +418,52 @@ class WebhookServiceTest {
         verify(dispatchService, never()).dispatchToSubscription(eq(tenantEvt), any());
     }
 
+    // #209 finding 1: replay MUST intersect with the SUBSCRIPTION's own
+    // event_types/event_categories (spec replayEvents: "all event types the
+    // subscription is subscribed to"), or a concrete-tenant budget-only
+    // subscription could replay historical ADMIN-only events to its endpoint.
+    @Test
+    void replay_doesNotDeliverEventsOutsideSubscriptionSelectors() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1"); // subscribed to BUDGET_CREATED only
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
+        io.runcycles.admin.model.event.Event budgetEvt = io.runcycles.admin.model.event.Event.builder()
+            .eventId("evt_ok").eventType(io.runcycles.admin.model.event.EventType.BUDGET_CREATED)
+            .category(io.runcycles.admin.model.event.EventCategory.BUDGET)
+            .tenantId("tenant-1").source("admin").timestamp(Instant.now()).build();
+        io.runcycles.admin.model.event.Event adminEvt = io.runcycles.admin.model.event.Event.builder()
+            .eventId("evt_admin").eventType(io.runcycles.admin.model.event.EventType.API_KEY_CREATED)
+            .category(io.runcycles.admin.model.event.EventCategory.API_KEY)
+            .tenantId("tenant-1").source("admin").timestamp(Instant.now()).build();
+        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+            .thenReturn(List.of(budgetEvt, adminEvt));
+
+        ReplayRequest request = ReplayRequest.builder()
+            .from(Instant.now().minusSeconds(3600)).to(Instant.now()).build();
+
+        ReplayResponse response = webhookService.replay("whsub_1", request);
+
+        assertThat(response.getEventsQueued()).isEqualTo(1);
+        verify(dispatchService).dispatchToSubscription(budgetEvt, sub);
+        // The admin-only event is NOT in the subscription's selectors → not delivered.
+        verify(dispatchService, never()).dispatchToSubscription(eq(adminEvt), any());
+    }
+
+    @Test
+    void replay_disabledSubscription_deliversNothing_noLock() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
+        sub.setStatus(WebhookStatus.DISABLED);
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+
+        ReplayResponse response = webhookService.replay("whsub_1",
+            ReplayRequest.builder().from(Instant.now().minusSeconds(3600)).to(Instant.now()).build());
+
+        assertThat(response.getEventsQueued()).isEqualTo(0);
+        // Short-circuits before acquiring the lock or dispatching anything.
+        verify(webhookRepository, never()).acquireReplayLock(anyString(), any());
+        verify(dispatchService, never()).dispatchToSubscription(any(), any());
+    }
+
     @Test
     void replay_systemSubscription_queriesAllTenants() {
         WebhookSubscription sub = WebhookSubscription.builder()
@@ -654,6 +700,8 @@ class WebhookServiceTest {
     @Test
     void replay_dispatchFailure_continuesAndCounts() {
         WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
+        // Subscribe to both budget events so both pass the #209 selector filter.
+        sub.setEventTypes(List.of(EventType.BUDGET_CREATED, EventType.BUDGET_FUNDED));
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
 

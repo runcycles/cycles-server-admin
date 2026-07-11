@@ -4,6 +4,7 @@ import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.ErrorCode;
+import io.runcycles.admin.model.webhook.WebhookSubscription;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -41,7 +42,7 @@ import java.util.List;
 public class WebhookCategoryBoundaryValidator {
 
     /** Sentinel owning-tenant for admin-provisioned, non-tenant-owned subscriptions. */
-    public static final String SYSTEM_TENANT = "__system__";
+    public static final String SYSTEM_TENANT = WebhookSubscription.SYSTEM_TENANT;
 
     /**
      * Validate a request's {@code event_types}/{@code event_categories} against
@@ -64,9 +65,15 @@ public class WebhookCategoryBoundaryValidator {
         validateEventCategories(eventCategories);
     }
 
-    /** True when the owning tenant is the system sentinel (not tenant-owned). */
+    /**
+     * True when the owning tenant is system-owned (not tenant-owned). Delegates
+     * to {@link WebhookSubscription#isSystemOwner} so the write-path validator
+     * and the cleanup reconciler share ONE predicate. Per gov v0.1.25.40 only
+     * null/omitted and the literal {@code __system__} sentinel are exempt; a
+     * blank (whitespace-only) tenant_id is treated as CONCRETE and validated.
+     */
     public boolean isSystemTarget(String tenantId) {
-        return tenantId == null || tenantId.isBlank() || SYSTEM_TENANT.equals(tenantId);
+        return WebhookSubscription.isSystemOwner(tenantId);
     }
 
     /** Reject any admin-only event type. Null list is a no-op. */

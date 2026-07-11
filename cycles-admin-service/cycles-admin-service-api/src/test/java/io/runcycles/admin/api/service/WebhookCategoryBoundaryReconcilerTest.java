@@ -3,6 +3,7 @@ package io.runcycles.admin.api.service;
 import io.runcycles.admin.data.repository.WebhookRepository;
 import io.runcycles.admin.data.repository.WebhookRepository.CategoryBoundaryAction;
 import io.runcycles.admin.data.repository.WebhookRepository.CategoryBoundaryRepairOutcome;
+import io.runcycles.admin.data.repository.WebhookRepository.ReconcileResult;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -22,65 +23,100 @@ class WebhookCategoryBoundaryReconcilerTest {
     @Mock private WebhookRepository webhookRepository;
     @InjectMocks private WebhookCategoryBoundaryReconciler reconciler;
 
-    @Test
-    void run_flagEnabled_invokesReconcile_notDryRunByDefault() {
-        ReflectionTestUtils.setField(reconciler, "reconcileOnStartup", true);
-        ReflectionTestUtils.setField(reconciler, "dryRun", false);
-        when(webhookRepository.reconcileTenantCategoryBoundary(false)).thenReturn(List.of());
-
-        reconciler.run(mock(ApplicationArguments.class));
-
-        verify(webhookRepository).reconcileTenantCategoryBoundary(false);
+    private ReconcileResult complete(CategoryBoundaryRepairOutcome... outcomes) {
+        return new ReconcileResult(List.of(outcomes), 0);
     }
 
-    @Test
-    void run_dryRunFlag_passesDryRunTrue() {
-        ReflectionTestUtils.setField(reconciler, "reconcileOnStartup", true);
-        ReflectionTestUtils.setField(reconciler, "dryRun", true);
-        when(webhookRepository.reconcileTenantCategoryBoundary(true)).thenReturn(List.of());
-
-        reconciler.run(mock(ApplicationArguments.class));
-
-        verify(webhookRepository).reconcileTenantCategoryBoundary(true);
+    private void tune(boolean dryRun, int maxAttempts) {
+        ReflectionTestUtils.setField(reconciler, "dryRun", dryRun);
+        ReflectionTestUtils.setField(reconciler, "maxAttempts", maxAttempts);
+        ReflectionTestUtils.setField(reconciler, "initialBackoffMs", 0L); // no sleep in tests
     }
 
     @Test
     void run_flagDisabled_skipsReconcile() {
         ReflectionTestUtils.setField(reconciler, "reconcileOnStartup", false);
-
         reconciler.run(mock(ApplicationArguments.class));
-
         verifyNoInteractions(webhookRepository);
     }
 
     @Test
+    void run_flagEnabled_startsBackgroundReconcile() {
+        ReflectionTestUtils.setField(reconciler, "reconcileOnStartup", true);
+        tune(false, 1);
+        when(webhookRepository.reconcileTenantCategoryBoundary(false)).thenReturn(complete());
+
+        reconciler.run(mock(ApplicationArguments.class));
+
+        // Runs on a daemon thread; give it a moment to invoke the repo.
+        verify(webhookRepository, timeout(2000)).reconcileTenantCategoryBoundary(false);
+    }
+
+    @Test
+    void reconcile_passesDryRunFlag() {
+        tune(true, 1);
+        when(webhookRepository.reconcileTenantCategoryBoundary(true)).thenReturn(complete());
+
+        reconciler.reconcile();
+
+        verify(webhookRepository).reconcileTenantCategoryBoundary(true);
+    }
+
+    @Test
     void reconcile_returnsOutcomes_andLogsSummary() {
-        ReflectionTestUtils.setField(reconciler, "dryRun", false);
-        when(webhookRepository.reconcileTenantCategoryBoundary(false)).thenReturn(List.of(
-                new CategoryBoundaryRepairOutcome("wh1", "t1", CategoryBoundaryAction.DISABLED_ADMIN_CATEGORIES, List.of("api_key")),
-                new CategoryBoundaryRepairOutcome("wh2", "t2", CategoryBoundaryAction.DISABLED_ADMIN_CATEGORIES, List.of("policy")),
-                new CategoryBoundaryRepairOutcome("wh3", "t3", CategoryBoundaryAction.DISABLED_EMPTY_BOTH, List.of())));
+        tune(false, 1);
+        when(webhookRepository.reconcileTenantCategoryBoundary(false)).thenReturn(complete(
+                new CategoryBoundaryRepairOutcome("wh1", "t1", CategoryBoundaryAction.DISABLED_ADMIN_SELECTORS, List.of("api_key")),
+                new CategoryBoundaryRepairOutcome("wh2", "t2", CategoryBoundaryAction.DISABLED_EMPTY_BOTH, List.of())));
 
-        List<CategoryBoundaryRepairOutcome> outcomes = reconciler.reconcile();
+        ReconcileResult r = reconciler.reconcile();
 
-        assertThat(outcomes).hasSize(3);
+        assertThat(r.repaired()).hasSize(2);
+        assertThat(r.isComplete()).isTrue();
     }
 
     @Test
-    void reconcile_noOutcomes_returnsEmpty() {
-        ReflectionTestUtils.setField(reconciler, "dryRun", false);
-        when(webhookRepository.reconcileTenantCategoryBoundary(false)).thenReturn(List.of());
+    void reconcile_noOutcomes_returnsComplete() {
+        tune(false, 1);
+        when(webhookRepository.reconcileTenantCategoryBoundary(false)).thenReturn(complete());
 
-        assertThat(reconciler.reconcile()).isEmpty();
+        assertThat(reconciler.reconcile().repaired()).isEmpty();
     }
 
     @Test
-    void reconcile_repositoryThrows_swallowedReturnsEmpty() {
-        // A cleanup failure must never block startup.
-        ReflectionTestUtils.setField(reconciler, "dryRun", false);
+    void reconcile_repositoryThrows_swallowed_returnsIncomplete() {
+        tune(false, 1);
         when(webhookRepository.reconcileTenantCategoryBoundary(false))
                 .thenThrow(new RuntimeException("redis down"));
 
-        assertThat(reconciler.reconcile()).isEmpty();
+        ReconcileResult r = reconciler.reconcile();
+
+        assertThat(r.repaired()).isEmpty();
+        assertThat(r.isComplete()).isFalse(); // failure recorded → caller retries
+    }
+
+    @Test
+    void reconcileWithRetry_retriesUntilComplete() {
+        tune(false, 3);
+        when(webhookRepository.reconcileTenantCategoryBoundary(false))
+                .thenReturn(new ReconcileResult(List.of(), 1))   // incomplete
+                .thenReturn(new ReconcileResult(List.of(), 1))   // incomplete
+                .thenReturn(complete());                          // done
+
+        reconciler.reconcileWithRetry();
+
+        verify(webhookRepository, times(3)).reconcileTenantCategoryBoundary(false);
+    }
+
+    @Test
+    void reconcileWithRetry_givesUpAfterMaxAttempts_alerts() {
+        tune(false, 2);
+        when(webhookRepository.reconcileTenantCategoryBoundary(false))
+                .thenReturn(new ReconcileResult(List.of(), 1)); // always incomplete
+
+        reconciler.reconcileWithRetry();
+
+        // Exactly maxAttempts calls, then gives up (logs ERROR alert) — never throws.
+        verify(webhookRepository, times(2)).reconcileTenantCategoryBoundary(false);
     }
 }

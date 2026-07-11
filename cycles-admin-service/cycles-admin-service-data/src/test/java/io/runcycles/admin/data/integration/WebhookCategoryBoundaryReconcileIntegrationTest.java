@@ -7,6 +7,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.admin.data.repository.WebhookRepository;
 import io.runcycles.admin.data.repository.WebhookRepository.CategoryBoundaryAction;
 import io.runcycles.admin.data.repository.WebhookRepository.CategoryBoundaryRepairOutcome;
+import io.runcycles.admin.data.repository.WebhookRepository.ReconcileResult;
 import io.runcycles.admin.data.service.CryptoService;
 import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventType;
@@ -110,58 +111,69 @@ class WebhookCategoryBoundaryReconcileIntegrationTest {
 
     @Test
     void reconcile_seededMix_disablesOffenders_conservatively_andIsIdempotent() {
-        // 1) offender: admin category alongside a legit type → DISABLE (NOT
-        //    stripped: it may be legit-but-misconfigured operator monitoring).
+        // 1) offender: admin CATEGORY alongside a legit type -> DISABLE (not stripped)
         seed("wh_admin_cat", "tenant-1", List.of(EventType.BUDGET_CREATED),
                 List.of(EventCategory.BUDGET, EventCategory.API_KEY), WebhookStatus.ACTIVE);
-        // 2) offender: admin-category-only, no types → DISABLE (admin categories).
-        seed("wh_admin_only", "tenant-2", List.of(),
-                List.of(EventCategory.API_KEY), WebhookStatus.ACTIVE);
-        // 3) legit tenant-accessible categories → untouched
+        // 2) offender: admin-only TYPE (finding 3) -> DISABLE
+        seed("wh_admin_type", "tenant-2", List.of(EventType.API_KEY_CREATED),
+                null, WebhookStatus.ACTIVE);
+        // 3) legit tenant-accessible categories -> untouched
         seed("wh_legit", "tenant-3", List.of(EventType.BUDGET_CREATED),
                 List.of(EventCategory.RESERVATION), WebhookStatus.ACTIVE);
-        // 4) __system__ row with admin categories → NOT tenant-owned, untouched
+        // 4) __system__ row with admin categories -> NOT tenant-owned, untouched
         seed("wh_system", "__system__", List.of(EventType.API_KEY_CREATED),
                 List.of(EventCategory.API_KEY), WebhookStatus.ACTIVE);
-        // 5) pre-existing empty-both (match-ALL) row → DISABLE
+        // 5) tenant empty-both (match-ALL) -> DISABLE
         seed("wh_empty_both", "tenant-4", List.of(), null, WebhookStatus.ACTIVE);
-        // 6) legit types-only → untouched
+        // 6) __system__ empty-both (finding 4) -> DISABLE (carve-out is admin-selectors only)
+        seed("wh_system_empty_both", "__system__", List.of(), null, WebhookStatus.ACTIVE);
+        // 7) null-owner (system per isSystemOwner) with admin category -> untouched for
+        //    admin selectors, but... it is NOT empty-both here, so untouched (finding 6)
+        seed("wh_null_owner", null, List.of(EventType.API_KEY_CREATED),
+                List.of(EventCategory.API_KEY), WebhookStatus.ACTIVE);
+        // 8) legit types-only -> untouched
         seed("wh_types_only", "tenant-5", List.of(EventType.BUDGET_CREATED),
                 null, WebhookStatus.ACTIVE);
-        // 7) already-DISABLED offender → skipped (idempotent)
+        // 9) already-DISABLED offender -> skipped (idempotent)
         seed("wh_already_disabled", "tenant-6", List.of(EventType.BUDGET_CREATED),
                 List.of(EventCategory.POLICY), WebhookStatus.DISABLED);
 
-        List<CategoryBoundaryRepairOutcome> outcomes = webhookRepository.reconcileTenantCategoryBoundary(false);
+        ReconcileResult result = webhookRepository.reconcileTenantCategoryBoundary(false);
+        assertThat(result.isComplete()).isTrue();
+        List<CategoryBoundaryRepairOutcome> outcomes = result.repaired();
 
-        // Exactly the three ACTIVE offenders were disabled.
+        // Offenders disabled: admin-cat, admin-type, tenant empty-both, __system__ empty-both.
         assertThat(outcomes).extracting(CategoryBoundaryRepairOutcome::subscriptionId)
-                .containsExactlyInAnyOrder("wh_admin_cat", "wh_admin_only", "wh_empty_both");
+                .containsExactlyInAnyOrder("wh_admin_cat", "wh_admin_type", "wh_empty_both", "wh_system_empty_both");
 
-        assertThat(outcomeFor(outcomes, "wh_admin_cat").action()).isEqualTo(CategoryBoundaryAction.DISABLED_ADMIN_CATEGORIES);
-        assertThat(outcomeFor(outcomes, "wh_admin_cat").offendingCategories()).containsExactly("api_key");
-        assertThat(outcomeFor(outcomes, "wh_admin_only").action()).isEqualTo(CategoryBoundaryAction.DISABLED_ADMIN_CATEGORIES);
+        assertThat(outcomeFor(outcomes, "wh_admin_cat").action()).isEqualTo(CategoryBoundaryAction.DISABLED_ADMIN_SELECTORS);
+        assertThat(outcomeFor(outcomes, "wh_admin_cat").offendingSelectors()).containsExactly("api_key");
+        assertThat(outcomeFor(outcomes, "wh_admin_type").action()).isEqualTo(CategoryBoundaryAction.DISABLED_ADMIN_SELECTORS);
+        assertThat(outcomeFor(outcomes, "wh_admin_type").offendingSelectors()).containsExactly("api_key.created");
         assertThat(outcomeFor(outcomes, "wh_empty_both").action()).isEqualTo(CategoryBoundaryAction.DISABLED_EMPTY_BOTH);
+        assertThat(outcomeFor(outcomes, "wh_system_empty_both").action()).isEqualTo(CategoryBoundaryAction.DISABLED_EMPTY_BOTH);
 
-        // Offenders DISABLED, categories left INTACT for operator review.
+        // Offenders DISABLED, selectors left INTACT for operator review.
         WebhookSubscription adminCat = read("wh_admin_cat");
         assertThat(adminCat.getStatus()).isEqualTo(WebhookStatus.DISABLED);
-        assertThat(adminCat.getEventCategories()).containsExactly(EventCategory.BUDGET, EventCategory.API_KEY); // NOT stripped
+        assertThat(adminCat.getEventCategories()).containsExactly(EventCategory.BUDGET, EventCategory.API_KEY);
         assertThat(adminCat.getEventTypes()).containsExactly(EventType.BUDGET_CREATED);
-
-        assertThat(read("wh_admin_only").getStatus()).isEqualTo(WebhookStatus.DISABLED);
-        assertThat(read("wh_admin_only").getEventCategories()).containsExactly(EventCategory.API_KEY); // intact
+        assertThat(read("wh_admin_type").getStatus()).isEqualTo(WebhookStatus.DISABLED);
+        assertThat(read("wh_admin_type").getEventTypes()).containsExactly(EventType.API_KEY_CREATED); // intact
         assertThat(read("wh_empty_both").getStatus()).isEqualTo(WebhookStatus.DISABLED);
+        assertThat(read("wh_system_empty_both").getStatus()).isEqualTo(WebhookStatus.DISABLED);
 
         // Untouched rows.
         assertThat(read("wh_legit").getStatus()).isEqualTo(WebhookStatus.ACTIVE);
         assertThat(read("wh_system").getStatus()).isEqualTo(WebhookStatus.ACTIVE);
-        assertThat(read("wh_system").getEventCategories()).containsExactly(EventCategory.API_KEY);
+        assertThat(read("wh_null_owner").getStatus()).isEqualTo(WebhookStatus.ACTIVE); // system-exempt for admin selectors
         assertThat(read("wh_types_only").getStatus()).isEqualTo(WebhookStatus.ACTIVE);
         assertThat(read("wh_already_disabled").getStatus()).isEqualTo(WebhookStatus.DISABLED);
 
-        // Idempotent: a second run finds nothing to disable.
-        assertThat(webhookRepository.reconcileTenantCategoryBoundary(false)).isEmpty();
+        // Idempotent: a second run finds nothing to disable and is complete.
+        ReconcileResult rerun = webhookRepository.reconcileTenantCategoryBoundary(false);
+        assertThat(rerun.repaired()).isEmpty();
+        assertThat(rerun.isComplete()).isTrue();
     }
 
     @Test
@@ -170,10 +182,9 @@ class WebhookCategoryBoundaryReconcileIntegrationTest {
                 List.of(EventCategory.API_KEY), WebhookStatus.ACTIVE);
         seed("wh_empty_both", "tenant-2", List.of(), null, WebhookStatus.ACTIVE);
 
-        List<CategoryBoundaryRepairOutcome> outcomes = webhookRepository.reconcileTenantCategoryBoundary(true);
+        ReconcileResult result = webhookRepository.reconcileTenantCategoryBoundary(true);
 
-        // Reports both offenders...
-        assertThat(outcomes).extracting(CategoryBoundaryRepairOutcome::subscriptionId)
+        assertThat(result.repaired()).extracting(CategoryBoundaryRepairOutcome::subscriptionId)
                 .containsExactlyInAnyOrder("wh_admin_cat", "wh_empty_both");
         // ...but mutates nothing (both still ACTIVE).
         assertThat(read("wh_admin_cat").getStatus()).isEqualTo(WebhookStatus.ACTIVE);
@@ -181,7 +192,26 @@ class WebhookCategoryBoundaryReconcileIntegrationTest {
     }
 
     @Test
+    void reconcile_manyRows_scanBatchingCoversAll() {
+        // Larger set than one SSCAN batch worth to exercise cursor paging.
+        for (int i = 0; i < 250; i++) {
+            seed("wh_ok_" + i, "tenant-x", List.of(EventType.BUDGET_CREATED), null, WebhookStatus.ACTIVE);
+        }
+        seed("wh_off", "tenant-y", List.of(EventType.BUDGET_CREATED),
+                List.of(EventCategory.API_KEY), WebhookStatus.ACTIVE);
+
+        ReconcileResult result = webhookRepository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(result.isComplete()).isTrue();
+        assertThat(result.repaired()).extracting(CategoryBoundaryRepairOutcome::subscriptionId)
+                .containsExactly("wh_off");
+        assertThat(read("wh_off").getStatus()).isEqualTo(WebhookStatus.DISABLED);
+    }
+
+    @Test
     void reconcile_emptyStore_isNoOp() {
-        assertThat(webhookRepository.reconcileTenantCategoryBoundary(false)).isEmpty();
+        ReconcileResult result = webhookRepository.reconcileTenantCategoryBoundary(false);
+        assertThat(result.repaired()).isEmpty();
+        assertThat(result.isComplete()).isTrue();
     }
 }

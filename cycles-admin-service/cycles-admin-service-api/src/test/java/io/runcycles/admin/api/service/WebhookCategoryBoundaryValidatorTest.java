@@ -19,15 +19,26 @@ class WebhookCategoryBoundaryValidatorTest {
     // ---- isSystemTarget ----
 
     @Test
-    void isSystemTarget_trueForSentinelNullBlank() {
+    void isSystemTarget_trueForSentinelAndNull() {
         assertThat(validator.isSystemTarget("__system__")).isTrue();
         assertThat(validator.isSystemTarget(null)).isTrue();
-        assertThat(validator.isSystemTarget("  ")).isTrue();
     }
 
     @Test
-    void isSystemTarget_falseForConcreteTenant() {
+    void isSystemTarget_falseForConcreteTenant_andBlank() {
+        // #209 finding 5: a blank (whitespace-only) tenant_id is NOT
+        // system-exempt — it is treated as concrete and validated.
         assertThat(validator.isSystemTarget("tenant-1")).isFalse();
+        assertThat(validator.isSystemTarget("   ")).isFalse();
+        assertThat(validator.isSystemTarget("")).isFalse();
+    }
+
+    @Test
+    void validateForTarget_blankTenant_adminCategory_throws400() {
+        assertThatThrownBy(() -> validator.validateForTarget("   ",
+            List.of(EventType.BUDGET_CREATED), List.of(EventCategory.API_KEY)))
+            .isInstanceOf(GovernanceException.class)
+            .hasFieldOrPropertyWithValue("httpStatus", 400);
     }
 
     // ---- validateEventTypes ----

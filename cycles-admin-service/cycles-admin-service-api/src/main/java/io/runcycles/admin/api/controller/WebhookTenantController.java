@@ -101,8 +101,15 @@ public class WebhookTenantController {
         WebhookSubscription existing = webhookService.get(subscriptionId);
         boolean isAdminAuth = isAdminAuth(httpRequest);
         enforceTenantOwnership(httpRequest, existing);
-        categoryBoundaryValidator.validateEventTypes(request.getEventTypes());
-        categoryBoundaryValidator.validateEventCategories(request.getEventCategories());
+        // #209 finding 2: validate the EFFECTIVE resulting selectors (stored ∪
+        // request), not just the arrays present in the request. A status-only
+        // PATCH (e.g. {"status":"ACTIVE"}) carries null selector arrays, which
+        // the per-array validator skips — so a tenant could re-enable a disabled
+        // offender that still holds admin-only selectors. Validating the
+        // effective result blocks reactivating/mutating an unrepaired offender.
+        categoryBoundaryValidator.validateForTarget(existing.getTenantId(),
+            request.getEventTypes() != null ? request.getEventTypes() : existing.getEventTypes(),
+            request.getEventCategories() != null ? request.getEventCategories() : existing.getEventCategories());
         // Spec v0.1.25.29 Rule 2: any mutation on a webhook owned by a CLOSED
         // tenant returns 409 TENANT_CLOSED. This is the layer that makes
         // DISABLED effectively-terminal for closed-owner webhooks without

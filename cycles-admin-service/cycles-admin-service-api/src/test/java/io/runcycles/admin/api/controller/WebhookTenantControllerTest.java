@@ -7,6 +7,7 @@ import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
 import io.runcycles.admin.model.auth.ApiKeyValidationResponse;
+import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.webhook.*;
@@ -260,6 +261,29 @@ class WebhookTenantControllerTest {
                         .content("{\"event_types\":[\"api_key.created\"]}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
+
+    // #209 finding 2: a status-only PATCH cannot reactivate a disabled tenant
+    // offender that still holds admin-only selectors — the effective result
+    // (stored ∪ request) is validated, not just the request arrays.
+    @Test
+    void updateWebhook_statusOnlyReactivation_ofStoredOffender_returns400() throws Exception {
+        setupApiKeyAuth();
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .eventTypes(List.of(EventType.BUDGET_CREATED))
+            .eventCategories(List.of(EventCategory.API_KEY)) // stored admin-only category
+            .status(WebhookStatus.DISABLED).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(sub);
+
+        mockMvc.perform(patch("/v1/webhooks/whsub_1")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"ACTIVE\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(webhookService, never()).update(anyString(), any());
     }
 
     @Test

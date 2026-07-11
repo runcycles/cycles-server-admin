@@ -18,26 +18,43 @@ new optional request fields) are **not** considered breaking.
 
 ### Security
 
-- **Admin-plane webhook `event_categories` boundary — closes the CARRIER
-  source (#209).** `POST /v1/admin/webhooks?tenant_id=X` and
-  `PATCH /v1/admin/webhooks/{id}` applied no category validation, so an
-  operator / admin-on-behalf-of could place admin-only categories
-  (`api_key`, `policy`, `webhook`, `system`) on a subscription owned by a
-  concrete tenant X. Since event matching treats categories as an ADDITIVE
-  union, X — which controls that subscription's endpoint URL and signing
-  secret — then received admin-only governance/security telemetry for its
-  tenant. The 0.1.25.50 fix closed the tenant-plane *injection* path; this
-  closes the admin-plane *carrier* source. Both admin write paths now
-  validate `event_types` AND `event_categories` against the tenant-accessible
-  boundary (`budget.*`, `reservation.*`, `tenant.*`) when the target is a
-  **concrete tenant** — create validates against the `tenant_id` param,
-  update against the STORED subscription's `tenant_id` — rejecting admin-only
-  entries with 400 `INVALID_REQUEST`. Governance spec revision v0.1.25.40
-  (pending, runcycles/cycles-protocol#129) makes this normative.
-  - **`__system__` carve-out:** admin-only categories remain allowed on
+- **Admin-plane webhook boundary — closes the CARRIER source (#209).**
+  `POST /v1/admin/webhooks?tenant_id=X` and `PATCH /v1/admin/webhooks/{id}`
+  applied no boundary validation, so an operator / admin-on-behalf-of could
+  place admin-only event **types OR categories** (`api_key`, `policy`,
+  `webhook`, `system`) on a subscription owned by a concrete tenant X. Since
+  event matching unions types and categories, X — which controls that
+  subscription's endpoint URL and signing secret — then received admin-only
+  governance/security telemetry for its tenant. The 0.1.25.50 fix closed the
+  tenant-plane *injection* path; this closes the admin-plane *carrier* source.
+  Both admin write paths now validate `event_types` AND `event_categories`
+  against the tenant-accessible boundary (`budget.*`, `reservation.*`,
+  `tenant.*`) when the target is a **concrete tenant** — create validates
+  against the `tenant_id` param, update against the **effective resulting
+  selectors** (stored ∪ request) on the STORED subscription's `tenant_id` —
+  rejecting admin-only entries with 400 `INVALID_REQUEST`. Validating the
+  effective result means a status-only reactivation (`{"status":"ACTIVE"}`)
+  cannot re-enable a disabled offender that still holds admin-only selectors.
+  Governance spec revision v0.1.25.40 (pending, runcycles/cycles-protocol#129)
+  makes this normative.
+  - **`__system__` carve-out:** admin-only selectors remain allowed on
     `__system__`-owned subscriptions (no `tenant_id` param, or an
-    `__system__` target) — those are legitimate system-wide monitoring and
-    are not tenant-owned.
+    `__system__` target) — legitimate system-wide monitoring, not
+    tenant-owned. A null/omitted owner is treated the same; a blank
+    (whitespace-only) `tenant_id` is NOT exempt (treated as concrete and
+    validated).
+
+- **Replay honors the subscription's own selectors (#209).**
+  `POST /v1/admin/webhooks/{id}/replay` filtered historical events only by
+  the request's optional `event_types` + the subscription's `scope_filter`,
+  never by the subscription's OWN `event_types`/`event_categories`, and did
+  not check status — so replaying a concrete-tenant budget-only subscription
+  could dispatch historical ADMIN-only events to its tenant-controlled
+  endpoint (a direct bypass of this boundary; likely pre-existing). Replay now
+  intersects delivered events with the subscription's own selectors (spec
+  `replayEvents`: "all event types the subscription is subscribed to") and is
+  a no-op on a non-`ACTIVE` subscription — so a DISABLED offender receives
+  nothing via replay either.
 
 - **BEHAVIOR CHANGE — previously-allowed capability removed.** In 0.1.25.50
   the admin plane deliberately did NOT restrict categories (documented as
@@ -52,33 +69,41 @@ new optional request fields) are **not** considered breaking.
   filtered by **`event_categories`** to the admin classes you need. Because
   `__system__` is in the dispatch union for every tenant, that subscription
   receives those admin events for ALL tenants; select the specific tenant
-  **client-side** on the envelope's `tenant_id` (admin lifecycle events carry
-  `tenant_id` even though their `scope` is null). Do NOT use a `scope_filter`
-  for this — admin lifecycle events are null-scoped, and a `scope_filter`
-  excludes null-scoped events, so it would deliver none of them. The
-  `__system__` row is not tenant-owned, so its URL and secret stay
-  operator-controlled.
+  **client-side** on the envelope's `tenant_id`. Note on `scope_filter`:
+  `api_key.*`, `webhook.*` and `system.*` events are **null-scoped**, and a
+  `scope_filter` excludes null-scoped events, so it would deliver none of
+  them — client-side `tenant_id` filtering is the general solution. `policy.*`
+  events carry a real tenant-bounded `scope` and CAN be `scope_filter`ed if
+  you only need policy events. The `__system__` row is not tenant-owned, so
+  its URL and secret stay operator-controlled.
 
 ### Fixed
 
 - **One-time cleanup of pre-existing offender rows (#209, d2).** A startup
-  reconciler (idempotent; runs once per boot, no new API surface) finds
-  TENANT-owned subscriptions that already carry admin-only `event_categories`
-  and legacy empty-both match-ALL rows, and **DISABLEs** them (status
-  `DISABLED`) — conservative by design: it does NOT silently strip
-  categories, because a concrete-tenant admin-category row might be a
-  legit-but-misconfigured operator monitoring subscription, and a silent
-  rewrite would break it with no signal. Disabling stops delivery
-  immediately (dispatch matches only `ACTIVE` rows), is reversible, preserves
-  the row and its offending categories for operator review, and is loudly
-  logged with the `subscription_id`, `tenant_id`, and offending categories.
-  Configure with `webhook.category-boundary.reconcile-on-startup` (default
-  `true`) and `webhook.category-boundary.reconcile-dry-run` (default `false`
-  — set `true` to REPORT offenders in the logs without disabling anything,
-  for review before the disabling pass). Operators can also still find
-  offenders with the `redis-cli`/`jq` recipe from the [0.1.25.50] Security
-  note. Repaired (DISABLED) rows should be migrated per the migration note
-  above, or deleted.
+  reconciler (idempotent, resumable, no new API surface) finds concrete-tenant
+  subscriptions that already carry admin-only event **types or categories**,
+  and empty-both match-ALL rows (on any owner, `__system__` included — the
+  system carve-out exempts admin selectors only, not the "at least one
+  selector" invariant), and **DISABLEs** them — conservative by design: it
+  does NOT silently strip selectors, because a concrete-tenant admin-selector
+  row might be a legit-but-misconfigured operator monitoring subscription and
+  a silent rewrite would break it with no signal. Disabling stops delivery
+  immediately (live dispatch AND replay match only `ACTIVE` rows), is
+  reversible, preserves the row + offending selectors for review, and is
+  loudly logged. **Robustness:** it `SSCAN`s the index in batches (bounded
+  memory), writes via an atomic compare-and-set (never clobbers a concurrent
+  operator update), and runs on a **background thread** so startup/readiness
+  is never blocked; an incomplete pass (row error or CAS miss) is retried with
+  exponential backoff, and if retries are exhausted a loud `ERROR` alert is
+  emitted and the service stays up (a migration bug must not brick the
+  service — and the write-path gate already stops NEW offenders, so legacy
+  offenders merely remain DISABLED-pending). Configure with
+  `webhook.category-boundary.reconcile-on-startup` (default `true`) and
+  `webhook.category-boundary.reconcile-dry-run` (default `false` — `true`
+  REPORTS offenders in the logs without disabling anything). Operators can
+  also find offenders with the `redis-cli`/`jq` recipe from the [0.1.25.50]
+  Security note. Repaired (DISABLED) rows should be migrated per the migration
+  note above, or deleted.
 
 ## [0.1.25.50] — 2026-07-10
 

@@ -295,6 +295,16 @@ public class WebhookService {
     public ReplayResponse replay(String subscriptionId, ReplayRequest request) {
         WebhookSubscription sub = webhookRepository.findById(subscriptionId);
         String replayId = "replay_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        // #209: a replay MUST NOT deliver to a non-ACTIVE subscription — live
+        // dispatch only delivers to ACTIVE rows, so replay mirrors that. This
+        // makes "disabling stops delivery immediately" true for the reconciler's
+        // disabled offenders too: a DISABLED (or PAUSED) subscription queues
+        // nothing. Short-circuit before acquiring the replay lock.
+        if (sub.getStatus() != WebhookStatus.ACTIVE) {
+            LOG.info("Webhook replay is a no-op on a non-ACTIVE subscription: subscription_id={} tenant_id={} status={}",
+                safe(subscriptionId), safe(sub.getTenantId()), sub.getStatus());
+            return ReplayResponse.builder().replayId(replayId).eventsQueued(0).estimatedCompletionSeconds(0).build();
+        }
         // Acquire distributed lock — spec requires 409 REPLAY_IN_PROGRESS if already running
         if (!webhookRepository.acquireReplayLock(subscriptionId, replayId)) {
             throw GovernanceException.replayInProgress(subscriptionId);
@@ -312,11 +322,17 @@ public class WebhookService {
                     .filter(e -> request.getEventTypes().contains(e.getEventType()))
                     .toList();
             }
-            // Apply the subscription's scope_filter — same matcher as live
-            // dispatch (WebhookRepository.findMatchingSubscriptions), so a
-            // replay never delivers events the subscription would not have
-            // received live.
+            // #209: intersect with the SUBSCRIPTION's own event_types /
+            // event_categories — the same matcher as live dispatch
+            // (WebhookRepository.findMatchingSubscriptions). Spec (replayEvents):
+            // "If omitted, replays all event types the subscription is subscribed
+            // to." Without this, a concrete-tenant budget-only subscription could
+            // replay historical ADMIN-only events (api_key.*/policy.*/…) to its
+            // tenant-controlled endpoint — bypassing the category boundary this
+            // release establishes. Also apply the subscription's scope_filter so
+            // replay never delivers an event live dispatch would have skipped.
             events = events.stream()
+                .filter(e -> WebhookRepository.matchesEventType(sub, e.getEventType()))
                 .filter(e -> WebhookRepository.matchesScope(sub, e.getScope()))
                 .toList();
             // Queue each matching event for re-delivery to this subscription

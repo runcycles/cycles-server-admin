@@ -152,12 +152,16 @@ public class WebhookAdminController {
         // Capture prior status BEFORE mutating so we can classify the emit
         // type (WEBHOOK_PAUSED / WEBHOOK_RESUMED vs plain WEBHOOK_UPDATED).
         WebhookSubscription prior = webhookService.get(subscriptionId);
-        // #209 / governance v0.1.25.40 (pending): validate the provided
-        // event_types/event_categories against the STORED subscription's owning
-        // tenant (WebhookUpdateRequest has no tenant_id — ownership is the
-        // subscription's, not the request's). __system__ rows are exempt.
+        // #209 / governance v0.1.25.40 (pending): validate the EFFECTIVE
+        // resulting selectors (stored ∪ request) against the STORED
+        // subscription's owning tenant (WebhookUpdateRequest has no tenant_id —
+        // ownership is the subscription's). Effective (not request-only) so a
+        // status-only PATCH cannot reactivate an unrepaired concrete-tenant
+        // offender that still holds admin-only selectors. __system__ rows are
+        // exempt.
         categoryBoundaryValidator.validateForTarget(prior.getTenantId(),
-            request.getEventTypes(), request.getEventCategories());
+            request.getEventTypes() != null ? request.getEventTypes() : prior.getEventTypes(),
+            request.getEventCategories() != null ? request.getEventCategories() : prior.getEventCategories());
         WebhookStatus previousStatus = prior.getStatus();
         WebhookSubscription updated = webhookService.update(subscriptionId, request);
         java.util.Map<String, Object> updateMeta = new java.util.LinkedHashMap<>();

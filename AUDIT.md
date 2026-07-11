@@ -38,6 +38,82 @@ pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-07-11 — v0.1.25.51 codex REVISE-MAJOR: close live bypasses (#209)
+
+Codex security review of the PR found the create/update gate sound but
+several LIVE bypasses that had to close before shipping as a security
+fix. All verified against source, then fixed:
+
+1. **Replay bypassed the boundary.** `WebhookService.replay` filtered
+   historical events only by the request's optional type filter + the
+   subscription's `scope_filter` — never by the subscription's OWN
+   `event_types`/`event_categories`, and no status check. A
+   concrete-tenant budget-only subscription could replay historical
+   admin-only events to its tenant endpoint. Fix: replay now intersects
+   with the subscription's own selectors via
+   `WebhookRepository.matchesEventType` (made `public static`, shared
+   with live dispatch — spec `replayEvents`: "all event types the
+   subscription is subscribed to") AND short-circuits to a no-op on a
+   non-ACTIVE subscription (so a DISABLED offender receives nothing —
+   makes "disabling stops delivery" true for replay too). Pre-existing
+   bug, fixed here as a direct bypass of this boundary.
+2. **Reconciled offenders could be reactivated unrepaired.** A
+   status-only `{"status":"ACTIVE"}` PATCH passes null selector arrays
+   (per-array validator skips them) and update permits DISABLED→ACTIVE.
+   Fix: both controllers now validate the EFFECTIVE resulting selectors
+   (stored ∪ request), so reactivating a concrete-tenant row that still
+   holds admin-only selectors → 400.
+3. **Reconciler ignored admin-only event TYPES** — examined only
+   `event_categories`. A concrete-tenant row with
+   `event_types:["api_key.created"]` stayed ACTIVE. Fix: offender =
+   admin-only TYPE or CATEGORY (action renamed
+   `DISABLED_ADMIN_SELECTORS`, outcome field `offendingSelectors`).
+4. **`__system__` empty-both rows escaped cleanup** — the unconditional
+   `__system__` skip ran before empty-both detection. Fix: the system
+   carve-out exempts admin selectors ONLY; empty-both is checked for all
+   owners (system empty-both rows are disabled).
+5. **Blank `tenant_id` got an undocumented system exemption** —
+   `isSystemTarget` treated blank as system. Fix: a new
+   `WebhookSubscription.isSystemOwner` (null/omitted or literal
+   `__system__` only; blank = concrete) is the SINGLE predicate used by
+   both the validator (api) and reconciler (data) — closing finding 6
+   (validator/reconciler disagreement on null owner) at the same time.
+7. **Reconciler robustness.** Rewritten from `SMEMBERS`+sequential
+   GET/SET to: `SSCAN` cursor batching (bounded memory); atomic
+   compare-and-set Lua write (never clobbers a concurrent operator
+   update — a CAS miss is a counted failure, retried next pass); runs on
+   a **background daemon thread** so startup/readiness is NEVER blocked;
+   an incomplete pass (row error or CAS miss) is retried with
+   exponential backoff, and exhausted retries emit a loud ERROR alert
+   while the service stays up. **Readiness decision:** deliberately do
+   NOT hard-block readiness on migration completion — a migration bug
+   must not brick the service, the write-path gate already stops NEW
+   offenders, and legacy offenders merely remain DISABLED-pending until
+   a clean pass. `reconcileTenantCategoryBoundary` now returns a
+   `ReconcileResult(repaired, failures)`; the reconciler retries while
+   `failures>0`.
+8. **Migration wording** corrected: `api_key`/`webhook`/`system` events
+   are null-scoped (not `scope_filter`able → client-side `tenant_id`
+   filtering); `policy` events carry a real tenant-bounded scope and CAN
+   be `scope_filter`ed.
+
+Tests added: replay cannot deliver outside the subscription's selectors
+and is a no-op on a DISABLED sub; status-only reactivation of an
+unrepaired offender → 400 (tenant + admin plane; `__system__` still
+reactivatable); admin-only event TYPE on a concrete tenant → 400 (write)
+and flagged by the reconciler; `__system__` empty-both disabled;
+null-owner treated as system for admin-selector exemption but still
+empty-both-checked; blank `tenant_id` create with admin category → 400;
+reconciler CAS-miss → failure/incomplete + retry, corrupt-row failure,
+SSCAN batch paging (>1 batch), whole-pass failure incomplete, dry-run
+reports-without-mutating, retry-until-complete, give-up-and-alert.
+Data-module unit-job coverage restored to 0.9562 (gate 0.95; the CI gate
+that failed at 0.93 — the earlier reconciler coverage came only from the
+Testcontainers integration test, which the CI unit job excludes, so the
+new branches are covered by mocked-Jedis unit tests). Full build:
+1,621 tests (192 model + 579 data + 850 api), all module coverage gates
+green.
+
 ### 2026-07-11 — v0.1.25.51: admin-plane webhook category boundary + conservative offender cleanup (security, #209)
 
 Closes #209. The 0.1.25.50 fix closed the tenant-plane INJECTION path
