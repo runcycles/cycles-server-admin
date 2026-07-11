@@ -163,49 +163,78 @@ class WebhookReplayPaginationIntegrationTest {
         assertThat(capturedDeliveries(60)).allMatch(e -> e.getEventType() == EventType.BUDGET_CREATED);
     }
 
-    // (2) hydration drops interior rows (expired/evicted) but later ZSET members
-    //     match → NOT treated as exhaustion; later matches still delivered.
+    // (2) DELIVERABLE matches exist BEYOND the old code's first repository
+    //     candidate window (round-4 list() fetched limit*3 = 500*3 = 1500 ZSET
+    //     ids per page), and interior hydration drops make that first window
+    //     hydrate to FEWER than the 500 page size. The round-4 collector
+    //     ("page.size() < 500 → stop") would treat the short first page as
+    //     exhaustion and MISS every tail match (deliver 0). Approach B reads the
+    //     full ordered id list up front, so hydration drops never look like
+    //     exhaustion → all tail matches ship. This is what distinguishes the two.
     @Test
-    void replay_interiorHydrationDrops_laterMatchesStillDelivered() {
+    void replay_matchesBeyondFirstCandidateWindow_withHydrationDrops_stillDelivered() {
         Instant base = Instant.parse("2026-07-11T00:00:00Z");
-        for (int i = 0; i < 10; i++) {
+        // 1500 non-matching filler at positions 0..1499 (the old limit*3 window).
+        for (int i = 0; i < 1500; i++) {
+            seedEvent(String.format("evt_fill_%05d", i), EventType.TENANT_CREATED, EventCategory.TENANT,
+                    null, base.plusMillis(i));
+        }
+        // Evict 1100 interior rows (ZSET members REMAIN) so the old first
+        // candidate window hydrates to 400 events (< 500) → round-4 stops here.
+        try (Jedis jedis = jedisPool.getResource()) {
+            for (int i = 0; i < 1100; i++) {
+                jedis.del("event:evt_fill_" + String.format("%05d", i));
+            }
+        }
+        // 30 DELIVERABLE matches AFTER the first candidate window (positions 1500+).
+        for (int i = 0; i < 30; i++) {
+            seedEvent(String.format("evt_match_%05d", i), EventType.BUDGET_CREATED, EventCategory.BUDGET,
+                    null, base.plusMillis(1500 + i));
+        }
+        seedBudgetSub();
+
+        ReplayResponse r = replay(1000, base.minusSeconds(1), base.plusSeconds(10));
+
+        // Round-4 would deliver 0 (stopped at the short first page); approach B
+        // delivers every tail match.
+        assertThat(r.getEventsQueued()).isEqualTo(30);
+        assertThat(capturedDeliveries(30)).extracting(Event::getEventId)
+                .containsExactly(java.util.stream.IntStream.range(0, 30)
+                        .mapToObj(i -> "evt_match_" + String.format("%05d", i))
+                        .toArray(String[]::new));
+    }
+
+    // (3) The old zscore(cursor)==null DUPLICATE class is STRUCTURALLY ELIMINATED
+    //     by approach B: the full ordered id list is fetched ONCE up front
+    //     (ZRANGEBYSCORE) and hydrated in batches — there is no per-page cursor
+    //     re-query, so the "cursor member vanished → re-emit the same page" path
+    //     no longer exists. This pins the actual new guarantee: a member whose
+    //     event row vanished between the id-fetch and hydration is cleanly
+    //     SKIPPED (no duplicate, no miss of later members, no crash), across a
+    //     MULTI-BATCH id list (>1 hydration batch of 500).
+    @Test
+    void replay_vanishedMembers_skippedCleanly_noDuplicate_acrossBatches() {
+        Instant base = Instant.parse("2026-07-11T00:00:00Z");
+        for (int i = 0; i < 600; i++) { // 600 members → 2 hydration batches (500 + 100)
             seedEvent(String.format("evt_%04d", i), EventType.BUDGET_CREATED, EventCategory.BUDGET, null,
                     base.plusMillis(i));
         }
-        // Evict three INTERIOR event rows (keep their ZSET members).
+        // Rows vanish (ZSET members REMAIN in the fetched id list) in BOTH
+        // batches, including at the 500-item batch boundary.
         try (Jedis jedis = jedisPool.getResource()) {
-            jedis.del("event:evt_0003", "event:evt_0004", "event:evt_0005");
+            jedis.del("event:evt_0003", "event:evt_0499", "event:evt_0500", "event:evt_0550");
         }
         seedBudgetSub();
 
-        ReplayResponse r = replay(1000, base.minusSeconds(1), base.plusSeconds(1));
+        ReplayResponse r = replay(1000, base.minusSeconds(1), base.plusSeconds(10));
 
-        assertThat(r.getEventsQueued()).isEqualTo(7); // 10 members - 3 evicted
-        assertThat(capturedDeliveries(7)).extracting(Event::getEventId)
-                .containsExactly("evt_0000", "evt_0001", "evt_0002",
-                        "evt_0006", "evt_0007", "evt_0008", "evt_0009"); // later matches present
-    }
-
-    // (3) a vanished member (its row evicted between ZRANGE and hydration) does
-    //     NOT cause a duplicate — each event is delivered at most once.
-    @Test
-    void replay_vanishedMember_noDuplicateDelivery() {
-        Instant base = Instant.parse("2026-07-11T00:00:00Z");
-        for (int i = 0; i < 5; i++) {
-            seedEvent("evt_" + i, EventType.BUDGET_CREATED, EventCategory.BUDGET, null, base.plusMillis(i));
-        }
-        try (Jedis jedis = jedisPool.getResource()) {
-            jedis.del("event:evt_2"); // middle member's row gone
-        }
-        seedBudgetSub();
-
-        ReplayResponse r = replay(1000, base.minusSeconds(1), base.plusSeconds(1));
-
-        assertThat(r.getEventsQueued()).isEqualTo(4);
-        List<Event> delivered = capturedDeliveries(4);
+        assertThat(r.getEventsQueued()).isEqualTo(596); // 600 - 4 vanished, each once
+        List<Event> delivered = capturedDeliveries(596);
         assertThat(delivered).extracting(Event::getEventId)
-                .containsExactly("evt_0", "evt_1", "evt_3", "evt_4") // no evt_2, no repeats
-                .doesNotHaveDuplicates();
+                .doesNotHaveDuplicates()
+                .doesNotContain("evt_0003", "evt_0499", "evt_0500", "evt_0550")
+                // members AFTER a vanished one (incl. in the 2nd batch) still ship:
+                .contains("evt_0551", "evt_0599");
     }
 
     // (4) scan ceiling hit → WARN logged (no silent truncation).

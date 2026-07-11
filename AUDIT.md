@@ -38,6 +38,36 @@ pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-07-11 — v0.1.25.51 codex round 5: strengthen two replay regression tests (test-only) (#209)
+
+Round 5 confirmed the approach-B replay PRODUCTION fix sound (REVISE-MINOR,
+test-only). Two `WebhookReplayPaginationIntegrationTest` regression tests didn't
+actually reproduce the bugs they guard (they'd pass against round-4 too). No
+production change; only the two tests were rewritten.
+
+- **Hydration-thinning test** — was 10 members / 3 deleted (all 7 survivors hydrate
+  in the first fetch; round-4 passes too). Rewritten to
+  `replay_matchesBeyondFirstCandidateWindow_withHydrationDrops_stillDelivered`:
+  seeds 1500 non-matching filler (the round-4 `list()` `limit*3 = 1500` candidate
+  window), EVICTS 1100 interior rows (ZSET members remain) so that window
+  hydrates to 400 events (< 500), then seeds 30 DELIVERABLE matches at positions
+  1500+. Round-4's `page.size() < 500 → stop` treats the short first page as
+  exhaustion and delivers 0; approach B reads the full ordered id list up front
+  and delivers all 30. Asserting 30 genuinely distinguishes the two.
+- **Vanished-cursor test** — was 5 members / 1 row deleted (member stays; no
+  cursor re-query under approach B). ASSESSED: the old `zscore(cursor)==null`
+  duplicate class is STRUCTURALLY ELIMINATED by approach B — the full ordered id
+  list is fetched ONCE via `ZRANGEBYSCORE` and hydrated in batches, so there is
+  no per-page cursor re-query to return a stale page. Rewritten to
+  `replay_vanishedMembers_skippedCleanly_noDuplicate_acrossBatches`: 600 members
+  (2 hydration batches), 4 rows evicted across BOTH batches incl. the 500-item
+  boundary → each vanished member cleanly skipped, no duplicate, later members
+  (incl. 2nd batch) still delivered (596 queued). Pins the new structural
+  guarantee. The other four scenario tests were left unchanged (codex-clean).
+
+All gates green: api unit 861 (unchanged — integration test excluded from the
+unit job), data unit 543 (LINE 0.9572), api integration 874, data integration 593.
+
 ### 2026-07-11 — v0.1.25.51 codex round 4: replay pagination cursor bugs → approach B (#209)
 
 Round 4 confirmed classification / reconciler / /test / honest-boolean CLEAN
