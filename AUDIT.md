@@ -38,6 +38,76 @@ pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-07-11 — v0.1.25.51 codex round 2 REVISE-MAJOR: fail-closed dispatch boundary + strip cleanup (#209)
+
+Codex round 2 verified the write gate, effective-merge, reconciler
+correctness, shared predicate and migration wording as good, but flagged
+that the security property was still TIMING-DEPENDENT (reconciler is
+fail-open; live dispatch did no ownership check) plus a few residual
+bypasses. All verified against source, then fixed:
+
+**(HIGH) Architectural fix — enforce the boundary AT DELIVERY (fail-closed).**
+The durable confidentiality guarantee is no longer the reconciler (which is
+point-in-time hygiene) but a per-event dispatch filter. `WebhookDispatchService`
+now takes `WebhookCategoryBoundaryValidator` and, in BOTH live dispatch
+(`dispatch` loop) and replay (`dispatchToSubscription`), skips an event when
+`!WebhookSubscription.isSystemOwner(sub.getTenantId()) &&
+categoryBoundaryValidator.isAdminOnly(event.getEventType())`
+(`isBlockedByOwnershipBoundary`, a no-I/O helper on the passed sub). The skip
+is PER EVENT (a mixed subscription still receives its tenant-accessible events;
+counted `boundary_skipped`), so a concrete-tenant subscription can never
+receive an admin-only event regardless of stored selectors, reconciler state,
+or status. `dispatchToSubscription` now returns `boolean` (delivered?) so
+replay counts only real deliveries.
+
+**Reconciler action reconsidered — STRIP, not disable.** Because dispatch now
+blocks the leak, admin-only selectors on a concrete-tenant row are already
+non-functional, so the reconciler STRIPS them (keeping tenant-accessible
+selectors) instead of disabling the whole subscription — storage is brought in
+line with the already-enforced delivery behavior, with no collateral on
+legitimate deliveries and no signal lost (dispatch, not the row's ACTIVE flag,
+is the guarantee). Actions: `STRIPPED_ADMIN_SELECTORS`; if stripping empties
+both lists → `STRIPPED_AND_DISABLED`; legacy empty-both (any owner) →
+`DISABLED_EMPTY_BOTH`. Empty-both fallback preserved because a match-ALL row is
+a separate invariant violation.
+
+**Null-owner decision — reconciler MIGRATES null→`__system__`.** A null-owner
+row was limbo (exempt from repair yet absent from every dispatch index). The
+reconciler normalizes it to the `__system__` owner and `SADD`s it to
+`webhooks:__system__` (`NORMALIZED_NULL_OWNER`), in the same CAS write. The
+replay NPE (`sub.getTenantId().equals(...)`) is fixed via `isSystemOwner`.
+
+**(MEDIUM) Bulk RESUME bypass.** `WebhookAdminController` bulk `RESUME` reached
+ACTIVE via `webhookService.update` directly, bypassing single-op validation.
+RESUME now calls `categoryBoundaryValidator.validateForTarget` on the stored
+(effective) selectors first; an offender fails the row (`INVALID_TRANSITION`).
+
+**(MEDIUM) Replay status TOCTOU.** `dispatchToSubscription` re-reads the
+subscription (`findById`) and re-checks `ACTIVE` at dispatch time, so a
+subscription disabled concurrently mid-replay stops delivering.
+
+**(MINOR) Reconciler daemon lifecycle.** The raw `new Thread` is replaced with
+a managed single-thread `ExecutorService` (daemon factory); `@PreDestroy
+shutdown()` calls `shutdownNow()` (interrupts an in-flight retry backoff) +
+`awaitTermination(5s)`, so the sweep stops cleanly on context shutdown.
+
+Docs reframed: CHANGELOG / AUDIT / reconciler + repository javadoc now state
+the dispatch boundary is the security mechanism and the reconciler is
+best-effort storage hygiene that STRIPS (the "DISABLED-pending" framing is
+removed).
+
+Tests added/updated: dispatch-side per-event filtering (live + replay,
+`WebhookDispatchServiceTest`); bulk-RESUME offender blocked + clean row resumes
+(`WebhookAdminControllerTest`); replay counts only delivered events and honors
+dispatch-time status re-check (`WebhookServiceTest`); reconciler strip /
+strip-and-disable / normalize-null-owner actions + daemon shutdown interrupts
+backoff + exhausted-retry ERROR alert (`WebhookCategoryBoundaryReconcilerTest`,
+`WebhookRepositoryTest`); real-Redis integration strip/normalize/concurrency
+/multi-batch(600)/blank-owner + Lua CAS no-clobber
+(`WebhookCategoryBoundaryReconcileIntegrationTest`). Full foreground build,
+all gates green: api unit 854, data unit 534 (LINE 0.9565, gate 0.95), data
+integration 582, api integration 861.
+
 ### 2026-07-11 — v0.1.25.51 codex REVISE-MAJOR: close live bypasses (#209)
 
 Codex security review of the PR found the create/update gate sound but

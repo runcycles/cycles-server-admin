@@ -482,6 +482,14 @@ public class WebhookAdminController {
                     .message("Cannot resume DISABLED subscription").build());
                 return;
             }
+            // #209: bulk RESUME reached ACTIVE via webhookService.update directly,
+            // bypassing the single-op effective-selector validation — so a PAUSED
+            // concrete-tenant offender could be resumed. Validate the stored
+            // (effective) selectors against the owning tenant; an offender fails
+            // the row (dispatch is fail-closed regardless, but an offender must
+            // not go ACTIVE with admin-only selectors on a concrete tenant).
+            categoryBoundaryValidator.validateForTarget(live.getTenantId(),
+                live.getEventTypes(), live.getEventCategories());
             WebhookUpdateRequest update = WebhookUpdateRequest.builder()
                 .status(WebhookStatus.ACTIVE).build();
             webhookService.update(id, update);

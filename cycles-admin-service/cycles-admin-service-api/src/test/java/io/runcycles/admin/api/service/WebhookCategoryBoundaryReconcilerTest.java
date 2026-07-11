@@ -11,6 +11,9 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.test.util.ReflectionTestUtils;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 
 import java.util.List;
 
@@ -66,7 +69,7 @@ class WebhookCategoryBoundaryReconcilerTest {
     void reconcile_returnsOutcomes_andLogsSummary() {
         tune(false, 1);
         when(webhookRepository.reconcileTenantCategoryBoundary(false)).thenReturn(complete(
-                new CategoryBoundaryRepairOutcome("wh1", "t1", CategoryBoundaryAction.DISABLED_ADMIN_SELECTORS, List.of("api_key")),
+                new CategoryBoundaryRepairOutcome("wh1", "t1", CategoryBoundaryAction.STRIPPED_ADMIN_SELECTORS, List.of("api_key")),
                 new CategoryBoundaryRepairOutcome("wh2", "t2", CategoryBoundaryAction.DISABLED_EMPTY_BOTH, List.of())));
 
         ReconcileResult r = reconciler.reconcile();
@@ -118,5 +121,50 @@ class WebhookCategoryBoundaryReconcilerTest {
 
         // Exactly maxAttempts calls, then gives up (logs ERROR alert) — never throws.
         verify(webhookRepository, times(2)).reconcileTenantCategoryBoundary(false);
+    }
+
+    @Test
+    void reconcileWithRetry_exhaustedRetries_logsErrorAlert_neverThrows() {
+        // Capture the reconciler's ERROR log to assert the alert fires on giving up.
+        ch.qos.logback.classic.Logger logger =
+            (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(WebhookCategoryBoundaryReconciler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            tune(false, 2);
+            when(webhookRepository.reconcileTenantCategoryBoundary(false))
+                    .thenReturn(new ReconcileResult(List.of(), 1));
+
+            reconciler.reconcileWithRetry(); // must not throw
+
+            assertThat(appender.list).anySatisfy(e -> {
+                assertThat(e.getLevel()).isEqualTo(Level.ERROR);
+                assertThat(e.getFormattedMessage()).contains("did NOT complete");
+            });
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
+    void run_thenShutdown_interruptsBackoff_stopsCleanly() {
+        ReflectionTestUtils.setField(reconciler, "reconcileOnStartup", true);
+        ReflectionTestUtils.setField(reconciler, "dryRun", false);
+        ReflectionTestUtils.setField(reconciler, "maxAttempts", 5);
+        // Long backoff so the daemon is asleep between retries when we shut down.
+        ReflectionTestUtils.setField(reconciler, "initialBackoffMs", 60_000L);
+        when(webhookRepository.reconcileTenantCategoryBoundary(false))
+                .thenReturn(new ReconcileResult(List.of(), 1)); // always incomplete → will sleep
+
+        reconciler.run(mock(ApplicationArguments.class));
+        // Wait until the first pass has run (daemon is now sleeping the 60s backoff).
+        verify(webhookRepository, timeout(2000).atLeastOnce()).reconcileTenantCategoryBoundary(false);
+
+        // shutdownNow interrupts the backoff and awaitTermination returns promptly.
+        long start = System.currentTimeMillis();
+        ReflectionTestUtils.invokeMethod(reconciler, "shutdown");
+        long elapsed = System.currentTimeMillis() - start;
+        assertThat(elapsed).isLessThan(5_000L); // did NOT wait out the 60s backoff
     }
 }

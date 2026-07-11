@@ -6,6 +6,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.runcycles.admin.data.repository.WebhookDeliveryRepository;
 import io.runcycles.admin.data.repository.WebhookRepository;
 import io.runcycles.admin.model.event.Event;
+import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.webhook.DeliveryStatus;
 import io.runcycles.admin.model.webhook.WebhookStatus;
@@ -41,7 +42,7 @@ class WebhookDispatchServiceTest {
     void setUp() {
         lenient().when(jedisPool.getResource()).thenReturn(jedis);
         meterRegistry = new SimpleMeterRegistry();
-        webhookDispatchService = new WebhookDispatchService(webhookRepository, deliveryRepository, objectMapper, jedisPool, meterRegistry);
+        webhookDispatchService = new WebhookDispatchService(webhookRepository, deliveryRepository, objectMapper, jedisPool, meterRegistry, new WebhookCategoryBoundaryValidator());
     }
 
     private Event buildEvent() {
@@ -158,14 +159,122 @@ class WebhookDispatchServiceTest {
     void dispatchToSubscription_createsDeliveryAndEnqueues() {
         Event event = buildEvent();
         WebhookSubscription sub = buildSubscription("whsub_1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub); // fresh status re-read (ACTIVE)
 
-        webhookDispatchService.dispatchToSubscription(event, sub);
+        boolean queued = webhookDispatchService.dispatchToSubscription(event, sub);
 
+        assertThat(queued).isTrue();
         verify(deliveryRepository).save(argThat(d ->
             d.getSubscriptionId().equals("whsub_1") &&
             d.getEventId().equals("evt_1") &&
             d.getStatus() == DeliveryStatus.PENDING));
         verify(jedis).lpush(eq("dispatch:pending"), anyString());
+    }
+
+    // ---- #209 fail-closed ownership boundary (live dispatch + replay) ----
+
+    private Event adminEvent() {
+        return Event.builder().eventId("evt_admin").eventType(EventType.API_KEY_CREATED)
+            .tenantId("tenant-1").scope(null).timestamp(Instant.now()).build();
+    }
+
+    private WebhookSubscription sub(String id, String tenantId, WebhookStatus status) {
+        return WebhookSubscription.builder().subscriptionId(id).tenantId(tenantId)
+            .url("https://example.com/wh").eventTypes(List.of(EventType.BUDGET_CREATED))
+            .eventCategories(List.of(EventCategory.API_KEY)) // offender-style: subscribes to admin cat
+            .status(status).createdAt(Instant.now()).build();
+    }
+
+    @Test
+    void dispatch_liveConcreteTenantSub_doesNotReceiveAdminEvent_butDoesReceiveTenantEvent() {
+        WebhookSubscription concrete = sub("whsub_c", "tenant-1", WebhookStatus.ACTIVE);
+        // Admin event to a concrete-tenant sub → boundary-blocked (no delivery).
+        when(webhookRepository.findMatchingSubscriptions("tenant-1", EventType.API_KEY_CREATED, null))
+            .thenReturn(List.of(concrete));
+        webhookDispatchService.dispatch(adminEvent());
+        verify(deliveryRepository, never()).save(any());
+
+        // Tenant-accessible event to the same sub → delivered.
+        reset(deliveryRepository);
+        Event budget = buildEvent(); // BUDGET_CREATED, scope org/team1
+        when(webhookRepository.findMatchingSubscriptions("tenant-1", EventType.BUDGET_CREATED, "org/team1"))
+            .thenReturn(List.of(concrete));
+        webhookDispatchService.dispatch(budget);
+        verify(deliveryRepository).save(any());
+    }
+
+    @Test
+    void dispatch_liveSystemSub_doesReceiveAdminEvent() {
+        WebhookSubscription system = sub("whsub_s", "__system__", WebhookStatus.ACTIVE);
+        when(webhookRepository.findMatchingSubscriptions(any(), eq(EventType.API_KEY_CREATED), any()))
+            .thenReturn(List.of(system));
+
+        webhookDispatchService.dispatch(adminEvent());
+
+        verify(deliveryRepository).save(any()); // system subs CAN receive admin events
+    }
+
+    @Test
+    void dispatchToSubscription_concreteTenant_adminEvent_blocked_returnsFalse() {
+        WebhookSubscription concrete = sub("whsub_c", "tenant-1", WebhookStatus.ACTIVE);
+
+        boolean queued = webhookDispatchService.dispatchToSubscription(adminEvent(), concrete);
+
+        assertThat(queued).isFalse();
+        verify(deliveryRepository, never()).save(any());
+        verify(webhookRepository, never()).findById(anyString()); // short-circuits before status re-read
+    }
+
+    @Test
+    void dispatchToSubscription_systemSub_adminEvent_delivered() {
+        WebhookSubscription system = sub("whsub_s", "__system__", WebhookStatus.ACTIVE);
+        when(webhookRepository.findById("whsub_s")).thenReturn(system);
+
+        boolean queued = webhookDispatchService.dispatchToSubscription(adminEvent(), system);
+
+        assertThat(queued).isTrue();
+        verify(deliveryRepository).save(any());
+    }
+
+    @Test
+    void dispatchToSubscription_disabledConcurrently_reReadsStatus_skips() {
+        // Stale snapshot is ACTIVE, but the row is now DISABLED (concurrent disable).
+        WebhookSubscription staleActive = buildSubscription("whsub_1"); // ACTIVE, tenant-accessible event
+        WebhookSubscription nowDisabled = buildSubscription("whsub_1");
+        nowDisabled.setStatus(WebhookStatus.DISABLED);
+        when(webhookRepository.findById("whsub_1")).thenReturn(nowDisabled);
+
+        boolean queued = webhookDispatchService.dispatchToSubscription(buildEvent(), staleActive);
+
+        assertThat(queued).isFalse();
+        verify(deliveryRepository, never()).save(any());
+    }
+
+    @Test
+    void dispatchToSubscription_subscriptionDeletedMidReplay_skips() {
+        WebhookSubscription stale = buildSubscription("whsub_gone");
+        when(webhookRepository.findById("whsub_gone"))
+            .thenThrow(io.runcycles.admin.data.exception.GovernanceException.webhookNotFound("whsub_gone"));
+
+        boolean queued = webhookDispatchService.dispatchToSubscription(buildEvent(), stale);
+
+        assertThat(queued).isFalse();
+        verify(deliveryRepository, never()).save(any());
+    }
+
+    @Test
+    void dispatchToSubscription_nullOwner_treatedAsSystem_adminEvent_delivered() {
+        // Null-owner classifies as system (null-safe) → admin event allowed; no NPE.
+        WebhookSubscription nullOwner = WebhookSubscription.builder()
+            .subscriptionId("whsub_null").tenantId(null).url("https://example.com/wh")
+            .eventTypes(List.of(EventType.API_KEY_CREATED)).status(WebhookStatus.ACTIVE)
+            .createdAt(Instant.now()).build();
+        when(webhookRepository.findById("whsub_null")).thenReturn(nullOwner);
+
+        boolean queued = webhookDispatchService.dispatchToSubscription(adminEvent(), nullOwner);
+
+        assertThat(queued).isTrue();
+        verify(deliveryRepository).save(any());
     }
 
     @Test

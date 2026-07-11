@@ -76,6 +76,16 @@ public class WebhookCategoryBoundaryValidator {
         return WebhookSubscription.isSystemOwner(tenantId);
     }
 
+    /**
+     * True when this event type is admin-only (outside the tenant-accessible
+     * boundary). Single source used by the write-path gate AND the fail-closed
+     * dispatch boundary ({@code WebhookDispatchService}) so delivery filtering
+     * and validation share one definition.
+     */
+    public boolean isAdminOnly(EventType type) {
+        return type != null && !type.isTenantAccessible();
+    }
+
     /** Reject any admin-only event type. Null list is a no-op. */
     public void validateEventTypes(List<EventType> eventTypes) {
         if (eventTypes == null) return;

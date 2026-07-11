@@ -34,6 +34,15 @@ class WebhookServiceTest {
     @Mock private com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     @InjectMocks private WebhookService webhookService;
 
+    @org.junit.jupiter.api.BeforeEach
+    void dispatchDeliversByDefault() {
+        // dispatchToSubscription now returns whether a delivery was enqueued;
+        // default to true so replay-counting tests behave as before (a guard
+        // that skips delivery is exercised explicitly where relevant).
+        org.mockito.Mockito.lenient()
+            .when(dispatchService.dispatchToSubscription(any(), any())).thenReturn(true);
+    }
+
     private WebhookCreateRequest createRequest() {
         return WebhookCreateRequest.builder()
             .name("Test Webhook")
@@ -716,7 +725,6 @@ class WebhookServiceTest {
             .thenReturn(List.of(evt1, evt2));
         doThrow(new RuntimeException("dispatch error")).when(dispatchService)
             .dispatchToSubscription(eq(evt1), any());
-        doNothing().when(dispatchService).dispatchToSubscription(eq(evt2), any());
 
         ReplayRequest request = ReplayRequest.builder()
             .from(Instant.now().minusSeconds(3600))

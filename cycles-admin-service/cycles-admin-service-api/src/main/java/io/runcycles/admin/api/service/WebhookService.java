@@ -311,9 +311,11 @@ public class WebhookService {
         }
         try {
             int maxEvents = request.getMaxEvents() != null ? Math.min(request.getMaxEvents(), 1000) : 100;
-            // Query events in the requested time range
+            // Query events in the requested time range. isSystemOwner is null-safe
+            // (a null owner classifies as system → query all tenants), avoiding an
+            // NPE on a null-owned row.
             List<Event> events = eventRepository.list(
-                sub.getTenantId().equals("__system__") ? null : sub.getTenantId(),
+                WebhookSubscription.isSystemOwner(sub.getTenantId()) ? null : sub.getTenantId(),
                 null, null, null, null,
                 request.getFrom(), request.getTo(), null, maxEvents);
             // Filter by event types if specified in replay request
@@ -339,8 +341,12 @@ public class WebhookService {
             int queued = 0;
             for (Event event : events) {
                 try {
-                    dispatchService.dispatchToSubscription(event, sub);
-                    queued++;
+                    // Count only events actually enqueued — dispatchToSubscription
+                    // returns false when a delivery guard (ownership boundary, or a
+                    // concurrent disable re-checked at dispatch time) skips it.
+                    if (dispatchService.dispatchToSubscription(event, sub)) {
+                        queued++;
+                    }
                 } catch (Exception e) {
                     LOG.warn("Failed to queue webhook replay delivery: replay_id={} subscription_id={} tenant_id={} event_id={} event_type={} correlation_id={} request_id={} trace_id={} error={}",
                             safe(replayId), safe(subscriptionId), safe(sub.getTenantId()), safe(event.getEventId()),

@@ -162,22 +162,20 @@ public class WebhookRepository {
 
     /** What the category-boundary reconciler did (or would do) to one row. */
     public enum CategoryBoundaryAction {
-        /**
-         * Concrete-tenant row carries admin-only event_types and/or
-         * event_categories → row DISABLED (NOT stripped): it may be a
-         * legit-but-misconfigured operator monitoring row, so we stop delivery
-         * loudly and leave its selectors intact for the operator to review and
-         * migrate, rather than silently rewriting it.
-         */
-        DISABLED_ADMIN_SELECTORS,
+        /** Concrete-tenant row: admin-only selectors STRIPPED, tenant-accessible kept. */
+        STRIPPED_ADMIN_SELECTORS,
+        /** Stripping admin-only selectors emptied both selector lists → DISABLED. */
+        STRIPPED_AND_DISABLED,
         /** Legacy empty-both (match-ALL) row → DISABLED (the 0.1.25.50 rule). */
-        DISABLED_EMPTY_BOTH
+        DISABLED_EMPTY_BOTH,
+        /** Null-owner (corruption) row normalized to the __system__ owner + index. */
+        NORMALIZED_NULL_OWNER
     }
 
-    /** {@code offendingSelectors} = the admin-only type/category wire values that flagged the row. */
+    /** {@code strippedSelectors} = the admin-only type/category wire values removed (empty for pure disable/normalize). */
     public record CategoryBoundaryRepairOutcome(String subscriptionId, String tenantId,
                                                 CategoryBoundaryAction action,
-                                                List<String> offendingSelectors) {}
+                                                List<String> strippedSelectors) {}
 
     /**
      * Result of one reconcile pass. {@code failures} counts rows that errored
@@ -190,46 +188,46 @@ public class WebhookRepository {
     }
 
     /**
-     * One-time (idempotent, resumable) cleanup for #209 / governance v0.1.25.40
-     * (pending): find webhook subscriptions that violate the tenant-accessible
-     * boundary and DISABLE them.
+     * Best-effort hygiene cleanup for #209 / governance v0.1.25.40 (pending).
      *
-     * <p>Offender definition, per row:
+     * <p><b>This is NOT the security mechanism.</b> The durable confidentiality
+     * guarantee is the fail-closed DISPATCH boundary
+     * ({@code WebhookDispatchService}): a concrete-tenant subscription never
+     * receives admin-only events, immediately and unconditionally, regardless of
+     * stored selectors or this reconciler's state. Because dispatch already
+     * blocks the leak, admin-only selectors stored on a concrete-tenant row are
+     * already non-functional — so this reconciler safely STRIPS them (storage is
+     * brought in line with the effective delivery behavior; NOT a behavior
+     * change, and no collateral on legitimate tenant-accessible deliveries).
+     *
+     * <p>Per row (skips already-{@code DISABLED} rows — idempotent):
      * <ul>
-     *   <li><b>Concrete-tenant</b> rows (owner is NOT null/omitted and NOT the
-     *       {@code __system__} sentinel — see {@link WebhookSubscription#isSystemOwner})
-     *       carrying any admin-only {@code event_types} OR {@code event_categories}
-     *       (api_key/policy/webhook/system) → {@code DISABLED_ADMIN_SELECTORS}.
-     *       Both selector kinds are checked (event matching unions them).</li>
+     *   <li><b>Null-owner</b> (corruption): normalized to the {@code __system__}
+     *       owner and added to the {@code webhooks:__system__} dispatch index so
+     *       it is a well-classified system subscription rather than limbo
+     *       (exempt from repair yet absent from every dispatch index).
+     *       {@code NORMALIZED_NULL_OWNER}. (If it is also empty-both it is
+     *       disabled in the same write.)</li>
+     *   <li><b>Concrete-tenant</b> (owner not null/{@code __system__}, per
+     *       {@link WebhookSubscription#isSystemOwner}) carrying admin-only
+     *       {@code event_types} and/or {@code event_categories}: those admin
+     *       selectors are STRIPPED, tenant-accessible ones kept →
+     *       {@code STRIPPED_ADMIN_SELECTORS}. If stripping empties BOTH lists the
+     *       row would match every event, so it is DISABLED →
+     *       {@code STRIPPED_AND_DISABLED}.</li>
      *   <li><b>Any</b> row (including {@code __system__}) that is empty-both — no
      *       {@code event_types} AND no {@code event_categories}, i.e. match-ALL →
      *       {@code DISABLED_EMPTY_BOTH}. The system carve-out exempts admin
-     *       SELECTORS only; it does not exempt a row from the universal
-     *       "at least one selector" invariant.</li>
+     *       SELECTORS only, not the universal "at least one selector" invariant.</li>
      * </ul>
-     *
-     * <p><b>Conservative:</b> offenders are DISABLED, never silently stripped —
-     * a concrete-tenant admin-selector row might be a legit-but-misconfigured
-     * operator monitoring row, and a silent rewrite would break it with no
-     * signal. Disabling stops delivery immediately (live dispatch AND replay
-     * only deliver to {@code ACTIVE} rows), is reversible, preserves the row +
-     * offending selectors for review, and is loudly logged. The supported
-     * replacement for genuine per-tenant admin monitoring is a
-     * {@code __system__}-owned subscription filtered by {@code event_categories}
-     * (it receives those admin events for ALL tenants, since {@code __system__}
-     * is in every tenant's dispatch union), selecting the target tenant
-     * CLIENT-SIDE on the envelope {@code tenant_id}. ({@code api_key},
-     * {@code webhook} and {@code system} events are null-scoped and cannot be
-     * scope-filtered; {@code policy} events carry a real tenant-bounded scope
-     * and CAN be scope-filtered.)
+     * Every action is loudly logged for operator visibility.
      *
      * <p><b>Robust:</b> SSCANs the global index in batches (bounded memory, no
      * whole-keyspace SMEMBERS), writes via an atomic compare-and-set (never
-     * clobbers a concurrent update — a CAS miss is a concurrent-skip counted as
-     * a failure and retried next pass), and skips already-{@code DISABLED}
-     * offenders (idempotent). Never throws.
+     * clobbers a concurrent update — a CAS miss is counted as a failure and
+     * retried next pass). Never throws.
      *
-     * @param dryRun when true, compute + log offenders but mutate nothing
+     * @param dryRun when true, compute + log the actions but mutate nothing
      */
     public ReconcileResult reconcileTenantCategoryBoundary(boolean dryRun) {
         List<CategoryBoundaryRepairOutcome> repaired = new ArrayList<>();
@@ -245,60 +243,70 @@ public class WebhookRepository {
                         String data = jedis.get("webhook:" + id);
                         if (data == null) continue;
                         WebhookSubscription sub = objectMapper.readValue(data, WebhookSubscription.class);
-                        // Already-disabled offenders need no action (idempotent).
-                        if (sub.getStatus() == WebhookStatus.DISABLED) continue;
+                        if (sub.getStatus() == WebhookStatus.DISABLED) continue; // idempotent
 
-                        boolean system = WebhookSubscription.isSystemOwner(sub.getTenantId());
+                        boolean nullOwner = sub.getTenantId() == null;
+                        // Normalize null owner → __system__ (corruption fix); the row is then
+                        // system-owned for the boundary logic below.
+                        String effectiveOwner = nullOwner ? WebhookSubscription.SYSTEM_TENANT : sub.getTenantId();
+                        boolean system = WebhookSubscription.isSystemOwner(effectiveOwner);
 
-                        // Admin selectors only flag CONCRETE-owner rows.
-                        List<String> offending = new ArrayList<>();
+                        // Concrete-tenant rows: strip admin-only selectors (dispatch already
+                        // blocks their delivery, so this only reconciles storage).
+                        List<String> stripped = new ArrayList<>();
                         if (!system) {
                             List<EventType> types = sub.getEventTypes();
-                            if (types != null) {
-                                for (EventType t : types) {
-                                    if (!t.isTenantAccessible()) offending.add(t.getValue());
-                                }
+                            List<EventCategory> cats = sub.getEventCategories();
+                            List<EventType> keptTypes = new ArrayList<>();
+                            List<EventCategory> keptCats = new ArrayList<>();
+                            if (types != null) for (EventType t : types) {
+                                if (t.isTenantAccessible()) keptTypes.add(t); else stripped.add(t.getValue());
                             }
-                            List<EventCategory> cats0 = sub.getEventCategories();
-                            if (cats0 != null) {
-                                for (EventCategory c : cats0) {
-                                    if (!c.isTenantAccessible()) offending.add(c.getValue());
-                                }
+                            if (cats != null) for (EventCategory c : cats) {
+                                if (c.isTenantAccessible()) keptCats.add(c); else stripped.add(c.getValue());
+                            }
+                            if (!stripped.isEmpty()) {
+                                sub.setEventTypes(keptTypes.isEmpty() ? null : keptTypes);
+                                sub.setEventCategories(keptCats.isEmpty() ? null : keptCats);
                             }
                         }
-                        boolean hasAdminSelectors = !offending.isEmpty();
+                        boolean didStrip = !stripped.isEmpty();
 
-                        // Empty-both applies to ALL rows, __system__ included.
+                        // Empty-both computed on the RESULTING selectors (after any strip).
                         List<EventType> t2 = sub.getEventTypes();
                         List<EventCategory> c2 = sub.getEventCategories();
                         boolean emptyBoth = (t2 == null || t2.isEmpty()) && (c2 == null || c2.isEmpty());
+                        boolean disable = emptyBoth; // was ACTIVE/PAUSED (DISABLED skipped above)
 
-                        if (!hasAdminSelectors && !emptyBoth) continue; // clean row
+                        boolean changed = nullOwner || didStrip || disable;
+                        if (!changed) continue; // clean row
 
-                        CategoryBoundaryAction action = hasAdminSelectors
-                            ? CategoryBoundaryAction.DISABLED_ADMIN_SELECTORS
-                            : CategoryBoundaryAction.DISABLED_EMPTY_BOTH;
+                        CategoryBoundaryAction action;
+                        if (didStrip && disable) action = CategoryBoundaryAction.STRIPPED_AND_DISABLED;
+                        else if (didStrip)       action = CategoryBoundaryAction.STRIPPED_ADMIN_SELECTORS;
+                        else if (disable)        action = CategoryBoundaryAction.DISABLED_EMPTY_BOTH;
+                        else                     action = CategoryBoundaryAction.NORMALIZED_NULL_OWNER;
 
                         if (!dryRun) {
-                            // DISABLE only — do NOT strip. Selectors left intact for review.
-                            sub.setStatus(WebhookStatus.DISABLED);
+                            if (nullOwner) sub.setTenantId(WebhookSubscription.SYSTEM_TENANT);
+                            if (disable) sub.setStatus(WebhookStatus.DISABLED);
                             sub.setUpdatedAt(Instant.now());
                             String newJson = objectMapper.writeValueAsString(sub);
                             Object casRes = jedis.eval(CAS_SET_LUA, List.of("webhook:" + id),
                                 List.of(data, newJson));
                             if (!Long.valueOf(1L).equals(casRes)) {
-                                // Concurrent update landed between GET and CAS — skip; retried next pass.
                                 failures++;
                                 LOG.warn("category-boundary reconcile CAS miss (concurrent update), will retry: subscription_id={} tenant_id={}",
-                                    LogSanitizer.safe(id), LogSanitizer.safe(sub.getTenantId()));
+                                    LogSanitizer.safe(id), LogSanitizer.safe(effectiveOwner));
                                 continue;
                             }
+                            if (nullOwner) jedis.sadd("webhooks:" + WebhookSubscription.SYSTEM_TENANT, id);
                         }
 
-                        repaired.add(new CategoryBoundaryRepairOutcome(id, sub.getTenantId(), action, offending));
-                        LOG.warn("category-boundary reconcile {} offender webhook (#209): subscription_id={} tenant_id={} action={} offending_selectors={} — operator action: migrate genuine per-tenant admin monitoring to a __system__ subscription filtered by event_categories, selecting the tenant client-side on the envelope tenant_id (api_key.*/webhook.*/system.* are null-scoped; policy.* is scope-filterable)",
-                            dryRun ? "REPORTED (dry-run)" : "DISABLED",
-                            LogSanitizer.safe(id), LogSanitizer.safe(sub.getTenantId()), action, offending);
+                        repaired.add(new CategoryBoundaryRepairOutcome(id, effectiveOwner, action, stripped));
+                        LOG.warn("category-boundary reconcile {} webhook (#209): subscription_id={} tenant_id={} action={} stripped_selectors={} — dispatch already blocks admin-only delivery to concrete-tenant subs; this reconciles storage.",
+                            dryRun ? "REPORTED (dry-run)" : "repaired",
+                            LogSanitizer.safe(id), LogSanitizer.safe(effectiveOwner), action, stripped);
                     } catch (Exception e) {
                         failures++;
                         LOG.warn("category-boundary reconcile skipped webhook subscription (will retry): subscription_id={} error={}",
@@ -307,8 +315,6 @@ public class WebhookRepository {
                 }
             } while (!ScanParams.SCAN_POINTER_START.equals(cursor));
         } catch (Exception e) {
-            // Whole-pass failure (e.g. Redis unavailable): report incomplete so
-            // the caller retries in the background — do NOT throw.
             failures++;
             LOG.error("category-boundary reconcile pass failed (will retry): error={}",
                 LogSanitizer.safe(e.getMessage()), e);

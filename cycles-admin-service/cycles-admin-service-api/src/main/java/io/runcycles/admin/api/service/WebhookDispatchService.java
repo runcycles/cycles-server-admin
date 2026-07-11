@@ -34,17 +34,42 @@ public class WebhookDispatchService {
     private final ObjectMapper objectMapper;
     private final JedisPool jedisPool;
     private final MeterRegistry meterRegistry;
+    private final WebhookCategoryBoundaryValidator categoryBoundaryValidator;
 
     public WebhookDispatchService(WebhookRepository webhookRepository,
                                    WebhookDeliveryRepository deliveryRepository,
                                    ObjectMapper objectMapper,
                                    JedisPool jedisPool,
-                                   MeterRegistry meterRegistry) {
+                                   MeterRegistry meterRegistry,
+                                   WebhookCategoryBoundaryValidator categoryBoundaryValidator) {
         this.webhookRepository = webhookRepository;
         this.deliveryRepository = deliveryRepository;
         this.objectMapper = objectMapper;
         this.jedisPool = jedisPool;
         this.meterRegistry = meterRegistry;
+        this.categoryBoundaryValidator = categoryBoundaryValidator;
+    }
+
+    /**
+     * #209 — the DURABLE, fail-closed confidentiality boundary. A
+     * concrete-tenant-owned subscription (owner is not {@code __system__}/null,
+     * per {@link WebhookSubscription#isSystemOwner}) MUST NOT receive an
+     * admin-only event (admin category OR admin type). Enforced at DELIVERY, so
+     * the leak is impossible regardless of what selectors are stored on the row
+     * or whether the cleanup reconciler has run — the write-path gate stops NEW
+     * offenders and the reconciler is best-effort hygiene, but THIS is the
+     * guarantee. Per-event: a mixed subscription still receives its
+     * tenant-accessible events; only the admin-only ones are skipped.
+     */
+    private boolean isBlockedByOwnershipBoundary(Event event, WebhookSubscription sub) {
+        boolean blocked = !WebhookSubscription.isSystemOwner(sub.getTenantId())
+            && categoryBoundaryValidator.isAdminOnly(event.getEventType());
+        if (blocked) {
+            LOG.debug("Webhook delivery blocked by ownership boundary (#209): subscription_id={} tenant_id={} event_type={} — a concrete-tenant subscription cannot receive admin-only events",
+                safe(sub.getSubscriptionId()), safe(sub.getTenantId()),
+                event.getEventType() != null ? event.getEventType().getValue() : null);
+        }
+        return blocked;
     }
 
     /**
@@ -56,6 +81,14 @@ public class WebhookDispatchService {
             List<WebhookSubscription> subs = webhookRepository.findMatchingSubscriptions(
                 event.getTenantId(), event.getEventType(), event.getScope());
             for (WebhookSubscription sub : subs) {
+                // Fail-closed ownership boundary (no I/O). Live dispatch already
+                // read fresh status via findMatchingSubscriptions, so no status
+                // re-check is needed here (there is no large stale-snapshot window
+                // as there is on the replay path).
+                if (isBlockedByOwnershipBoundary(event, sub)) {
+                    recordDispatch("boundary_skipped");
+                    continue;
+                }
                 try {
                     createDelivery(event, sub);
                     recordDispatch("queued");
@@ -97,9 +130,39 @@ public class WebhookDispatchService {
 
     /**
      * Dispatch a single event to a specific subscription (used by replay).
+     * Returns {@code true} if a delivery was enqueued, {@code false} if it was
+     * skipped by a delivery guard.
+     *
+     * <p>Applies BOTH guards, so replay is fail-closed:
+     * <ul>
+     *   <li>the ownership boundary (a concrete-tenant sub never gets admin-only
+     *       events); and</li>
+     *   <li>a fresh STATUS re-read at delivery time — replay queues events from a
+     *       subscription snapshot captured before the replay lock, so a
+     *       subscription disabled (or paused) concurrently must stop receiving
+     *       deliveries mid-replay ("disabling stops delivery immediately" under
+     *       concurrency, TOCTOU fix).</li>
+     * </ul>
      */
-    public void dispatchToSubscription(Event event, WebhookSubscription sub) {
+    public boolean dispatchToSubscription(Event event, WebhookSubscription sub) {
+        if (isBlockedByOwnershipBoundary(event, sub)) {
+            return false;
+        }
+        WebhookSubscription current;
+        try {
+            current = webhookRepository.findById(sub.getSubscriptionId());
+        } catch (Exception e) {
+            // Subscription vanished (deleted) mid-replay — skip.
+            return false;
+        }
+        if (current == null || current.getStatus() != WebhookStatus.ACTIVE) {
+            LOG.debug("Webhook replay delivery skipped — subscription no longer ACTIVE: subscription_id={} tenant_id={} status={}",
+                safe(sub.getSubscriptionId()), safe(sub.getTenantId()),
+                current != null ? current.getStatus() : null);
+            return false;
+        }
         createDelivery(event, sub);
+        return true;
     }
 
     private void createDelivery(Event event, WebhookSubscription sub) {

@@ -3,6 +3,7 @@ package io.runcycles.admin.api.service;
 import io.runcycles.admin.data.repository.WebhookRepository;
 import io.runcycles.admin.data.repository.WebhookRepository.CategoryBoundaryAction;
 import io.runcycles.admin.data.repository.WebhookRepository.ReconcileResult;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,33 +12,35 @@ import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+
 /**
- * One-time (idempotent, resumable) startup cleanup for #209 — the (d2) half of
- * the fix. It finds webhook subscriptions that violate the tenant-accessible
- * boundary (concrete-tenant rows carrying admin-only event_types/categories,
- * plus legacy empty-both match-ALL rows) and DISABLEs them. See
+ * Best-effort startup HYGIENE for #209 — the (d2) half of the fix. It reconciles
+ * webhook subscriptions that violate the tenant-accessible boundary
+ * (concrete-tenant rows carrying admin-only event_types/categories → strip those
+ * selectors; empty-both match-ALL rows → disable; null-owner rows → normalize to
+ * {@code __system__}). See
  * {@link WebhookRepository#reconcileTenantCategoryBoundary(boolean)} for the
- * per-row rules and why it disables (conservative) rather than silently strips.
+ * per-row rules.
  *
- * <p>Robustness / readiness posture (finding 7):
- * <ul>
- *   <li>The pass runs on a <b>background daemon thread</b> — startup is never
- *       blocked, and readiness is NOT gated on the migration completing. A
- *       migration bug must not brick the service, and the create/update gate
- *       already stops NEW offenders; legacy offenders simply remain
- *       DISABLED-pending until a clean pass finishes.</li>
- *   <li>An incomplete pass (row error, or a compare-and-set miss from a
- *       concurrent update) is <b>retried with exponential backoff</b>. The
- *       sweep is idempotent, so retries are safe. If retries are exhausted
- *       without a clean pass, a loud {@code ERROR} alert is emitted and the
- *       service stays up.</li>
- * </ul>
- * No new API surface (an undocumented endpoint would fail the OpenAPI
- * contract-diff check); mirrors the repo's {@code @Scheduled} audit-sweep /
- * {@code CommandLineRunner} precedent. Config:
- * {@code webhook.category-boundary.reconcile-on-startup} (default {@code true}),
- * {@code webhook.category-boundary.reconcile-dry-run} (default {@code false} —
- * {@code true} REPORTS offenders in the logs without disabling anything).
+ * <p><b>This is not the security mechanism.</b> The durable confidentiality
+ * guarantee is the fail-closed DISPATCH boundary
+ * ({@code WebhookDispatchService}) — a concrete-tenant subscription never
+ * receives admin-only events, immediately and unconditionally. This reconciler
+ * only brings STORAGE in line with that already-enforced delivery behavior, so
+ * it is safe for it to be best-effort: it runs on a managed background thread
+ * (startup/readiness is never blocked), retries an incomplete pass (row error or
+ * CAS miss) with exponential backoff, and on exhausted retries logs a loud
+ * {@code ERROR} and lets the service stay up (a hygiene bug must not brick the
+ * service; delivery is already safe). No new API surface — an undocumented
+ * endpoint would fail the OpenAPI contract-diff check.
+ *
+ * <p>Config: {@code webhook.category-boundary.reconcile-on-startup} (default
+ * {@code true}), {@code webhook.category-boundary.reconcile-dry-run} (default
+ * {@code false} — {@code true} REPORTS the actions in the logs without mutating).
  */
 @Component
 public class WebhookCategoryBoundaryReconciler implements ApplicationRunner {
@@ -49,7 +52,7 @@ public class WebhookCategoryBoundaryReconciler implements ApplicationRunner {
     @Value("${webhook.category-boundary.reconcile-on-startup:true}")
     private boolean reconcileOnStartup;
 
-    /** When true, report offenders (log) without disabling any row. */
+    /** When true, report actions (log) without mutating any row. */
     @Value("${webhook.category-boundary.reconcile-dry-run:false}")
     private boolean dryRun;
 
@@ -61,16 +64,38 @@ public class WebhookCategoryBoundaryReconciler implements ApplicationRunner {
     @Value("${webhook.category-boundary.reconcile-initial-backoff-ms:1000}")
     private long initialBackoffMs;
 
+    /**
+     * Managed single-thread executor for the background sweep. A managed
+     * executor (not a raw {@code new Thread}) is interrupted and awaited on
+     * Spring context shutdown, so the sweep stops cleanly instead of leaking a
+     * thread that keeps sleeping through a retry backoff.
+     */
+    private final ExecutorService executor = Executors.newSingleThreadExecutor(new ThreadFactory() {
+        @Override public Thread newThread(Runnable r) {
+            Thread t = new Thread(r, "webhook-category-boundary-reconcile");
+            t.setDaemon(true);
+            return t;
+        }
+    });
+
     @Override
     public void run(ApplicationArguments args) {
         if (!reconcileOnStartup) {
             LOG.info("Webhook category-boundary reconcile: skipped (reconcile-on-startup=false)");
             return;
         }
-        // Background daemon thread: never block startup or readiness on the migration.
-        Thread t = new Thread(this::reconcileWithRetry, "webhook-category-boundary-reconcile");
-        t.setDaemon(true);
-        t.start();
+        // Background: never block startup or readiness on this hygiene sweep.
+        executor.submit(this::reconcileWithRetry);
+    }
+
+    @PreDestroy
+    void shutdown() {
+        executor.shutdownNow(); // interrupts an in-flight retry backoff
+        try {
+            executor.awaitTermination(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     /**
@@ -80,6 +105,9 @@ public class WebhookCategoryBoundaryReconciler implements ApplicationRunner {
     public void reconcileWithRetry() {
         long backoff = initialBackoffMs;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            if (Thread.currentThread().isInterrupted()) {
+                return;
+            }
             ReconcileResult result = reconcile();
             if (result.isComplete()) {
                 return;
@@ -96,7 +124,7 @@ public class WebhookCategoryBoundaryReconciler implements ApplicationRunner {
                 backoff = Math.min(backoff * 2, 30_000L);
             }
         }
-        LOG.error("Webhook category-boundary reconcile did NOT complete after {} attempts (#209); service is up and NEW offenders are blocked by the write-path gate, but legacy offenders may remain until the next restart or a manual re-run. ALERT.",
+        LOG.error("Webhook category-boundary reconcile did NOT complete after {} attempts (#209); service is up and delivery is already safe (the dispatch boundary blocks admin-only events to concrete-tenant subs), but storage hygiene may be incomplete until the next restart or manual re-run. ALERT.",
             maxAttempts);
     }
 
@@ -109,17 +137,19 @@ public class WebhookCategoryBoundaryReconciler implements ApplicationRunner {
         try {
             ReconcileResult result = webhookRepository.reconcileTenantCategoryBoundary(dryRun);
             if (result.repaired().isEmpty() && result.isComplete()) {
-                LOG.info("Webhook category-boundary reconcile: no offender rows (#209 cleanup, idempotent, dry_run={})", dryRun);
+                LOG.info("Webhook category-boundary reconcile: nothing to reconcile (#209 hygiene, idempotent, dry_run={})", dryRun);
             } else {
-                long adminSel = result.repaired().stream().filter(o -> o.action() == CategoryBoundaryAction.DISABLED_ADMIN_SELECTORS).count();
-                long emptyBoth = result.repaired().stream().filter(o -> o.action() == CategoryBoundaryAction.DISABLED_EMPTY_BOTH).count();
-                LOG.warn("Webhook category-boundary reconcile: {} {} offender row(s) (#209), failures={} — admin_selectors={} empty_both={}. Genuine per-tenant admin monitoring should move to a __system__ subscription filtered by event_categories (select tenant client-side on the envelope tenant_id).",
-                    dryRun ? "REPORTED (dry-run, no rows changed):" : "DISABLED",
-                    result.repaired().size(), result.failures(), adminSel, emptyBoth);
+                long stripped = result.repaired().stream().filter(o -> o.action() == CategoryBoundaryAction.STRIPPED_ADMIN_SELECTORS).count();
+                long strippedDisabled = result.repaired().stream().filter(o -> o.action() == CategoryBoundaryAction.STRIPPED_AND_DISABLED).count();
+                long disabledEmptyBoth = result.repaired().stream().filter(o -> o.action() == CategoryBoundaryAction.DISABLED_EMPTY_BOTH).count();
+                long normalized = result.repaired().stream().filter(o -> o.action() == CategoryBoundaryAction.NORMALIZED_NULL_OWNER).count();
+                LOG.warn("Webhook category-boundary reconcile: {} {} row(s) (#209 hygiene), failures={} — stripped={} stripped_and_disabled={} disabled_empty_both={} normalized_null_owner={}",
+                    dryRun ? "REPORTED (dry-run, no rows changed):" : "repaired",
+                    result.repaired().size(), result.failures(), stripped, strippedDisabled, disabledEmptyBoth, normalized);
             }
             return result;
         } catch (Exception e) {
-            LOG.error("Webhook category-boundary reconcile failed (#209 cleanup); startup continues", e);
+            LOG.error("Webhook category-boundary reconcile failed (#209 hygiene); service continues", e);
             return new ReconcileResult(java.util.List.of(), 1);
         }
     }

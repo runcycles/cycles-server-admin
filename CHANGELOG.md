@@ -18,6 +18,22 @@ new optional request fields) are **not** considered breaking.
 
 ### Security
 
+- **Fail-closed DISPATCH boundary — the durable confidentiality guarantee (#209).**
+  The write-path gates (below) stop NEW offenders and the reconciler (below)
+  cleans up STORED ones, but both are point-in-time: a concrete-tenant
+  subscription that already holds admin-only selectors and has not yet been
+  reconciled would still deliver admin-only events. The guarantee is now
+  enforced at DELIVERY, unconditionally: in BOTH live dispatch
+  (`WebhookDispatchService`) and replay (`dispatchToSubscription`), an event is
+  skipped **per event** when the subscription is concrete-tenant-owned
+  (`isSystemOwner == false`) AND the event is admin-only (reusing the
+  `WebhookCategoryBoundaryValidator` boundary). This is fail-closed and does not
+  depend on the reconciler having run, on stored-selector correctness, or on
+  status transitions — a concrete-tenant subscription can never receive an
+  admin-only event. It filters per event, so a mixed subscription still receives
+  its tenant-accessible events; only the admin-only ones are withheld (counted
+  as `boundary_skipped`). `__system__`-owned subscriptions are unaffected.
+
 - **Admin-plane webhook boundary — closes the CARRIER source (#209).**
   `POST /v1/admin/webhooks?tenant_id=X` and `PATCH /v1/admin/webhooks/{id}`
   applied no boundary validation, so an operator / admin-on-behalf-of could
@@ -54,7 +70,20 @@ new optional request fields) are **not** considered breaking.
   intersects delivered events with the subscription's own selectors (spec
   `replayEvents`: "all event types the subscription is subscribed to") and is
   a no-op on a non-`ACTIVE` subscription — so a DISABLED offender receives
-  nothing via replay either.
+  nothing via replay either. Status is additionally **re-checked at dispatch
+  time** (in `dispatchToSubscription`, after the initial guard) so a
+  subscription disabled concurrently mid-replay stops delivering (closes a
+  status TOCTOU). The fail-closed dispatch boundary above also applies on the
+  replay path, so even an ACTIVE offender delivers none of its admin-only
+  historical events.
+
+- **Bulk RESUME routed through boundary validation (#209).**
+  `POST /v1/admin/webhooks/bulk-action` with `action: RESUME` reached `ACTIVE`
+  via `webhookService.update` directly, bypassing the single-op effective
+  -selector validation — so a PAUSED concrete-tenant offender could be bulk
+  -resumed. RESUME now validates the stored (effective) selectors against the
+  owning tenant before reactivating; an offender fails the row
+  (`INVALID_TRANSITION`) instead of resuming.
 
 - **BEHAVIOR CHANGE — previously-allowed capability removed.** In 0.1.25.50
   the admin plane deliberately did NOT restrict categories (documented as
@@ -79,31 +108,43 @@ new optional request fields) are **not** considered breaking.
 
 ### Fixed
 
-- **One-time cleanup of pre-existing offender rows (#209, d2).** A startup
-  reconciler (idempotent, resumable, no new API surface) finds concrete-tenant
-  subscriptions that already carry admin-only event **types or categories**,
-  and empty-both match-ALL rows (on any owner, `__system__` included — the
-  system carve-out exempts admin selectors only, not the "at least one
-  selector" invariant), and **DISABLEs** them — conservative by design: it
-  does NOT silently strip selectors, because a concrete-tenant admin-selector
-  row might be a legit-but-misconfigured operator monitoring subscription and
-  a silent rewrite would break it with no signal. Disabling stops delivery
-  immediately (live dispatch AND replay match only `ACTIVE` rows), is
-  reversible, preserves the row + offending selectors for review, and is
-  loudly logged. **Robustness:** it `SSCAN`s the index in batches (bounded
-  memory), writes via an atomic compare-and-set (never clobbers a concurrent
-  operator update), and runs on a **background thread** so startup/readiness
-  is never blocked; an incomplete pass (row error or CAS miss) is retried with
+- **One-time STORAGE HYGIENE for pre-existing offender rows (#209, d2).** A
+  startup reconciler (idempotent, resumable, no new API surface) brings STORED
+  selectors in line with the delivery behavior the dispatch boundary already
+  enforces. **This is not the security mechanism** — the fail-closed dispatch
+  boundary (above) is; the reconciler is best-effort cleanup and, because
+  dispatch already blocks the leak, admin-only selectors on a concrete-tenant
+  row are already non-functional. Per row (skips already-`DISABLED` rows):
+  - **Concrete-tenant rows carrying admin-only types/categories:** the
+    admin-only selectors are **STRIPPED** and tenant-accessible ones kept
+    (`STRIPPED_ADMIN_SELECTORS`). Because dispatch already withholds those
+    admin events, stripping is not a behavior change and has no collateral on
+    legitimate tenant-accessible deliveries; it makes storage match effective
+    behavior. If stripping empties BOTH selector lists (the row would then
+    match every event) it is DISABLED instead (`STRIPPED_AND_DISABLED`).
+  - **Empty-both match-ALL rows** on any owner (`__system__` included — the
+    system carve-out exempts admin selectors only, not the "at least one
+    selector" invariant) are **DISABLED** (`DISABLED_EMPTY_BOTH`).
+  - **Null-owner rows** (corruption): normalized to the `__system__` owner and
+    added to the `webhooks:__system__` dispatch index (`NORMALIZED_NULL_OWNER`),
+    removing the limbo state (exempt from repair yet absent from every dispatch
+    index) rather than leaving them un-indexed.
+
+  Every action is loudly logged. **Robustness:** it `SSCAN`s the index in
+  batches (bounded memory), writes via an atomic compare-and-set (never
+  clobbers a concurrent operator update — a CAS miss is a counted failure and
+  retried), and runs on a **managed daemon executor** that is interrupted and
+  awaited on Spring context shutdown (`@PreDestroy`) so it stops cleanly instead
+  of leaking a thread sleeping through a retry backoff. Startup/readiness is
+  never blocked; an incomplete pass (row error or CAS miss) is retried with
   exponential backoff, and if retries are exhausted a loud `ERROR` alert is
-  emitted and the service stays up (a migration bug must not brick the
-  service — and the write-path gate already stops NEW offenders, so legacy
-  offenders merely remain DISABLED-pending). Configure with
+  emitted and the service stays up (hygiene must not brick the service — and
+  delivery is already safe via the dispatch boundary). Configure with
   `webhook.category-boundary.reconcile-on-startup` (default `true`) and
   `webhook.category-boundary.reconcile-dry-run` (default `false` — `true`
-  REPORTS offenders in the logs without disabling anything). Operators can
+  REPORTS the actions in the logs without mutating anything). Operators can
   also find offenders with the `redis-cli`/`jq` recipe from the [0.1.25.50]
-  Security note. Repaired (DISABLED) rows should be migrated per the migration
-  note above, or deleted.
+  Security note.
 
 ## [0.1.25.50] — 2026-07-10
 

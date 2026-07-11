@@ -700,6 +700,64 @@ class WebhookAdminControllerTest {
     }
 
     @Test
+    void bulkActionWebhooks_resume_concreteTenantAdminOffender_failsRow_noResume() throws Exception {
+        // #209 bulk-RESUME bypass: a PAUSED concrete-tenant subscription carrying
+        // an admin-only category must NOT be resumed to ACTIVE — bulk RESUME now
+        // routes through effective-selector validation, so the row fails.
+        io.runcycles.admin.model.webhook.WebhookSubscription offender =
+                io.runcycles.admin.model.webhook.WebhookSubscription.builder()
+                        .subscriptionId("w1").tenantId("tenant-1")
+                        .url("https://example.com/w1")
+                        .eventCategories(List.of(io.runcycles.admin.model.event.EventCategory.API_KEY))
+                        .status(WebhookStatus.PAUSED).createdAt(Instant.now()).build();
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(offender));
+        when(webhookRepository.findById("w1")).thenReturn(offender);
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"PAUSED\"},\"action\":\"RESUME\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.failed.length()").value(1))
+                .andExpect(jsonPath("$.failed[0].id").value("w1"))
+                .andExpect(jsonPath("$.failed[0].error_code").value("INVALID_TRANSITION"))
+                .andExpect(jsonPath("$.succeeded.length()").value(0));
+
+        verify(webhookService, never()).update(anyString(), any());
+    }
+
+    @Test
+    void bulkActionWebhooks_resume_concreteTenantClean_resumes() throws Exception {
+        // A PAUSED concrete-tenant subscription with only tenant-accessible
+        // selectors passes validation and resumes normally.
+        io.runcycles.admin.model.webhook.WebhookSubscription clean =
+                io.runcycles.admin.model.webhook.WebhookSubscription.builder()
+                        .subscriptionId("w1").tenantId("tenant-1")
+                        .url("https://example.com/w1")
+                        .eventCategories(List.of(io.runcycles.admin.model.event.EventCategory.BUDGET))
+                        .status(WebhookStatus.PAUSED).createdAt(Instant.now()).build();
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(clean));
+        when(webhookRepository.findById("w1")).thenReturn(clean);
+        when(webhookService.update(anyString(), any())).thenReturn(clean);
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"PAUSED\"},\"action\":\"RESUME\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.succeeded.length()").value(1))
+                .andExpect(jsonPath("$.failed.length()").value(0));
+
+        verify(webhookService).update(eq("w1"), any());
+    }
+
+    @Test
     void bulkActionWebhooks_delete_missingRow_landsInSkipped() throws Exception {
         when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
                 .thenReturn(java.util.Optional.empty());
