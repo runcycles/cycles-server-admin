@@ -38,6 +38,65 @@ pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-07-11 — v0.1.25.51 codex round 4: replay pagination cursor bugs → approach B (#209)
+
+Round 4 confirmed classification / reconciler / /test / honest-boolean CLEAN
+(the events-worker version-skew gap does NOT reproduce here — strict
+`@JsonCreator` throws on unknown enums, so an unknown record fails hydration and
+is skipped = fail-closed). The remaining issue was ENTIRELY in the round-3 replay
+pagination rewrite, which traded the old under-delivery for three cursor bugs on
+the millisecond-scored event index:
+- **HIGH** — equal-timestamp page boundary skip: `list()` resumes ASC with
+  `minScore = cursorScore + 1`, but scores are epoch-MILLIS, so same-ms members
+  past the page end were skipped.
+- **MEDIUM** — partial hydrated page misread as exhaustion: `list()` drops
+  expired/missing/corrupt/unknown-enum rows, so a `< pageSize` result did NOT
+  mean the ZSET range was exhausted; the collector stopped early.
+- **MEDIUM** — unresolvable cursor duplicates: if `zscore(cursor)` was null (member
+  gone) the lower bound didn't advance and the same page could repeat until
+  `max_events`.
+
+**Approach chosen: (B) — fetch the ordered member-id list up front, hydrate in
+batches over that FIXED list.** Rationale: it is inherently correct for a
+bounded-window scan (the ZSET gives the exact ordered, de-duplicated member set,
+so there is no score cursor to skip/duplicate and hydration drops can't look like
+exhaustion) AND it does NOT mutate `list()`'s cursor contract, so no other caller
+is affected. Approach (A) — extending `list()`'s cursor to a `(score, member)`
+total order — would have touched a method with ~30 call sites (controllers for
+events/audit/policy/tenant/budget/api-key/balance, AdminOverviewService,
+EventService); needlessly risky for a replay-only fix. **Caller-impact check:**
+grepped all `list(` callers; approach B adds two NEW methods
+(`EventRepository.listEventIdsInRange`, `hydrateByIds`) and leaves `list()`
+untouched, so every existing caller is byte-for-byte unchanged.
+
+Implementation: `WebhookService.collectDeliverableReplayEvents` calls
+`listEventIdsInRange(tenant, from, to, replayMaxScan)` (one `ZRANGEBYSCORE`,
+ascending score then member — chronological, de-duplicated, capped), then
+iterates the fixed id list in `REPLAY_PAGE_SIZE=500` slices, hydrating each via
+`hydrateByIds` (drops missing/corrupt/unknown-enum rows, fail-closed) and applying
+request-type ∩ subscription selectors (`matchesEventType`) ∩ `scope_filter`
+(`matchesScope`) ∩ ownership boundary — collecting up to `max_events` DELIVERABLE
+events, delivered chronologically. The scan ceiling became configurable
+(`webhook.replay.max-scan`, default 20000) so it is exercisable; hitting it before
+filling `max_events` logs a WARN (no silent truncation).
+
+Tests: the mocked WebhookServiceTest paging-mechanics tests (which supplied
+idealized pages and couldn't catch these) were removed; the mechanics now live in
+`WebhookReplayPaginationIntegrationTest` against REAL Redis / the real
+`EventRepository` covering all six required scenarios — (1) >500 same-millisecond
+events with matches in the lexicographic tail → all delivered; (2) interior
+hydration drops with later matches → not exhaustion; (3) vanished member → no
+duplicate; (4) scan-ceiling hit → WARN logged, `events_queued` reflects the
+truncation; (5) chronological order across the 500-item page boundary (600 events);
+(6) `max_events` counts deliverable-after-filters (interleaved matching /
+non-matching). Added data-module unit tests for `listEventIdsInRange`
+(tenant/global/infinity/non-positive-max) and `hydrateByIds` (drop
+missing/corrupt, empty). Remaining WebhookServiceTest replay tests re-mocked to the
+new methods via a `stubReplayWindow` helper.
+
+Full foreground build, all gates green: api unit 861, data unit 543 (LINE 0.9572,
+gate 0.95), api integration 874, data integration 593.
+
 ### 2026-07-11 — v0.1.25.51 codex round 3: replay cap-then-filter + boundary/atomicity/honesty hardening (#209)
 
 Round-3 findings verified against source (2bb2467) and fixed. The BIGGEST

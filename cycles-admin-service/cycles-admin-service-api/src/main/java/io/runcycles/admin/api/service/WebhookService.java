@@ -10,7 +10,6 @@ import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.event.*;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.SortSpec;
-import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.webhook.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -365,12 +364,16 @@ public class WebhookService {
     /** Per-fetch page size while paging the replay window (bounded memory). */
     private static final int REPLAY_PAGE_SIZE = 500;
     /**
-     * Total scanned-event ceiling for one replay. A very sparse window (few
-     * matching events among many) can't scan unbounded; if this bound is hit
-     * before {@code maxEvents} matches are collected, collection stops and logs
-     * — NOT a silent truncation.
+     * Total scanned-event ceiling for one replay — the max size of the ordered
+     * id list pulled for the window. A very sparse window (few matching events
+     * among many) can't scan unbounded; if this bound is hit before
+     * {@code maxEvents} matches are collected, collection stops and logs — NOT a
+     * silent truncation. Configurable (`webhook.replay.max-scan`) so the ceiling
+     * is exercisable; the field initializer is the default used when no property
+     * is bound (e.g. plain unit construction).
      */
-    private static final int REPLAY_MAX_SCAN = 20_000;
+    @org.springframework.beans.factory.annotation.Value("${webhook.replay.max-scan:20000}")
+    private int replayMaxScan = 20_000;
 
     /**
      * Collect up to {@code maxEvents} DELIVERABLE events from the replay window
@@ -388,31 +391,38 @@ public class WebhookService {
      *       deliver (a concrete-tenant sub never spends budget on admin-only
      *       events).</li>
      * </ul>
-     * Pages via the timestamp-ASC cursor of {@link EventRepository#list} until
-     * {@code maxEvents} matches are collected, the window is exhausted, or the
-     * {@link #REPLAY_MAX_SCAN} scan ceiling is reached.
+     *
+     * <p><b>Approach B (no-miss AND no-duplicate over a bounded window).</b>
+     * Rather than walk {@link EventRepository#list}'s millisecond score cursor
+     * — which can skip equal-timestamp members (resume advances by
+     * {@code score+1}), misread a hydration-thinned page as exhaustion, and
+     * re-emit a page when a cursor member has vanished — this takes ONE bounded,
+     * ordered, de-duplicated id list for the window
+     * ({@link EventRepository#listEventIdsInRange}, capped at
+     * {@link #REPLAY_MAX_SCAN}) and hydrates + filters in fixed batches over it.
+     * The id list is the exact ordered member set, so hydration drops (expired /
+     * corrupt / unknown-enum rows) never look like exhaustion and there is no
+     * score cursor to skip or duplicate. If the window holds more than
+     * {@code REPLAY_MAX_SCAN} events the ceiling caps the scan and we log (never
+     * silently truncate).
      */
     private List<Event> collectDeliverableReplayEvents(WebhookSubscription sub,
                                                         ReplayRequest request, int maxEvents) {
         // isSystemOwner is null-safe (null owner → system → query all tenants).
         String queryTenant = WebhookSubscription.isSystemOwner(sub.getTenantId())
             ? null : sub.getTenantId();
-        SortSpec chronological = SortSpec.of("timestamp", SortDirection.ASC);
         boolean hasRequestTypeFilter =
             request.getEventTypes() != null && !request.getEventTypes().isEmpty();
 
+        // One bounded, ordered, de-duplicated id list for the whole window.
+        List<String> ids = eventRepository.listEventIdsInRange(
+            queryTenant, request.getFrom(), request.getTo(), replayMaxScan);
+
         List<Event> collected = new ArrayList<>();
-        String cursor = null;
-        int scanned = 0;
-        while (collected.size() < maxEvents && scanned < REPLAY_MAX_SCAN) {
-            List<Event> page = eventRepository.list(
-                queryTenant, null, null, null, null,
-                request.getFrom(), request.getTo(), cursor, REPLAY_PAGE_SIZE, chronological);
-            if (page.isEmpty()) {
-                break; // window exhausted
-            }
+        for (int start = 0; start < ids.size() && collected.size() < maxEvents; start += REPLAY_PAGE_SIZE) {
+            int end = Math.min(start + REPLAY_PAGE_SIZE, ids.size());
+            List<Event> page = eventRepository.hydrateByIds(ids.subList(start, end));
             for (Event e : page) {
-                scanned++;
                 if (hasRequestTypeFilter && !request.getEventTypes().contains(e.getEventType())) {
                     continue;
                 }
@@ -423,14 +433,12 @@ public class WebhookService {
                 collected.add(e);
                 if (collected.size() >= maxEvents) break;
             }
-            if (page.size() < REPLAY_PAGE_SIZE) {
-                break; // last (partial) page — window exhausted
-            }
-            cursor = page.get(page.size() - 1).getEventId();
         }
-        if (collected.size() < maxEvents && scanned >= REPLAY_MAX_SCAN) {
+        // Ceiling: the id list was capped at replayMaxScan, so a full-cap list
+        // that did not fill max_events may have more deliverable events beyond it.
+        if (collected.size() < maxEvents && ids.size() >= replayMaxScan) {
             LOG.warn("Webhook replay hit the scan ceiling before filling max_events: subscription_id={} tenant_id={} scanned={} collected={} max_events={} — window may hold more matching events past the scan bound",
-                safe(sub.getSubscriptionId()), safe(sub.getTenantId()), scanned, collected.size(), maxEvents);
+                safe(sub.getSubscriptionId()), safe(sub.getTenantId()), ids.size(), collected.size(), maxEvents);
         }
         return collected;
     }

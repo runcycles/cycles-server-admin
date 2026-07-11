@@ -93,18 +93,26 @@ new optional request fields) are **not** considered breaking.
   status TOCTOU). The fail-closed dispatch boundary above also applies on the
   replay path, so even an ACTIVE offender delivers none of its admin-only
   historical events.
-  - **Cap-then-filter under-delivery fixed.** Replay previously fetched a single
-    page capped at `max_events` and then applied the selector/scope/type filters
-    AS post-hoc stream filters — so if the first `max_events` (default 100)
-    events in the `[from,to]` window didn't match but later ones did, replay
-    queued ZERO despite matching events existing. Replay now PAGES the window
-    chronologically (bounded batches) and applies every filter — request
+  - **Cap-then-filter under-delivery fixed (no-miss AND no-duplicate).** Replay
+    previously fetched a single page capped at `max_events` and then applied the
+    selector/scope/type filters AS post-hoc stream filters — so if the first
+    `max_events` (default 100) events in the `[from,to]` window didn't match but
+    later ones did, replay queued ZERO despite matching events existing. Replay
+    now takes ONE bounded, ordered, de-duplicated event-id list for the window
+    (a single `ZRANGEBYSCORE`, `EventRepository.listEventIdsInRange`) and
+    hydrates + filters in fixed batches over it, applying every filter — request
     `event_types` ∩ the subscription's own selectors ∩ `scope_filter` ∩ the
-    ownership boundary — DURING pagination, accumulating up to `max_events`
-    **deliverable** events (so the cap counts deliverable events, not scanned
-    ones), then delivers them in chronological order (spec `replayEvents`). A
-    total scan ceiling bounds cost on very sparse windows and logs a warning if
-    hit before the cap is filled (never a silent truncation).
+    ownership boundary — while accumulating up to `max_events` **deliverable**
+    events (so the cap counts deliverable events, not scanned ones), then
+    delivers them in chronological order (spec `replayEvents`). Reading the whole
+    ordered member set up front (rather than walking a millisecond score cursor)
+    avoids three cursor hazards on the ms-scored index: equal-timestamp members
+    skipped when the cursor advanced by `score+1`, a hydration-thinned short page
+    misread as range exhaustion, and duplicate pages when a cursor member had
+    vanished. The scan is bounded by `webhook.replay.max-scan` (default 20000);
+    hitting the ceiling before the cap is filled logs a warning (never a silent
+    truncation). No change to `EventRepository.list()` or its cursor, so other
+    event-listing callers are unaffected.
 
 - **Bulk RESUME routed through boundary validation (#209).**
   `POST /v1/admin/webhooks/bulk-action` with `action: RESUME` reached `ACTIVE`
