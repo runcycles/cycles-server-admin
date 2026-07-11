@@ -2,7 +2,7 @@
 
 **Spec:**
 [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml)
-(OpenAPI 3.1.0, info.version `0.1.25.37`; adds CASCADE SEMANTICS — Rule 1 `POST
+(OpenAPI 3.1.0, info.version `0.1.25.38`; adds CASCADE SEMANTICS — Rule 1 `POST
 /admin/tenants/{id}` PATCH→CLOSED cascades owned budgets (→CLOSED), webhook
 subscriptions (→DISABLED), and API keys (→REVOKED) under a shared correlation_id
 — Rule 1 permits **Mode A (atomic)** or **Mode B
@@ -25,7 +25,9 @@ adds the `EventDataTenantCascade` payload schema those events conform to;
 v0.1.25.36 adds `admin_on_behalf_of` to the `Event.actor.type` enum so events
 from admin-key dual-auth operations validate; v0.1.25.37 adds `TENANT_CLOSED`
 to the `EventDataReservationDenied.reason_code` documented known values —
-documentation-only on an open string field) in
+documentation-only on an open string field; v0.1.25.38 (merged 2026-07-10,
+cycles-protocol#126) extends the tenant self-service webhook boundary to
+cover `event_categories` — implemented here in 0.1.25.50) in
 [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 
 **Server:** Spring Boot 3.5.15 / Java 21 / Jedis 7.5.2 · commons-lang3 3.18.0
@@ -45,7 +47,8 @@ API key creates (or PATCHes) a subscription with one allowed
 `event_type` plus `"event_categories": ["api_key"]` (or policy /
 webhook / system) and receives admin-only event classes for its tenant
 — API-key lifecycle, policy changes, webhook lifecycle, system events.
-Governance spec revision v0.1.25.38 (pending, prepared in parallel)
+Governance spec revision v0.1.25.38 (merged 2026-07-10,
+cycles-protocol#126; this admin work shipped alongside it in 0.1.25.50)
 adds the normative rule: tenant-plane create AND update MUST validate
 event_categories against the same boundary, 400 INVALID_REQUEST.
 

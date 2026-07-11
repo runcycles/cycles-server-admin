@@ -28,7 +28,8 @@ new optional request fields) are **not** considered breaking.
   `system`) and receive admin-only event classes for its tenant (e.g.
   `api_key.created` payloads). Both paths now reject admin-only categories
   with 400 `INVALID_REQUEST`, same message style as the `event_types` check
-  (governance spec revision v0.1.25.38, pending). The boundary applies to
+  (governance spec revision v0.1.25.38, merged 2026-07-10 —
+  cycles-protocol#126). The boundary applies to
   the tenant-plane endpoint regardless of caller — admin-on-behalf-of PATCH
   included — matching the existing `event_types` behavior; admin categories
   belong on `/v1/admin/webhooks/*`.
