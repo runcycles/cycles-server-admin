@@ -1,4 +1,4 @@
-# Complete Budget Governance v0.1.25.50 — Admin Server Audit
+# Complete Budget Governance v0.1.25.51 — Admin Server Audit
 
 **Spec:**
 [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml)
@@ -37,6 +37,85 @@ behavior) in
 pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
+
+### 2026-07-11 — v0.1.25.51: admin-plane webhook category boundary + conservative offender cleanup (security, #209)
+
+Closes #209. The 0.1.25.50 fix closed the tenant-plane INJECTION path
+for admin-only webhook `event_categories`; #209 is the admin-plane
+CARRIER source. `WebhookAdminController.create`
+(`POST /v1/admin/webhooks?tenant_id=X`) and `.update` (PATCH) applied NO
+category validation, so an operator / admin-on-behalf-of could place
+admin-only categories (api_key/policy/webhook/system) on a subscription
+owned by concrete tenant X. Because `matchesEventType` treats categories
+as an ADDITIVE union, X — which owns the row's endpoint URL + signing
+secret — then received admin-only governance/security telemetry.
+
+(a) Admin write-path validation.
+- New shared `WebhookCategoryBoundaryValidator` (@Component) is the single
+  source of truth for the boundary. Both the tenant controller (refactored
+  off its two private methods) and the admin controller call it, so the
+  type-level and category-level checks and both planes cannot drift; the
+  boundary itself derives from `EventCategory.isTenantAccessible()`.
+- Admin plane validates only when the target is a CONCRETE tenant
+  (`validateForTarget` no-ops on the `__system__` sentinel). Target tenant:
+  on create the `tenant_id` param; on update the STORED subscription's
+  `tenant_id` (WebhookUpdateRequest has no tenant_id — ownership is the
+  subscription's, verified against `prior.getTenantId()`). Admin-only entry
+  on a non-`__system__` target → 400 INVALID_REQUEST.
+- `__system__` carve-out: admin-only categories remain allowed there
+  (legitimate system-wide monitoring; not tenant-owned).
+
+CAPABILITY REMOVAL (recorded). 0.1.25.50 explicitly tested/documented
+admin-plane create/update WITH admin-only categories as 201/200 ("the
+boundary is tenant-plane-only, not a global tightening"), and its
+operator recipe called `/v1/admin/webhooks`-created admin-category rows
+"legitimate carriers". Verified by grep: those two WebhookAdminControllerTest
+cases were the only place this was asserted — an incidental
+tested-as-allowed behavior, not a separately-documented product feature.
+Both are rewritten to assert the new 400 for a concrete tenant (and
+201/200 for `__system__`). This is an intentional security correction —
+a previously-allowed capability is removed because a tenant-owned row
+exposes URL + secret to the tenant.
+
+(d2) One-time cleanup — CONSERVATIVE (disable, not strip).
+- Startup `ApplicationRunner` (`WebhookCategoryBoundaryReconciler`) →
+  `WebhookRepository.reconcileTenantCategoryBoundary(dryRun)`. Chosen over
+  a maintenance endpoint because a new admin endpoint would fail the
+  OpenAPI contract-diff check (undocumented surface); mirrors the repo's
+  `@Scheduled` audit-sweep / `CommandLineRunner` precedent.
+- Per row (non-`__system__`): a row carrying admin-only categories, or a
+  legacy empty-both match-ALL row, is DISABLED — NOT silently stripped.
+  Rationale (codex concern on gov #129): a concrete-tenant admin-category
+  row may be legit-but-misconfigured operator monitoring; silently
+  rewriting its selectors would break it with no signal. Disabling stops
+  delivery immediately (dispatch matches only ACTIVE), is reversible,
+  preserves the row + offending categories for review, and is loudly
+  logged (subscription_id / tenant_id / offending categories + the
+  migration hint). Already-DISABLED offenders are skipped → idempotent.
+- Config: `webhook.category-boundary.reconcile-on-startup` (default true),
+  `webhook.category-boundary.reconcile-dry-run` (default false; true =
+  REPORT offenders in logs, mutate nothing — review before the disabling
+  pass). Disabled in test properties so it never races per-test seeding;
+  the logic is covered directly (real-Redis integration + component unit).
+- MIGRATION for genuine per-tenant admin monitoring (in CHANGELOG): use a
+  `__system__`-owned subscription (no `tenant_id`) filtered by
+  `event_categories` to the admin classes; it receives those events for ALL
+  tenants (`__system__` is in every tenant's dispatch union), so select the
+  target tenant CLIENT-SIDE on the envelope `tenant_id`. NOT a `scope_filter`:
+  admin lifecycle events are null-scoped (verified: ApiKeyController emits
+  scope=null) and `matchesScope` excludes null scopes from any non-blank
+  filter, so a `scope_filter` would deliver none. gov #129 corrected the same
+  way. The row stays operator-owned (URL + secret), unlike a tenant-owned row.
+
+Tests: WebhookCategoryBoundaryValidatorTest (boundary + system carve-out);
+admin controller — admin-only category/type on a real tenant → 400 (create
++ update, service never called), on `__system__` → 201/200, tenant-accessible
+→ ok; reconciler integration (real Redis) over a seeded mix → correct
+DISABLED terminal states with categories intact, `__system__`/legit/
+types-only/already-disabled untouched, dry-run reports-without-mutating,
+idempotent re-run; reconciler component unit (flag on/off, dry-run passthrough,
+failure-swallowed). Version/revision 0.1.25.50 → 0.1.25.51. README alignment
+stays at governance v0.1.25.39 (v0.1.25.40 / cycles-protocol#129 still pending).
 
 ### 2026-07-11 — spec-alignment declaration bumped to governance v0.1.25.39 (docs only; no behavior change)
 

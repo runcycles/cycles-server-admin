@@ -7,6 +7,7 @@ import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.api.service.BulkActionAuditMetadataBuilder;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.api.service.TerminalOwnerMutationGuard;
+import io.runcycles.admin.api.service.WebhookCategoryBoundaryValidator;
 import io.runcycles.admin.api.service.WebhookService;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.idempotency.IdempotencyStore;
@@ -59,6 +60,7 @@ public class WebhookAdminController {
     @Autowired private AuditRepository auditRepository;
     @Autowired private IdempotencyStore idempotencyStore;
     @Autowired private TerminalOwnerMutationGuard mutationGuard;
+    @Autowired private WebhookCategoryBoundaryValidator categoryBoundaryValidator;
     @Autowired private EventService eventService;
     @Autowired private ObjectMapper objectMapper;
 
@@ -66,7 +68,17 @@ public class WebhookAdminController {
     public ResponseEntity<WebhookCreateResponse> create(
             @RequestParam(required = false) String tenant_id,
             @Valid @RequestBody WebhookCreateRequest request, HttpServletRequest httpRequest) {
-        String tenantId = tenant_id != null ? tenant_id : "__system__";
+        String tenantId = tenant_id != null ? tenant_id : WebhookCategoryBoundaryValidator.SYSTEM_TENANT;
+        // #209 / governance v0.1.25.40 (pending): the admin plane is the CARRIER
+        // source — an operator could place admin-only event_types/categories on
+        // a tenant-owned subscription, and since matchesEventType treats
+        // categories as an ADDITIVE union the owning tenant (which controls the
+        // endpoint URL + signing secret) would then receive admin-only
+        // governance/security telemetry. Validate the request against the target
+        // tenant; __system__ subscriptions are NOT tenant-owned, so admin-only
+        // categories remain allowed there (legitimate system-wide monitoring).
+        categoryBoundaryValidator.validateForTarget(tenantId,
+            request.getEventTypes(), request.getEventCategories());
         // Rule 2: refuse creating a subscription under a CLOSED tenant. Guard
         // no-ops on the "__system__" sentinel (no tenant record exists for it).
         if (tenant_id != null) mutationGuard.assertTenantOpen(tenantId);
@@ -140,6 +152,12 @@ public class WebhookAdminController {
         // Capture prior status BEFORE mutating so we can classify the emit
         // type (WEBHOOK_PAUSED / WEBHOOK_RESUMED vs plain WEBHOOK_UPDATED).
         WebhookSubscription prior = webhookService.get(subscriptionId);
+        // #209 / governance v0.1.25.40 (pending): validate the provided
+        // event_types/event_categories against the STORED subscription's owning
+        // tenant (WebhookUpdateRequest has no tenant_id — ownership is the
+        // subscription's, not the request's). __system__ rows are exempt.
+        categoryBoundaryValidator.validateForTarget(prior.getTenantId(),
+            request.getEventTypes(), request.getEventCategories());
         WebhookStatus previousStatus = prior.getStatus();
         WebhookSubscription updated = webhookService.update(subscriptionId, request);
         java.util.Map<String, Object> updateMeta = new java.util.LinkedHashMap<>();

@@ -30,7 +30,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(WebhookTenantController.class)
-@Import({MetricsTestConfiguration.class, ContractValidationConfig.class})
+@Import({MetricsTestConfiguration.class, ContractValidationConfig.class,
+        io.runcycles.admin.api.service.WebhookCategoryBoundaryValidator.class})
 class WebhookTenantControllerTest {
 
     @Autowired private MockMvc mockMvc;

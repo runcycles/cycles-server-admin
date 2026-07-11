@@ -2,6 +2,7 @@ package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.logging.LogSanitizer;
 import io.runcycles.admin.data.service.CryptoService;
+import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortSpec;
@@ -133,6 +134,117 @@ public class WebhookRepository {
                 } catch (Exception e) {
                     LOG.warn("Cascade-disable skipped webhook subscription: subscription_id={} tenant_id={} error={}",
                         LogSanitizer.safe(id), LogSanitizer.safe(tenantId), LogSanitizer.safe(e.getMessage()), e);
+                }
+            }
+        }
+        return outcomes;
+    }
+
+    /** Owning-tenant sentinel for admin-provisioned, non-tenant-owned rows. */
+    private static final String SYSTEM_TENANT = "__system__";
+
+    /** What the category-boundary reconciler did (or would do) to one row. */
+    public enum CategoryBoundaryAction {
+        /**
+         * Tenant-owned row carries admin-only categories → row DISABLED (NOT
+         * stripped): a concrete-tenant admin-category subscription may be a
+         * legit-but-misconfigured operator monitoring row, so we stop delivery
+         * loudly and leave the categories intact for the operator to review and
+         * migrate, rather than silently rewriting it.
+         */
+        DISABLED_ADMIN_CATEGORIES,
+        /** Legacy empty-both (match-ALL) row → DISABLED (the 0.1.25.50 rule). */
+        DISABLED_EMPTY_BOTH
+    }
+
+    /** {@code offendingCategories} = the admin-only categories that flagged the row. */
+    public record CategoryBoundaryRepairOutcome(String subscriptionId, String tenantId,
+                                                CategoryBoundaryAction action,
+                                                List<String> offendingCategories) {}
+
+    /**
+     * One-time (idempotent) cleanup for #209 / governance v0.1.25.40 (pending):
+     * find TENANT-owned (non-{@code __system__}) subscriptions that carry
+     * admin-only {@code event_categories} — placed there via the admin plane
+     * before the boundary was enforced — plus legacy empty-both match-ALL rows.
+     *
+     * <p><b>Conservative by design.</b> An offender is <b>DISABLED</b>, never
+     * silently stripped: a concrete-tenant admin-category subscription might be
+     * a legit-but-misconfigured operator monitoring row (delivering to an
+     * operator-controlled endpoint), and silently rewriting its selectors would
+     * break that with no signal. Disabling stops delivery immediately
+     * (dispatch only matches {@code ACTIVE} rows), is reversible, preserves the
+     * row (and its offending categories) for operator review, and is loudly
+     * logged. The supported replacement for genuine per-tenant admin monitoring
+     * is a {@code __system__}-owned subscription filtered by
+     * {@code event_categories} (it receives those admin events for ALL tenants,
+     * since {@code __system__} is in every tenant's dispatch union), selecting
+     * the target tenant CLIENT-SIDE on the envelope {@code tenant_id}. NOT a
+     * {@code scope_filter}: admin lifecycle events are null-scoped and
+     * {@code matchesScope} excludes null scopes from any non-blank filter, so a
+     * {@code scope_filter} would deliver none. A tenant-owned row exposes the
+     * endpoint URL + signing secret to the tenant; a {@code __system__} row
+     * does not.
+     *
+     * <p>Per row (skips {@code __system__} — legitimately admin-scoped): if it
+     * carries any admin-only category → {@code DISABLED_ADMIN_CATEGORIES}; else
+     * if it is empty-both → {@code DISABLED_EMPTY_BOTH}. Already-{@code DISABLED}
+     * offenders are skipped, so a re-run is a no-op (idempotent).
+     *
+     * @param dryRun when true, compute + log the offenders but mutate nothing
+     *               (report mode for operator review before the disabling pass)
+     */
+    public List<CategoryBoundaryRepairOutcome> reconcileTenantCategoryBoundary(boolean dryRun) {
+        List<CategoryBoundaryRepairOutcome> outcomes = new ArrayList<>();
+        try (Jedis jedis = jedisPool.getResource()) {
+            Set<String> ids = jedis.smembers("webhooks:_all");
+            if (ids == null || ids.isEmpty()) return outcomes;
+            for (String id : ids) {
+                try {
+                    String data = jedis.get("webhook:" + id);
+                    if (data == null) continue;
+                    WebhookSubscription sub = objectMapper.readValue(data, WebhookSubscription.class);
+                    // __system__ rows are not tenant-owned: admin-only categories
+                    // there are legitimate system-wide monitoring.
+                    if (SYSTEM_TENANT.equals(sub.getTenantId())) continue;
+                    // Already-disabled offenders need no further action (idempotent).
+                    if (sub.getStatus() == WebhookStatus.DISABLED) continue;
+
+                    List<EventCategory> cats = sub.getEventCategories();
+                    List<EventCategory> adminOnly = new ArrayList<>();
+                    if (cats != null) {
+                        for (EventCategory c : cats) {
+                            if (!c.isTenantAccessible()) adminOnly.add(c);
+                        }
+                    }
+                    boolean hasAdminCategories = !adminOnly.isEmpty();
+
+                    List<EventType> types = sub.getEventTypes();
+                    boolean typesEmpty = types == null || types.isEmpty();
+                    boolean catsEmpty = cats == null || cats.isEmpty();
+                    boolean emptyBoth = typesEmpty && catsEmpty;
+
+                    if (!hasAdminCategories && !emptyBoth) continue; // clean row
+
+                    CategoryBoundaryAction action = hasAdminCategories
+                        ? CategoryBoundaryAction.DISABLED_ADMIN_CATEGORIES
+                        : CategoryBoundaryAction.DISABLED_EMPTY_BOTH;
+                    List<String> offending = adminOnly.stream().map(EventCategory::getValue).toList();
+
+                    if (!dryRun) {
+                        // DISABLE only — do NOT strip. Categories left intact for review.
+                        sub.setStatus(WebhookStatus.DISABLED);
+                        sub.setUpdatedAt(Instant.now());
+                        jedis.set("webhook:" + id, objectMapper.writeValueAsString(sub));
+                    }
+
+                    outcomes.add(new CategoryBoundaryRepairOutcome(id, sub.getTenantId(), action, offending));
+                    LOG.warn("category-boundary reconcile {} offender webhook (#209): subscription_id={} tenant_id={} action={} offending_categories={} — operator action: migrate genuine per-tenant admin monitoring to a __system__ subscription filtered by event_categories, selecting the tenant client-side on the envelope tenant_id (admin events are null-scoped; a scope_filter would exclude them)",
+                        dryRun ? "REPORTED (dry-run)" : "DISABLED",
+                        LogSanitizer.safe(id), LogSanitizer.safe(sub.getTenantId()), action, offending);
+                } catch (Exception e) {
+                    LOG.warn("category-boundary reconcile skipped webhook subscription: subscription_id={} error={}",
+                        LogSanitizer.safe(id), LogSanitizer.safe(e.getMessage()), e);
                 }
             }
         }

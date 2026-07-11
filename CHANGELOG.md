@@ -14,6 +14,72 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.51] — 2026-07-11
+
+### Security
+
+- **Admin-plane webhook `event_categories` boundary — closes the CARRIER
+  source (#209).** `POST /v1/admin/webhooks?tenant_id=X` and
+  `PATCH /v1/admin/webhooks/{id}` applied no category validation, so an
+  operator / admin-on-behalf-of could place admin-only categories
+  (`api_key`, `policy`, `webhook`, `system`) on a subscription owned by a
+  concrete tenant X. Since event matching treats categories as an ADDITIVE
+  union, X — which controls that subscription's endpoint URL and signing
+  secret — then received admin-only governance/security telemetry for its
+  tenant. The 0.1.25.50 fix closed the tenant-plane *injection* path; this
+  closes the admin-plane *carrier* source. Both admin write paths now
+  validate `event_types` AND `event_categories` against the tenant-accessible
+  boundary (`budget.*`, `reservation.*`, `tenant.*`) when the target is a
+  **concrete tenant** — create validates against the `tenant_id` param,
+  update against the STORED subscription's `tenant_id` — rejecting admin-only
+  entries with 400 `INVALID_REQUEST`. Governance spec revision v0.1.25.40
+  (pending, runcycles/cycles-protocol#129) makes this normative.
+  - **`__system__` carve-out:** admin-only categories remain allowed on
+    `__system__`-owned subscriptions (no `tenant_id` param, or an
+    `__system__` target) — those are legitimate system-wide monitoring and
+    are not tenant-owned.
+
+- **BEHAVIOR CHANGE — previously-allowed capability removed.** In 0.1.25.50
+  the admin plane deliberately did NOT restrict categories (documented as
+  "the boundary is tenant-plane-only, not a global tightening"), so
+  admin-only categories on a concrete-tenant subscription via
+  `/v1/admin/webhooks` returned 201/200. That is now a 400 — a security
+  correction, because a tenant-owned row exposes the endpoint URL + signing
+  secret to the tenant. **Migration:** if you were monitoring a specific
+  tenant's admin-only events (e.g. `api_key.*`, `policy.*`) via a tenant-owned
+  subscription pointed at an operator endpoint, replace it with a
+  **`__system__`-owned** subscription (create with no `tenant_id` param)
+  filtered by **`event_categories`** to the admin classes you need. Because
+  `__system__` is in the dispatch union for every tenant, that subscription
+  receives those admin events for ALL tenants; select the specific tenant
+  **client-side** on the envelope's `tenant_id` (admin lifecycle events carry
+  `tenant_id` even though their `scope` is null). Do NOT use a `scope_filter`
+  for this — admin lifecycle events are null-scoped, and a `scope_filter`
+  excludes null-scoped events, so it would deliver none of them. The
+  `__system__` row is not tenant-owned, so its URL and secret stay
+  operator-controlled.
+
+### Fixed
+
+- **One-time cleanup of pre-existing offender rows (#209, d2).** A startup
+  reconciler (idempotent; runs once per boot, no new API surface) finds
+  TENANT-owned subscriptions that already carry admin-only `event_categories`
+  and legacy empty-both match-ALL rows, and **DISABLEs** them (status
+  `DISABLED`) — conservative by design: it does NOT silently strip
+  categories, because a concrete-tenant admin-category row might be a
+  legit-but-misconfigured operator monitoring subscription, and a silent
+  rewrite would break it with no signal. Disabling stops delivery
+  immediately (dispatch matches only `ACTIVE` rows), is reversible, preserves
+  the row and its offending categories for operator review, and is loudly
+  logged with the `subscription_id`, `tenant_id`, and offending categories.
+  Configure with `webhook.category-boundary.reconcile-on-startup` (default
+  `true`) and `webhook.category-boundary.reconcile-dry-run` (default `false`
+  — set `true` to REPORT offenders in the logs without disabling anything,
+  for review before the disabling pass). Operators can also still find
+  offenders with the `redis-cli`/`jq` recipe from the [0.1.25.50] Security
+  note. Repaired (DISABLED) rows should be migrated per the migration note
+  above, or deleted.
+
 ## [0.1.25.50] — 2026-07-10
 
 ### Security
