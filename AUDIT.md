@@ -2,7 +2,7 @@
 
 **Spec:**
 [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml)
-(OpenAPI 3.1.0, info.version `0.1.25.38`; adds CASCADE SEMANTICS — Rule 1 `POST
+(OpenAPI 3.1.0, info.version `0.1.25.39`; adds CASCADE SEMANTICS — Rule 1 `POST
 /admin/tenants/{id}` PATCH→CLOSED cascades owned budgets (→CLOSED), webhook
 subscriptions (→DISABLED), and API keys (→REVOKED) under a shared correlation_id
 — Rule 1 permits **Mode A (atomic)** or **Mode B
@@ -27,13 +27,36 @@ from admin-key dual-auth operations validate; v0.1.25.37 adds `TENANT_CLOSED`
 to the `EventDataReservationDenied.reason_code` documented known values —
 documentation-only on an open string field; v0.1.25.38 (merged 2026-07-10,
 cycles-protocol#126) extends the tenant self-service webhook boundary to
-cover `event_categories` — implemented here in 0.1.25.50) in
+cover `event_categories` — implemented here in 0.1.25.50; v0.1.25.39
+(merged 2026-07-11, cycles-protocol#127) relaxes the webhook schema to
+permit category-only subscriptions, ratifying already-shipped 0.1.25.50
+behavior) in
 [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 
 **Server:** Spring Boot 3.5.15 / Java 21 / Jedis 7.5.2 · commons-lang3 3.18.0
 pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
+
+### 2026-07-11 — spec-alignment declaration bumped to governance v0.1.25.39 (docs only; no behavior change)
+
+Declaration update, not a behavior change: no code, wire, or config is
+touched. Governance revision v0.1.25.39 merged to cycles-protocol main
+(PR #127, merge ca4ff57, info.version 0.1.25.39) — it RELAXES the
+webhook schema to permit category-only subscriptions (`event_types`
+optional; at least one of `event_types`/`event_categories` required),
+which is exactly the behavior this server already shipped in 0.1.25.50.
+Conformance was confirmed pre-merge, so .39 needs no admin code
+follow-up: `WebhookCreateRequest` keeps `@NotEmpty event_types` (create
+requires types), `WebhookService.update`'s empty-both guard rejects
+clearing both fields, and category-only updates already pass. Bumped the
+README alignment line and this file's header info.version pin
+0.1.25.38 → 0.1.25.39, and dropped the "one deliberate divergence"
+caveat the .38-era declaration carried (the category-only behavior is now
+ratified, not a divergence). Historical/dated .38 references (the admin
+server's own v0.1.25.38 release history, and the 0.1.25.50 entry's
+citation of governance .38 as the origin of the category-boundary rule)
+are correct as-is and left untouched.
 
 ### 2026-07-10 — v0.1.25.50: tenant webhook event_categories boundary + match-ALL update guard (security)
 
