@@ -1,4 +1,4 @@
-# Complete Budget Governance v0.1.25.50 — Admin Server Audit
+# Complete Budget Governance v0.1.25.51 — Admin Server Audit
 
 **Spec:**
 [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml)
@@ -37,6 +37,644 @@ behavior) in
 pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
+
+### 2026-07-11 — v0.1.25.51 codex round: dispatch re-read must not misclassify backend errors as INACTIVE (#209)
+
+Codex P2 on the just-added classification: `dispatchToSubscription`'s `findById`
+re-read was wrapped in a blanket `catch (Exception e) → INACTIVE`. But
+`WebhookRepository.findById` (verified) throws
+`GovernanceException.webhookNotFound(id)` (`ErrorCode.WEBHOOK_NOT_FOUND`, 404) ONLY
+for a genuinely-missing row, and wraps Redis/deserialization/other failures in a
+plain `RuntimeException("Failed to find webhook subscription", e)`. So a real
+backend outage during the re-read was misclassified INACTIVE → replay emitted the
+benign INFO and HID the failure.
+
+Fix: catch `GovernanceException` and map to `INACTIVE` ONLY when
+`getErrorCode() == WEBHOOK_NOT_FOUND` (genuine delete, intended lifecycle); any
+other `GovernanceException`, and any other `Exception` (Redis/deser/unexpected),
+→ `ENQUEUE_FAILED` (degradation → degraded WARN), each logged. The paused/disabled
+INACTIVE trigger (non-ACTIVE status on a successful re-read) is unchanged.
+
+The exact not-found signal caught: `GovernanceException` with
+`ErrorCode.WEBHOOK_NOT_FOUND` (the only INACTIVE-worthy `findById` throw).
+
+Tests (`WebhookDispatchServiceTest`): renamed the deleted case →
+`dispatchToSubscription_subscriptionDeletedMidReplay_inactive` (WEBHOOK_NOT_FOUND →
+INACTIVE, unchanged); added `dispatchToSubscription_reReadBackendError_enqueueFailed_
+notInactive` (findById throws `RuntimeException` wrapping `JedisConnectionException`
+→ ENQUEUE_FAILED) and `dispatchToSubscription_reReadNonNotFoundGovernanceError_
+enqueueFailed` (a non-not-found `GovernanceException` → ENQUEUE_FAILED). Replay-level
+effect is covered by the existing pair: ENQUEUE_FAILED → degraded WARN, INACTIVE →
+benign INFO (`WebhookServiceTest`).
+
+Gates green: model 192, data unit 543 (LINE 0.9572, unchanged), api unit 869, api
+integration 884, data integration 593 (unchanged).
+
+### 2026-07-11 — v0.1.25.51 reviewer round: categorize replay shortfall (structured dispatch outcome) (#209)
+
+Reviewer P2: the best-effort partial-enqueue WARN fired for EVERY
+`events_queued < selected`, but `dispatchToSubscription` returned `false` for
+several reasons and only ONE is a degradation — so a benign concurrent-disable
+mid-replay raised a false "backend degraded" alarm.
+
+Fix (structured result, chosen over broadening the log wording — the operational
+distinction matters):
+1. `WebhookDispatchService.dispatchToSubscription` now returns a structured enum
+   `DispatchOutcome { ENQUEUED, INACTIVE, BLOCKED, ENQUEUE_FAILED }` instead of a
+   boolean; per-branch behavior is UNCHANGED (ownership guard → BLOCKED; deleted /
+   non-ACTIVE at the dispatch-time status re-check → INACTIVE; LPUSH/save fail →
+   ENQUEUE_FAILED; else ENQUEUED).
+2. Callers: the ONLY production caller is `WebhookService.replay` (live
+   `dispatch()` uses `createDelivery` directly and is unchanged — verified by
+   grep). Replay counts `ENQUEUED` as `events_queued` and tallies each category.
+3. Categorized shortfall logging: if `enqueue_failed > 0` → **WARN** "DEGRADED
+   dispatch backend" (`replay_id`/`subscription_id`/`tenant_id`/`selected`/
+   `enqueued`/`enqueue_failed`/`inactive`/`blocked`); if the shortfall is ONLY
+   INACTIVE/BLOCKED → **INFO** "intended, NOT degradation". The per-event outer
+   catch (unexpected error, e.g. deliveryRepository.save throwing) counts as
+   `enqueue_failed` (a degradation).
+4. Tests: renamed the partial test to `replay_partialEnqueue_backendFailure_
+   logsDegradedWarn` (one ENQUEUE_FAILED → asserts the DEGRADED WARN with
+   `enqueued=2 enqueue_failed=1`); added `replay_partialEnqueue_concurrentDisable_
+   logsBenignInfo_notDegradedWarn` (one INACTIVE → `events_queued=2`, asserts the
+   benign INFO and asserts NO degraded WARN). Updated `WebhookDispatchServiceTest`
+   (10 assertions boolean→`DispatchOutcome`: ENQUEUED/BLOCKED/INACTIVE/
+   ENQUEUE_FAILED per case, incl. the deleted-mid-replay → INACTIVE and the
+   LPUSH-fail → ENQUEUE_FAILED paths) and the replay integration mock
+   (→ ENQUEUED). BLOCKED is exercised by the dispatch unit tests
+   (concrete-tenant admin/inconsistent/unclassifiable → BLOCKED).
+
+Gates green: model 192, data unit 543 (LINE 0.9572, unchanged), api unit 867, api
+integration 882, data integration 593 (unchanged).
+
+### 2026-07-11 — v0.1.25.51 reviewer round: replay max_events validation + best-effort enqueue (#209)
+
+Two reviewer findings, one commit.
+
+**F3 (P2) — enforce max_events min:1/max:1000 (was silently clamped).**
+`ReplayRequest.maxEvents` had no validation and `WebhookService` silently clamped
+`> 1000` via `Math.min(maxEvents, 1000)`, diverging from the spec's declared
+`minimum:1`/`maximum:1000`. Fix: added `@Min(1) @Max(1000)` (jakarta.validation) to
+`ReplayRequest.maxEvents` (same pattern as `WebhookRetryPolicy` + `@Builder.Default`);
+REMOVED the `Math.min` clamp — validation rejects out-of-range instead. **@Valid was
+ALREADY applied** on the replay `@RequestBody` (`WebhookAdminController` line 280), so
+no controller change was needed. **Default behavior:** omitting `max_events` stays
+100 — the service's `getMaxEvents() != null ? ... : 100` fallback (also the
+`@Builder.Default = 100`); `@Min/@Max` pass for null (null is "valid"), so an omitted
+value is not rejected. Controller tests: `max_events=0` → 400 (service not called),
+`max_events=1001` → 400 (service not called), omitted → 202 (validation passes).
+
+**F1 (P1) — best-effort enqueue is the INTENDED, spec-aligned behavior (confirm +
+observe, NO behavior change).** Per the coordinator's decision, governance #130 is
+narrowed to selection-completeness + BEST-EFFORT enqueue (`events_queued` = accepted
+count, may be < selected on transient failure; replay not idempotent). So the existing
+per-event catch + count STAYS. Made it correct + observable:
+- Added a loud **WARN** when `queued < selected` (`replay_id`, `subscription_id`,
+  `tenant_id`, `selected`, `queued`, shortfall) — a degraded dispatch backend is now
+  operator-visible (this is an operator signal, not a silent success claim; the spec
+  documents `events_queued` as the accepted count).
+- Reframed the replay comments/javadoc to state best-effort-enqueue-with-count is
+  INTENDED and `events_queued` may be `< selected` on backend failure; replay is NOT
+  idempotent (random delivery IDs → retry may duplicate). Documented the same on
+  `ReplayResponse.eventsQueued`.
+- Added `replay_partialEnqueue_reportsAcceptedCount_andLogsWarn_bestEffort` (3
+  selected, backend rejects 1 → `events_queued=2`, asserts the PARTIAL-enqueue WARN
+  with `selected=3 queued=2`).
+- Did NOT add fail-on-partial / atomic enqueue (rejected in favor of the best-effort
+  spec alignment; atomic enqueue was NOT judged clearly cheaper/better, so no stop-and-
+  ask was warranted).
+
+Gates green: model 192, data unit 543 (LINE 0.9572, unchanged), api unit 866, api
+integration 881, data integration 593 (unchanged).
+
+### 2026-07-11 — v0.1.25.51 codex confirm: replay all-or-narrow doc sweep (comment-only) (#209)
+
+Codex confirmed the all-or-narrow LOGIC correct/clean; one P2 DOC-ONLY — stale
+pagination-framing comments that contradicted the new behavior. No code-behavior
+change (one local var rename `page`→`batch`; no test change). Fixed + swept the
+whole replay path case-insensitively (`pagin|paging|page|cursor|continue|advance
+from|there may be more|stops and logs|truncat|max_events`), zero survivors:
+- `WebhookService.replay` comment (~330): "collect … by paging … DURING
+  pagination" → all-or-narrow (collect EVERY deliverable event; over-large window
+  is a 400 before enqueue).
+- `WebhookService` `REPLAY_PAGE_SIZE` javadoc: "page size while paging" →
+  "Hydration BATCH size … NOT a pagination unit: the whole window is scanned
+  within one replay".
+- `WebhookService` `replayMaxScan` javadoc: "collection stops and logs — NOT a
+  silent truncation" → "returns a 400 INVALID_REQUEST (window too large — narrow
+  from/to), NOT a silent partial".
+- `WebhookService.collectDeliverableReplayEvents` local `page` → `batch`.
+- `WebhookDispatchService.isBlockedByOwnershipBoundary` javadoc: "apply the SAME
+  predicate while paginating … must not spend its max_events budget … the cap
+  would count" → "when selecting the deliverable events for a window … the
+  deliverable total drives the completeness check".
+- `EventRepository.listEventIdsInRange` javadoc: "replay pages hydration over" →
+  "replay hydrates fixed BATCHES over".
+Confirmed-correct (kept): the all-or-narrow negations in `WebhookService`
+(~332/367/402-408, "NOT a resumable pagination cursor", "no continuation", "never
+a partial with 'continue'"); the approach-B contrast in `EventRepository`
+(the three OLD `list()` cursor hazards it AVOIDS); and the unrelated
+cursor-paginated `listByTenant`/`listAll`/`listDeliveries` APIs and the `continue`
+loop keyword. No behavior/comment mismatch beyond wording was found. Gates green:
+api unit 862, data unit 543 (LINE 0.9572), model 192.
+
+### 2026-07-11 — v0.1.25.51 reviewer round: replay is ALL-OR-NARROW (no fake continuation) (#209)
+
+Reviewer REVISE-MINOR: the prior scan-limit fix left a broken claim — it framed
+`max_events` as a RESUMABLE pagination cap ("lower max_events to page", "advance
+from") but `ReplayResponse` has NO continuation position (`replay_id`,
+`events_queued`, `estimated_completion_seconds` only). So a partial can't be
+resumed losslessly: distinct timestamps → the caller never learns the last
+replayed timestamp; same-millisecond events → an inclusive `from` repeats the
+page, advancing it skips the rest. The guidance was unusable.
+
+**Decision (chosen over adding a cursor — no schema change, lossless): REPLAY IS
+ALL-OR-NARROW.** A successful replay delivers EVERY deliverable event in the
+window; it never returns a partial with an implied "continue".
+
+Final `collectDeliverableReplayEvents` logic:
+- Fetch `replayMaxScan + 1` candidate ids. If `ids.size() > replayMaxScan` (window
+  not fully scannable) → **400** BEFORE any enqueue.
+- Else fully scanned: collect all deliverable events (request event_types ∩
+  subscription selectors ∩ scope ∩ ownership boundary), one past `max_events`
+  (`break` when `collected.size() > maxEvents`). If `collected.size() > maxEvents`
+  → **400** BEFORE any enqueue.
+- Else (fully scanned, ≤ `max_events`) → return ALL, delivered chronologically.
+This cleanly REPLACES the prior "ceiling reached AND < max_events → 400": now
+`> replayMaxScan candidates` OR `> max_events deliverable` → 400; else deliver all.
+
+**Error code: `INVALID_REQUEST` (400)** for both. Exact messages:
+- scan limit: "replay window too large: it exceeds the replay scan limit of N
+  events; narrow the from/to range"
+- too-many-deliverable: "replay window contains more than max_events (N)
+  deliverable events; narrow the from/to range, or raise max_events (up to 1000)"
+
+**Removed continuation guidance:** the old message tail "(or lower max_events to
+page within the limit)" and the code comment "eventsQueued == max_events signals
+'there may be more'" / "explicit pagination cap" framing are gone; the javadoc now
+states `max_events` is NOT a resumable cursor.
+
+Tests: replaced the two prior ceiling tests (4a/4b, which encoded the silent
+partial and a "cap filled within ceiling → success" that is now a scan-limit 400)
+and rewrote the old max_events-cap test. New integration tests (real Redis):
+window > scan limit → 400 (narrow, nothing enqueued, lock released); fully-scanned
+window > max_events deliverable → 400 (nothing enqueued); same-MILLISECOND cluster
+of 15 with max_events 10 → 400, then raising max_events to 20 → ONE replay delivers
+all 15 exactly once (the reviewer's same-timestamp concern, handled in the model);
+window ≤ max_events incl. a same-ms cluster → all delivered once, non-matching
+filtered. The four approach-B ordering/no-dup correctness tests are intact. Unit
+(WebhookServiceTest): `> max_events deliverable → 400, nothing dispatched, lock
+released` and `≤ max_events → all delivered in order`.
+
+**Spec reconciliation (report):** governance `replayEvents` (line 7096) already
+declares a `400 "Invalid replay request"` (`ErrorResponse`), so both 400s are
+within its declared responses — schema-conformant. The all-or-narrow SEMANTIC and
+the two messages must match the parallel governance PR #130 rewrite; final
+semantics/messages reported above for the coordinator to reconcile.
+
+All gates green: api unit 862, data unit 543 (LINE 0.9572, unchanged), api
+integration 877, data integration 593 (unchanged).
+
+### 2026-07-11 — v0.1.25.51 reviewer round: over-large replay window → caller-visible 400 (#209)
+
+Reviewer P2 (un-parked the PR): replay capped the candidate scan at
+`replayMaxScan` and, if matching events existed BEYOND the ceiling, returned a
+SUCCESSFUL response with `events_queued < max_events` plus a server-side WARN.
+To the caller that reads as "I got all matching events in my window" — but the
+search was truncated and the log is not caller-visible. The round-5 scan-ceiling
+test even codified the silent partial (50 of 60 + warning).
+
+**Fix — fail-fast, caller-visible (chosen over a truncation flag: no
+response-schema change, uses existing error semantics).** Precise semantics, only
+the genuinely-incomplete case fails:
+- `collectDeliverableReplayEvents` fetches `replayMaxScan + 1` candidate ids (one
+  past the ceiling) so it can tell "window fits" from "window overflows";
+  `ceilingReached = ids.size() > replayMaxScan`; it scans only the first
+  `replayMaxScan`.
+- If `ceilingReached` AND fewer than `max_events` DELIVERABLE events were
+  collected within the scanned set → the search is incomplete → throw
+  `GovernanceException(ErrorCode.INVALID_REQUEST, 400)` BEFORE the dispatch loop
+  (the collector runs before any enqueue, so there are NO partial side effects;
+  the replay lock is released by `replay()`'s `finally`). Message: "replay window
+  too large: it exceeds the replay scan limit of N events; narrow the from/to
+  range (or lower max_events to page within the limit)".
+- If `max_events` WAS filled within the ceiling → deliver normally (explicit
+  pagination cap, not truncation; `events_queued == max_events` signals "more may
+  exist").
+
+**Error code chosen: `INVALID_REQUEST` (400).** `LIMIT_EXCEEDED` is the 429
+rate-limit code (wrong status); there is no replay-window-specific code, and
+`INVALID_REQUEST/400` matches the existing webhook validators. Verified against
+`ErrorCode`.
+
+**Spec check (report — do NOT edit spec):** governance
+`cycles-governance-admin-v0.1.25.yaml` `replayEvents` (line 7096) ALREADY declares
+a `400 "Invalid replay request"` response (schema `ErrorResponse`), so returning
+`INVALID_REQUEST/400` for an over-large window is WITHIN its declared error
+responses — schema-conformant, no new error-response needed. What is NOT
+documented: the SEMANTIC that exceeding a server-side replay scan limit yields
+400 (the spec's LIMITS note only says "Maximum 1000 events per replay request"
+and "Use from/to to control the replay window", and documents `max_events`
+min1/max1000/default100 — nothing about a scan ceiling or over-large-window 400).
+Recommend a PROSE clause in the `replayEvents` description/LIMITS documenting the
+over-large-window 400 for governance PR #130. (Prose only — the 400 response
+object already exists.)
+
+Tests: rewrote the round-5 scan-ceiling test (which asserted the silent partial)
+into `replay_windowExceedsScanCeiling_incomplete_returns400_nothingEnqueued`
+(candidate 60 > ceiling 50, max_events 1000 unfilled → 400, `dispatchToSubscription`
+never called, replay lock released) and added
+`replay_windowExceedsCeiling_butMaxEventsFilledWithin_succeeds` (candidate 60 >
+ceiling 50 but max_events 10 filled within → success, 10 delivered, no false
+failure). The six approach-B correctness tests are intact. Ceiling injected via
+`webhook.replay.max-scan` (ReflectionTestUtils), so no 20000-row seeding.
+
+All gates green: api unit 861, data unit 543 (LINE 0.9572, unchanged), api
+integration 875, data integration 593 (unchanged).
+
+### 2026-07-11 — v0.1.25.51 codex round 5: strengthen two replay regression tests (test-only) (#209)
+
+Round 5 confirmed the approach-B replay PRODUCTION fix sound (REVISE-MINOR,
+test-only). Two `WebhookReplayPaginationIntegrationTest` regression tests didn't
+actually reproduce the bugs they guard (they'd pass against round-4 too). No
+production change; only the two tests were rewritten.
+
+- **Hydration-thinning test** — was 10 members / 3 deleted (all 7 survivors hydrate
+  in the first fetch; round-4 passes too). Rewritten to
+  `replay_matchesBeyondFirstCandidateWindow_withHydrationDrops_stillDelivered`:
+  seeds 1500 non-matching filler (the round-4 `list()` `limit*3 = 1500` candidate
+  window), EVICTS 1100 interior rows (ZSET members remain) so that window
+  hydrates to 400 events (< 500), then seeds 30 DELIVERABLE matches at positions
+  1500+. Round-4's `page.size() < 500 → stop` treats the short first page as
+  exhaustion and delivers 0; approach B reads the full ordered id list up front
+  and delivers all 30. Asserting 30 genuinely distinguishes the two.
+- **Vanished-cursor test** — was 5 members / 1 row deleted (member stays; no
+  cursor re-query under approach B). ASSESSED: the old `zscore(cursor)==null`
+  duplicate class is STRUCTURALLY ELIMINATED by approach B — the full ordered id
+  list is fetched ONCE via `ZRANGEBYSCORE` and hydrated in batches, so there is
+  no per-page cursor re-query to return a stale page. Rewritten to
+  `replay_vanishedMembers_skippedCleanly_noDuplicate_acrossBatches`: 600 members
+  (2 hydration batches), 4 rows evicted across BOTH batches incl. the 500-item
+  boundary → each vanished member cleanly skipped, no duplicate, later members
+  (incl. 2nd batch) still delivered (596 queued). Pins the new structural
+  guarantee. The other four scenario tests were left unchanged (codex-clean).
+
+All gates green: api unit 861 (unchanged — integration test excluded from the
+unit job), data unit 543 (LINE 0.9572), api integration 874, data integration 593.
+
+### 2026-07-11 — v0.1.25.51 codex round 4: replay pagination cursor bugs → approach B (#209)
+
+Round 4 confirmed classification / reconciler / /test / honest-boolean CLEAN
+(the events-worker version-skew gap does NOT reproduce here — strict
+`@JsonCreator` throws on unknown enums, so an unknown record fails hydration and
+is skipped = fail-closed). The remaining issue was ENTIRELY in the round-3 replay
+pagination rewrite, which traded the old under-delivery for three cursor bugs on
+the millisecond-scored event index:
+- **HIGH** — equal-timestamp page boundary skip: `list()` resumes ASC with
+  `minScore = cursorScore + 1`, but scores are epoch-MILLIS, so same-ms members
+  past the page end were skipped.
+- **MEDIUM** — partial hydrated page misread as exhaustion: `list()` drops
+  expired/missing/corrupt/unknown-enum rows, so a `< pageSize` result did NOT
+  mean the ZSET range was exhausted; the collector stopped early.
+- **MEDIUM** — unresolvable cursor duplicates: if `zscore(cursor)` was null (member
+  gone) the lower bound didn't advance and the same page could repeat until
+  `max_events`.
+
+**Approach chosen: (B) — fetch the ordered member-id list up front, hydrate in
+batches over that FIXED list.** Rationale: it is inherently correct for a
+bounded-window scan (the ZSET gives the exact ordered, de-duplicated member set,
+so there is no score cursor to skip/duplicate and hydration drops can't look like
+exhaustion) AND it does NOT mutate `list()`'s cursor contract, so no other caller
+is affected. Approach (A) — extending `list()`'s cursor to a `(score, member)`
+total order — would have touched a method with ~30 call sites (controllers for
+events/audit/policy/tenant/budget/api-key/balance, AdminOverviewService,
+EventService); needlessly risky for a replay-only fix. **Caller-impact check:**
+grepped all `list(` callers; approach B adds two NEW methods
+(`EventRepository.listEventIdsInRange`, `hydrateByIds`) and leaves `list()`
+untouched, so every existing caller is byte-for-byte unchanged.
+
+Implementation: `WebhookService.collectDeliverableReplayEvents` calls
+`listEventIdsInRange(tenant, from, to, replayMaxScan)` (one `ZRANGEBYSCORE`,
+ascending score then member — chronological, de-duplicated, capped), then
+iterates the fixed id list in `REPLAY_PAGE_SIZE=500` slices, hydrating each via
+`hydrateByIds` (drops missing/corrupt/unknown-enum rows, fail-closed) and applying
+request-type ∩ subscription selectors (`matchesEventType`) ∩ `scope_filter`
+(`matchesScope`) ∩ ownership boundary — collecting up to `max_events` DELIVERABLE
+events, delivered chronologically. The scan ceiling became configurable
+(`webhook.replay.max-scan`, default 20000) so it is exercisable; hitting it before
+filling `max_events` logs a WARN (no silent truncation).
+
+Tests: the mocked WebhookServiceTest paging-mechanics tests (which supplied
+idealized pages and couldn't catch these) were removed; the mechanics now live in
+`WebhookReplayPaginationIntegrationTest` against REAL Redis / the real
+`EventRepository` covering all six required scenarios — (1) >500 same-millisecond
+events with matches in the lexicographic tail → all delivered; (2) interior
+hydration drops with later matches → not exhaustion; (3) vanished member → no
+duplicate; (4) scan-ceiling hit → WARN logged, `events_queued` reflects the
+truncation; (5) chronological order across the 500-item page boundary (600 events);
+(6) `max_events` counts deliverable-after-filters (interleaved matching /
+non-matching). Added data-module unit tests for `listEventIdsInRange`
+(tenant/global/infinity/non-positive-max) and `hydrateByIds` (drop
+missing/corrupt, empty). Remaining WebhookServiceTest replay tests re-mocked to the
+new methods via a `stubReplayWindow` helper.
+
+Full foreground build, all gates green: api unit 861, data unit 543 (LINE 0.9572,
+gate 0.95), api integration 874, data integration 593.
+
+### 2026-07-11 — v0.1.25.51 codex round 3: replay cap-then-filter + boundary/atomicity/honesty hardening (#209)
+
+Round-3 findings verified against source (2bb2467) and fixed. The BIGGEST
+round-3 item — enforcing the boundary in the separate `cycles-server-events`
+delivery worker — is handled in that repo by a different change; this entry
+covers only the admin-service findings.
+
+**P2 (replay cap-then-filter under-delivery).** `WebhookService.replay` fetched
+ONE page capped at `max_events` then applied the request-type / subscription
+-selector (`matchesEventType`) / `scope_filter` (`matchesScope`) filters as
+post-hoc stream filters — so if the first `max_events` events in `[from,to]`
+didn't match but later ones did, replay queued ZERO. Round-3's two added
+post-cap filters made this more acute. Fix: new `collectDeliverableReplayEvents`
+pages the window in timestamp-ASC batches (`REPLAY_PAGE_SIZE=500`) via the
+`EventRepository.list` cursor, applies ALL filters PLUS the ownership boundary
+(`dispatchService.isBlockedByOwnershipBoundary`, made public) DURING pagination,
+accumulating up to `max_events` DELIVERABLE events, then delivers chronologically
+(spec `replayEvents`). A `REPLAY_MAX_SCAN=20_000` ceiling bounds cost on sparse
+windows and logs (not silently truncates) if hit. Verified `EventRepository.list`
+timestamp-ASC uses `zrangeByScore` with a score-advancing cursor (chronological).
+
+**Finding 1 (LOW — category + unclassifiable).** `isBlockedByOwnershipBoundary`
+checked only `event.getEventType()`. `Event.category` is independent (EventService
+preserves a supplied category), so a tenant-accessible TYPE with an admin-only
+CATEGORY, or a typeless record, slipped through. Now blocks if type OR category
+is admin-only, AND blocks an unclassifiable (both-null) record for a concrete
+owner. Added `WebhookCategoryBoundaryValidator.isAdminOnly(EventCategory)`.
+
+**Finding 2 (MEDIUM — normalize atomicity + disabled/unindexed).** The null-owner
+SET (CAS Lua) and the `SADD webhooks:__system__` were separate commands — a crash
+between them left the row normalized-but-unindexed, and the retry saw
+`nullOwner=false & changed=false` and never repaired the membership; also the
+blanket DISABLED-skip meant disabled null-owner rows were never normalized. Fix:
+one `CAS_SET_AND_INDEX_LUA` folds the conditional SET and the SADD into a single
+atomic op; the reconciler computes `needsIndex` via `SISMEMBER` INDEPENDENTLY of
+status (repairs a DISABLED null-owner row, and a system row missing from the
+index → new `INDEXED_SYSTEM_MEMBER` action via idempotent SADD). Strip/disable
+still skip already-DISABLED rows.
+
+**Finding 3 (MEDIUM — /test bypass). DECISION: documented exception (route b).**
+`WebhookService.test` POSTs a spec-defined `system.webhook_test` (admin category)
+ping DIRECTLY to the subscription URL, so a tenant-owned sub's `/test` delivers
+an admin-classified event. I did NOT reclassify the envelope because (1) the yaml
+spec is the authority and defines the test event as `system.webhook_test` — the
+enum has no tenant-accessible test type; and (2) keeping the type while relabelling
+the category would create exactly the type/category-inconsistent record finding 1
+now blocks. Instead documented it as a narrow, explicit invariant EXCEPTION
+(owner-triggered synthetic probe, payload `{subscription_id, test:true}`, no
+governance telemetry, bypasses the dispatch queue) in code comment + CHANGELOG +
+this AUDIT. **The governance spec needs the /test exception noted spec-side —
+flagged to the coordinator.**
+
+**Finding 4 (LOW — honest boolean).** `createDelivery` swallowed an `LPUSH`
+failure yet `dispatchToSubscription` returned `true`, so replay over-counted.
+`createDelivery` now returns enqueue success; `dispatchToSubscription` and the
+live dispatch metric propagate it.
+
+**Finding 5 (test hardening).** Real-Redis CAS test now evals the ACTUAL
+production script (`WebhookRepository.reconcileCasSetAndIndexScript()`), not a
+hand-copied string; the 600-row SSCAN test asserts `>1` cursor round-trips at the
+production COUNT; the concurrency re-read test asserts the fresh `findById`
+re-read actually drove the skip; added tests for category/unclassifiable blocking,
+disabled-null-owner normalization + system-unindexed membership repair (unit +
+real-Redis), /test envelope pinning, and enqueue-failure → false. Also fixed the
+integration `seed` helper to mirror production `save()` (per-tenant index), so
+seeded `__system__` rows are correctly indexed.
+
+Full foreground build, all gates green: api unit 863, data unit 538 (LINE 0.9567,
+gate 0.95), data integration 588, api integration 870.
+
+### 2026-07-11 — v0.1.25.51 codex round 2 REVISE-MAJOR: fail-closed dispatch boundary + strip cleanup (#209)
+
+Codex round 2 verified the write gate, effective-merge, reconciler
+correctness, shared predicate and migration wording as good, but flagged
+that the security property was still TIMING-DEPENDENT (reconciler is
+fail-open; live dispatch did no ownership check) plus a few residual
+bypasses. All verified against source, then fixed:
+
+**(HIGH) Architectural fix — enforce the boundary AT DELIVERY (fail-closed).**
+The durable confidentiality guarantee is no longer the reconciler (which is
+point-in-time hygiene) but a per-event dispatch filter. `WebhookDispatchService`
+now takes `WebhookCategoryBoundaryValidator` and, in BOTH live dispatch
+(`dispatch` loop) and replay (`dispatchToSubscription`), skips an event when
+`!WebhookSubscription.isSystemOwner(sub.getTenantId()) &&
+categoryBoundaryValidator.isAdminOnly(event.getEventType())`
+(`isBlockedByOwnershipBoundary`, a no-I/O helper on the passed sub). The skip
+is PER EVENT (a mixed subscription still receives its tenant-accessible events;
+counted `boundary_skipped`), so a concrete-tenant subscription can never
+receive an admin-only event regardless of stored selectors, reconciler state,
+or status. `dispatchToSubscription` now returns `boolean` (delivered?) so
+replay counts only real deliveries.
+
+**Reconciler action reconsidered — STRIP, not disable.** Because dispatch now
+blocks the leak, admin-only selectors on a concrete-tenant row are already
+non-functional, so the reconciler STRIPS them (keeping tenant-accessible
+selectors) instead of disabling the whole subscription — storage is brought in
+line with the already-enforced delivery behavior, with no collateral on
+legitimate deliveries and no signal lost (dispatch, not the row's ACTIVE flag,
+is the guarantee). Actions: `STRIPPED_ADMIN_SELECTORS`; if stripping empties
+both lists → `STRIPPED_AND_DISABLED`; legacy empty-both (any owner) →
+`DISABLED_EMPTY_BOTH`. Empty-both fallback preserved because a match-ALL row is
+a separate invariant violation.
+
+**Null-owner decision — reconciler MIGRATES null→`__system__`.** A null-owner
+row was limbo (exempt from repair yet absent from every dispatch index). The
+reconciler normalizes it to the `__system__` owner and `SADD`s it to
+`webhooks:__system__` (`NORMALIZED_NULL_OWNER`), in the same CAS write. The
+replay NPE (`sub.getTenantId().equals(...)`) is fixed via `isSystemOwner`.
+
+**(MEDIUM) Bulk RESUME bypass.** `WebhookAdminController` bulk `RESUME` reached
+ACTIVE via `webhookService.update` directly, bypassing single-op validation.
+RESUME now calls `categoryBoundaryValidator.validateForTarget` on the stored
+(effective) selectors first; an offender fails the row (`INVALID_TRANSITION`).
+
+**(MEDIUM) Replay status TOCTOU.** `dispatchToSubscription` re-reads the
+subscription (`findById`) and re-checks `ACTIVE` at dispatch time, so a
+subscription disabled concurrently mid-replay stops delivering.
+
+**(MINOR) Reconciler daemon lifecycle.** The raw `new Thread` is replaced with
+a managed single-thread `ExecutorService` (daemon factory); `@PreDestroy
+shutdown()` calls `shutdownNow()` (interrupts an in-flight retry backoff) +
+`awaitTermination(5s)`, so the sweep stops cleanly on context shutdown.
+
+Docs reframed: CHANGELOG / AUDIT / reconciler + repository javadoc now state
+the dispatch boundary is the security mechanism and the reconciler is
+best-effort storage hygiene that STRIPS (the "DISABLED-pending" framing is
+removed).
+
+Tests added/updated: dispatch-side per-event filtering (live + replay,
+`WebhookDispatchServiceTest`); bulk-RESUME offender blocked + clean row resumes
+(`WebhookAdminControllerTest`); replay counts only delivered events and honors
+dispatch-time status re-check (`WebhookServiceTest`); reconciler strip /
+strip-and-disable / normalize-null-owner actions + daemon shutdown interrupts
+backoff + exhausted-retry ERROR alert (`WebhookCategoryBoundaryReconcilerTest`,
+`WebhookRepositoryTest`); real-Redis integration strip/normalize/concurrency
+/multi-batch(600)/blank-owner + Lua CAS no-clobber
+(`WebhookCategoryBoundaryReconcileIntegrationTest`). Full foreground build,
+all gates green: api unit 854, data unit 534 (LINE 0.9565, gate 0.95), data
+integration 582, api integration 861.
+
+### 2026-07-11 — v0.1.25.51 codex REVISE-MAJOR: close live bypasses (#209)
+
+Codex security review of the PR found the create/update gate sound but
+several LIVE bypasses that had to close before shipping as a security
+fix. All verified against source, then fixed:
+
+1. **Replay bypassed the boundary.** `WebhookService.replay` filtered
+   historical events only by the request's optional type filter + the
+   subscription's `scope_filter` — never by the subscription's OWN
+   `event_types`/`event_categories`, and no status check. A
+   concrete-tenant budget-only subscription could replay historical
+   admin-only events to its tenant endpoint. Fix: replay now intersects
+   with the subscription's own selectors via
+   `WebhookRepository.matchesEventType` (made `public static`, shared
+   with live dispatch — spec `replayEvents`: "all event types the
+   subscription is subscribed to") AND short-circuits to a no-op on a
+   non-ACTIVE subscription (so a DISABLED offender receives nothing —
+   makes "disabling stops delivery" true for replay too). Pre-existing
+   bug, fixed here as a direct bypass of this boundary.
+2. **Reconciled offenders could be reactivated unrepaired.** A
+   status-only `{"status":"ACTIVE"}` PATCH passes null selector arrays
+   (per-array validator skips them) and update permits DISABLED→ACTIVE.
+   Fix: both controllers now validate the EFFECTIVE resulting selectors
+   (stored ∪ request), so reactivating a concrete-tenant row that still
+   holds admin-only selectors → 400.
+3. **Reconciler ignored admin-only event TYPES** — examined only
+   `event_categories`. A concrete-tenant row with
+   `event_types:["api_key.created"]` stayed ACTIVE. Fix: offender =
+   admin-only TYPE or CATEGORY (action renamed
+   `DISABLED_ADMIN_SELECTORS`, outcome field `offendingSelectors`).
+4. **`__system__` empty-both rows escaped cleanup** — the unconditional
+   `__system__` skip ran before empty-both detection. Fix: the system
+   carve-out exempts admin selectors ONLY; empty-both is checked for all
+   owners (system empty-both rows are disabled).
+5. **Blank `tenant_id` got an undocumented system exemption** —
+   `isSystemTarget` treated blank as system. Fix: a new
+   `WebhookSubscription.isSystemOwner` (null/omitted or literal
+   `__system__` only; blank = concrete) is the SINGLE predicate used by
+   both the validator (api) and reconciler (data) — closing finding 6
+   (validator/reconciler disagreement on null owner) at the same time.
+7. **Reconciler robustness.** Rewritten from `SMEMBERS`+sequential
+   GET/SET to: `SSCAN` cursor batching (bounded memory); atomic
+   compare-and-set Lua write (never clobbers a concurrent operator
+   update — a CAS miss is a counted failure, retried next pass); runs on
+   a **background daemon thread** so startup/readiness is NEVER blocked;
+   an incomplete pass (row error or CAS miss) is retried with
+   exponential backoff, and exhausted retries emit a loud ERROR alert
+   while the service stays up. **Readiness decision:** deliberately do
+   NOT hard-block readiness on migration completion — a migration bug
+   must not brick the service, the write-path gate already stops NEW
+   offenders, and legacy offenders merely remain DISABLED-pending until
+   a clean pass. `reconcileTenantCategoryBoundary` now returns a
+   `ReconcileResult(repaired, failures)`; the reconciler retries while
+   `failures>0`.
+8. **Migration wording** corrected: `api_key`/`webhook`/`system` events
+   are null-scoped (not `scope_filter`able → client-side `tenant_id`
+   filtering); `policy` events carry a real tenant-bounded scope and CAN
+   be `scope_filter`ed.
+
+Tests added: replay cannot deliver outside the subscription's selectors
+and is a no-op on a DISABLED sub; status-only reactivation of an
+unrepaired offender → 400 (tenant + admin plane; `__system__` still
+reactivatable); admin-only event TYPE on a concrete tenant → 400 (write)
+and flagged by the reconciler; `__system__` empty-both disabled;
+null-owner treated as system for admin-selector exemption but still
+empty-both-checked; blank `tenant_id` create with admin category → 400;
+reconciler CAS-miss → failure/incomplete + retry, corrupt-row failure,
+SSCAN batch paging (>1 batch), whole-pass failure incomplete, dry-run
+reports-without-mutating, retry-until-complete, give-up-and-alert.
+Data-module unit-job coverage restored to 0.9562 (gate 0.95; the CI gate
+that failed at 0.93 — the earlier reconciler coverage came only from the
+Testcontainers integration test, which the CI unit job excludes, so the
+new branches are covered by mocked-Jedis unit tests). Full build:
+1,621 tests (192 model + 579 data + 850 api), all module coverage gates
+green.
+
+### 2026-07-11 — v0.1.25.51: admin-plane webhook category boundary + conservative offender cleanup (security, #209)
+
+Closes #209. The 0.1.25.50 fix closed the tenant-plane INJECTION path
+for admin-only webhook `event_categories`; #209 is the admin-plane
+CARRIER source. `WebhookAdminController.create`
+(`POST /v1/admin/webhooks?tenant_id=X`) and `.update` (PATCH) applied NO
+category validation, so an operator / admin-on-behalf-of could place
+admin-only categories (api_key/policy/webhook/system) on a subscription
+owned by concrete tenant X. Because `matchesEventType` treats categories
+as an ADDITIVE union, X — which owns the row's endpoint URL + signing
+secret — then received admin-only governance/security telemetry.
+
+(a) Admin write-path validation.
+- New shared `WebhookCategoryBoundaryValidator` (@Component) is the single
+  source of truth for the boundary. Both the tenant controller (refactored
+  off its two private methods) and the admin controller call it, so the
+  type-level and category-level checks and both planes cannot drift; the
+  boundary itself derives from `EventCategory.isTenantAccessible()`.
+- Admin plane validates only when the target is a CONCRETE tenant
+  (`validateForTarget` no-ops on the `__system__` sentinel). Target tenant:
+  on create the `tenant_id` param; on update the STORED subscription's
+  `tenant_id` (WebhookUpdateRequest has no tenant_id — ownership is the
+  subscription's, verified against `prior.getTenantId()`). Admin-only entry
+  on a non-`__system__` target → 400 INVALID_REQUEST.
+- `__system__` carve-out: admin-only categories remain allowed there
+  (legitimate system-wide monitoring; not tenant-owned).
+
+CAPABILITY REMOVAL (recorded). 0.1.25.50 explicitly tested/documented
+admin-plane create/update WITH admin-only categories as 201/200 ("the
+boundary is tenant-plane-only, not a global tightening"), and its
+operator recipe called `/v1/admin/webhooks`-created admin-category rows
+"legitimate carriers". Verified by grep: those two WebhookAdminControllerTest
+cases were the only place this was asserted — an incidental
+tested-as-allowed behavior, not a separately-documented product feature.
+Both are rewritten to assert the new 400 for a concrete tenant (and
+201/200 for `__system__`). This is an intentional security correction —
+a previously-allowed capability is removed because a tenant-owned row
+exposes URL + secret to the tenant.
+
+(d2) One-time cleanup — CONSERVATIVE (disable, not strip).
+- Startup `ApplicationRunner` (`WebhookCategoryBoundaryReconciler`) →
+  `WebhookRepository.reconcileTenantCategoryBoundary(dryRun)`. Chosen over
+  a maintenance endpoint because a new admin endpoint would fail the
+  OpenAPI contract-diff check (undocumented surface); mirrors the repo's
+  `@Scheduled` audit-sweep / `CommandLineRunner` precedent.
+- Per row (non-`__system__`): a row carrying admin-only categories, or a
+  legacy empty-both match-ALL row, is DISABLED — NOT silently stripped.
+  Rationale (codex concern on gov #129): a concrete-tenant admin-category
+  row may be legit-but-misconfigured operator monitoring; silently
+  rewriting its selectors would break it with no signal. Disabling stops
+  delivery immediately (dispatch matches only ACTIVE), is reversible,
+  preserves the row + offending categories for review, and is loudly
+  logged (subscription_id / tenant_id / offending categories + the
+  migration hint). Already-DISABLED offenders are skipped → idempotent.
+- Config: `webhook.category-boundary.reconcile-on-startup` (default true),
+  `webhook.category-boundary.reconcile-dry-run` (default false; true =
+  REPORT offenders in logs, mutate nothing — review before the disabling
+  pass). Disabled in test properties so it never races per-test seeding;
+  the logic is covered directly (real-Redis integration + component unit).
+- MIGRATION for genuine per-tenant admin monitoring (in CHANGELOG): use a
+  `__system__`-owned subscription (no `tenant_id`) filtered by
+  `event_categories` to the admin classes; it receives those events for ALL
+  tenants (`__system__` is in every tenant's dispatch union), so select the
+  target tenant CLIENT-SIDE on the envelope `tenant_id`. NOT a `scope_filter`:
+  admin lifecycle events are null-scoped (verified: ApiKeyController emits
+  scope=null) and `matchesScope` excludes null scopes from any non-blank
+  filter, so a `scope_filter` would deliver none. gov #129 corrected the same
+  way. The row stays operator-owned (URL + secret), unlike a tenant-owned row.
+
+Tests: WebhookCategoryBoundaryValidatorTest (boundary + system carve-out);
+admin controller — admin-only category/type on a real tenant → 400 (create
++ update, service never called), on `__system__` → 201/200, tenant-accessible
+→ ok; reconciler integration (real Redis) over a seeded mix → correct
+DISABLED terminal states with categories intact, `__system__`/legit/
+types-only/already-disabled untouched, dry-run reports-without-mutating,
+idempotent re-run; reconciler component unit (flag on/off, dry-run passthrough,
+failure-swallowed). Version/revision 0.1.25.50 → 0.1.25.51. README alignment
+stays at governance v0.1.25.39 (v0.1.25.40 / cycles-protocol#129 still pending).
 
 ### 2026-07-11 — spec-alignment declaration bumped to governance v0.1.25.39 (docs only; no behavior change)
 

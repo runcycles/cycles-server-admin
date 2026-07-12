@@ -1314,4 +1314,302 @@ class WebhookRepositoryTest {
         assertThat(outcomes).hasSize(1);
         assertThat(outcomes.get(0).subscriptionId()).isEqualTo("whsub_1");
     }
+
+    // ---- reconcileTenantCategoryBoundary (#209 d2 hygiene) ----
+    // Mocked-Jedis coverage (real-Redis behavior lives in
+    // WebhookCategoryBoundaryReconcileIntegrationTest, which CI's unit job
+    // excludes) so every branch runs in the default -Dtest=!*IntegrationTest job.
+    // The reconciler SSCANs webhooks:_all and writes via an atomic CAS eval.
+
+    private String rowJson(String id, String tenantId, java.util.List<EventType> types,
+                           java.util.List<EventCategory> cats, WebhookStatus status) throws Exception {
+        return objectMapper.writeValueAsString(WebhookSubscription.builder()
+                .subscriptionId(id).tenantId(tenantId).url("https://x/" + id)
+                .eventTypes(types).eventCategories(cats).status(status)
+                .createdAt(Instant.now()).consecutiveFailures(0).build());
+    }
+
+    private void stubScan(String... ids) {
+        when(jedis.sscan(eq("webhooks:_all"), anyString(),
+                any(redis.clients.jedis.params.ScanParams.class)))
+                .thenReturn(new redis.clients.jedis.resps.ScanResult<>("0", List.of(ids)));
+    }
+
+    private void stubGet(String id, String json) {
+        when(jedis.get("webhook:" + id)).thenReturn(json);
+    }
+
+    private WebhookSubscription written(String id) throws Exception {
+        org.mockito.ArgumentCaptor<java.util.List> args = org.mockito.ArgumentCaptor.forClass(java.util.List.class);
+        verify(jedis).eval(anyString(), anyList(), args.capture());
+        return objectMapper.readValue((String) args.getValue().get(1), WebhookSubscription.class);
+    }
+
+    @org.junit.jupiter.api.BeforeEach
+    void stubCasSuccessByDefault() {
+        lenient().when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        // Default: system-owned rows are already members of the dispatch index,
+        // so the index-membership repair is a no-op unless a test says otherwise.
+        lenient().when(jedis.sismember(anyString(), anyString())).thenReturn(true);
+    }
+
+    @Test
+    void reconcile_scriptAndBatchAccessors_exposeProductionConstants() {
+        assertThat(WebhookRepository.reconcileCasSetAndIndexScript())
+                .contains("SADD").contains("SET").contains("GET");
+        assertThat(WebhookRepository.reconcileScanBatch()).isEqualTo(200);
+    }
+
+    @Test
+    void reconcile_emptyIndex_completeNoWrites() {
+        stubScan();
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(false);
+        assertThat(r.repaired()).isEmpty();
+        assertThat(r.isComplete()).isTrue();
+        verify(jedis, never()).eval(anyString(), anyList(), anyList());
+    }
+
+    @Test
+    void reconcile_adminCategory_strippedViaCas_tenantAccessibleKept() throws Exception {
+        stubScan("wh_admin");
+        stubGet("wh_admin", rowJson("wh_admin", "tenant-1", List.of(EventType.BUDGET_CREATED),
+                List.of(EventCategory.BUDGET, EventCategory.API_KEY), WebhookStatus.ACTIVE));
+
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(r.isComplete()).isTrue();
+        assertThat(r.repaired()).hasSize(1);
+        assertThat(r.repaired().get(0).action()).isEqualTo(WebhookRepository.CategoryBoundaryAction.STRIPPED_ADMIN_SELECTORS);
+        assertThat(r.repaired().get(0).strippedSelectors()).containsExactly("api_key");
+        WebhookSubscription w = written("wh_admin");
+        assertThat(w.getStatus()).isEqualTo(WebhookStatus.ACTIVE);            // still ACTIVE
+        assertThat(w.getEventCategories()).containsExactly(EventCategory.BUDGET); // admin one stripped
+        assertThat(w.getEventTypes()).containsExactly(EventType.BUDGET_CREATED);  // kept
+    }
+
+    @Test
+    void reconcile_adminTypeOnly_strippingEmptiesBoth_disabled() throws Exception {
+        stubScan("wh_type");
+        stubGet("wh_type", rowJson("wh_type", "tenant-1", List.of(EventType.API_KEY_CREATED),
+                null, WebhookStatus.ACTIVE));
+
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(r.repaired().get(0).action()).isEqualTo(WebhookRepository.CategoryBoundaryAction.STRIPPED_AND_DISABLED);
+        assertThat(r.repaired().get(0).strippedSelectors()).containsExactly("api_key.created");
+        WebhookSubscription w = written("wh_type");
+        assertThat(w.getStatus()).isEqualTo(WebhookStatus.DISABLED);
+        assertThat(w.getEventTypes()).isNullOrEmpty();
+    }
+
+    @Test
+    void reconcile_adminTypeWithKeptType_stripped_staysActive() throws Exception {
+        stubScan("wh_mix");
+        stubGet("wh_mix", rowJson("wh_mix", "tenant-1",
+                List.of(EventType.BUDGET_CREATED, EventType.API_KEY_CREATED), null, WebhookStatus.ACTIVE));
+
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(r.repaired().get(0).action()).isEqualTo(WebhookRepository.CategoryBoundaryAction.STRIPPED_ADMIN_SELECTORS);
+        WebhookSubscription w = written("wh_mix");
+        assertThat(w.getStatus()).isEqualTo(WebhookStatus.ACTIVE);
+        assertThat(w.getEventTypes()).containsExactly(EventType.BUDGET_CREATED);
+    }
+
+    @Test
+    void reconcile_tenantEmptyBoth_disabled() throws Exception {
+        stubScan("wh_eb");
+        stubGet("wh_eb", rowJson("wh_eb", "tenant-2", List.of(), null, WebhookStatus.ACTIVE));
+
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(r.repaired().get(0).action()).isEqualTo(WebhookRepository.CategoryBoundaryAction.DISABLED_EMPTY_BOTH);
+        assertThat(r.repaired().get(0).strippedSelectors()).isEmpty();
+        assertThat(written("wh_eb").getStatus()).isEqualTo(WebhookStatus.DISABLED);
+    }
+
+    @Test
+    void reconcile_systemEmptyBoth_disabled() throws Exception {
+        stubScan("wh_sys_eb");
+        stubGet("wh_sys_eb", rowJson("wh_sys_eb", "__system__", List.of(), null, WebhookStatus.ACTIVE));
+
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(r.repaired().get(0).action()).isEqualTo(WebhookRepository.CategoryBoundaryAction.DISABLED_EMPTY_BOTH);
+    }
+
+    @Test
+    void reconcile_systemAdminCategory_untouched() throws Exception {
+        stubScan("wh_sys");
+        stubGet("wh_sys", rowJson("wh_sys", "__system__", List.of(EventType.API_KEY_CREATED),
+                List.of(EventCategory.API_KEY), WebhookStatus.ACTIVE));
+
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(r.repaired()).isEmpty();
+        verify(jedis, never()).eval(anyString(), anyList(), anyList());
+    }
+
+    @Test
+    void reconcile_nullOwner_normalizedToSystem_andIndexed() throws Exception {
+        stubScan("wh_null");
+        stubGet("wh_null", rowJson("wh_null", null, List.of(EventType.API_KEY_CREATED),
+                List.of(EventCategory.API_KEY), WebhookStatus.ACTIVE));
+
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(r.repaired().get(0).action()).isEqualTo(WebhookRepository.CategoryBoundaryAction.NORMALIZED_NULL_OWNER);
+        assertThat(r.repaired().get(0).tenantId()).isEqualTo("__system__");
+        WebhookSubscription w = written("wh_null");
+        assertThat(w.getTenantId()).isEqualTo("__system__");
+        // system-owned now → admin selectors NOT stripped
+        assertThat(w.getEventCategories()).containsExactly(EventCategory.API_KEY);
+        assertThat(w.getStatus()).isEqualTo(WebhookStatus.ACTIVE);
+        // #209 finding 2: the SADD is folded into the SAME atomic Lua op as the
+        // owner rewrite (no separate sadd), so a partial failure can't persist
+        // the owner while leaving the row un-indexed.
+        verify(jedis, never()).sadd(anyString(), anyString());
+        org.mockito.ArgumentCaptor<java.util.List> keys = org.mockito.ArgumentCaptor.forClass(java.util.List.class);
+        org.mockito.ArgumentCaptor<java.util.List> argv = org.mockito.ArgumentCaptor.forClass(java.util.List.class);
+        verify(jedis).eval(anyString(), keys.capture(), argv.capture());
+        assertThat(keys.getValue()).containsExactly("webhook:wh_null", "webhooks:__system__");
+        assertThat((String) argv.getValue().get(2)).isEqualTo("1");       // doIndex flag
+        assertThat((String) argv.getValue().get(3)).isEqualTo("wh_null"); // id added to index
+    }
+
+    @Test
+    void reconcile_alreadyDisabled_skipped() throws Exception {
+        stubScan("wh_dis");
+        stubGet("wh_dis", rowJson("wh_dis", "tenant-3", List.of(EventType.BUDGET_CREATED),
+                List.of(EventCategory.POLICY), WebhookStatus.DISABLED));
+
+        assertThat(repository.reconcileTenantCategoryBoundary(false).repaired()).isEmpty();
+        verify(jedis, never()).eval(anyString(), anyList(), anyList());
+    }
+
+    // #209 finding 2: a DISABLED null-owner row still needs normalizing +
+    // indexing (the blanket DISABLED-skip previously left it in limbo).
+    @Test
+    void reconcile_disabledNullOwner_normalizedAndIndexed_staysDisabled() throws Exception {
+        stubScan("wh_dnull");
+        stubGet("wh_dnull", rowJson("wh_dnull", null, List.of(EventType.API_KEY_CREATED),
+                List.of(EventCategory.API_KEY), WebhookStatus.DISABLED));
+
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(r.repaired().get(0).action()).isEqualTo(WebhookRepository.CategoryBoundaryAction.NORMALIZED_NULL_OWNER);
+        WebhookSubscription w = written("wh_dnull");
+        assertThat(w.getTenantId()).isEqualTo("__system__");
+        assertThat(w.getStatus()).isEqualTo(WebhookStatus.DISABLED); // stays disabled
+        // Owner rewrite + SADD are one atomic op (no separate sadd).
+        verify(jedis, never()).sadd(anyString(), anyString());
+        org.mockito.ArgumentCaptor<java.util.List> argv = org.mockito.ArgumentCaptor.forClass(java.util.List.class);
+        verify(jedis).eval(anyString(), anyList(), argv.capture());
+        assertThat((String) argv.getValue().get(2)).isEqualTo("1"); // doIndex
+    }
+
+    // #209 finding 2: a system-owned row that is MISSING from the dispatch index
+    // (e.g. a prior partial normalization) gets its membership repaired,
+    // independent of status, via an idempotent SADD (no CAS write needed).
+    @Test
+    void reconcile_systemUnindexed_membershipRepaired_noJsonWrite() throws Exception {
+        stubScan("wh_sys_unx");
+        stubGet("wh_sys_unx", rowJson("wh_sys_unx", "__system__", List.of(EventType.API_KEY_CREATED),
+                List.of(EventCategory.API_KEY), WebhookStatus.ACTIVE));
+        when(jedis.sismember("webhooks:__system__", "wh_sys_unx")).thenReturn(false); // not indexed
+
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(r.repaired().get(0).action()).isEqualTo(WebhookRepository.CategoryBoundaryAction.INDEXED_SYSTEM_MEMBER);
+        verify(jedis).sadd("webhooks:__system__", "wh_sys_unx"); // pure index repair
+        verify(jedis, never()).eval(anyString(), anyList(), anyList()); // no JSON change
+    }
+
+    // A DISABLED system row missing from the index is still indexed (status-independent).
+    @Test
+    void reconcile_disabledSystemUnindexed_membershipRepaired() throws Exception {
+        stubScan("wh_dsys");
+        stubGet("wh_dsys", rowJson("wh_dsys", "__system__", List.of(EventType.API_KEY_CREATED),
+                null, WebhookStatus.DISABLED));
+        when(jedis.sismember("webhooks:__system__", "wh_dsys")).thenReturn(false);
+
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(r.repaired().get(0).action()).isEqualTo(WebhookRepository.CategoryBoundaryAction.INDEXED_SYSTEM_MEMBER);
+        verify(jedis).sadd("webhooks:__system__", "wh_dsys");
+    }
+
+    @Test
+    void reconcile_legitAndTypesOnly_untouched() throws Exception {
+        stubScan("wh_ok", "wh_types");
+        stubGet("wh_ok", rowJson("wh_ok", "tenant-4", List.of(EventType.BUDGET_CREATED),
+                List.of(EventCategory.RESERVATION), WebhookStatus.ACTIVE));
+        stubGet("wh_types", rowJson("wh_types", "tenant-5", List.of(EventType.BUDGET_CREATED),
+                null, WebhookStatus.ACTIVE));
+
+        assertThat(repository.reconcileTenantCategoryBoundary(false).repaired()).isEmpty();
+        verify(jedis, never()).eval(anyString(), anyList(), anyList());
+    }
+
+    @Test
+    void reconcile_dryRun_reportsButDoesNotWrite() throws Exception {
+        stubScan("wh_admin");
+        stubGet("wh_admin", rowJson("wh_admin", "tenant-1", List.of(EventType.BUDGET_CREATED),
+                List.of(EventCategory.API_KEY), WebhookStatus.ACTIVE));
+
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(true);
+
+        assertThat(r.repaired()).hasSize(1);
+        assertThat(r.repaired().get(0).action()).isEqualTo(WebhookRepository.CategoryBoundaryAction.STRIPPED_ADMIN_SELECTORS);
+        verify(jedis, never()).eval(anyString(), anyList(), anyList());
+        verify(jedis, never()).sadd(anyString(), anyString());
+    }
+
+    @Test
+    void reconcile_casMiss_countedFailure_notComplete() throws Exception {
+        stubScan("wh_admin");
+        stubGet("wh_admin", rowJson("wh_admin", "tenant-1", List.of(EventType.BUDGET_CREATED),
+                List.of(EventCategory.API_KEY), WebhookStatus.ACTIVE));
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(0L); // concurrent update
+
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(r.repaired()).isEmpty();
+        assertThat(r.failures()).isEqualTo(1);
+        assertThat(r.isComplete()).isFalse();
+    }
+
+    @Test
+    void reconcile_missingRow_skipped() {
+        stubScan("wh_gone");
+        when(jedis.get("webhook:wh_gone")).thenReturn(null);
+        assertThat(repository.reconcileTenantCategoryBoundary(false).repaired()).isEmpty();
+    }
+
+    @Test
+    void reconcile_corruptRow_countedFailure_othersStillRepaired() throws Exception {
+        stubScan("wh_bad", "wh_admin");
+        when(jedis.get("webhook:wh_bad")).thenReturn("{not-json");
+        stubGet("wh_admin", rowJson("wh_admin", "tenant-1", List.of(EventType.BUDGET_CREATED),
+                List.of(EventCategory.API_KEY), WebhookStatus.ACTIVE));
+
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(r.repaired()).extracting(WebhookRepository.CategoryBoundaryRepairOutcome::subscriptionId)
+                .containsExactly("wh_admin");
+        assertThat(r.failures()).isEqualTo(1);
+        assertThat(r.isComplete()).isFalse();
+    }
+
+    @Test
+    void reconcile_scanThrows_wholePassFailure_notComplete() {
+        when(jedis.sscan(eq("webhooks:_all"), anyString(),
+                any(redis.clients.jedis.params.ScanParams.class)))
+                .thenThrow(new RuntimeException("redis down"));
+
+        WebhookRepository.ReconcileResult r = repository.reconcileTenantCategoryBoundary(false);
+
+        assertThat(r.repaired()).isEmpty();
+        assertThat(r.isComplete()).isFalse();
+    }
 }

@@ -163,6 +163,60 @@ class EventRepositoryTest {
                 });
     }
 
+    // ---- listEventIdsInRange() / hydrateByIds() (replay approach B) ----
+
+    @Test
+    void listEventIdsInRange_tenant_usesZrangeByScoreAscending() {
+        when(jedis.zrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), eq(500)))
+                .thenReturn(List.of("evt_a", "evt_b", "evt_c"));
+
+        List<String> ids = repository.listEventIdsInRange("tenant-1",
+                Instant.ofEpochMilli(1000), Instant.ofEpochMilli(2000), 500);
+
+        assertThat(ids).containsExactly("evt_a", "evt_b", "evt_c"); // order preserved
+        verify(jedis).zrangeByScore(eq("events:tenant-1"), eq(1000.0), eq(2000.0), eq(0), eq(500));
+    }
+
+    @Test
+    void listEventIdsInRange_nullTenant_usesGlobalIndex_andInfinities() {
+        when(jedis.zrangeByScore(eq("events:_all"), eq(Double.NEGATIVE_INFINITY),
+                eq(Double.POSITIVE_INFINITY), eq(0), eq(100))).thenReturn(List.of("evt_x"));
+
+        List<String> ids = repository.listEventIdsInRange(null, null, null, 100);
+
+        assertThat(ids).containsExactly("evt_x");
+    }
+
+    @Test
+    void listEventIdsInRange_nonPositiveMax_returnsEmpty_noRedis() {
+        assertThat(repository.listEventIdsInRange("tenant-1", null, null, 0)).isEmpty();
+        verify(jedis, never()).zrangeByScore(anyString(), anyDouble(), anyDouble(), anyInt(), anyInt());
+    }
+
+    @Test
+    void hydrateByIds_dropsMissingAndCorrupt_preservesOrderOfRest() throws Exception {
+        Event e1 = Event.builder().eventId("evt_1").tenantId("t").eventType(EventType.BUDGET_CREATED)
+                .category(EventCategory.BUDGET).source("s").timestamp(Instant.now()).build();
+        Event e3 = Event.builder().eventId("evt_3").tenantId("t").eventType(EventType.BUDGET_CREATED)
+                .category(EventCategory.BUDGET).source("s").timestamp(Instant.now()).build();
+        String e1Json = objectMapper.writeValueAsString(e1);
+        String e3Json = objectMapper.writeValueAsString(e3);
+        when(jedis.get("event:evt_1")).thenReturn(e1Json);
+        when(jedis.get("event:evt_2")).thenReturn(null);        // expired/missing → dropped
+        when(jedis.get("event:evt_3")).thenReturn(e3Json);
+        when(jedis.get("event:evt_4")).thenReturn("{not-json"); // corrupt → dropped, not thrown
+
+        List<Event> events = repository.hydrateByIds(List.of("evt_1", "evt_2", "evt_3", "evt_4"));
+
+        assertThat(events).extracting(Event::getEventId).containsExactly("evt_1", "evt_3");
+    }
+
+    @Test
+    void hydrateByIds_empty_returnsEmpty_noRedis() {
+        assertThat(repository.hydrateByIds(List.of())).isEmpty();
+        verify(jedis, never()).get(anyString());
+    }
+
     // ---- list() ----
 
     @Test

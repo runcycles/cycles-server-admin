@@ -13,6 +13,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -33,6 +34,16 @@ class WebhookServiceTest {
     @Mock private io.runcycles.admin.data.repository.EventRepository eventRepository;
     @Mock private com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     @InjectMocks private WebhookService webhookService;
+
+    @org.junit.jupiter.api.BeforeEach
+    void dispatchDeliversByDefault() {
+        // dispatchToSubscription returns a STRUCTURED outcome; default to ENQUEUED
+        // so replay-counting tests behave as before (a benign skip / backend
+        // failure is exercised explicitly where relevant).
+        org.mockito.Mockito.lenient()
+            .when(dispatchService.dispatchToSubscription(any(), any()))
+            .thenReturn(WebhookDispatchService.DispatchOutcome.ENQUEUED);
+    }
 
     private WebhookCreateRequest createRequest() {
         return WebhookCreateRequest.builder()
@@ -351,8 +362,7 @@ class WebhookServiceTest {
         WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
-        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
-            .thenReturn(List.of());
+        stubReplayWindow(List.of());
 
         ReplayRequest request = ReplayRequest.builder()
             .from(Instant.now().minusSeconds(3600))
@@ -374,8 +384,7 @@ class WebhookServiceTest {
             .eventId("evt_1").eventType(io.runcycles.admin.model.event.EventType.BUDGET_CREATED)
             .category(io.runcycles.admin.model.event.EventCategory.BUDGET)
             .tenantId("tenant-1").source("admin").timestamp(Instant.now()).build();
-        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
-            .thenReturn(List.of(event));
+        stubReplayWindow(List.of(event));
 
         ReplayRequest request = ReplayRequest.builder()
             .from(Instant.now().minusSeconds(3600))
@@ -402,8 +411,7 @@ class WebhookServiceTest {
             .eventId("evt_2").eventType(io.runcycles.admin.model.event.EventType.TENANT_CREATED)
             .category(io.runcycles.admin.model.event.EventCategory.TENANT)
             .tenantId("tenant-1").source("admin").timestamp(Instant.now()).build();
-        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
-            .thenReturn(List.of(budgetEvt, tenantEvt));
+        stubReplayWindow(List.of(budgetEvt, tenantEvt));
 
         ReplayRequest request = ReplayRequest.builder()
             .from(Instant.now().minusSeconds(3600))
@@ -418,6 +426,247 @@ class WebhookServiceTest {
         verify(dispatchService, never()).dispatchToSubscription(eq(tenantEvt), any());
     }
 
+    // #209 finding 1: replay MUST intersect with the SUBSCRIPTION's own
+    // event_types/event_categories (spec replayEvents: "all event types the
+    // subscription is subscribed to"), or a concrete-tenant budget-only
+    // subscription could replay historical ADMIN-only events to its endpoint.
+    @Test
+    void replay_doesNotDeliverEventsOutsideSubscriptionSelectors() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1"); // subscribed to BUDGET_CREATED only
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
+        io.runcycles.admin.model.event.Event budgetEvt = io.runcycles.admin.model.event.Event.builder()
+            .eventId("evt_ok").eventType(io.runcycles.admin.model.event.EventType.BUDGET_CREATED)
+            .category(io.runcycles.admin.model.event.EventCategory.BUDGET)
+            .tenantId("tenant-1").source("admin").timestamp(Instant.now()).build();
+        io.runcycles.admin.model.event.Event adminEvt = io.runcycles.admin.model.event.Event.builder()
+            .eventId("evt_admin").eventType(io.runcycles.admin.model.event.EventType.API_KEY_CREATED)
+            .category(io.runcycles.admin.model.event.EventCategory.API_KEY)
+            .tenantId("tenant-1").source("admin").timestamp(Instant.now()).build();
+        stubReplayWindow(List.of(budgetEvt, adminEvt));
+
+        ReplayRequest request = ReplayRequest.builder()
+            .from(Instant.now().minusSeconds(3600)).to(Instant.now()).build();
+
+        ReplayResponse response = webhookService.replay("whsub_1", request);
+
+        assertThat(response.getEventsQueued()).isEqualTo(1);
+        verify(dispatchService).dispatchToSubscription(budgetEvt, sub);
+        // The admin-only event is NOT in the subscription's selectors → not delivered.
+        verify(dispatchService, never()).dispatchToSubscription(eq(adminEvt), any());
+    }
+
+    private io.runcycles.admin.model.event.Event evt(String id,
+            io.runcycles.admin.model.event.EventType type,
+            io.runcycles.admin.model.event.EventCategory cat) {
+        return io.runcycles.admin.model.event.Event.builder()
+            .eventId(id).eventType(type).category(cat)
+            .tenantId("tenant-1").source("admin").timestamp(Instant.now()).build();
+    }
+
+    /**
+     * Approach-B replay stubbing: the collector reads a bounded ordered id list
+     * ({@code listEventIdsInRange}) then hydrates batches ({@code hydrateByIds}).
+     * These unit tests supply a single in-order window (all filter/ordering/cap
+     * logic in the collector is exercised); the real ZRANGEBYSCORE paging
+     * mechanics are covered by WebhookReplayPaginationIntegrationTest.
+     */
+    private void stubReplayWindow(List<io.runcycles.admin.model.event.Event> events) {
+        List<String> ids = events.stream()
+            .map(io.runcycles.admin.model.event.Event::getEventId).toList();
+        lenient().when(eventRepository.listEventIdsInRange(nullable(String.class), any(), any(), anyInt()))
+            .thenReturn(ids);
+        lenient().when(eventRepository.hydrateByIds(any())).thenReturn(events);
+    }
+
+    // NOTE: the paging MECHANICS (equal-timestamp boundary, hydration-thinned
+    // pages, vanished cursor, scan ceiling, cross-page chronological order) are
+    // covered against REAL Redis / the real EventRepository in
+    // WebhookReplayPaginationIntegrationTest — mocked pages cannot exercise the
+    // ZRANGEBYSCORE contract those bugs live in.
+
+    // All-or-narrow: MORE than max_events deliverable in the window → 400,
+    // NOTHING dispatched, replay lock released (max_events is not a partial cap).
+    @Test
+    void replay_moreThanMaxEventsDeliverable_throws400_nothingDispatched() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
+        io.runcycles.admin.model.event.Event a = evt("evt_a", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        io.runcycles.admin.model.event.Event b = evt("evt_b", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        io.runcycles.admin.model.event.Event c = evt("evt_c", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        stubReplayWindow(List.of(a, b, c)); // 3 deliverable
+
+        assertThatThrownBy(() -> webhookService.replay("whsub_1",
+                ReplayRequest.builder().from(Instant.now().minusSeconds(3600)).to(Instant.now())
+                    .maxEvents(2).build())) // 3 > max_events 2
+            .isInstanceOf(GovernanceException.class)
+            .satisfies(ex -> {
+                GovernanceException ge = (GovernanceException) ex;
+                assertThat(ge.getHttpStatus()).isEqualTo(400);
+                assertThat(ge.getErrorCode())
+                    .isEqualTo(io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST);
+                assertThat(ge.getMessage()).contains("more than max_events").contains("raise max_events");
+            });
+
+        verify(dispatchService, never()).dispatchToSubscription(any(), any()); // nothing dispatched
+        verify(webhookRepository).releaseReplayLock(eq("whsub_1"), any());       // lock released
+    }
+
+    // All-or-narrow, within the cap: all deliverable events (<= max_events) are
+    // delivered, in chronological (id-list) order.
+    @Test
+    void replay_allDeliverableWithinMax_deliveredInOrder() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
+        io.runcycles.admin.model.event.Event a = evt("evt_a", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        io.runcycles.admin.model.event.Event b = evt("evt_b", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        io.runcycles.admin.model.event.Event c = evt("evt_c", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        stubReplayWindow(List.of(a, b, c));
+
+        ReplayResponse response = webhookService.replay("whsub_1",
+            ReplayRequest.builder().from(Instant.now().minusSeconds(3600)).to(Instant.now())
+                .maxEvents(5).build()); // 3 <= 5 → deliver all
+
+        assertThat(response.getEventsQueued()).isEqualTo(3);
+        org.mockito.InOrder inOrder = org.mockito.Mockito.inOrder(dispatchService);
+        inOrder.verify(dispatchService).dispatchToSubscription(a, sub);
+        inOrder.verify(dispatchService).dispatchToSubscription(b, sub);
+        inOrder.verify(dispatchService).dispatchToSubscription(c, sub);
+    }
+
+    private ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> attachWebhookServiceAppender() {
+        ch.qos.logback.classic.Logger logger =
+            (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(WebhookService.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+            new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        return appender;
+    }
+
+    private void detachWebhookServiceAppender(ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender) {
+        ((ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(WebhookService.class)).detachAppender(appender);
+    }
+
+    // #209 F1: enqueue is BEST-EFFORT by DESIGN (governance #130). Selection is
+    // complete, but a REAL backend failure (ENQUEUE_FAILED) makes events_queued <
+    // selected — the INTENDED contract (not fail-on-partial, not atomic). Only a
+    // genuine degradation is a WARN; events_queued honestly reports the accepted
+    // count.
+    @Test
+    void replay_partialEnqueue_backendFailure_logsDegradedWarn() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
+        io.runcycles.admin.model.event.Event a = evt("evt_a", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        io.runcycles.admin.model.event.Event b = evt("evt_b", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        io.runcycles.admin.model.event.Event c = evt("evt_c", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        stubReplayWindow(List.of(a, b, c)); // 3 selected
+        // Backend transiently FAILS the enqueue of one selected event.
+        when(dispatchService.dispatchToSubscription(b, sub))
+            .thenReturn(WebhookDispatchService.DispatchOutcome.ENQUEUE_FAILED);
+
+        var appender = attachWebhookServiceAppender();
+        ReplayResponse response;
+        try {
+            response = webhookService.replay("whsub_1",
+                ReplayRequest.builder().from(Instant.now().minusSeconds(3600)).to(Instant.now())
+                    .maxEvents(5).build());
+        } finally {
+            detachWebhookServiceAppender(appender);
+        }
+
+        assertThat(response.getEventsQueued()).isEqualTo(2); // accepted count, honest (< 3 selected)
+        // DEGRADED WARN (real backend failure), NOT the benign INFO.
+        assertThat(appender.list).anyMatch(e -> e.getLevel() == ch.qos.logback.classic.Level.WARN
+                && e.getFormattedMessage().contains("DEGRADED dispatch backend")
+                && e.getFormattedMessage().contains("selected=3")
+                && e.getFormattedMessage().contains("enqueued=2")
+                && e.getFormattedMessage().contains("enqueue_failed=1"));
+    }
+
+    // #209 P2: a BENIGN shortfall — subscription concurrently paused/disabled/
+    // deleted mid-replay (dispatch returns INACTIVE) — is NOT a backend
+    // degradation. events_queued reflects only the enqueued ones, and the signal
+    // is a benign INFO, NOT the degraded-backend WARN.
+    @Test
+    void replay_partialEnqueue_concurrentDisable_logsBenignInfo_notDegradedWarn() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
+        io.runcycles.admin.model.event.Event a = evt("evt_a", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        io.runcycles.admin.model.event.Event b = evt("evt_b", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        io.runcycles.admin.model.event.Event c = evt("evt_c", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        stubReplayWindow(List.of(a, b, c)); // 3 selected
+        // Subscription disabled mid-replay → one dispatch re-check returns INACTIVE.
+        when(dispatchService.dispatchToSubscription(b, sub))
+            .thenReturn(WebhookDispatchService.DispatchOutcome.INACTIVE);
+
+        var appender = attachWebhookServiceAppender();
+        ReplayResponse response;
+        try {
+            response = webhookService.replay("whsub_1",
+                ReplayRequest.builder().from(Instant.now().minusSeconds(3600)).to(Instant.now())
+                    .maxEvents(5).build());
+        } finally {
+            detachWebhookServiceAppender(appender);
+        }
+
+        assertThat(response.getEventsQueued()).isEqualTo(2); // only the enqueued ones
+        // Benign INFO — intended lifecycle change, NOT degradation.
+        assertThat(appender.list).anyMatch(e -> e.getLevel() == ch.qos.logback.classic.Level.INFO
+                && e.getFormattedMessage().contains("intended, NOT degradation")
+                && e.getFormattedMessage().contains("inactive=1"));
+        // And DEFINITELY no degraded-backend WARN.
+        assertThat(appender.list).noneMatch(e -> e.getLevel() == ch.qos.logback.classic.Level.WARN
+                && e.getFormattedMessage().contains("DEGRADED dispatch backend"));
+    }
+
+    // The fail-closed ownership boundary is applied DURING collection, so an
+    // admin event a concrete-tenant OFFENDER still matches by selector does not
+    // consume cap budget and is not delivered.
+    @Test
+    void replay_ownershipBoundaryExcludesAdminEventDuringCollection() {
+        WebhookSubscription offender = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1")
+            .url("https://example.com/webhook")
+            .eventTypes(List.of(io.runcycles.admin.model.event.EventType.BUDGET_CREATED,
+                                io.runcycles.admin.model.event.EventType.API_KEY_CREATED))
+            .status(WebhookStatus.ACTIVE).consecutiveFailures(0).createdAt(Instant.now()).build();
+        when(webhookRepository.findById("whsub_1")).thenReturn(offender);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
+        io.runcycles.admin.model.event.Event budgetEvt = evt("evt_ok", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        io.runcycles.admin.model.event.Event adminEvt = evt("evt_admin", io.runcycles.admin.model.event.EventType.API_KEY_CREATED, io.runcycles.admin.model.event.EventCategory.API_KEY);
+        stubReplayWindow(List.of(budgetEvt, adminEvt));
+        // Boundary blocks the admin event for this concrete-tenant sub (the
+        // budgetEvt call is left at the mock default, false → deliverable).
+        lenient().when(dispatchService.isBlockedByOwnershipBoundary(adminEvt, offender)).thenReturn(true);
+
+        ReplayResponse response = webhookService.replay("whsub_1",
+            ReplayRequest.builder().from(Instant.now().minusSeconds(3600)).to(Instant.now()).build());
+
+        assertThat(response.getEventsQueued()).isEqualTo(1);
+        verify(dispatchService).dispatchToSubscription(budgetEvt, offender);
+        verify(dispatchService, never()).dispatchToSubscription(eq(adminEvt), any());
+    }
+
+    @Test
+    void replay_disabledSubscription_deliversNothing_noLock() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
+        sub.setStatus(WebhookStatus.DISABLED);
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+
+        ReplayResponse response = webhookService.replay("whsub_1",
+            ReplayRequest.builder().from(Instant.now().minusSeconds(3600)).to(Instant.now()).build());
+
+        assertThat(response.getEventsQueued()).isEqualTo(0);
+        // Short-circuits before acquiring the lock or dispatching anything.
+        verify(webhookRepository, never()).acquireReplayLock(anyString(), any());
+        verify(dispatchService, never()).dispatchToSubscription(any(), any());
+    }
+
     @Test
     void replay_systemSubscription_queriesAllTenants() {
         WebhookSubscription sub = WebhookSubscription.builder()
@@ -427,8 +676,7 @@ class WebhookServiceTest {
             .status(WebhookStatus.ACTIVE).consecutiveFailures(0).disableAfterFailures(10).build();
         when(webhookRepository.findById("whsub_sys")).thenReturn(sub);
         when(webhookRepository.acquireReplayLock(eq("whsub_sys"), any())).thenReturn(true);
-        when(eventRepository.list(isNull(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
-            .thenReturn(List.of());
+        stubReplayWindow(List.of());
 
         ReplayRequest request = ReplayRequest.builder()
             .from(Instant.now().minusSeconds(3600))
@@ -438,7 +686,7 @@ class WebhookServiceTest {
         webhookService.replay("whsub_sys", request);
 
         // Should pass null for tenantId to query all tenants
-        verify(eventRepository).list(isNull(), any(), any(), any(), any(), any(), any(), any(), anyInt());
+        verify(eventRepository, atLeastOnce()).listEventIdsInRange(isNull(), any(), any(), anyInt());
     }
 
     // ---- replay scope_filter conformance (same matcher as live dispatch) ----
@@ -461,8 +709,7 @@ class WebhookServiceTest {
         io.runcycles.admin.model.event.Event matching = scopedEvent("evt_match", "tenant:a/workspace:b");
         io.runcycles.admin.model.event.Event otherScope = scopedEvent("evt_other", "tenant:b/workspace:c");
         io.runcycles.admin.model.event.Event unscoped = scopedEvent("evt_null", null);
-        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
-            .thenReturn(List.of(matching, otherScope, unscoped));
+        stubReplayWindow(List.of(matching, otherScope, unscoped));
 
         ReplayRequest request = ReplayRequest.builder()
             .from(Instant.now().minusSeconds(3600))
@@ -485,8 +732,7 @@ class WebhookServiceTest {
         sub.setScopeFilter("tenant:a/workspace:b");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
-        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
-            .thenReturn(List.of(scopedEvent("evt_null", null)));
+        stubReplayWindow(List.of(scopedEvent("evt_null", null)));
 
         ReplayRequest request = ReplayRequest.builder()
             .from(Instant.now().minusSeconds(3600))
@@ -508,8 +754,7 @@ class WebhookServiceTest {
 
         io.runcycles.admin.model.event.Event scoped = scopedEvent("evt_scoped", "tenant:a/workspace:b");
         io.runcycles.admin.model.event.Event unscoped = scopedEvent("evt_null", null);
-        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
-            .thenReturn(List.of(scoped, unscoped));
+        stubReplayWindow(List.of(scoped, unscoped));
 
         ReplayRequest request = ReplayRequest.builder()
             .from(Instant.now().minusSeconds(3600))
@@ -531,8 +776,7 @@ class WebhookServiceTest {
 
         io.runcycles.admin.model.event.Event scoped = scopedEvent("evt_scoped", "tenant:a/workspace:b");
         io.runcycles.admin.model.event.Event unscoped = scopedEvent("evt_null", null);
-        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
-            .thenReturn(List.of(scoped, unscoped));
+        stubReplayWindow(List.of(scoped, unscoped));
 
         ReplayRequest request = ReplayRequest.builder()
             .from(Instant.now().minusSeconds(3600))
@@ -561,8 +805,7 @@ class WebhookServiceTest {
             .timestamp(Instant.now()).build();
         // Matches both:
         io.runcycles.admin.model.event.Event matchesBoth = scopedEvent("evt_both", "tenant:a/workspace:b");
-        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
-            .thenReturn(List.of(wrongType, matchesBoth));
+        stubReplayWindow(List.of(wrongType, matchesBoth));
 
         ReplayRequest request = ReplayRequest.builder()
             .from(Instant.now().minusSeconds(3600))
@@ -575,6 +818,33 @@ class WebhookServiceTest {
         assertThat(response.getEventsQueued()).isEqualTo(1);
         verify(dispatchService).dispatchToSubscription(matchesBoth, sub);
         verify(dispatchService, never()).dispatchToSubscription(eq(wrongType), any());
+    }
+
+    // #209 finding 3: /test is a NARROW, DOCUMENTED exception to the webhook
+    // category boundary. It POSTs a spec-defined system.webhook_test ping
+    // DIRECTLY to a (possibly tenant-owned) endpoint. This is intentional: the
+    // spec defines the test event as the admin-category `system.webhook_test`,
+    // the payload is a synthetic owner-triggered probe carrying no governance
+    // telemetry, and it bypasses the dispatch queue entirely. This test pins the
+    // documented envelope so the exception stays explicit.
+    @Test
+    void test_concreteTenantSub_usesSpecDefinedSystemWebhookTestEnvelope_documentedException() throws Exception {
+        WebhookSubscription concrete = buildSubscription("whsub_1", "tenant-1"); // concrete tenant
+        when(webhookRepository.findById("whsub_1")).thenReturn(concrete);
+        when(webhookRepository.getSigningSecret("whsub_1")).thenReturn("test-secret");
+        org.mockito.ArgumentCaptor<io.runcycles.admin.model.event.Event> evt =
+            org.mockito.ArgumentCaptor.forClass(io.runcycles.admin.model.event.Event.class);
+        when(objectMapper.writeValueAsString(evt.capture())).thenReturn("{\"test\":true}");
+
+        webhookService.test("whsub_1");
+
+        io.runcycles.admin.model.event.Event pinged = evt.getValue();
+        assertThat(pinged.getEventType())
+            .isEqualTo(io.runcycles.admin.model.event.EventType.SYSTEM_WEBHOOK_TEST);
+        assertThat(pinged.getCategory())
+            .isEqualTo(io.runcycles.admin.model.event.EventCategory.SYSTEM);
+        // Synthetic, owner-triggered probe — carries no real governance telemetry.
+        assertThat(pinged.getData()).containsEntry("test", true);
     }
 
     @Test
@@ -635,8 +905,7 @@ class WebhookServiceTest {
             .eventId("evt_2").eventType(EventType.TENANT_CREATED).tenantId("tenant-1")
             .timestamp(Instant.now()).build();
 
-        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
-            .thenReturn(List.of(evt1, evt2));
+        stubReplayWindow(List.of(evt1, evt2));
 
         ReplayRequest request = ReplayRequest.builder()
             .from(Instant.now().minusSeconds(3600))
@@ -654,6 +923,8 @@ class WebhookServiceTest {
     @Test
     void replay_dispatchFailure_continuesAndCounts() {
         WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
+        // Subscribe to both budget events so both pass the #209 selector filter.
+        sub.setEventTypes(List.of(EventType.BUDGET_CREATED, EventType.BUDGET_FUNDED));
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
 
@@ -664,11 +935,9 @@ class WebhookServiceTest {
             .eventId("evt_2").eventType(EventType.BUDGET_FUNDED).tenantId("tenant-1")
             .timestamp(Instant.now()).build();
 
-        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
-            .thenReturn(List.of(evt1, evt2));
+        stubReplayWindow(List.of(evt1, evt2));
         doThrow(new RuntimeException("dispatch error")).when(dispatchService)
             .dispatchToSubscription(eq(evt1), any());
-        doNothing().when(dispatchService).dispatchToSubscription(eq(evt2), any());
 
         ReplayRequest request = ReplayRequest.builder()
             .from(Instant.now().minusSeconds(3600))
@@ -703,8 +972,7 @@ class WebhookServiceTest {
         WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
-        when(eventRepository.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
-            .thenReturn(List.of());
+        stubReplayWindow(List.of());
 
         ReplayRequest request = ReplayRequest.builder()
             .from(Instant.now().minusSeconds(3600))

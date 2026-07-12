@@ -9,6 +9,23 @@ import java.util.Map;
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = false)
 public class WebhookSubscription {
+
+    /** Owning-tenant sentinel for admin-provisioned, non-tenant-owned rows. */
+    public static final String SYSTEM_TENANT = "__system__";
+
+    /**
+     * Single source of truth for "is this subscription system-owned (not
+     * tenant-owned)". Per governance v0.1.25.40 the tenant-accessible boundary
+     * exempts ONLY a null/omitted owner and the literal {@link #SYSTEM_TENANT}
+     * sentinel. A blank (whitespace-only) {@code tenant_id} is NOT system - it
+     * is treated as a concrete owner so it stays boundary-validated (closes the
+     * blank-owner exemption bypass). Used by both the write-path validator (api)
+     * and the cleanup reconciler (data) so they cannot disagree.
+     */
+    public static boolean isSystemOwner(String tenantId) {
+        return tenantId == null || SYSTEM_TENANT.equals(tenantId);
+    }
+
     @JsonProperty("subscription_id") private String subscriptionId;
     @JsonProperty("tenant_id") private String tenantId;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("name") private String name;

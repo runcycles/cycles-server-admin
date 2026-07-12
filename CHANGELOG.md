@@ -14,6 +14,235 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.51] — 2026-07-11
+
+### Security
+
+- **Fail-closed DISPATCH boundary — the durable confidentiality guarantee (#209).**
+  The write-path gates (below) stop NEW offenders and the reconciler (below)
+  cleans up STORED ones, but both are point-in-time: a concrete-tenant
+  subscription that already holds admin-only selectors and has not yet been
+  reconciled would still deliver admin-only events. The guarantee is now
+  enforced at DELIVERY, unconditionally: in BOTH live dispatch
+  (`WebhookDispatchService`) and replay (`dispatchToSubscription`), an event is
+  skipped **per event** when the subscription is concrete-tenant-owned
+  (`isSystemOwner == false`) AND the event is admin-only (reusing the
+  `WebhookCategoryBoundaryValidator` boundary). The predicate is strictly
+  fail-closed: it blocks if EITHER the event's TYPE **or** its (independent,
+  cross-plane) CATEGORY is admin-only, and it blocks an unclassifiable record
+  (type and category both null) — `Event.category` is not always derived from
+  the type, so a malformed or type/category-inconsistent record can't slip
+  through to a tenant endpoint. This does not depend on the reconciler having
+  run, on stored-selector correctness, or on status transitions — a
+  concrete-tenant subscription can never receive an admin-only event. It filters
+  per event, so a mixed subscription still receives its tenant-accessible
+  events; only the admin-only ones are withheld (counted as `boundary_skipped`).
+  `__system__`-owned subscriptions are unaffected.
+  - **`/test` exception (documented).** `POST /v1/webhooks/{id}/test` and its
+    admin twin POST a spec-defined `system.webhook_test` ping DIRECTLY to the
+    subscription URL (not via the dispatch queue), so a tenant-owned
+    subscription's own test delivers an admin-category (`system`) synthetic
+    event. This is a narrow, explicit EXCEPTION to the invariant: the governance
+    spec (the authority) defines the test event as `system.webhook_test`, the
+    payload is an owner-triggered probe (`{subscription_id, test:true}`) carrying
+    NO real governance/security telemetry, and reclassifying the wire envelope
+    would both diverge from the spec and produce the type/category-inconsistent
+    record the dispatch boundary now blocks. Confidentiality is intact (no real
+    admin telemetry reaches a tenant endpoint); only a synthetic self-test
+    carries the `system` label. The spec-side exception is tracked separately.
+
+- **Admin-plane webhook boundary — closes the CARRIER source (#209).**
+  `POST /v1/admin/webhooks?tenant_id=X` and `PATCH /v1/admin/webhooks/{id}`
+  applied no boundary validation, so an operator / admin-on-behalf-of could
+  place admin-only event **types OR categories** (`api_key`, `policy`,
+  `webhook`, `system`) on a subscription owned by a concrete tenant X. Since
+  event matching unions types and categories, X — which controls that
+  subscription's endpoint URL and signing secret — then received admin-only
+  governance/security telemetry for its tenant. The 0.1.25.50 fix closed the
+  tenant-plane *injection* path; this closes the admin-plane *carrier* source.
+  Both admin write paths now validate `event_types` AND `event_categories`
+  against the tenant-accessible boundary (`budget.*`, `reservation.*`,
+  `tenant.*`) when the target is a **concrete tenant** — create validates
+  against the `tenant_id` param, update against the **effective resulting
+  selectors** (stored ∪ request) on the STORED subscription's `tenant_id` —
+  rejecting admin-only entries with 400 `INVALID_REQUEST`. Validating the
+  effective result means a status-only reactivation (`{"status":"ACTIVE"}`)
+  cannot re-enable a disabled offender that still holds admin-only selectors.
+  Governance spec revision v0.1.25.40 (pending, runcycles/cycles-protocol#129)
+  makes this normative.
+  - **`__system__` carve-out:** admin-only selectors remain allowed on
+    `__system__`-owned subscriptions (no `tenant_id` param, or an
+    `__system__` target) — legitimate system-wide monitoring, not
+    tenant-owned. A null/omitted owner is treated the same; a blank
+    (whitespace-only) `tenant_id` is NOT exempt (treated as concrete and
+    validated).
+
+- **Replay honors the subscription's own selectors (#209).**
+  `POST /v1/admin/webhooks/{id}/replay` filtered historical events only by
+  the request's optional `event_types` + the subscription's `scope_filter`,
+  never by the subscription's OWN `event_types`/`event_categories`, and did
+  not check status — so replaying a concrete-tenant budget-only subscription
+  could dispatch historical ADMIN-only events to its tenant-controlled
+  endpoint (a direct bypass of this boundary; likely pre-existing). Replay now
+  intersects delivered events with the subscription's own selectors (spec
+  `replayEvents`: "all event types the subscription is subscribed to") and is
+  a no-op on a non-`ACTIVE` subscription — so a DISABLED offender receives
+  nothing via replay either. Status is additionally **re-checked at dispatch
+  time** (in `dispatchToSubscription`, after the initial guard) so a
+  subscription disabled concurrently mid-replay stops delivering (closes a
+  status TOCTOU). The fail-closed dispatch boundary above also applies on the
+  replay path, so even an ACTIVE offender delivers none of its admin-only
+  historical events.
+  - **Cap-then-filter under-delivery fixed (no-miss AND no-duplicate).** Replay
+    previously fetched a single page capped at `max_events` and then applied the
+    selector/scope/type filters AS post-hoc stream filters — so if the first
+    `max_events` (default 100) events in the `[from,to]` window didn't match but
+    later ones did, replay queued ZERO despite matching events existing. Replay
+    now takes ONE bounded, ordered, de-duplicated event-id list for the window
+    (a single `ZRANGEBYSCORE`, `EventRepository.listEventIdsInRange`) and
+    hydrates + filters in fixed batches over it, applying every filter — request
+    `event_types` ∩ the subscription's own selectors ∩ `scope_filter` ∩ the
+    ownership boundary — while accumulating up to `max_events` **deliverable**
+    events (so the cap counts deliverable events, not scanned ones), then
+    delivers them in chronological order (spec `replayEvents`). Reading the whole
+    ordered member set up front (rather than walking a millisecond score cursor)
+    avoids three cursor hazards on the ms-scored index: equal-timestamp members
+    skipped when the cursor advanced by `score+1`, a hydration-thinned short page
+    misread as range exhaustion, and duplicate pages when a cursor member had
+    vanished. No change to `EventRepository.list()` or its cursor, so other
+    event-listing callers are unaffected.
+  - **Replay is ALL-OR-NARROW (a success is complete for its window).**
+    `max_events` is NOT a resumable pagination cursor — `ReplayResponse` carries
+    no continuation position, so a partial result could not be resumed losslessly
+    (distinct timestamps: the caller never learns the last replayed timestamp;
+    same-millisecond events: an inclusive `from` would repeat or skip). So a
+    SUCCESSFUL replay delivers EVERY deliverable event in `[from,to]`; it never
+    returns a partial with an implied "continue". Two fail-fast **400
+    `INVALID_REQUEST`** cases (thrown BEFORE any delivery is enqueued — no partial
+    side effects; the replay lock is released):
+    - the window's candidate count exceeds the server scan limit
+      (`webhook.replay.max-scan`, default 20000) — completeness can't be
+      guaranteed over the unscanned tail — *"replay window too large: it exceeds
+      the replay scan limit of N events; narrow the from/to range"*; or
+    - the fully-scanned window holds MORE than `max_events` deliverable events —
+      *"replay window contains more than max_events (N) deliverable events;
+      narrow the from/to range, or raise max_events (up to 1000)"*.
+
+    Otherwise (fully scanned, ≤ `max_events` deliverable) ALL are delivered,
+    chronologically. There is no "advance `from` to continue" / "lower
+    `max_events` to page" guidance — `max_events` bounds the window size, it is
+    not a continuation cursor.
+  - **`max_events` is validated `[1,1000]` (400, not silently clamped).**
+    `ReplayRequest.max_events` now carries `@Min(1) @Max(1000)` (jakarta
+    validation) and the replay endpoint's `@RequestBody` is `@Valid`, so
+    `max_events=0` or `max_events=1001` is rejected with **400** (matching the
+    governance spec's declared `minimum:1`/`maximum:1000`). The prior
+    `Math.min(max_events, 1000)` silent clamp is removed. Omitting `max_events`
+    still defaults to 100.
+  - **Enqueue is BEST-EFFORT, and `events_queued` reports the accepted count
+    (governance #130).** Selection is complete for the window, but per-event
+    enqueue onto the dispatch queue is best-effort: `events_queued` may be fewer
+    than the events selected. A shortfall is **categorized** so a benign
+    concurrent lifecycle change is not mistaken for a backend problem —
+    `dispatchToSubscription` returns a structured outcome
+    (`ENQUEUED`/`INACTIVE`/`BLOCKED`/`ENQUEUE_FAILED`):
+    - if any event hit `ENQUEUE_FAILED` (real backend failure — the `LPUSH`/save
+      failed, OR the dispatch-time subscription re-read failed with a
+      Redis/deserialization error rather than a genuine not-found) → **WARN**
+      "DEGRADED dispatch backend" with the per-category counts
+      (`selected`/`enqueued`/`enqueue_failed`/`inactive`/`blocked`);
+    - if the shortfall is ONLY `INACTIVE` (subscription concurrently
+      paused/disabled at the re-check, or genuinely deleted — `WEBHOOK_NOT_FOUND`
+      only) and/or `BLOCKED` (delivery-time ownership guard) → **INFO** (intended,
+      not degradation). A re-read backend error is NOT hidden as `INACTIVE`.
+
+    Replay is **NOT idempotent** — delivery IDs are random, so a retry may
+    duplicate already-queued deliveries.
+
+- **Bulk RESUME routed through boundary validation (#209).**
+  `POST /v1/admin/webhooks/bulk-action` with `action: RESUME` reached `ACTIVE`
+  via `webhookService.update` directly, bypassing the single-op effective
+  -selector validation — so a PAUSED concrete-tenant offender could be bulk
+  -resumed. RESUME now validates the stored (effective) selectors against the
+  owning tenant before reactivating; an offender fails the row
+  (`INVALID_TRANSITION`) instead of resuming.
+
+- **BEHAVIOR CHANGE — previously-allowed capability removed.** In 0.1.25.50
+  the admin plane deliberately did NOT restrict categories (documented as
+  "the boundary is tenant-plane-only, not a global tightening"), so
+  admin-only categories on a concrete-tenant subscription via
+  `/v1/admin/webhooks` returned 201/200. That is now a 400 — a security
+  correction, because a tenant-owned row exposes the endpoint URL + signing
+  secret to the tenant. **Migration:** if you were monitoring a specific
+  tenant's admin-only events (e.g. `api_key.*`, `policy.*`) via a tenant-owned
+  subscription pointed at an operator endpoint, replace it with a
+  **`__system__`-owned** subscription (create with no `tenant_id` param)
+  filtered by **`event_categories`** to the admin classes you need. Because
+  `__system__` is in the dispatch union for every tenant, that subscription
+  receives those admin events for ALL tenants; select the specific tenant
+  **client-side** on the envelope's `tenant_id`. Note on `scope_filter`:
+  `api_key.*`, `webhook.*` and `system.*` events are **null-scoped**, and a
+  `scope_filter` excludes null-scoped events, so it would deliver none of
+  them — client-side `tenant_id` filtering is the general solution. `policy.*`
+  events carry a real tenant-bounded `scope` and CAN be `scope_filter`ed if
+  you only need policy events. The `__system__` row is not tenant-owned, so
+  its URL and secret stay operator-controlled.
+
+### Fixed
+
+- **One-time STORAGE HYGIENE for pre-existing offender rows (#209, d2).** A
+  startup reconciler (idempotent, resumable, no new API surface) brings STORED
+  selectors in line with the delivery behavior the dispatch boundary already
+  enforces. **This is not the security mechanism** — the fail-closed dispatch
+  boundary (above) is; the reconciler is best-effort cleanup and, because
+  dispatch already blocks the leak, admin-only selectors on a concrete-tenant
+  row are already non-functional. The strip/disable actions skip already
+  -`DISABLED` rows (idempotent); the NORMALIZE and INDEX actions run regardless
+  of status. Per row:
+  - **Concrete-tenant rows carrying admin-only types/categories:** the
+    admin-only selectors are **STRIPPED** and tenant-accessible ones kept
+    (`STRIPPED_ADMIN_SELECTORS`). Because dispatch already withholds those
+    admin events, stripping is not a behavior change and has no collateral on
+    legitimate tenant-accessible deliveries; it makes storage match effective
+    behavior. If stripping empties BOTH selector lists (the row would then
+    match every event) it is DISABLED instead (`STRIPPED_AND_DISABLED`).
+  - **Empty-both match-ALL rows** on any owner (`__system__` included — the
+    system carve-out exempts admin selectors only, not the "at least one
+    selector" invariant) are **DISABLED** (`DISABLED_EMPTY_BOTH`).
+  - **Null-owner rows** (corruption): normalized to the `__system__` owner and
+    added to the `webhooks:__system__` dispatch index (`NORMALIZED_NULL_OWNER`),
+    removing the limbo state (exempt from repair yet absent from every dispatch
+    index) rather than leaving them un-indexed. The owner rewrite (SET) and the
+    index add (SADD) run in ONE atomic Lua op, so a partial failure can never
+    persist the owner while leaving the row un-indexed. This runs even for a
+    DISABLED null-owner row.
+  - **System-owned rows MISSING from the index** (e.g. left behind by a prior
+    partial normalization): membership repaired via an idempotent SADD,
+    independent of status (`INDEXED_SYSTEM_MEMBER`).
+
+  Every action is loudly logged. **Robustness:** it `SSCAN`s the index in
+  batches (bounded memory), writes via an atomic compare-and-set + index add
+  (never clobbers a concurrent operator update — a CAS miss is a counted failure
+  and retried), and runs on a **managed daemon executor** that is interrupted and
+  awaited on Spring context shutdown (`@PreDestroy`) so it stops cleanly instead
+  of leaking a thread sleeping through a retry backoff. Startup/readiness is
+  never blocked; an incomplete pass (row error or CAS miss) is retried with
+  exponential backoff, and if retries are exhausted a loud `ERROR` alert is
+  emitted and the service stays up (hygiene must not brick the service — and
+  delivery is already safe via the dispatch boundary). Configure with
+  `webhook.category-boundary.reconcile-on-startup` (default `true`) and
+  `webhook.category-boundary.reconcile-dry-run` (default `false` — `true`
+  REPORTS the actions in the logs without mutating anything). Operators can
+  also find offenders with the `redis-cli`/`jq` recipe from the [0.1.25.50]
+  Security note.
+
+- **Replay `events_queued` no longer over-reports (#209).** `dispatchToSubscription`
+  returned `true` even when the delivery row was persisted but the `LPUSH` onto
+  `dispatch:pending` failed (the enqueue error was swallowed), so replay counted
+  a delivery the worker would never pick up. `createDelivery` now returns whether
+  the row was actually ENQUEUED, and `dispatchToSubscription` (and the live
+  dispatch metric) propagate it — `events_queued` counts only real enqueues.
+
 ## [0.1.25.50] — 2026-07-10
 
 ### Security

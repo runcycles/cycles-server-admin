@@ -5,12 +5,12 @@ import static io.runcycles.admin.api.logging.LogSanitizer.safe;
 import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.api.service.TerminalOwnerMutationGuard;
+import io.runcycles.admin.api.service.WebhookCategoryBoundaryValidator;
 import io.runcycles.admin.api.service.WebhookService;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.AuditRepository;
 import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.event.ActorType;
-import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.webhook.*;
 import io.swagger.v3.oas.annotations.Operation;
@@ -21,13 +21,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import java.time.Instant;
-import java.util.List;
 
 @RestController @RequestMapping("/v1/webhooks") @Tag(name = "Webhooks")
 public class WebhookTenantController {
     @Autowired private WebhookService webhookService;
     @Autowired private AuditRepository auditRepository;
     @Autowired private TerminalOwnerMutationGuard mutationGuard;
+    @Autowired private WebhookCategoryBoundaryValidator categoryBoundaryValidator;
 
     // createTenantWebhook is intentionally NOT dual-auth (spec v0.1.25.14):
     // URL / signing secret / event choice are tenant policy; admin creating
@@ -39,8 +39,10 @@ public class WebhookTenantController {
     public ResponseEntity<WebhookCreateResponse> create(
             @Valid @RequestBody WebhookCreateRequest request, HttpServletRequest httpRequest) {
         String tenantId = getAuthenticatedTenantId(httpRequest);
-        validateTenantEventTypes(request.getEventTypes());
-        validateTenantEventCategories(request.getEventCategories());
+        // Tenant plane: the owning tenant is always concrete, so validate
+        // unconditionally against the tenant-accessible boundary.
+        categoryBoundaryValidator.validateEventTypes(request.getEventTypes());
+        categoryBoundaryValidator.validateEventCategories(request.getEventCategories());
         mutationGuard.assertTenantOpen(tenantId);
         WebhookCreateResponse response = webhookService.create(tenantId, request);
         auditRepository.log(buildAuditEntry(httpRequest)
@@ -99,12 +101,15 @@ public class WebhookTenantController {
         WebhookSubscription existing = webhookService.get(subscriptionId);
         boolean isAdminAuth = isAdminAuth(httpRequest);
         enforceTenantOwnership(httpRequest, existing);
-        if (request.getEventTypes() != null) {
-            validateTenantEventTypes(request.getEventTypes());
-        }
-        if (request.getEventCategories() != null) {
-            validateTenantEventCategories(request.getEventCategories());
-        }
+        // #209 finding 2: validate the EFFECTIVE resulting selectors (stored ∪
+        // request), not just the arrays present in the request. A status-only
+        // PATCH (e.g. {"status":"ACTIVE"}) carries null selector arrays, which
+        // the per-array validator skips — so a tenant could re-enable a disabled
+        // offender that still holds admin-only selectors. Validating the
+        // effective result blocks reactivating/mutating an unrepaired offender.
+        categoryBoundaryValidator.validateForTarget(existing.getTenantId(),
+            request.getEventTypes() != null ? request.getEventTypes() : existing.getEventTypes(),
+            request.getEventCategories() != null ? request.getEventCategories() : existing.getEventCategories());
         // Spec v0.1.25.29 Rule 2: any mutation on a webhook owned by a CLOSED
         // tenant returns 409 TENANT_CLOSED. This is the layer that makes
         // DISABLED effectively-terminal for closed-owner webhooks without
@@ -226,39 +231,4 @@ public class WebhookTenantController {
         return safe(v);
     }
 
-    private void validateTenantEventTypes(List<EventType> eventTypes) {
-        if (eventTypes == null) return;
-        for (EventType type : eventTypes) {
-            if (!type.isTenantAccessible()) {
-                throw new GovernanceException(ErrorCode.INVALID_REQUEST,
-                    "Event type " + type.getValue() + " is admin-only; tenants can subscribe to budget.*, reservation.*, tenant.* only", 400);
-            }
-        }
-    }
-
-    /**
-     * Tenant-plane {@code event_categories} boundary (governance revision
-     * v0.1.25.38): {@code WebhookRepository.matchesEventType} treats
-     * categories as an ADDITIVE union with {@code event_types}, so an
-     * unvalidated category smuggles admin-only event classes past
-     * {@link #validateTenantEventTypes} (e.g. one allowed event_type plus
-     * {@code "event_categories": ["api_key"]}). Same boundary, same 400,
-     * derived from the same source ({@code EventCategory.isTenantAccessible},
-     * which {@code EventType.isTenantAccessible} delegates to).
-     *
-     * <p>Like {@link #validateTenantEventTypes}, this runs unconditionally on
-     * the tenant-plane paths — including admin-on-behalf-of PATCH through
-     * {@code /v1/webhooks/*}: the boundary belongs to the ENDPOINT, not the
-     * caller. Admin-provisioned subscriptions with admin categories are
-     * created and managed via {@code /v1/admin/webhooks/*}.
-     */
-    private void validateTenantEventCategories(List<io.runcycles.admin.model.event.EventCategory> eventCategories) {
-        if (eventCategories == null) return;
-        for (io.runcycles.admin.model.event.EventCategory category : eventCategories) {
-            if (!category.isTenantAccessible()) {
-                throw new GovernanceException(ErrorCode.INVALID_REQUEST,
-                    "Event category " + category.getValue() + " is admin-only; tenants can subscribe to budget.*, reservation.*, tenant.* only", 400);
-            }
-        }
-    }
 }

@@ -153,6 +153,22 @@ public class WebhookService {
     }
 
     public WebhookTestResponse test(String subscriptionId) {
+        // #209 — NARROW, EXPLICIT invariant EXCEPTION. The webhook category
+        // boundary otherwise forbids delivering an admin-classified event to a
+        // concrete-tenant subscription. /test is exempt because:
+        //   (1) the governance spec (the authority) defines the test ping as the
+        //       admin-category event type `system.webhook_test` — reclassifying
+        //       the wire envelope here would diverge from the spec, and keeping
+        //       the type while relabelling the category would produce exactly the
+        //       type/category-inconsistent record the dispatch boundary now
+        //       blocks (WebhookDispatchService#isBlockedByOwnershipBoundary);
+        //   (2) this is a SYNTHETIC, owner-triggered connectivity probe (the
+        //       subscription owner tests their OWN endpoint) whose payload is
+        //       {subscription_id, test:true} — it carries NO real governance or
+        //       security telemetry, so the confidentiality guarantee is intact.
+        // It also POSTs DIRECTLY (not via the dispatch queue / events worker), so
+        // no dispatch-side boundary applies. Documented in CHANGELOG/AUDIT; the
+        // spec-side exception is tracked separately.
         WebhookSubscription sub = webhookRepository.findById(subscriptionId);
         String secret = webhookRepository.getSigningSecret(subscriptionId);
         String testEventId = "evt_test_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
@@ -295,41 +311,71 @@ public class WebhookService {
     public ReplayResponse replay(String subscriptionId, ReplayRequest request) {
         WebhookSubscription sub = webhookRepository.findById(subscriptionId);
         String replayId = "replay_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        // #209: a replay MUST NOT deliver to a non-ACTIVE subscription — live
+        // dispatch only delivers to ACTIVE rows, so replay mirrors that. This
+        // makes "disabling stops delivery immediately" true for the reconciler's
+        // disabled offenders too: a DISABLED (or PAUSED) subscription queues
+        // nothing. Short-circuit before acquiring the replay lock.
+        if (sub.getStatus() != WebhookStatus.ACTIVE) {
+            LOG.info("Webhook replay is a no-op on a non-ACTIVE subscription: subscription_id={} tenant_id={} status={}",
+                safe(subscriptionId), safe(sub.getTenantId()), sub.getStatus());
+            return ReplayResponse.builder().replayId(replayId).eventsQueued(0).estimatedCompletionSeconds(0).build();
+        }
         // Acquire distributed lock — spec requires 409 REPLAY_IN_PROGRESS if already running
         if (!webhookRepository.acquireReplayLock(subscriptionId, replayId)) {
             throw GovernanceException.replayInProgress(subscriptionId);
         }
         try {
-            int maxEvents = request.getMaxEvents() != null ? Math.min(request.getMaxEvents(), 1000) : 100;
-            // Query events in the requested time range
-            List<Event> events = eventRepository.list(
-                sub.getTenantId().equals("__system__") ? null : sub.getTenantId(),
-                null, null, null, null,
-                request.getFrom(), request.getTo(), null, maxEvents);
-            // Filter by event types if specified in replay request
-            if (request.getEventTypes() != null && !request.getEventTypes().isEmpty()) {
-                events = events.stream()
-                    .filter(e -> request.getEventTypes().contains(e.getEventType()))
-                    .toList();
-            }
-            // Apply the subscription's scope_filter — same matcher as live
-            // dispatch (WebhookRepository.findMatchingSubscriptions), so a
-            // replay never delivers events the subscription would not have
-            // received live.
-            events = events.stream()
-                .filter(e -> WebhookRepository.matchesScope(sub, e.getScope()))
-                .toList();
-            // Queue each matching event for re-delivery to this subscription
-            int queued = 0;
+            // max_events is bounded to [1,1000] by @Min/@Max on ReplayRequest
+            // (rejected with 400 by @Valid, NOT silently clamped here); null
+            // defaults to 100 (spec default).
+            int maxEvents = request.getMaxEvents() != null ? request.getMaxEvents() : 100;
+            // #209 P2: ALL-OR-NARROW SELECTION — collect EVERY deliverable event in
+            // the window, filtered against the same predicates as live dispatch, in
+            // chronological order (spec replayEvents). This is not paging toward a
+            // continuation: an over-large window (candidates beyond the scan
+            // limit, or more than maxEvents deliverable) fails with a 400 BEFORE
+            // any delivery is enqueued (see collectDeliverableReplayEvents), so
+            // SELECTION is complete for its window.
+            List<Event> events = collectDeliverableReplayEvents(sub, request, maxEvents);
+            int selected = events.size();
+            // #209 F1: enqueue is BEST-EFFORT by design (governance #130). Selection
+            // is complete, but events_queued reports how many were ACCEPTED onto the
+            // dispatch queue. dispatchToSubscription returns a STRUCTURED outcome so
+            // we can tell a real backend degradation (ENQUEUE_FAILED) from intended,
+            // benign skips (INACTIVE = concurrent pause/disable/delete re-checked at
+            // dispatch; BLOCKED = delivery-time ownership guard). Replay is NOT
+            // idempotent (delivery IDs are random; a retry may duplicate).
+            int enqueued = 0, inactive = 0, blocked = 0, enqueueFailed = 0;
             for (Event event : events) {
                 try {
-                    dispatchService.dispatchToSubscription(event, sub);
-                    queued++;
+                    switch (dispatchService.dispatchToSubscription(event, sub)) {
+                        case ENQUEUED -> enqueued++;
+                        case INACTIVE -> inactive++;
+                        case BLOCKED -> blocked++;
+                        case ENQUEUE_FAILED -> enqueueFailed++;
+                    }
                 } catch (Exception e) {
+                    // Unexpected error enqueuing this event — a backend degradation.
+                    enqueueFailed++;
                     LOG.warn("Failed to queue webhook replay delivery: replay_id={} subscription_id={} tenant_id={} event_id={} event_type={} correlation_id={} request_id={} trace_id={} error={}",
                             safe(replayId), safe(subscriptionId), safe(sub.getTenantId()), safe(event.getEventId()),
                             safe(event.getEventType() != null ? event.getEventType().getValue() : null),
                             safe(event.getCorrelationId()), safe(event.getRequestId()), safe(event.getTraceId()), safe(e.getMessage()), e);
+                }
+            }
+            int queued = enqueued;
+            // Categorized shortfall signal — a real backend failure is a "degraded"
+            // WARN; a purely lifecycle/guard shortfall is a benign INFO (intended).
+            if (queued < selected) {
+                if (enqueueFailed > 0) {
+                    LOG.warn("Webhook replay PARTIAL enqueue — DEGRADED dispatch backend: replay_id={} subscription_id={} tenant_id={} selected={} enqueued={} enqueue_failed={} inactive={} blocked={} — {} deliverable event(s) were NOT enqueued; replay is not idempotent, a retry may duplicate already-queued deliveries",
+                        safe(replayId), safe(subscriptionId), safe(sub.getTenantId()),
+                        selected, enqueued, enqueueFailed, inactive, blocked, selected - queued);
+                } else {
+                    LOG.info("Webhook replay enqueued fewer than selected due to concurrent subscription lifecycle change / delivery-time guard (intended, NOT degradation): replay_id={} subscription_id={} tenant_id={} selected={} enqueued={} inactive={} blocked={}",
+                        safe(replayId), safe(subscriptionId), safe(sub.getTenantId()),
+                        selected, enqueued, inactive, blocked);
                 }
             }
             return ReplayResponse.builder()
@@ -340,6 +386,112 @@ public class WebhookService {
         } finally {
             webhookRepository.releaseReplayLock(subscriptionId, replayId);
         }
+    }
+
+    /** Hydration BATCH size — how many event ids are hydrated from the ordered
+     *  window id list per {@code hydrateByIds} call (bounds memory). NOT a
+     *  pagination unit: the whole window is scanned within one replay. */
+    private static final int REPLAY_PAGE_SIZE = 500;
+    /**
+     * Scan limit for one replay — the max size of the ordered id list pulled for
+     * the window. Replay is ALL-OR-NARROW: if the window's candidate count
+     * exceeds this bound the window cannot be fully scanned, so replay returns a
+     * 400 {@code INVALID_REQUEST} ("window too large — narrow from/to"), NOT a
+     * silent partial. Configurable (`webhook.replay.max-scan`) so the limit is
+     * exercisable; the field initializer is the default used when no property is
+     * bound (e.g. plain unit construction).
+     */
+    @org.springframework.beans.factory.annotation.Value("${webhook.replay.max-scan:20000}")
+    private int replayMaxScan = 20_000;
+
+    /**
+     * Collect EVERY DELIVERABLE event in the replay window, in CHRONOLOGICAL
+     * (ascending) order, applying every filter live dispatch/replay would apply:
+     * <ul>
+     *   <li>the request's optional {@code event_types} filter;</li>
+     *   <li>the subscription's OWN {@code event_types}/{@code event_categories}
+     *       ({@link WebhookRepository#matchesEventType}) and {@code scope_filter}
+     *       ({@link WebhookRepository#matchesScope}) — spec {@code replayEvents}:
+     *       "replays all event types the subscription is subscribed to"; and</li>
+     *   <li>the fail-closed ownership boundary
+     *       ({@link WebhookDispatchService#isBlockedByOwnershipBoundary}) — a
+     *       concrete-tenant sub never receives admin-only events.</li>
+     * </ul>
+     *
+     * <p><b>Approach B (no-miss AND no-duplicate over a bounded window).</b>
+     * Takes ONE bounded, ordered, de-duplicated id list for the window
+     * ({@link EventRepository#listEventIdsInRange}) and hydrates + filters in
+     * fixed batches over it. The id list is the exact ordered member set, so
+     * hydration drops (expired / corrupt / unknown-enum rows) never look like
+     * exhaustion and there is no score cursor to skip or duplicate.
+     *
+     * <p><b>Replay is ALL-OR-NARROW.</b> {@code max_events} is NOT a resumable
+     * pagination cursor — {@code ReplayResponse} carries no continuation position,
+     * so a partial result could not be resumed losslessly (distinct timestamps:
+     * the caller never learns the last replayed timestamp; same-millisecond
+     * events: an inclusive {@code from} would repeat or skip). So a SUCCESSFUL
+     * replay delivers EVERY deliverable event in {@code [from,to]}; it never
+     * returns a partial with an implied "continue". Two fail-fast 400s (thrown
+     * BEFORE any delivery is enqueued, so there are no partial side effects):
+     * <ul>
+     *   <li>the window's candidate count exceeds the server scan limit
+     *       ({@link #replayMaxScan}) — completeness can't be guaranteed over the
+     *       unscanned tail → narrow {@code from}/{@code to}; or</li>
+     *   <li>the (fully scanned) window holds MORE than {@code max_events}
+     *       deliverable events → narrow {@code from}/{@code to}, or raise
+     *       {@code max_events} (up to the 1000 cap).</li>
+     * </ul>
+     * Otherwise (fully scanned, {@code <= max_events} deliverable) all are
+     * returned — a success is COMPLETE for its window.
+     */
+    private List<Event> collectDeliverableReplayEvents(WebhookSubscription sub,
+                                                        ReplayRequest request, int maxEvents) {
+        // isSystemOwner is null-safe (null owner → system → query all tenants).
+        String queryTenant = WebhookSubscription.isSystemOwner(sub.getTenantId())
+            ? null : sub.getTenantId();
+        boolean hasRequestTypeFilter =
+            request.getEventTypes() != null && !request.getEventTypes().isEmpty();
+
+        // Fetch ONE past the scan limit: if the window has more candidates than we
+        // can scan, we can't guarantee completeness → narrow the window (400).
+        List<String> ids = eventRepository.listEventIdsInRange(
+            queryTenant, request.getFrom(), request.getTo(), replayMaxScan + 1);
+        if (ids.size() > replayMaxScan) {
+            LOG.warn("Webhook replay window exceeds the scan limit: subscription_id={} tenant_id={} scan_limit={} — returning 400, no deliveries enqueued",
+                safe(sub.getSubscriptionId()), safe(sub.getTenantId()), replayMaxScan);
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                "replay window too large: it exceeds the replay scan limit of " + replayMaxScan
+                    + " events; narrow the from/to range",
+                400);
+        }
+
+        // Fully scanned. Collect all deliverable events, one past max_events so we
+        // can detect a window that holds MORE than max_events deliverable.
+        List<Event> collected = new ArrayList<>();
+        collect:
+        for (int start = 0; start < ids.size(); start += REPLAY_PAGE_SIZE) {
+            int end = Math.min(start + REPLAY_PAGE_SIZE, ids.size());
+            List<Event> batch = eventRepository.hydrateByIds(ids.subList(start, end));
+            for (Event e : batch) {
+                if (hasRequestTypeFilter && !request.getEventTypes().contains(e.getEventType())) {
+                    continue;
+                }
+                if (!WebhookRepository.matchesEventType(sub, e.getEventType())) continue;
+                if (!WebhookRepository.matchesScope(sub, e.getScope())) continue;
+                if (dispatchService.isBlockedByOwnershipBoundary(e, sub)) continue;
+                collected.add(e);
+                if (collected.size() > maxEvents) break collect; // overflow detected
+            }
+        }
+        if (collected.size() > maxEvents) {
+            LOG.warn("Webhook replay window holds more than max_events deliverable events: subscription_id={} tenant_id={} max_events={} — returning 400, no deliveries enqueued",
+                safe(sub.getSubscriptionId()), safe(sub.getTenantId()), maxEvents);
+            throw new GovernanceException(ErrorCode.INVALID_REQUEST,
+                "replay window contains more than max_events (" + maxEvents + ") deliverable events;"
+                    + " narrow the from/to range, or raise max_events (up to 1000)",
+                400);
+        }
+        return collected;
     }
 
     /**

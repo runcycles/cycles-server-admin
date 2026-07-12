@@ -153,6 +153,70 @@ public class EventRepository {
     }
 
     /**
+     * Ordered event IDs in the {@code [from,to]} timestamp window for one tenant
+     * ({@code events:<tenant>}) or all tenants ({@code events:_all}), as a SINGLE
+     * bounded {@code ZRANGEBYSCORE} — the exact, de-duplicated member set in
+     * ascending (score, member) order.
+     *
+     * <p>Provided for webhook replay (governance #209, approach B): replay
+     * hydrates fixed BATCHES over this whole id list instead of walking
+     * {@link #list}'s score-cursor, which sidesteps three cursor hazards on a
+     * millisecond-scored
+     * ZSET — equal-timestamp members skipped when the cursor advances by
+     * {@code score+1}, a hydration-thinned short page misread as range
+     * exhaustion, and duplicate pages when a cursor member has vanished. The ZSET
+     * range is inherently ordered, de-duplicated and stable, so none of those
+     * apply. Does NOT touch {@code list()} or its cursor, so other callers are
+     * unaffected. Capped at {@code maxIds} (the replay scan ceiling).
+     *
+     * @return chronologically ordered IDs (ascending score; ties by member),
+     *         at most {@code maxIds}; empty when the window has no events
+     */
+    public List<String> listEventIdsInRange(String tenantId, Instant from, Instant to, int maxIds) {
+        if (maxIds <= 0) {
+            return new ArrayList<>();
+        }
+        double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
+        double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
+        String indexKey = (tenantId != null) ? "events:" + tenantId : "events:_all";
+        try (Jedis jedis = jedisPool.getResource()) {
+            return jedis.zrangeByScore(indexKey, minScore, maxScore, 0, maxIds);
+        }
+    }
+
+    /**
+     * Hydrate + parse the given event IDs, PRESERVING their order, dropping any
+     * row that is missing/expired (a {@code null} {@code event:<id>} value) or
+     * unparseable. Unparseable includes strict {@code @JsonCreator} failures on
+     * unknown enum values — an unhydratable record is skipped (fail-closed:
+     * never delivered), it does not abort the batch. Used by replay to hydrate
+     * batches over the fixed id list from {@link #listEventIdsInRange}; a dropped
+     * row here is NOT treated as range exhaustion by the caller (the id list is
+     * already the full ordered member set).
+     */
+    public List<Event> hydrateByIds(List<String> ids) {
+        List<Event> events = new ArrayList<>(ids.size());
+        if (ids.isEmpty()) {
+            return events;
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            for (String id : ids) {
+                String data = jedis.get("event:" + id);
+                if (data == null) {
+                    continue; // expired / evicted between the ZRANGE and hydration
+                }
+                try {
+                    events.add(objectMapper.readValue(data, Event.class));
+                } catch (Exception e) {
+                    LOG.warn("Replay hydration skipped an unparseable event row (fail-closed): event_id={} error={}",
+                        LogSanitizer.safe(id), LogSanitizer.safe(e.getMessage()));
+                }
+            }
+        }
+        return events;
+    }
+
+    /**
      * Upper bound on IDs hydrated for a non-timestamp sort pass. Sorted
      * walks need to see the full filter-matching population before the
      * cursor walk; without a ceiling a broad time window would OOM. At

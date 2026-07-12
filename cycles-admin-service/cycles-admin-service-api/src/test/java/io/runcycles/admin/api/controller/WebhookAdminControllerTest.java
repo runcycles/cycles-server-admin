@@ -37,7 +37,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(WebhookAdminController.class)
-@Import({MetricsTestConfiguration.class, ContractValidationConfig.class})
+@Import({MetricsTestConfiguration.class, ContractValidationConfig.class,
+        io.runcycles.admin.api.service.WebhookCategoryBoundaryValidator.class})
 class WebhookAdminControllerTest {
 
     @Autowired private MockMvc mockMvc;
@@ -147,16 +148,66 @@ class WebhookAdminControllerTest {
                 entry.getStatus() == 200));
     }
 
-    // v0.1.25.50: the tenant-plane event_categories boundary is NOT a global
-    // tightening — the admin plane (/v1/admin/webhooks) may create/update
-    // subscriptions with admin-only categories. Proves the boundary is
-    // scoped to the tenant endpoint, not applied to every WebhookService call.
+    // #209 / governance v0.1.25.40 (pending): the admin plane is the CARRIER
+    // source. Admin-only categories on a TENANT-owned subscription are now
+    // rejected 400 (create validates against the tenant_id param; update
+    // against the STORED subscription's tenant_id); __system__ rows are NOT
+    // tenant-owned and admin-only categories there remain allowed.
     @Test
-    void createWebhook_withAdminOnlyEventCategory_returns201() throws Exception {
+    void createWebhook_adminOnlyEventCategory_onRealTenant_returns400() throws Exception {
+        mockMvc.perform(post("/v1/admin/webhooks")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("tenant_id", "tenant-1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://example.com/wh\",\"event_types\":[\"budget.created\"],\"event_categories\":[\"api_key\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(webhookService, never()).create(anyString(), any());
+    }
+
+    @Test
+    void createWebhook_adminOnlyEventType_onRealTenant_returns400() throws Exception {
+        mockMvc.perform(post("/v1/admin/webhooks")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("tenant_id", "tenant-1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://example.com/wh\",\"event_types\":[\"api_key.created\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(webhookService, never()).create(anyString(), any());
+    }
+
+    @Test
+    void createWebhook_adminOnlyEventCategory_onSystem_returns201() throws Exception {
+        // No tenant_id param -> __system__ target -> admin-only categories allowed
+        // (legitimate system-wide monitoring; not tenant-owned).
         WebhookSubscription sub = WebhookSubscription.builder()
-            .subscriptionId("whsub_admincat").tenantId("tenant-1").url("https://example.com/wh")
+            .subscriptionId("whsub_sys").tenantId("__system__").url("https://example.com/wh")
             .eventTypes(List.of(EventType.BUDGET_CREATED))
             .eventCategories(List.of(EventCategory.API_KEY)).status(WebhookStatus.ACTIVE)
+            .createdAt(Instant.now()).build();
+        WebhookCreateResponse response = WebhookCreateResponse.builder()
+            .subscription(sub).signingSecret("whsec_abc").build();
+        when(webhookService.create(eq("__system__"), any())).thenReturn(response);
+
+        mockMvc.perform(post("/v1/admin/webhooks")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://example.com/wh\",\"event_types\":[\"budget.created\"],\"event_categories\":[\"api_key\"]}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.subscription.subscription_id").value("whsub_sys"));
+
+        verify(webhookService).create(eq("__system__"), any());
+    }
+
+    @Test
+    void createWebhook_tenantAccessibleCategories_onRealTenant_returns201() throws Exception {
+        WebhookSubscription sub = WebhookSubscription.builder()
+            .subscriptionId("whsub_ok").tenantId("tenant-1").url("https://example.com/wh")
+            .eventTypes(List.of(EventType.BUDGET_CREATED))
+            .eventCategories(List.of(EventCategory.RESERVATION)).status(WebhookStatus.ACTIVE)
             .createdAt(Instant.now()).build();
         WebhookCreateResponse response = WebhookCreateResponse.builder()
             .subscription(sub).signingSecret("whsec_abc").build();
@@ -166,32 +217,123 @@ class WebhookAdminControllerTest {
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .param("tenant_id", "tenant-1")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"url\":\"https://example.com/wh\",\"event_types\":[\"budget.created\"],\"event_categories\":[\"api_key\"]}"))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.subscription.subscription_id").value("whsub_admincat"));
+                        .content("{\"url\":\"https://example.com/wh\",\"event_types\":[\"budget.created\"],\"event_categories\":[\"budget\",\"reservation\",\"tenant\"]}"))
+                .andExpect(status().isCreated());
 
         verify(webhookService).create(eq("tenant-1"), any());
     }
 
     @Test
-    void updateWebhook_withAdminOnlyEventCategory_returns200() throws Exception {
+    void updateWebhook_adminOnlyEventCategory_onTenantOwned_returns400() throws Exception {
+        // Target tenant is the STORED subscription's tenant_id (tenant-1).
         WebhookSubscription prior = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        WebhookSubscription updated = WebhookSubscription.builder()
-            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
-            .eventCategories(List.of(EventCategory.SYSTEM)).status(WebhookStatus.ACTIVE)
-            .createdAt(Instant.now()).build();
         when(webhookService.get("whsub_1")).thenReturn(prior);
-        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
 
         mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"event_categories\":[\"system\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(webhookService, never()).update(anyString(), any());
+    }
+
+    @Test
+    void updateWebhook_adminOnlyEventCategory_onSystemOwned_returns200() throws Exception {
+        // Stored subscription is __system__-owned -> admin-only categories allowed.
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_sys").tenantId("__system__").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        WebhookSubscription updated = WebhookSubscription.builder()
+            .subscriptionId("whsub_sys").tenantId("__system__").url("https://example.com/wh")
+            .eventCategories(List.of(EventCategory.SYSTEM)).status(WebhookStatus.ACTIVE)
+            .createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_sys")).thenReturn(prior);
+        when(webhookService.update(eq("whsub_sys"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_sys")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"event_categories\":[\"system\"]}"))
+                .andExpect(status().isOk());
+
+        verify(webhookService).update(eq("whsub_sys"), any());
+    }
+
+    @Test
+    void updateWebhook_tenantAccessibleCategory_onTenantOwned_returns200() throws Exception {
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq("whsub_1"), any())).thenReturn(prior);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"event_categories\":[\"budget\"]}"))
                 .andExpect(status().isOk());
 
         verify(webhookService).update(eq("whsub_1"), any());
+    }
+
+    // #209 finding 2: a status-only PATCH (null selector arrays) must validate
+    // the EFFECTIVE result (stored ∪ request), so it cannot reactivate a
+    // disabled concrete-tenant offender that still holds admin-only selectors.
+    @Test
+    void updateWebhook_statusOnlyReactivation_ofStoredAdminCategoryOffender_returns400() throws Exception {
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_off").tenantId("tenant-1").url("https://example.com/wh")
+            .eventTypes(List.of(EventType.BUDGET_CREATED))
+            .eventCategories(List.of(EventCategory.API_KEY)) // stored admin-only category
+            .status(WebhookStatus.DISABLED).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_off")).thenReturn(prior);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_off")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"ACTIVE\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(webhookService, never()).update(anyString(), any());
+    }
+
+    @Test
+    void updateWebhook_statusOnlyReactivation_ofSystemAdminCategoryRow_returns200() throws Exception {
+        // __system__ owner is exempt — an admin-category system row can be reactivated.
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_sys").tenantId("__system__").url("https://example.com/wh")
+            .eventCategories(List.of(EventCategory.API_KEY))
+            .status(WebhookStatus.DISABLED).createdAt(Instant.now()).build();
+        when(webhookService.get("whsub_sys")).thenReturn(prior);
+        when(webhookService.update(eq("whsub_sys"), any())).thenReturn(prior);
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_sys")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"ACTIVE\"}"))
+                .andExpect(status().isOk());
+
+        verify(webhookService).update(eq("whsub_sys"), any());
+    }
+
+    // #209 finding 5: a blank (whitespace-only) tenant_id is NOT system-exempt —
+    // admin-only selectors on a blank owner are validated (rejected).
+    @Test
+    void createWebhook_blankTenantId_adminCategory_returns400() throws Exception {
+        mockMvc.perform(post("/v1/admin/webhooks")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .param("tenant_id", "   ")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://example.com/wh\",\"event_types\":[\"budget.created\"],\"event_categories\":[\"api_key\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(webhookService, never()).create(anyString(), any());
     }
 
     @Test
@@ -288,6 +430,44 @@ class WebhookAdminControllerTest {
         verify(auditRepository).log(argThat(entry ->
                 "replayEvents".equals(entry.getOperation()) &&
                 entry.getStatus() == 202));
+    }
+
+    // #209 F3: max_events is bounded [1,1000] by @Min/@Max on ReplayRequest and
+    // enforced by @Valid — out-of-range is REJECTED (400), not silently clamped.
+    @Test
+    void replay_maxEventsZero_returns400_serviceNotCalled() throws Exception {
+        mockMvc.perform(post("/v1/admin/webhooks/whsub_1/replay")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"max_events\":0}"))
+                .andExpect(status().isBadRequest());
+        verify(webhookService, never()).replay(anyString(), any());
+    }
+
+    @Test
+    void replay_maxEventsOver1000_returns400_serviceNotCalled() throws Exception {
+        mockMvc.perform(post("/v1/admin/webhooks/whsub_1/replay")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"max_events\":1001}"))
+                .andExpect(status().isBadRequest());
+        verify(webhookService, never()).replay(anyString(), any());
+    }
+
+    @Test
+    void replay_nullMaxEvents_passesValidation_returns202() throws Exception {
+        // Omitting max_events is valid (@Min/@Max pass for null); it defaults to
+        // 100 in the service. @Valid must NOT reject it.
+        ReplayResponse response = ReplayResponse.builder()
+            .replayId("replay_2").eventsQueued(0).estimatedCompletionSeconds(0).build();
+        when(webhookService.replay(eq("whsub_1"), any())).thenReturn(response);
+
+        mockMvc.perform(post("/v1/admin/webhooks/whsub_1/replay")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isAccepted());
+        verify(webhookService).replay(eq("whsub_1"), any());
     }
 
     // --- Sort contract tests (spec v0.1.25.20 §V4 server-side sort) ---
@@ -555,6 +735,64 @@ class WebhookAdminControllerTest {
                 .andExpect(jsonPath("$.succeeded.length()").value(0));
 
         verify(webhookService, never()).update(anyString(), any());
+    }
+
+    @Test
+    void bulkActionWebhooks_resume_concreteTenantAdminOffender_failsRow_noResume() throws Exception {
+        // #209 bulk-RESUME bypass: a PAUSED concrete-tenant subscription carrying
+        // an admin-only category must NOT be resumed to ACTIVE — bulk RESUME now
+        // routes through effective-selector validation, so the row fails.
+        io.runcycles.admin.model.webhook.WebhookSubscription offender =
+                io.runcycles.admin.model.webhook.WebhookSubscription.builder()
+                        .subscriptionId("w1").tenantId("tenant-1")
+                        .url("https://example.com/w1")
+                        .eventCategories(List.of(io.runcycles.admin.model.event.EventCategory.API_KEY))
+                        .status(WebhookStatus.PAUSED).createdAt(Instant.now()).build();
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(offender));
+        when(webhookRepository.findById("w1")).thenReturn(offender);
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"PAUSED\"},\"action\":\"RESUME\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.failed.length()").value(1))
+                .andExpect(jsonPath("$.failed[0].id").value("w1"))
+                .andExpect(jsonPath("$.failed[0].error_code").value("INVALID_TRANSITION"))
+                .andExpect(jsonPath("$.succeeded.length()").value(0));
+
+        verify(webhookService, never()).update(anyString(), any());
+    }
+
+    @Test
+    void bulkActionWebhooks_resume_concreteTenantClean_resumes() throws Exception {
+        // A PAUSED concrete-tenant subscription with only tenant-accessible
+        // selectors passes validation and resumes normally.
+        io.runcycles.admin.model.webhook.WebhookSubscription clean =
+                io.runcycles.admin.model.webhook.WebhookSubscription.builder()
+                        .subscriptionId("w1").tenantId("tenant-1")
+                        .url("https://example.com/w1")
+                        .eventCategories(List.of(io.runcycles.admin.model.event.EventCategory.BUDGET))
+                        .status(WebhookStatus.PAUSED).createdAt(Instant.now()).build();
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(WebhookBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
+                .thenReturn(List.of(clean));
+        when(webhookRepository.findById("w1")).thenReturn(clean);
+        when(webhookService.update(anyString(), any())).thenReturn(clean);
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"PAUSED\"},\"action\":\"RESUME\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.succeeded.length()").value(1))
+                .andExpect(jsonPath("$.failed.length()").value(0));
+
+        verify(webhookService).update(eq("w1"), any());
     }
 
     @Test
