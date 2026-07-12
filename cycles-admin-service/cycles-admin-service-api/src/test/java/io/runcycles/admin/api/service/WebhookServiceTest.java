@@ -535,6 +535,46 @@ class WebhookServiceTest {
         inOrder.verify(dispatchService).dispatchToSubscription(c, sub);
     }
 
+    // #209 F1: enqueue is BEST-EFFORT by DESIGN (governance #130). Selection is
+    // complete, but a transient per-event enqueue failure makes events_queued <
+    // selected — this is the INTENDED, spec-conformant contract (not fail-on-
+    // partial, not atomic). The degraded enqueue MUST be loudly logged so it is
+    // operator-observable; events_queued honestly reports the accepted count.
+    @Test
+    void replay_partialEnqueue_reportsAcceptedCount_andLogsWarn_bestEffort() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
+        io.runcycles.admin.model.event.Event a = evt("evt_a", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        io.runcycles.admin.model.event.Event b = evt("evt_b", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        io.runcycles.admin.model.event.Event c = evt("evt_c", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        stubReplayWindow(List.of(a, b, c)); // 3 selected
+        // Backend transiently rejects the enqueue of one selected event.
+        when(dispatchService.dispatchToSubscription(b, sub)).thenReturn(false);
+
+        // Capture the WARN so the partial enqueue is proven observable.
+        ch.qos.logback.classic.Logger logger =
+            (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(WebhookService.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+            new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        ReplayResponse response;
+        try {
+            response = webhookService.replay("whsub_1",
+                ReplayRequest.builder().from(Instant.now().minusSeconds(3600)).to(Instant.now())
+                    .maxEvents(5).build());
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        assertThat(response.getEventsQueued()).isEqualTo(2); // accepted count, honest (< 3 selected)
+        assertThat(appender.list).anyMatch(e -> e.getLevel() == ch.qos.logback.classic.Level.WARN
+                && e.getFormattedMessage().contains("PARTIAL enqueue")
+                && e.getFormattedMessage().contains("selected=3")
+                && e.getFormattedMessage().contains("queued=2"));
+    }
+
     // The fail-closed ownership boundary is applied DURING collection, so an
     // admin event a concrete-tenant OFFENDER still matches by selector does not
     // consume cap budget and is not delivered.

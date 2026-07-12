@@ -432,6 +432,44 @@ class WebhookAdminControllerTest {
                 entry.getStatus() == 202));
     }
 
+    // #209 F3: max_events is bounded [1,1000] by @Min/@Max on ReplayRequest and
+    // enforced by @Valid — out-of-range is REJECTED (400), not silently clamped.
+    @Test
+    void replay_maxEventsZero_returns400_serviceNotCalled() throws Exception {
+        mockMvc.perform(post("/v1/admin/webhooks/whsub_1/replay")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"max_events\":0}"))
+                .andExpect(status().isBadRequest());
+        verify(webhookService, never()).replay(anyString(), any());
+    }
+
+    @Test
+    void replay_maxEventsOver1000_returns400_serviceNotCalled() throws Exception {
+        mockMvc.perform(post("/v1/admin/webhooks/whsub_1/replay")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"max_events\":1001}"))
+                .andExpect(status().isBadRequest());
+        verify(webhookService, never()).replay(anyString(), any());
+    }
+
+    @Test
+    void replay_nullMaxEvents_passesValidation_returns202() throws Exception {
+        // Omitting max_events is valid (@Min/@Max pass for null); it defaults to
+        // 100 in the service. @Valid must NOT reject it.
+        ReplayResponse response = ReplayResponse.builder()
+            .replayId("replay_2").eventsQueued(0).estimatedCompletionSeconds(0).build();
+        when(webhookService.replay(eq("whsub_1"), any())).thenReturn(response);
+
+        mockMvc.perform(post("/v1/admin/webhooks/whsub_1/replay")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isAccepted());
+        verify(webhookService).replay(eq("whsub_1"), any());
+    }
+
     // --- Sort contract tests (spec v0.1.25.20 §V4 server-side sort) ---
 
     @Test

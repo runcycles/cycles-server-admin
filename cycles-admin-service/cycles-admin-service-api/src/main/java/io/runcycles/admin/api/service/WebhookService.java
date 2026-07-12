@@ -326,22 +326,30 @@ public class WebhookService {
             throw GovernanceException.replayInProgress(subscriptionId);
         }
         try {
-            int maxEvents = request.getMaxEvents() != null ? Math.min(request.getMaxEvents(), 1000) : 100;
-            // #209 P2: ALL-OR-NARROW — collect EVERY deliverable event in the
-            // window, filtered against the same predicates as live dispatch, in
+            // max_events is bounded to [1,1000] by @Min/@Max on ReplayRequest
+            // (rejected with 400 by @Valid, NOT silently clamped here); null
+            // defaults to 100 (spec default).
+            int maxEvents = request.getMaxEvents() != null ? request.getMaxEvents() : 100;
+            // #209 P2: ALL-OR-NARROW SELECTION — collect EVERY deliverable event in
+            // the window, filtered against the same predicates as live dispatch, in
             // chronological order (spec replayEvents). This is not paging toward a
             // continuation: an over-large window (candidates beyond the scan
             // limit, or more than maxEvents deliverable) fails with a 400 BEFORE
-            // any delivery is enqueued (see collectDeliverableReplayEvents), so a
-            // success delivers the COMPLETE set for its window.
+            // any delivery is enqueued (see collectDeliverableReplayEvents), so
+            // SELECTION is complete for its window.
             List<Event> events = collectDeliverableReplayEvents(sub, request, maxEvents);
-            // Queue each matching event for re-delivery to this subscription
+            int selected = events.size();
+            // #209 F1: enqueue is BEST-EFFORT by design (governance #130). Selection
+            // is complete, but events_queued reports how many were ACCEPTED onto the
+            // dispatch queue — it may be < selected if the backend transiently fails
+            // a per-event enqueue. Replay is NOT idempotent (delivery IDs are random;
+            // a retry may duplicate). We count only events actually enqueued
+            // (dispatchToSubscription returns false when a delivery guard — ownership
+            // boundary or a concurrent disable re-checked at dispatch — skips it, and
+            // an enqueue error is caught per event) so the count is honest.
             int queued = 0;
             for (Event event : events) {
                 try {
-                    // Count only events actually enqueued — dispatchToSubscription
-                    // returns false when a delivery guard (ownership boundary, or a
-                    // concurrent disable re-checked at dispatch time) skips it.
                     if (dispatchService.dispatchToSubscription(event, sub)) {
                         queued++;
                     }
@@ -351,6 +359,12 @@ public class WebhookService {
                             safe(event.getEventType() != null ? event.getEventType().getValue() : null),
                             safe(event.getCorrelationId()), safe(event.getRequestId()), safe(event.getTraceId()), safe(e.getMessage()), e);
                 }
+            }
+            // Loud, operator-facing signal that a degraded backend produced a
+            // PARTIAL enqueue (best-effort contract: events_queued < selected).
+            if (queued < selected) {
+                LOG.warn("Webhook replay PARTIAL enqueue (best-effort): replay_id={} subscription_id={} tenant_id={} selected={} queued={} — {} deliverable event(s) were NOT enqueued (degraded dispatch backend); replay is not idempotent, a retry may duplicate already-queued deliveries",
+                    safe(replayId), safe(subscriptionId), safe(sub.getTenantId()), selected, queued, selected - queued);
             }
             return ReplayResponse.builder()
                 .replayId(replayId)

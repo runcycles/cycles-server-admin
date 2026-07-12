@@ -132,6 +132,21 @@ new optional request fields) are **not** considered breaking.
     chronologically. There is no "advance `from` to continue" / "lower
     `max_events` to page" guidance — `max_events` bounds the window size, it is
     not a continuation cursor.
+  - **`max_events` is validated `[1,1000]` (400, not silently clamped).**
+    `ReplayRequest.max_events` now carries `@Min(1) @Max(1000)` (jakarta
+    validation) and the replay endpoint's `@RequestBody` is `@Valid`, so
+    `max_events=0` or `max_events=1001` is rejected with **400** (matching the
+    governance spec's declared `minimum:1`/`maximum:1000`). The prior
+    `Math.min(max_events, 1000)` silent clamp is removed. Omitting `max_events`
+    still defaults to 100.
+  - **Enqueue is BEST-EFFORT, and `events_queued` reports the accepted count
+    (governance #130).** Selection is complete for the window, but per-event
+    enqueue onto the dispatch queue is best-effort: on a transient backend
+    failure `events_queued` may be fewer than the events selected. A **loud WARN**
+    (`replay_id`, `subscription_id`, `selected`, `queued`) is logged whenever
+    `events_queued < selected` so a degraded backend is operator-observable.
+    Replay is **NOT idempotent** — delivery IDs are random, so a retry may
+    duplicate already-queued deliveries.
 
 - **Bulk RESUME routed through boundary validation (#209).**
   `POST /v1/admin/webhooks/bulk-action` with `action: RESUME` reached `ACTIVE`

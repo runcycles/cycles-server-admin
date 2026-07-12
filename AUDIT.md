@@ -38,6 +38,46 @@ pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-07-11 — v0.1.25.51 reviewer round: replay max_events validation + best-effort enqueue (#209)
+
+Two reviewer findings, one commit.
+
+**F3 (P2) — enforce max_events min:1/max:1000 (was silently clamped).**
+`ReplayRequest.maxEvents` had no validation and `WebhookService` silently clamped
+`> 1000` via `Math.min(maxEvents, 1000)`, diverging from the spec's declared
+`minimum:1`/`maximum:1000`. Fix: added `@Min(1) @Max(1000)` (jakarta.validation) to
+`ReplayRequest.maxEvents` (same pattern as `WebhookRetryPolicy` + `@Builder.Default`);
+REMOVED the `Math.min` clamp — validation rejects out-of-range instead. **@Valid was
+ALREADY applied** on the replay `@RequestBody` (`WebhookAdminController` line 280), so
+no controller change was needed. **Default behavior:** omitting `max_events` stays
+100 — the service's `getMaxEvents() != null ? ... : 100` fallback (also the
+`@Builder.Default = 100`); `@Min/@Max` pass for null (null is "valid"), so an omitted
+value is not rejected. Controller tests: `max_events=0` → 400 (service not called),
+`max_events=1001` → 400 (service not called), omitted → 202 (validation passes).
+
+**F1 (P1) — best-effort enqueue is the INTENDED, spec-aligned behavior (confirm +
+observe, NO behavior change).** Per the coordinator's decision, governance #130 is
+narrowed to selection-completeness + BEST-EFFORT enqueue (`events_queued` = accepted
+count, may be < selected on transient failure; replay not idempotent). So the existing
+per-event catch + count STAYS. Made it correct + observable:
+- Added a loud **WARN** when `queued < selected` (`replay_id`, `subscription_id`,
+  `tenant_id`, `selected`, `queued`, shortfall) — a degraded dispatch backend is now
+  operator-visible (this is an operator signal, not a silent success claim; the spec
+  documents `events_queued` as the accepted count).
+- Reframed the replay comments/javadoc to state best-effort-enqueue-with-count is
+  INTENDED and `events_queued` may be `< selected` on backend failure; replay is NOT
+  idempotent (random delivery IDs → retry may duplicate). Documented the same on
+  `ReplayResponse.eventsQueued`.
+- Added `replay_partialEnqueue_reportsAcceptedCount_andLogsWarn_bestEffort` (3
+  selected, backend rejects 1 → `events_queued=2`, asserts the PARTIAL-enqueue WARN
+  with `selected=3 queued=2`).
+- Did NOT add fail-on-partial / atomic enqueue (rejected in favor of the best-effort
+  spec alignment; atomic enqueue was NOT judged clearly cheaper/better, so no stop-and-
+  ask was warranted).
+
+Gates green: model 192, data unit 543 (LINE 0.9572, unchanged), api unit 866, api
+integration 881, data integration 593 (unchanged).
+
 ### 2026-07-11 — v0.1.25.51 codex confirm: replay all-or-narrow doc sweep (comment-only) (#209)
 
 Codex confirmed the all-or-narrow LOGIC correct/clean; one P2 DOC-ONLY — stale
