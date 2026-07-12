@@ -146,12 +146,15 @@ new optional request fields) are **not** considered breaking.
     concurrent lifecycle change is not mistaken for a backend problem —
     `dispatchToSubscription` returns a structured outcome
     (`ENQUEUED`/`INACTIVE`/`BLOCKED`/`ENQUEUE_FAILED`):
-    - if any event hit `ENQUEUE_FAILED` (real transient backend failure) →
-      **WARN** "DEGRADED dispatch backend" with the per-category counts
+    - if any event hit `ENQUEUE_FAILED` (real backend failure — the `LPUSH`/save
+      failed, OR the dispatch-time subscription re-read failed with a
+      Redis/deserialization error rather than a genuine not-found) → **WARN**
+      "DEGRADED dispatch backend" with the per-category counts
       (`selected`/`enqueued`/`enqueue_failed`/`inactive`/`blocked`);
     - if the shortfall is ONLY `INACTIVE` (subscription concurrently
-      paused/disabled/deleted, re-checked at dispatch) and/or `BLOCKED`
-      (delivery-time ownership guard) → **INFO** (intended, not degradation).
+      paused/disabled at the re-check, or genuinely deleted — `WEBHOOK_NOT_FOUND`
+      only) and/or `BLOCKED` (delivery-time ownership guard) → **INFO** (intended,
+      not degradation). A re-read backend error is NOT hidden as `INACTIVE`.
 
     Replay is **NOT idempotent** — delivery IDs are random, so a retry may
     duplicate already-queued deliveries.

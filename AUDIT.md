@@ -38,6 +38,38 @@ pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-07-11 — v0.1.25.51 codex round: dispatch re-read must not misclassify backend errors as INACTIVE (#209)
+
+Codex P2 on the just-added classification: `dispatchToSubscription`'s `findById`
+re-read was wrapped in a blanket `catch (Exception e) → INACTIVE`. But
+`WebhookRepository.findById` (verified) throws
+`GovernanceException.webhookNotFound(id)` (`ErrorCode.WEBHOOK_NOT_FOUND`, 404) ONLY
+for a genuinely-missing row, and wraps Redis/deserialization/other failures in a
+plain `RuntimeException("Failed to find webhook subscription", e)`. So a real
+backend outage during the re-read was misclassified INACTIVE → replay emitted the
+benign INFO and HID the failure.
+
+Fix: catch `GovernanceException` and map to `INACTIVE` ONLY when
+`getErrorCode() == WEBHOOK_NOT_FOUND` (genuine delete, intended lifecycle); any
+other `GovernanceException`, and any other `Exception` (Redis/deser/unexpected),
+→ `ENQUEUE_FAILED` (degradation → degraded WARN), each logged. The paused/disabled
+INACTIVE trigger (non-ACTIVE status on a successful re-read) is unchanged.
+
+The exact not-found signal caught: `GovernanceException` with
+`ErrorCode.WEBHOOK_NOT_FOUND` (the only INACTIVE-worthy `findById` throw).
+
+Tests (`WebhookDispatchServiceTest`): renamed the deleted case →
+`dispatchToSubscription_subscriptionDeletedMidReplay_inactive` (WEBHOOK_NOT_FOUND →
+INACTIVE, unchanged); added `dispatchToSubscription_reReadBackendError_enqueueFailed_
+notInactive` (findById throws `RuntimeException` wrapping `JedisConnectionException`
+→ ENQUEUE_FAILED) and `dispatchToSubscription_reReadNonNotFoundGovernanceError_
+enqueueFailed` (a non-not-found `GovernanceException` → ENQUEUE_FAILED). Replay-level
+effect is covered by the existing pair: ENQUEUE_FAILED → degraded WARN, INACTIVE →
+benign INFO (`WebhookServiceTest`).
+
+Gates green: model 192, data unit 543 (LINE 0.9572, unchanged), api unit 869, api
+integration 884, data integration 593 (unchanged).
+
 ### 2026-07-11 — v0.1.25.51 reviewer round: categorize replay shortfall (structured dispatch outcome) (#209)
 
 Reviewer P2: the best-effort partial-enqueue WARN fired for EVERY

@@ -5,10 +5,12 @@ import static io.runcycles.admin.api.logging.LogSanitizer.safe;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.runcycles.admin.api.filter.TraceContextFilter;
+import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.WebhookDeliveryRepository;
 import io.runcycles.admin.data.repository.WebhookRepository;
 import io.runcycles.admin.model.event.Event;
 import io.runcycles.admin.model.event.EventType;
+import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.webhook.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -195,10 +197,23 @@ public class WebhookDispatchService {
         WebhookSubscription current;
         try {
             current = webhookRepository.findById(sub.getSubscriptionId());
+        } catch (GovernanceException e) {
+            if (e.getErrorCode() == ErrorCode.WEBHOOK_NOT_FOUND) {
+                // Subscription genuinely deleted mid-replay — an INTENDED lifecycle
+                // change, not a backend failure.
+                return DispatchOutcome.INACTIVE;
+            }
+            // Any OTHER governance error is unexpected — treat as degradation.
+            LOG.warn("Webhook replay re-read failed (non-not-found governance error): subscription_id={} tenant_id={} error_code={} error={}",
+                safe(sub.getSubscriptionId()), safe(sub.getTenantId()), e.getErrorCode(), safe(e.getMessage()));
+            return DispatchOutcome.ENQUEUE_FAILED;
         } catch (Exception e) {
-            // Subscription vanished (deleted) mid-replay — an intended lifecycle
-            // change, not a backend failure.
-            return DispatchOutcome.INACTIVE;
+            // Redis / deserialization / unexpected failure during the re-read —
+            // a real backend DEGRADATION, NOT a benign lifecycle change. Must not
+            // be hidden as INACTIVE (that would mask a real outage).
+            LOG.warn("Webhook replay re-read failed (backend error): subscription_id={} tenant_id={} error={}",
+                safe(sub.getSubscriptionId()), safe(sub.getTenantId()), safe(e.getMessage()), e);
+            return DispatchOutcome.ENQUEUE_FAILED;
         }
         if (current == null || current.getStatus() != WebhookStatus.ACTIVE) {
             LOG.debug("Webhook replay delivery skipped — subscription no longer ACTIVE: subscription_id={} tenant_id={} status={}",

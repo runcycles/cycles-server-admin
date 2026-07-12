@@ -257,7 +257,9 @@ class WebhookDispatchServiceTest {
     }
 
     @Test
-    void dispatchToSubscription_subscriptionDeletedMidReplay_skips() {
+    void dispatchToSubscription_subscriptionDeletedMidReplay_inactive() {
+        // Genuinely deleted → findById throws WEBHOOK_NOT_FOUND → INACTIVE
+        // (intended lifecycle change).
         WebhookSubscription stale = buildSubscription("whsub_gone");
         when(webhookRepository.findById("whsub_gone"))
             .thenThrow(io.runcycles.admin.data.exception.GovernanceException.webhookNotFound("whsub_gone"));
@@ -265,6 +267,37 @@ class WebhookDispatchServiceTest {
         WebhookDispatchService.DispatchOutcome outcome = webhookDispatchService.dispatchToSubscription(buildEvent(), stale);
 
         assertThat(outcome).isEqualTo(WebhookDispatchService.DispatchOutcome.INACTIVE);
+        verify(deliveryRepository, never()).save(any());
+    }
+
+    @Test
+    void dispatchToSubscription_reReadBackendError_enqueueFailed_notInactive() {
+        // #209 P2: a Redis/deserialization failure during the dispatch-time
+        // re-read is a real backend DEGRADATION — it must classify as
+        // ENQUEUE_FAILED (→ degraded WARN), NOT be hidden as INACTIVE.
+        WebhookSubscription stale = buildSubscription("whsub_1");
+        when(webhookRepository.findById("whsub_1"))
+            .thenThrow(new RuntimeException("Failed to find webhook subscription",
+                new redis.clients.jedis.exceptions.JedisConnectionException("redis down")));
+
+        WebhookDispatchService.DispatchOutcome outcome = webhookDispatchService.dispatchToSubscription(buildEvent(), stale);
+
+        assertThat(outcome).isEqualTo(WebhookDispatchService.DispatchOutcome.ENQUEUE_FAILED);
+        verify(deliveryRepository, never()).save(any());
+    }
+
+    @Test
+    void dispatchToSubscription_reReadNonNotFoundGovernanceError_enqueueFailed() {
+        // A governance exception that is NOT WEBHOOK_NOT_FOUND is unexpected →
+        // treated as degradation, not a benign lifecycle change.
+        WebhookSubscription stale = buildSubscription("whsub_1");
+        when(webhookRepository.findById("whsub_1"))
+            .thenThrow(new io.runcycles.admin.data.exception.GovernanceException(
+                io.runcycles.admin.model.shared.ErrorCode.INTERNAL_ERROR, "boom", 500));
+
+        WebhookDispatchService.DispatchOutcome outcome = webhookDispatchService.dispatchToSubscription(buildEvent(), stale);
+
+        assertThat(outcome).isEqualTo(WebhookDispatchService.DispatchOutcome.ENQUEUE_FAILED);
         verify(deliveryRepository, never()).save(any());
     }
 
