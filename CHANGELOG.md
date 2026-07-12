@@ -68,7 +68,7 @@ new optional request fields) are **not** considered breaking.
   rejecting admin-only entries with 400 `INVALID_REQUEST`. Validating the
   effective result means a status-only reactivation (`{"status":"ACTIVE"}`)
   cannot re-enable a disabled offender that still holds admin-only selectors.
-  Governance spec revision v0.1.25.40 (pending, runcycles/cycles-protocol#129)
+  Governance spec revision v0.1.25.40 (merged, runcycles/cycles-protocol#129)
   makes this normative.
   - **`__system__` carve-out:** admin-only selectors remain allowed on
     `__system__`-owned subscriptions (no `tenant_id` param, or an

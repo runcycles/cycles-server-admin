@@ -69,7 +69,7 @@ public class WebhookAdminController {
             @RequestParam(required = false) String tenant_id,
             @Valid @RequestBody WebhookCreateRequest request, HttpServletRequest httpRequest) {
         String tenantId = tenant_id != null ? tenant_id : WebhookCategoryBoundaryValidator.SYSTEM_TENANT;
-        // #209 / governance v0.1.25.40 (pending): the admin plane is the CARRIER
+        // #209 / governance v0.1.25.40: the admin plane is the CARRIER
         // source — an operator could place admin-only event_types/categories on
         // a tenant-owned subscription, and since matchesEventType treats
         // categories as an ADDITIVE union the owning tenant (which controls the
@@ -152,7 +152,7 @@ public class WebhookAdminController {
         // Capture prior status BEFORE mutating so we can classify the emit
         // type (WEBHOOK_PAUSED / WEBHOOK_RESUMED vs plain WEBHOOK_UPDATED).
         WebhookSubscription prior = webhookService.get(subscriptionId);
-        // #209 / governance v0.1.25.40 (pending): validate the EFFECTIVE
+        // #209 / governance v0.1.25.40: validate the EFFECTIVE
         // resulting selectors (stored ∪ request) against the STORED
         // subscription's owning tenant (WebhookUpdateRequest has no tenant_id —
         // ownership is the subscription's). Effective (not request-only) so a

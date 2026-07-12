@@ -207,7 +207,7 @@ public class WebhookRepository {
     }
 
     /**
-     * Best-effort hygiene cleanup for #209 / governance v0.1.25.40 (pending).
+     * Best-effort hygiene cleanup for #209 / governance v0.1.25.40.
      *
      * <p><b>This is NOT the security mechanism.</b> The durable confidentiality
      * guarantee is the fail-closed DISPATCH boundary
