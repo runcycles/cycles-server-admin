@@ -2,7 +2,7 @@
 
 **Spec:**
 [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml)
-(OpenAPI 3.1.0, info.version `0.1.25.39`; adds CASCADE SEMANTICS — Rule 1 `POST
+(OpenAPI 3.1.0, info.version `0.1.25.41`; adds CASCADE SEMANTICS — Rule 1 `POST
 /admin/tenants/{id}` PATCH→CLOSED cascades owned budgets (→CLOSED), webhook
 subscriptions (→DISABLED), and API keys (→REVOKED) under a shared correlation_id
 — Rule 1 permits **Mode A (atomic)** or **Mode B
@@ -30,13 +30,34 @@ cycles-protocol#126) extends the tenant self-service webhook boundary to
 cover `event_categories` — implemented here in 0.1.25.50; v0.1.25.39
 (merged 2026-07-11, cycles-protocol#127) relaxes the webhook schema to
 permit category-only subscriptions, ratifying already-shipped 0.1.25.50
-behavior) in
+behavior; v0.1.25.40 (merged, cycles-protocol#129) adds the admin-plane
+webhook category boundary (INVARIANT 2 — a tenant-owned subscription may
+not carry admin-only event types/categories); v0.1.25.41 (merged,
+cycles-protocol#130) narrows `replayEvents` success to
+selection-completeness + best-effort enqueue (all-or-narrow) and documents
+the `/test` synthetic-ping exception — .40 and .41 both implemented here in
+0.1.25.51) in
 [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 
 **Server:** Spring Boot 3.5.15 / Java 21 / Jedis 7.5.2 · commons-lang3 3.18.0
 pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
+
+### 2026-07-12 — declared spec alignment bump v0.1.25.39 → v0.1.25.41 (doc-only)
+
+Post-release doc bookkeeping (0.1.25.51 shipped; PR #210 merged to main).
+cycles-protocol `origin/main` `cycles-governance-admin-v0.1.25.yaml` `info.version`
+is now `0.1.25.41` (verified). This release (0.1.25.51) implements governance
+v0.1.25.40 (admin-plane webhook category boundary — INVARIANT 2 / tenant-owned
+subscriptions may not carry admin-only types/categories, cycles-protocol#129) AND
+v0.1.25.41 (replayEvents all-or-narrow: selection-completeness + best-effort
+enqueue, plus the `/test` synthetic-ping exception, cycles-protocol#130). Bumped
+the README alignment declaration and the AUDIT header `info.version` pin
+v0.1.25.39 → v0.1.25.41 (same pattern as the earlier .37→.38→.39 bumps). No
+behavior change — .40/.41 are the specs already implemented in this release;
+declaration was lagging. Dated release-history / provenance references to earlier
+revisions (README §release notes v0.1.25.37/.38/.39 entries) left untouched.
 
 ### 2026-07-11 — v0.1.25.51 codex round: dispatch re-read must not misclassify backend errors as INACTIVE (#209)
 
