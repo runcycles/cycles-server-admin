@@ -148,7 +148,7 @@ class WebhookAdminControllerTest {
                 entry.getStatus() == 200));
     }
 
-    // #209 / governance v0.1.25.40 (pending): the admin plane is the CARRIER
+    // #209 / governance v0.1.25.40: the admin plane is the CARRIER
     // source. Admin-only categories on a TENANT-owned subscription are now
     // rejected 400 (create validates against the tenant_id param; update
     // against the STORED subscription's tenant_id); __system__ rows are NOT

@@ -28,7 +28,7 @@ import java.util.List;
  *       subscription, and since {@code matchesEventType} treats categories as
  *       an ADDITIVE union, that tenant (which controls the endpoint URL +
  *       signing secret) would receive admin-only governance/security
- *       telemetry. Governance revision v0.1.25.40 (pending) makes this
+ *       telemetry. Governance revision v0.1.25.40 makes this
  *       normative. {@code __system__} subscriptions are NOT tenant-owned —
  *       admin-only categories on them are legitimate system-wide monitoring
  *       and remain allowed.</li>
