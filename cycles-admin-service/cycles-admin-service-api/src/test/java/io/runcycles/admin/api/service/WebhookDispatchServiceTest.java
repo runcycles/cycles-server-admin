@@ -161,9 +161,9 @@ class WebhookDispatchServiceTest {
         WebhookSubscription sub = buildSubscription("whsub_1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub); // fresh status re-read (ACTIVE)
 
-        boolean queued = webhookDispatchService.dispatchToSubscription(event, sub);
+        WebhookDispatchService.DispatchOutcome outcome = webhookDispatchService.dispatchToSubscription(event, sub);
 
-        assertThat(queued).isTrue();
+        assertThat(outcome).isEqualTo(WebhookDispatchService.DispatchOutcome.ENQUEUED);
         verify(deliveryRepository).save(argThat(d ->
             d.getSubscriptionId().equals("whsub_1") &&
             d.getEventId().equals("evt_1") &&
@@ -218,9 +218,9 @@ class WebhookDispatchServiceTest {
     void dispatchToSubscription_concreteTenant_adminEvent_blocked_returnsFalse() {
         WebhookSubscription concrete = sub("whsub_c", "tenant-1", WebhookStatus.ACTIVE);
 
-        boolean queued = webhookDispatchService.dispatchToSubscription(adminEvent(), concrete);
+        WebhookDispatchService.DispatchOutcome outcome = webhookDispatchService.dispatchToSubscription(adminEvent(), concrete);
 
-        assertThat(queued).isFalse();
+        assertThat(outcome).isEqualTo(WebhookDispatchService.DispatchOutcome.BLOCKED);
         verify(deliveryRepository, never()).save(any());
         verify(webhookRepository, never()).findById(anyString()); // short-circuits before status re-read
     }
@@ -230,9 +230,9 @@ class WebhookDispatchServiceTest {
         WebhookSubscription system = sub("whsub_s", "__system__", WebhookStatus.ACTIVE);
         when(webhookRepository.findById("whsub_s")).thenReturn(system);
 
-        boolean queued = webhookDispatchService.dispatchToSubscription(adminEvent(), system);
+        WebhookDispatchService.DispatchOutcome outcome = webhookDispatchService.dispatchToSubscription(adminEvent(), system);
 
-        assertThat(queued).isTrue();
+        assertThat(outcome).isEqualTo(WebhookDispatchService.DispatchOutcome.ENQUEUED);
         verify(deliveryRepository).save(any());
     }
 
@@ -249,9 +249,9 @@ class WebhookDispatchServiceTest {
         nowDisabled.setStatus(WebhookStatus.DISABLED);
         when(webhookRepository.findById("whsub_1")).thenReturn(nowDisabled);
 
-        boolean queued = webhookDispatchService.dispatchToSubscription(buildEvent(), staleActive);
+        WebhookDispatchService.DispatchOutcome outcome = webhookDispatchService.dispatchToSubscription(buildEvent(), staleActive);
 
-        assertThat(queued).isFalse();
+        assertThat(outcome).isEqualTo(WebhookDispatchService.DispatchOutcome.INACTIVE);
         verify(webhookRepository).findById("whsub_1"); // the re-read actually happened
         verify(deliveryRepository, never()).save(any());
     }
@@ -262,9 +262,9 @@ class WebhookDispatchServiceTest {
         when(webhookRepository.findById("whsub_gone"))
             .thenThrow(io.runcycles.admin.data.exception.GovernanceException.webhookNotFound("whsub_gone"));
 
-        boolean queued = webhookDispatchService.dispatchToSubscription(buildEvent(), stale);
+        WebhookDispatchService.DispatchOutcome outcome = webhookDispatchService.dispatchToSubscription(buildEvent(), stale);
 
-        assertThat(queued).isFalse();
+        assertThat(outcome).isEqualTo(WebhookDispatchService.DispatchOutcome.INACTIVE);
         verify(deliveryRepository, never()).save(any());
     }
 
@@ -277,9 +277,9 @@ class WebhookDispatchServiceTest {
             .createdAt(Instant.now()).build();
         when(webhookRepository.findById("whsub_null")).thenReturn(nullOwner);
 
-        boolean queued = webhookDispatchService.dispatchToSubscription(adminEvent(), nullOwner);
+        WebhookDispatchService.DispatchOutcome outcome = webhookDispatchService.dispatchToSubscription(adminEvent(), nullOwner);
 
-        assertThat(queued).isTrue();
+        assertThat(outcome).isEqualTo(WebhookDispatchService.DispatchOutcome.ENQUEUED);
         verify(deliveryRepository).save(any());
     }
 
@@ -293,9 +293,9 @@ class WebhookDispatchServiceTest {
             .eventType(EventType.BUDGET_CREATED).category(EventCategory.API_KEY)
             .tenantId("tenant-1").timestamp(Instant.now()).build();
 
-        boolean queued = webhookDispatchService.dispatchToSubscription(inconsistent, concrete);
+        WebhookDispatchService.DispatchOutcome outcome = webhookDispatchService.dispatchToSubscription(inconsistent, concrete);
 
-        assertThat(queued).isFalse();
+        assertThat(outcome).isEqualTo(WebhookDispatchService.DispatchOutcome.BLOCKED);
         verify(deliveryRepository, never()).save(any());
         verify(webhookRepository, never()).findById(anyString()); // short-circuits
     }
@@ -307,9 +307,9 @@ class WebhookDispatchServiceTest {
             .eventType(null).category(null)
             .tenantId("tenant-1").timestamp(Instant.now()).build();
 
-        boolean queued = webhookDispatchService.dispatchToSubscription(unclassifiable, concrete);
+        WebhookDispatchService.DispatchOutcome outcome = webhookDispatchService.dispatchToSubscription(unclassifiable, concrete);
 
-        assertThat(queued).isFalse();
+        assertThat(outcome).isEqualTo(WebhookDispatchService.DispatchOutcome.BLOCKED);
         verify(deliveryRepository, never()).save(any());
     }
 
@@ -321,9 +321,9 @@ class WebhookDispatchServiceTest {
             .eventType(EventType.BUDGET_CREATED).category(EventCategory.API_KEY)
             .tenantId("tenant-1").timestamp(Instant.now()).build();
 
-        boolean queued = webhookDispatchService.dispatchToSubscription(inconsistent, system);
+        WebhookDispatchService.DispatchOutcome outcome = webhookDispatchService.dispatchToSubscription(inconsistent, system);
 
-        assertThat(queued).isTrue(); // system-owned: boundary does not apply
+        assertThat(outcome).isEqualTo(WebhookDispatchService.DispatchOutcome.ENQUEUED); // system-owned: boundary does not apply
         verify(deliveryRepository).save(any());
     }
 
@@ -336,9 +336,9 @@ class WebhookDispatchServiceTest {
         when(jedis.lpush(eq("dispatch:pending"), anyString()))
             .thenThrow(new RuntimeException("redis down"));
 
-        boolean queued = webhookDispatchService.dispatchToSubscription(buildEvent(), sub);
+        WebhookDispatchService.DispatchOutcome outcome = webhookDispatchService.dispatchToSubscription(buildEvent(), sub);
 
-        assertThat(queued).isFalse();       // not enqueued → honest false
+        assertThat(outcome).isEqualTo(WebhookDispatchService.DispatchOutcome.ENQUEUE_FAILED);       // not enqueued → honest false
         verify(deliveryRepository).save(any()); // row still persisted
     }
 

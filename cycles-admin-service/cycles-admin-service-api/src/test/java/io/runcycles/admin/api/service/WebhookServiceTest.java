@@ -37,11 +37,12 @@ class WebhookServiceTest {
 
     @org.junit.jupiter.api.BeforeEach
     void dispatchDeliversByDefault() {
-        // dispatchToSubscription now returns whether a delivery was enqueued;
-        // default to true so replay-counting tests behave as before (a guard
-        // that skips delivery is exercised explicitly where relevant).
+        // dispatchToSubscription returns a STRUCTURED outcome; default to ENQUEUED
+        // so replay-counting tests behave as before (a benign skip / backend
+        // failure is exercised explicitly where relevant).
         org.mockito.Mockito.lenient()
-            .when(dispatchService.dispatchToSubscription(any(), any())).thenReturn(true);
+            .when(dispatchService.dispatchToSubscription(any(), any()))
+            .thenReturn(WebhookDispatchService.DispatchOutcome.ENQUEUED);
     }
 
     private WebhookCreateRequest createRequest() {
@@ -535,13 +536,27 @@ class WebhookServiceTest {
         inOrder.verify(dispatchService).dispatchToSubscription(c, sub);
     }
 
+    private ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> attachWebhookServiceAppender() {
+        ch.qos.logback.classic.Logger logger =
+            (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(WebhookService.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+            new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        return appender;
+    }
+
+    private void detachWebhookServiceAppender(ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender) {
+        ((ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(WebhookService.class)).detachAppender(appender);
+    }
+
     // #209 F1: enqueue is BEST-EFFORT by DESIGN (governance #130). Selection is
-    // complete, but a transient per-event enqueue failure makes events_queued <
-    // selected — this is the INTENDED, spec-conformant contract (not fail-on-
-    // partial, not atomic). The degraded enqueue MUST be loudly logged so it is
-    // operator-observable; events_queued honestly reports the accepted count.
+    // complete, but a REAL backend failure (ENQUEUE_FAILED) makes events_queued <
+    // selected — the INTENDED contract (not fail-on-partial, not atomic). Only a
+    // genuine degradation is a WARN; events_queued honestly reports the accepted
+    // count.
     @Test
-    void replay_partialEnqueue_reportsAcceptedCount_andLogsWarn_bestEffort() {
+    void replay_partialEnqueue_backendFailure_logsDegradedWarn() {
         WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
         when(webhookRepository.findById("whsub_1")).thenReturn(sub);
         when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
@@ -549,30 +564,64 @@ class WebhookServiceTest {
         io.runcycles.admin.model.event.Event b = evt("evt_b", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
         io.runcycles.admin.model.event.Event c = evt("evt_c", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
         stubReplayWindow(List.of(a, b, c)); // 3 selected
-        // Backend transiently rejects the enqueue of one selected event.
-        when(dispatchService.dispatchToSubscription(b, sub)).thenReturn(false);
+        // Backend transiently FAILS the enqueue of one selected event.
+        when(dispatchService.dispatchToSubscription(b, sub))
+            .thenReturn(WebhookDispatchService.DispatchOutcome.ENQUEUE_FAILED);
 
-        // Capture the WARN so the partial enqueue is proven observable.
-        ch.qos.logback.classic.Logger logger =
-            (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(WebhookService.class);
-        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
-            new ch.qos.logback.core.read.ListAppender<>();
-        appender.start();
-        logger.addAppender(appender);
+        var appender = attachWebhookServiceAppender();
         ReplayResponse response;
         try {
             response = webhookService.replay("whsub_1",
                 ReplayRequest.builder().from(Instant.now().minusSeconds(3600)).to(Instant.now())
                     .maxEvents(5).build());
         } finally {
-            logger.detachAppender(appender);
+            detachWebhookServiceAppender(appender);
         }
 
         assertThat(response.getEventsQueued()).isEqualTo(2); // accepted count, honest (< 3 selected)
+        // DEGRADED WARN (real backend failure), NOT the benign INFO.
         assertThat(appender.list).anyMatch(e -> e.getLevel() == ch.qos.logback.classic.Level.WARN
-                && e.getFormattedMessage().contains("PARTIAL enqueue")
+                && e.getFormattedMessage().contains("DEGRADED dispatch backend")
                 && e.getFormattedMessage().contains("selected=3")
-                && e.getFormattedMessage().contains("queued=2"));
+                && e.getFormattedMessage().contains("enqueued=2")
+                && e.getFormattedMessage().contains("enqueue_failed=1"));
+    }
+
+    // #209 P2: a BENIGN shortfall — subscription concurrently paused/disabled/
+    // deleted mid-replay (dispatch returns INACTIVE) — is NOT a backend
+    // degradation. events_queued reflects only the enqueued ones, and the signal
+    // is a benign INFO, NOT the degraded-backend WARN.
+    @Test
+    void replay_partialEnqueue_concurrentDisable_logsBenignInfo_notDegradedWarn() {
+        WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
+        when(webhookRepository.findById("whsub_1")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub_1"), any())).thenReturn(true);
+        io.runcycles.admin.model.event.Event a = evt("evt_a", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        io.runcycles.admin.model.event.Event b = evt("evt_b", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        io.runcycles.admin.model.event.Event c = evt("evt_c", io.runcycles.admin.model.event.EventType.BUDGET_CREATED, io.runcycles.admin.model.event.EventCategory.BUDGET);
+        stubReplayWindow(List.of(a, b, c)); // 3 selected
+        // Subscription disabled mid-replay → one dispatch re-check returns INACTIVE.
+        when(dispatchService.dispatchToSubscription(b, sub))
+            .thenReturn(WebhookDispatchService.DispatchOutcome.INACTIVE);
+
+        var appender = attachWebhookServiceAppender();
+        ReplayResponse response;
+        try {
+            response = webhookService.replay("whsub_1",
+                ReplayRequest.builder().from(Instant.now().minusSeconds(3600)).to(Instant.now())
+                    .maxEvents(5).build());
+        } finally {
+            detachWebhookServiceAppender(appender);
+        }
+
+        assertThat(response.getEventsQueued()).isEqualTo(2); // only the enqueued ones
+        // Benign INFO — intended lifecycle change, NOT degradation.
+        assertThat(appender.list).anyMatch(e -> e.getLevel() == ch.qos.logback.classic.Level.INFO
+                && e.getFormattedMessage().contains("intended, NOT degradation")
+                && e.getFormattedMessage().contains("inactive=1"));
+        // And DEFINITELY no degraded-backend WARN.
+        assertThat(appender.list).noneMatch(e -> e.getLevel() == ch.qos.logback.classic.Level.WARN
+                && e.getFormattedMessage().contains("DEGRADED dispatch backend"));
     }
 
     // The fail-closed ownership boundary is applied DURING collection, so an

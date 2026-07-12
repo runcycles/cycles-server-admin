@@ -141,10 +141,18 @@ new optional request fields) are **not** considered breaking.
     still defaults to 100.
   - **Enqueue is BEST-EFFORT, and `events_queued` reports the accepted count
     (governance #130).** Selection is complete for the window, but per-event
-    enqueue onto the dispatch queue is best-effort: on a transient backend
-    failure `events_queued` may be fewer than the events selected. A **loud WARN**
-    (`replay_id`, `subscription_id`, `selected`, `queued`) is logged whenever
-    `events_queued < selected` so a degraded backend is operator-observable.
+    enqueue onto the dispatch queue is best-effort: `events_queued` may be fewer
+    than the events selected. A shortfall is **categorized** so a benign
+    concurrent lifecycle change is not mistaken for a backend problem —
+    `dispatchToSubscription` returns a structured outcome
+    (`ENQUEUED`/`INACTIVE`/`BLOCKED`/`ENQUEUE_FAILED`):
+    - if any event hit `ENQUEUE_FAILED` (real transient backend failure) →
+      **WARN** "DEGRADED dispatch backend" with the per-category counts
+      (`selected`/`enqueued`/`enqueue_failed`/`inactive`/`blocked`);
+    - if the shortfall is ONLY `INACTIVE` (subscription concurrently
+      paused/disabled/deleted, re-checked at dispatch) and/or `BLOCKED`
+      (delivery-time ownership guard) → **INFO** (intended, not degradation).
+
     Replay is **NOT idempotent** — delivery IDs are random, so a retry may
     duplicate already-queued deliveries.
 

@@ -38,6 +38,43 @@ pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-07-11 — v0.1.25.51 reviewer round: categorize replay shortfall (structured dispatch outcome) (#209)
+
+Reviewer P2: the best-effort partial-enqueue WARN fired for EVERY
+`events_queued < selected`, but `dispatchToSubscription` returned `false` for
+several reasons and only ONE is a degradation — so a benign concurrent-disable
+mid-replay raised a false "backend degraded" alarm.
+
+Fix (structured result, chosen over broadening the log wording — the operational
+distinction matters):
+1. `WebhookDispatchService.dispatchToSubscription` now returns a structured enum
+   `DispatchOutcome { ENQUEUED, INACTIVE, BLOCKED, ENQUEUE_FAILED }` instead of a
+   boolean; per-branch behavior is UNCHANGED (ownership guard → BLOCKED; deleted /
+   non-ACTIVE at the dispatch-time status re-check → INACTIVE; LPUSH/save fail →
+   ENQUEUE_FAILED; else ENQUEUED).
+2. Callers: the ONLY production caller is `WebhookService.replay` (live
+   `dispatch()` uses `createDelivery` directly and is unchanged — verified by
+   grep). Replay counts `ENQUEUED` as `events_queued` and tallies each category.
+3. Categorized shortfall logging: if `enqueue_failed > 0` → **WARN** "DEGRADED
+   dispatch backend" (`replay_id`/`subscription_id`/`tenant_id`/`selected`/
+   `enqueued`/`enqueue_failed`/`inactive`/`blocked`); if the shortfall is ONLY
+   INACTIVE/BLOCKED → **INFO** "intended, NOT degradation". The per-event outer
+   catch (unexpected error, e.g. deliveryRepository.save throwing) counts as
+   `enqueue_failed` (a degradation).
+4. Tests: renamed the partial test to `replay_partialEnqueue_backendFailure_
+   logsDegradedWarn` (one ENQUEUE_FAILED → asserts the DEGRADED WARN with
+   `enqueued=2 enqueue_failed=1`); added `replay_partialEnqueue_concurrentDisable_
+   logsBenignInfo_notDegradedWarn` (one INACTIVE → `events_queued=2`, asserts the
+   benign INFO and asserts NO degraded WARN). Updated `WebhookDispatchServiceTest`
+   (10 assertions boolean→`DispatchOutcome`: ENQUEUED/BLOCKED/INACTIVE/
+   ENQUEUE_FAILED per case, incl. the deleted-mid-replay → INACTIVE and the
+   LPUSH-fail → ENQUEUE_FAILED paths) and the replay integration mock
+   (→ ENQUEUED). BLOCKED is exercised by the dispatch unit tests
+   (concrete-tenant admin/inconsistent/unclassifiable → BLOCKED).
+
+Gates green: model 192, data unit 543 (LINE 0.9572, unchanged), api unit 867, api
+integration 882, data integration 593 (unchanged).
+
 ### 2026-07-11 — v0.1.25.51 reviewer round: replay max_events validation + best-effort enqueue (#209)
 
 Two reviewer findings, one commit.

@@ -151,40 +151,63 @@ public class WebhookDispatchService {
     }
 
     /**
+     * Outcome of {@link #dispatchToSubscription} — a STRUCTURED result so replay
+     * can distinguish a real backend degradation from intended, benign skips
+     * (governance #130). Only {@link #ENQUEUE_FAILED} is a degradation.
+     */
+    public enum DispatchOutcome {
+        /** Delivery row persisted AND enqueued onto {@code dispatch:pending}. */
+        ENQUEUED,
+        /** Subscription no longer ACTIVE (paused / disabled / deleted) at the
+         *  dispatch-time status re-check — intended lifecycle behavior, NOT
+         *  degradation. */
+        INACTIVE,
+        /** The fail-closed ownership boundary blocked delivery at dispatch time
+         *  (rare race — selection already applied the boundary) — intended
+         *  security behavior, NOT degradation. */
+        BLOCKED,
+        /** A real transient backend failure — the delivery could not be enqueued
+         *  ({@code LPUSH}/save failed). Degradation, WARN-worthy. */
+        ENQUEUE_FAILED
+    }
+
+    /**
      * Dispatch a single event to a specific subscription (used by replay).
-     * Returns {@code true} if a delivery was enqueued, {@code false} if it was
-     * skipped by a delivery guard.
+     * Returns a {@link DispatchOutcome} — replay counts {@link DispatchOutcome#ENQUEUED}
+     * and categorizes the rest so a benign concurrent lifecycle change is not
+     * reported as a backend degradation.
      *
      * <p>Applies BOTH guards, so replay is fail-closed:
      * <ul>
      *   <li>the ownership boundary (a concrete-tenant sub never gets admin-only
-     *       events); and</li>
+     *       events) → {@link DispatchOutcome#BLOCKED}; and</li>
      *   <li>a fresh STATUS re-read at delivery time — replay queues events from a
      *       subscription snapshot captured before the replay lock, so a
      *       subscription disabled (or paused) concurrently must stop receiving
      *       deliveries mid-replay ("disabling stops delivery immediately" under
-     *       concurrency, TOCTOU fix).</li>
+     *       concurrency, TOCTOU fix) → {@link DispatchOutcome#INACTIVE}.</li>
      * </ul>
      */
-    public boolean dispatchToSubscription(Event event, WebhookSubscription sub) {
+    public DispatchOutcome dispatchToSubscription(Event event, WebhookSubscription sub) {
         if (isBlockedByOwnershipBoundary(event, sub)) {
-            return false;
+            return DispatchOutcome.BLOCKED;
         }
         WebhookSubscription current;
         try {
             current = webhookRepository.findById(sub.getSubscriptionId());
         } catch (Exception e) {
-            // Subscription vanished (deleted) mid-replay — skip.
-            return false;
+            // Subscription vanished (deleted) mid-replay — an intended lifecycle
+            // change, not a backend failure.
+            return DispatchOutcome.INACTIVE;
         }
         if (current == null || current.getStatus() != WebhookStatus.ACTIVE) {
             LOG.debug("Webhook replay delivery skipped — subscription no longer ACTIVE: subscription_id={} tenant_id={} status={}",
                 safe(sub.getSubscriptionId()), safe(sub.getTenantId()),
                 current != null ? current.getStatus() : null);
-            return false;
+            return DispatchOutcome.INACTIVE;
         }
-        // Honest boolean: true only if the delivery was actually enqueued.
-        return createDelivery(event, sub);
+        // ENQUEUED only if the delivery was actually enqueued; else ENQUEUE_FAILED.
+        return createDelivery(event, sub) ? DispatchOutcome.ENQUEUED : DispatchOutcome.ENQUEUE_FAILED;
     }
 
     /**

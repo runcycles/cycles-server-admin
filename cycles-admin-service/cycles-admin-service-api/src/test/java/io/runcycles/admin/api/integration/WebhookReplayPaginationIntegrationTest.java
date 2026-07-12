@@ -47,7 +47,7 @@ import static org.mockito.Mockito.when;
  * Approach B: {@link WebhookService#replay} pulls one bounded ordered id list
  * ({@link EventRepository#listEventIdsInRange}) then hydrates+filters batches.
  * {@link WebhookDispatchService} is mocked (delivery is not where the paging
- * bugs are); its {@code dispatchToSubscription} returns true so
+ * bugs are); its {@code dispatchToSubscription} returns ENQUEUED so
  * {@code events_queued} counts deliverable events and we capture delivery order.
  */
 class WebhookReplayPaginationIntegrationTest {
@@ -100,7 +100,8 @@ class WebhookReplayPaginationIntegrationTest {
             jedis.flushAll();
         }
         dispatchService = mock(WebhookDispatchService.class);
-        when(dispatchService.dispatchToSubscription(any(), any())).thenReturn(true);
+        when(dispatchService.dispatchToSubscription(any(), any()))
+                .thenReturn(WebhookDispatchService.DispatchOutcome.ENQUEUED);
         // boundary default: not blocked (false) — Mockito default for boolean.
         webhookService = new WebhookService(
                 webhookRepository, mock(WebhookDeliveryRepository.class),

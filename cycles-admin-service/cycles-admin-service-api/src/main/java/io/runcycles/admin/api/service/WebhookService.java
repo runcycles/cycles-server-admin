@@ -341,30 +341,42 @@ public class WebhookService {
             int selected = events.size();
             // #209 F1: enqueue is BEST-EFFORT by design (governance #130). Selection
             // is complete, but events_queued reports how many were ACCEPTED onto the
-            // dispatch queue — it may be < selected if the backend transiently fails
-            // a per-event enqueue. Replay is NOT idempotent (delivery IDs are random;
-            // a retry may duplicate). We count only events actually enqueued
-            // (dispatchToSubscription returns false when a delivery guard — ownership
-            // boundary or a concurrent disable re-checked at dispatch — skips it, and
-            // an enqueue error is caught per event) so the count is honest.
-            int queued = 0;
+            // dispatch queue. dispatchToSubscription returns a STRUCTURED outcome so
+            // we can tell a real backend degradation (ENQUEUE_FAILED) from intended,
+            // benign skips (INACTIVE = concurrent pause/disable/delete re-checked at
+            // dispatch; BLOCKED = delivery-time ownership guard). Replay is NOT
+            // idempotent (delivery IDs are random; a retry may duplicate).
+            int enqueued = 0, inactive = 0, blocked = 0, enqueueFailed = 0;
             for (Event event : events) {
                 try {
-                    if (dispatchService.dispatchToSubscription(event, sub)) {
-                        queued++;
+                    switch (dispatchService.dispatchToSubscription(event, sub)) {
+                        case ENQUEUED -> enqueued++;
+                        case INACTIVE -> inactive++;
+                        case BLOCKED -> blocked++;
+                        case ENQUEUE_FAILED -> enqueueFailed++;
                     }
                 } catch (Exception e) {
+                    // Unexpected error enqueuing this event — a backend degradation.
+                    enqueueFailed++;
                     LOG.warn("Failed to queue webhook replay delivery: replay_id={} subscription_id={} tenant_id={} event_id={} event_type={} correlation_id={} request_id={} trace_id={} error={}",
                             safe(replayId), safe(subscriptionId), safe(sub.getTenantId()), safe(event.getEventId()),
                             safe(event.getEventType() != null ? event.getEventType().getValue() : null),
                             safe(event.getCorrelationId()), safe(event.getRequestId()), safe(event.getTraceId()), safe(e.getMessage()), e);
                 }
             }
-            // Loud, operator-facing signal that a degraded backend produced a
-            // PARTIAL enqueue (best-effort contract: events_queued < selected).
+            int queued = enqueued;
+            // Categorized shortfall signal — a real backend failure is a "degraded"
+            // WARN; a purely lifecycle/guard shortfall is a benign INFO (intended).
             if (queued < selected) {
-                LOG.warn("Webhook replay PARTIAL enqueue (best-effort): replay_id={} subscription_id={} tenant_id={} selected={} queued={} — {} deliverable event(s) were NOT enqueued (degraded dispatch backend); replay is not idempotent, a retry may duplicate already-queued deliveries",
-                    safe(replayId), safe(subscriptionId), safe(sub.getTenantId()), selected, queued, selected - queued);
+                if (enqueueFailed > 0) {
+                    LOG.warn("Webhook replay PARTIAL enqueue — DEGRADED dispatch backend: replay_id={} subscription_id={} tenant_id={} selected={} enqueued={} enqueue_failed={} inactive={} blocked={} — {} deliverable event(s) were NOT enqueued; replay is not idempotent, a retry may duplicate already-queued deliveries",
+                        safe(replayId), safe(subscriptionId), safe(sub.getTenantId()),
+                        selected, enqueued, enqueueFailed, inactive, blocked, selected - queued);
+                } else {
+                    LOG.info("Webhook replay enqueued fewer than selected due to concurrent subscription lifecycle change / delivery-time guard (intended, NOT degradation): replay_id={} subscription_id={} tenant_id={} selected={} enqueued={} inactive={} blocked={}",
+                        safe(replayId), safe(subscriptionId), safe(sub.getTenantId()),
+                        selected, enqueued, inactive, blocked);
+                }
             }
             return ReplayResponse.builder()
                 .replayId(replayId)
