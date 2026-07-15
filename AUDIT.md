@@ -155,6 +155,16 @@ not this long-lived audit narrative. Merge requires a clean Maven verification,
 Docker-backed integration tests, independent 95% JaCoCo line and branch gates
 for every code module, Compose validation, image build, and `git diff --check`.
 
+### 2026-07-15 — v0.1.25.52 pre-release provenance closure (documentation only)
+
+The pre-tag drift checklist found that two already-merged, non-runtime changes
+since `v0.1.25.51` did not have an explicit home in the `0.1.25.52` consumer
+CHANGELOG entry: the declared governance-spec alignment update through
+v0.1.25.41 (PR #211) and the CodeQL SARIF upload action refresh to v4.37.0
+(PR #213). The `Changed` entry now records both. No application source, wire
+contract, production Compose pin, or release version changed in this
+bookkeeping correction.
+
 ### 2026-07-12 — declared spec alignment bump v0.1.25.39 → v0.1.25.41 (doc-only)
 
 Post-release doc bookkeeping (0.1.25.51 shipped; PR #210 merged to main).
