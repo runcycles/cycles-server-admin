@@ -577,6 +577,24 @@ class EventRepositoryTest {
     }
 
     @Test
+    void save_preservesExistingIdAndFailureDiagnosticsHandleNullShapes() {
+        Event existing = Event.builder().eventId("evt-existing")
+                .tenantId("tenant-1").timestamp(Instant.now()).build();
+        repository.save(existing);
+        assertThat(existing.getEventId()).isEqualTo("evt-existing");
+
+        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
+        assertThatThrownBy(() -> repository.save(null))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Failed to save event");
+        Event untyped = Event.builder().eventId("evt-untyped")
+                .tenantId("tenant-1").timestamp(Instant.now()).build();
+        assertThatThrownBy(() -> repository.save(untyped))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Failed to save event");
+    }
+
+    @Test
     void findById_redisException_throwsRuntimeException() {
         when(jedis.get("event:evt_err")).thenThrow(new RuntimeException("Redis down"));
 
@@ -828,6 +846,82 @@ class EventRepositoryTest {
         sorted.sort(asc);
         // Default case sorts by event_id ascending (tie-breaker becomes primary).
         assertThat(sorted).extracting(Event::getEventId).containsExactly("evt_a", "evt_b");
+    }
+
+    @Test
+    void eventComparator_eventTypeAndCategoryAreNullSafe() {
+        Instant now = Instant.now();
+        Event nullClassifiers = Event.builder().eventId("evt-null").timestamp(now).build();
+        Event classified = ev("evt-value", "tenant-1", EventType.BUDGET_CREATED, "scope", now);
+
+        List<Event> byType = new ArrayList<>(List.of(nullClassifiers, classified));
+        byType.sort(EventRepository.eventComparator(SortSpec.of("event_type", SortDirection.ASC)));
+        assertThat(byType).extracting(Event::getEventId).containsExactly("evt-value", "evt-null");
+
+        List<Event> byCategory = new ArrayList<>(List.of(nullClassifiers, classified));
+        byCategory.sort(EventRepository.eventComparator(SortSpec.of("category", SortDirection.ASC)));
+        assertThat(byCategory).extracting(Event::getEventId).containsExactly("evt-value", "evt-null");
+    }
+
+    @Test
+    void list_traceAndRequestFiltersRequireBothExactMatches() throws Exception {
+        Instant now = Instant.now();
+        Event match = ev("evt-match", "tenant-1", EventType.BUDGET_CREATED, "scope", now);
+        match.setTraceId("trace-1");
+        match.setRequestId("request-1");
+        Event wrongTrace = ev("evt-wrong-trace", "tenant-1", EventType.BUDGET_CREATED, "scope", now);
+        wrongTrace.setTraceId("other");
+        wrongTrace.setRequestId("request-1");
+        Event wrongRequest = ev("evt-wrong-request", "tenant-1", EventType.BUDGET_CREATED, "scope", now);
+        wrongRequest.setTraceId("trace-1");
+        wrongRequest.setRequestId("other");
+        stubZSet("events:tenant-1", false, List.of(wrongTrace, wrongRequest, match));
+
+        List<Event> result = repository.list("tenant-1", null, null, null, null,
+                null, null, null, 10, null, null, "trace-1", "request-1");
+
+        assertThat(result).extracting(Event::getEventId).containsExactly("evt-match");
+    }
+
+    @Test
+    void sortedList_appliesWindowFiltersSearchAndBlankCursorBeforeSorting() throws Exception {
+        Instant from = Instant.parse("2026-01-01T00:00:00Z");
+        Instant to = from.plusSeconds(60);
+        Event wrongType = ev("evt-type", "tenant-1", EventType.TENANT_CREATED, "needle", from);
+        Event wrongSearch = ev("evt-search", "tenant-1", EventType.BUDGET_CREATED, "other", from);
+        Event good = ev("evt-good", "tenant-1", EventType.BUDGET_CREATED, "needle-scope", from);
+        when(jedis.zrevrangeByScore("events:tenant-1", (double) to.toEpochMilli(),
+                (double) from.toEpochMilli()))
+                .thenReturn(List.of("missing", "evt-type", "evt-search", "evt-good"));
+        when(jedis.get("event:missing")).thenReturn(null);
+        String wrongTypeJson = objectMapper.writeValueAsString(wrongType);
+        String wrongSearchJson = objectMapper.writeValueAsString(wrongSearch);
+        String goodJson = objectMapper.writeValueAsString(good);
+        when(jedis.get("event:evt-type")).thenReturn(wrongTypeJson);
+        when(jedis.get("event:evt-search")).thenReturn(wrongSearchJson);
+        when(jedis.get("event:evt-good")).thenReturn(goodJson);
+
+        List<Event> result = repository.list("tenant-1", "budget.created", null, null, null,
+                from, to, " ", 10, SortSpec.of("event_type", SortDirection.ASC), "needle", null, null);
+
+        assertThat(result).extracting(Event::getEventId).containsExactly("evt-good");
+    }
+
+    @Test
+    void correlationLookup_handlesNullIndexAndSearchMisses() throws Exception {
+        when(jedis.smembers("events:correlation:corr-null")).thenReturn(null);
+        assertThat(repository.list(null, null, null, null, "corr-null",
+                null, null, null, 10)).isEmpty();
+
+        Event event = ev("evt-1", "tenant-1", EventType.BUDGET_CREATED, "other", Instant.now());
+        event.setCorrelationId("corr-search");
+        when(jedis.smembers("events:correlation:corr-search"))
+                .thenReturn(new LinkedHashSet<>(List.of("evt-1")));
+        String json = objectMapper.writeValueAsString(event);
+        when(jedis.get("event:evt-1")).thenReturn(json);
+
+        assertThat(repository.list(null, null, null, null, "corr-search",
+                null, null, null, 10, null, "needle")).isEmpty();
     }
 
     // ---- parseFailure catch-block coverage (listSortedNonTimestamp + listByCorrelation) ----

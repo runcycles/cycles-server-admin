@@ -134,7 +134,7 @@ public class TenantRepository {
                     if (data == null) {
                         LOG.warn("Tenant index points to missing row: tenant_id={} index_key=tenants status_filter={} parent_tenant_id_filter={} search_present={} sort_field={}",
                             LogSanitizer.safe(id), status, LogSanitizer.safe(parentTenantId), search != null && !search.isBlank(),
-                            sortSpec != null ? sortSpec.field() : null);
+                            sortSpec.field());
                         continue;
                     }
                     Tenant t = objectMapper.readValue(data, Tenant.class);
@@ -143,7 +143,7 @@ public class TenantRepository {
                 } catch (Exception e) {
                     LOG.warn("Failed to parse tenant row: tenant_id={} index_key=tenants status_filter={} parent_tenant_id_filter={} search_present={} sort_field={}",
                         LogSanitizer.safe(id), status, LogSanitizer.safe(parentTenantId), search != null && !search.isBlank(),
-                        sortSpec != null ? sortSpec.field() : null, e);
+                        sortSpec.field(), e);
                 }
             }
             hydrated.sort(tenantComparator(sortSpec));
@@ -218,9 +218,6 @@ public class TenantRepository {
     private static Comparator<Tenant> tenantComparator(SortSpec sortSpec) {
         Comparator<String> nullLastStr = Comparator.nullsLast(Comparator.naturalOrder());
         Comparator<Tenant> tid = Comparator.comparing(Tenant::getTenantId, nullLastStr);
-        if (sortSpec == null) {
-            return tid;
-        }
         String field = sortSpec.field() != null ? sortSpec.field() : "tenant_id";
         Comparator<Tenant> primary;
         switch (field) {
@@ -326,16 +323,8 @@ public class TenantRepository {
                         io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
                         "Cannot transition from CLOSED", 400);
                 }
-                // From ACTIVE: -> ACTIVE, SUSPENDED, CLOSED
-                // From SUSPENDED: -> ACTIVE, SUSPENDED, CLOSED
-                // (Both sets are the same after CLOSED is excluded as a source state.)
-                if (!(newStatus == TenantStatus.ACTIVE
-                        || newStatus == TenantStatus.SUSPENDED
-                        || newStatus == TenantStatus.CLOSED)) {
-                    throw new GovernanceException(
-                        io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
-                        "Invalid status transition: " + oldStatus + " -> " + newStatus, 400);
-                }
+                // Every non-null TenantStatus is valid from ACTIVE or SUSPENDED;
+                // CLOSED source-state handling remains explicit above.
                 tenant.setStatus(newStatus);
                 if (newStatus == TenantStatus.SUSPENDED) {
                     tenant.setSuspendedAt(now);

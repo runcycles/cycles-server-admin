@@ -512,7 +512,7 @@ public class BudgetRepository {
                 Map<String, String> hash = jedis.hgetAll(key);
                 if (hash.isEmpty()) {
                     LOG.warn("Budget index points to missing row; cleaning index: budget_key={} tenant_id={} index_key={} sort_field={}",
-                        LogSanitizer.safe(key), LogSanitizer.safe(tenantId), LogSanitizer.safe("budgets:" + tenantId), sortSpec != null ? sortSpec.field() : null);
+                        LogSanitizer.safe(key), LogSanitizer.safe(tenantId), LogSanitizer.safe("budgets:" + tenantId), sortSpec.field());
                     jedis.srem("budgets:" + tenantId, key);
                     continue;
                 }
@@ -521,7 +521,7 @@ public class BudgetRepository {
                 all.add(ledger);
             } catch (Exception e) {
                 LOG.warn("Failed to parse budget row: budget_key={} tenant_id={} index_key={} sort_field={}",
-                    LogSanitizer.safe(key), LogSanitizer.safe(tenantId), LogSanitizer.safe("budgets:" + tenantId), sortSpec != null ? sortSpec.field() : null, e);
+                    LogSanitizer.safe(key), LogSanitizer.safe(tenantId), LogSanitizer.safe("budgets:" + tenantId), sortSpec.field(), e);
             }
         }
         all.sort(budgetComparator(sortSpec));
@@ -546,7 +546,7 @@ public class BudgetRepository {
      * for any given ledger. Unknown fields fall back to ledger_id.
      */
     static Comparator<BudgetLedger> budgetComparator(SortSpec sortSpec) {
-        String field = sortSpec.field();
+        String field = sortSpec.field() != null ? sortSpec.field() : "utilization";
         Comparator<BudgetLedger> primary;
         switch (field) {
             case "tenant_id":
@@ -575,7 +575,7 @@ public class BudgetRepository {
                 break;
             case "utilization":
             default:
-                if (!"utilization".equals(field) && !field.equals("ledger_id")) {
+                if (!"utilization".equals(field) && !"ledger_id".equals(field)) {
                     // Unknown field — fall through to ledger_id tie-breaker only.
                     primary = Comparator.comparing(BudgetLedger::getLedgerId, Comparator.nullsLast(String::compareTo));
                     break;
@@ -693,7 +693,7 @@ public class BudgetRepository {
                     all.add(ledger);
                 } catch (Exception e) {
                     LOG.warn("Failed to parse budget row during cross-tenant sorted list: budget_key={} tenant_id={} sort_field={}",
-                        LogSanitizer.safe(key), LogSanitizer.safe(tenantId), sortSpec != null ? sortSpec.field() : null, e);
+                        LogSanitizer.safe(key), LogSanitizer.safe(tenantId), sortSpec.field(), e);
                 }
             }
         }
@@ -964,7 +964,7 @@ public class BudgetRepository {
             return HexFormat.of().formatHex(hash);
         } catch (Exception e) {
             LOG.warn("Failed to compute budget funding payload hash; idempotency mismatch detection skipped: request_type={}",
-                request != null ? request.getClass().getSimpleName() : null, e);
+                request.getClass().getSimpleName(), e);
             return "";
         }
     }

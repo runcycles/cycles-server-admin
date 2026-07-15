@@ -92,6 +92,20 @@ class IdempotencyStoreTest {
     }
 
     @Test
+    void lookupFailureDiagnostics_handleNullAndBlankKeys() {
+        when(jedis.get(anyString())).thenReturn("{not-json");
+
+        assertThat(store.lookup("tenants-bulk", null, Envelope.class)).isEmpty();
+        assertThat(store.lookup("tenants-bulk", " ", Envelope.class)).isEmpty();
+
+        reset(jedis);
+        when(jedisPool.getResource()).thenReturn(jedis);
+        when(jedis.get(anyString())).thenThrow(new RuntimeException("Redis down"));
+        assertThat(store.lookup("tenants-bulk", null, Envelope.class)).isEmpty();
+        assertThat(store.lookup("tenants-bulk", " ", Envelope.class)).isEmpty();
+    }
+
+    @Test
     void store_writesWithFifteenMinuteTtl() throws Exception {
         Envelope envelope = new Envelope("PAUSE", 7);
         String expectedJson = objectMapper.writeValueAsString(envelope);
@@ -122,6 +136,15 @@ class IdempotencyStoreTest {
 
         // Must not throw.
         store.store("tenants-bulk", "k-8", new Envelope("CLOSE", 2));
+    }
+
+    @Test
+    void storeFailureDiagnostics_handleNullEnvelopeAndNullOrBlankKeys() {
+        doThrow(new RuntimeException("Redis down"))
+            .when(jedis).setex(anyString(), anyLong(), anyString());
+
+        store.store("tenants-bulk", null, null);
+        store.store("tenants-bulk", " ", null);
     }
 
     @Test
@@ -243,6 +266,15 @@ class IdempotencyStoreTest {
             .thenThrow(new RuntimeException("Redis down"));
 
         store.abandon(claim);
+    }
+
+    @Test
+    void abandonFailureDiagnostics_handleNullAndBlankKeys() {
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenThrow(new RuntimeException("Redis down"));
+
+        store.abandon(new IdempotencyStore.Claim<>("budgets-bulk", null, "owner-1", null));
+        store.abandon(new IdempotencyStore.Claim<>("budgets-bulk", " ", "owner-2", null));
     }
 
     @Test

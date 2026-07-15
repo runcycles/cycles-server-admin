@@ -51,9 +51,11 @@ new optional request fields) are **not** considered breaking.
 
 - Contract tests fetch a reviewed cycles-protocol commit instead of a moving
   branch, while a nightly drift job detects upstream contract changes. Model-
-  module coverage is again subject to the 95% gate, jqwik uses
-  supported JUnit Platform configuration, and Mockito is attached explicitly
-  as a test JVM agent.
+  module coverage is again subject to the 95% gate, and every module now has a
+  95% JaCoCo branch-coverage gate in addition to the line gate. The clean
+  integration-profile build covers 98.44% of model branches, 96.07% of data
+  branches, and 95.48% of API branches. Jqwik uses supported JUnit Platform
+  configuration, and Mockito is attached explicitly as a test JVM agent.
 
 ## [0.1.25.51] — 2026-07-11
 

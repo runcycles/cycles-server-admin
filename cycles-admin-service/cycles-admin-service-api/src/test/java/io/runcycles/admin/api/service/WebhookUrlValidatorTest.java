@@ -351,4 +351,36 @@ class WebhookUrlValidatorTest {
             .isInstanceOf(GovernanceException.class)
             .hasMessageContaining("Only HTTP(S) URLs are allowed");
     }
+
+    @Test
+    void validateNullSecurityCollectionsUseUnrestrictedDefaults() {
+        when(configRepository.get()).thenReturn(WebhookSecurityConfig.builder()
+            .allowHttp(true).blockedCidrRanges(null).allowedUrlPatterns(null).build());
+
+        urlValidator.validate("http://192.0.2.10/webhook");
+    }
+
+    @Test
+    void cidrRangeRecognizesMappedIpv6AndEveryMappedPrefixFailure() throws Exception {
+        WebhookUrlValidator.CidrRange range = WebhookUrlValidator.CidrRange.parse("192.0.2.0/24");
+        byte[] mapped = new byte[16];
+        mapped[10] = (byte) 0xff;
+        mapped[11] = (byte) 0xff;
+        mapped[12] = (byte) 192;
+        mapped[13] = 0;
+        mapped[14] = 2;
+        mapped[15] = 42;
+        java.net.Inet6Address mappedAddress = java.net.Inet6Address.getByAddress(null, mapped, -1);
+        assertThat(range.contains(mappedAddress)).isTrue();
+
+        byte[] firstMarkerMissing = mapped.clone();
+        firstMarkerMissing[10] = 0;
+        assertThat(range.contains(java.net.Inet6Address.getByAddress(null, firstMarkerMissing, -1))).isFalse();
+        byte[] secondMarkerMissing = mapped.clone();
+        secondMarkerMissing[11] = 0;
+        assertThat(range.contains(java.net.Inet6Address.getByAddress(null, secondMarkerMissing, -1))).isFalse();
+        byte[] earlyNonZero = mapped.clone();
+        earlyNonZero[3] = 1;
+        assertThat(range.contains(java.net.Inet6Address.getByAddress(null, earlyNonZero, -1))).isFalse();
+    }
 }

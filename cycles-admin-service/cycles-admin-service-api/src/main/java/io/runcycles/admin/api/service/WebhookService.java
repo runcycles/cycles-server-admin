@@ -215,7 +215,7 @@ public class WebhookService {
             java.net.http.HttpResponse<String> response = HTTP_CLIENT
                 .send(reqBuilder.build(), java.net.http.HttpResponse.BodyHandlers.ofString());
             int elapsed = (int) (System.currentTimeMillis() - start);
-            boolean success = response.statusCode() >= 200 && response.statusCode() < 300;
+            boolean success = response.statusCode() / 100 == 2;
             return WebhookTestResponse.builder()
                 .success(success)
                 .responseStatus(response.statusCode())

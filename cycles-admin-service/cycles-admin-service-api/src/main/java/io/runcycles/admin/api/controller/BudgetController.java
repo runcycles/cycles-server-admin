@@ -745,14 +745,13 @@ public class BudgetController {
     }
 
     private static EventType fundEventType(FundingOperation operation) {
-        switch (operation) {
-            case CREDIT: return EventType.BUDGET_FUNDED;
-            case DEBIT: return EventType.BUDGET_DEBITED;
-            case RESET: return EventType.BUDGET_RESET;
-            case RESET_SPENT: return EventType.BUDGET_RESET_SPENT;
-            case REPAY_DEBT: return EventType.BUDGET_DEBT_REPAID;
-            default: return EventType.BUDGET_FUNDED;
-        }
+        return switch (operation) {
+            case CREDIT -> EventType.BUDGET_FUNDED;
+            case DEBIT -> EventType.BUDGET_DEBITED;
+            case RESET -> EventType.BUDGET_RESET;
+            case RESET_SPENT -> EventType.BUDGET_RESET_SPENT;
+            case REPAY_DEBT -> EventType.BUDGET_DEBT_REPAID;
+        };
     }
 
     private void logEventEmissionFailure(EventType eventType, String tenantId, String budgetId,
@@ -766,7 +765,8 @@ public class BudgetController {
     }
 
     private void validateCreateUnits(BudgetCreateRequest request) {
-        if (request.getAllocated() != null && request.getAllocated().getUnit() != request.getUnit()) {
+        // allocated is @NotNull and this helper is reached only after @Valid succeeds.
+        if (request.getAllocated().getUnit() != request.getUnit()) {
             throw GovernanceException.unitMismatch(request.getUnit().name(), request.getAllocated().getUnit().name());
         }
         if (request.getOverdraftLimit() != null && request.getOverdraftLimit().getUnit() != request.getUnit()) {

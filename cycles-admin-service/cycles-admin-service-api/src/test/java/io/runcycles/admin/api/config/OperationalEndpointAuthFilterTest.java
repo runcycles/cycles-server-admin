@@ -89,4 +89,31 @@ class OperationalEndpointAuthFilterTest {
         assertThat(response.getStatus()).isEqualTo(500);
         assertThat(response.getContentAsString()).contains("Server misconfiguration");
     }
+
+    @Test
+    void nullConfiguredKeyAndBlankPresentedKeyAreRejected() throws Exception {
+        ReflectionTestUtils.setField(filter, "adminApiKey", null);
+        request.setRequestURI("/actuator/info");
+        filter.doFilter(request, response, new MockFilterChain());
+        assertThat(response.getStatus()).isEqualTo(500);
+
+        ReflectionTestUtils.setField(filter, "adminApiKey", "admin-secret-key");
+        request.addHeader("X-Admin-API-Key", " ");
+        response = new MockHttpServletResponse();
+        filter.doFilter(request, response, new MockFilterChain());
+        assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    void errorResponsePreservesExistingRequestAndTraceIdentifiers() throws Exception {
+        request.setRequestURI("/swagger/index.html");
+        request.setAttribute("requestId", "req-existing");
+        request.setAttribute("traceId", "trace-existing");
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertThat(response.getContentAsString()).contains("req-existing", "trace-existing");
+        assertThat((Boolean) ReflectionTestUtils.invokeMethod(filter, "requiresProtection", (Object) null))
+            .isFalse();
+    }
 }

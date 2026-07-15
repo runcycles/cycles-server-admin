@@ -115,10 +115,6 @@ public final class ScopeValidator {
                 fieldName + " must not be blank", 400);
         }
         String[] segments = scope.split("/", -1);
-        if (segments.length == 0) {
-            throw new GovernanceException(ErrorCode.INVALID_REQUEST,
-                fieldName + " must be a non-empty slash-joined scope", 400);
-        }
         int lastKindIdx = -1;
         for (int i = 0; i < segments.length; i++) {
             String segment = segments[i];

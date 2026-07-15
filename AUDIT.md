@@ -96,9 +96,10 @@ source tracking, and contract tests tied to a moving upstream branch.
   by browser CORS;
 - pins contract tests to reviewed cycles-protocol commit
   `469840bb2f41ce35650c89405ea12fc56e847c76`, restores the model module to the
-  95% JaCoCo gate, adds nightly upstream-drift detection, moves jqwik
-  configuration to JUnit Platform, attaches Mockito explicitly for future-JDK
-  compatibility, and uses the current Jedis client configuration constructor.
+  95% JaCoCo gate, enforces 95% branch coverage independently in every module,
+  adds nightly upstream-drift detection, moves jqwik configuration to JUnit
+  Platform, attaches Mockito explicitly for future-JDK compatibility, and uses
+  the current Jedis client configuration constructor.
 
 **Self-review corrections.** Multiple review rounds over the complete diff found
 and fixed defects in the remediation itself: volatile reconciler scan progress
@@ -123,15 +124,15 @@ enforce it at the shared edge (the in-process limiter is intentionally
 per-replica).
 
 **Verification.** `mvn -B -q clean verify -Pintegration-tests` against the local
-checkout of the pinned spec passed in 114.3s: **1,724 tests**, 0 failures, 0
-errors, 0 skipped, including 67 tests across six Docker/Testcontainers
-integration suites. JaCoCo line coverage passed in every module: API
-**95.86%** (3,036/3,167), data **95.32%** (2,218/2,327), model **96.31%**
-(313/325). Development and production Compose configurations validate (the
-production check supplies non-secret placeholder values for required variables),
-`docker build --tag cycles-server-admin:self-review .` succeeds, and
-`git diff --check` is clean. The resource tree contains no stale
-`jqwik.properties` file.
+checkout of the pinned spec passed in 117.9s: **1,860 tests**, 0 failures, 0
+errors, 0 skipped, including the Docker/Testcontainers integration suites. The
+new JaCoCo line-and-branch gate passed independently in every module. Branch
+coverage is API **95.48%**, data **96.07%**, model **98.44%**; line coverage is
+API **97.56%**, data **98.32%**, model **97.85%**. Development and production
+Compose configurations validate (the production check supplies non-secret
+placeholder values for required variables), `docker build --tag
+cycles-server-admin:self-review .` succeeds, and `git diff --check` is clean.
+The resource tree contains no stale `jqwik.properties` file.
 
 ### 2026-07-12 — declared spec alignment bump v0.1.25.39 → v0.1.25.41 (doc-only)
 

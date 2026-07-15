@@ -16,6 +16,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 
@@ -398,5 +401,93 @@ class WebhookDispatchServiceTest {
 
         assertThat(meterRegistry.counter("cycles_admin_webhook_dispatched_total", "result", "failure").count())
             .isEqualTo(1.0);
+    }
+
+    @Test
+    void dispatchNullEventAndUntypedEventExerciseFailureDiagnostics() {
+        webhookDispatchService.dispatch(null);
+
+        Event untyped = Event.builder().eventId("evt-untyped").tenantId("tenant-1")
+            .scope("tenant:tenant-1").category(EventCategory.BUDGET)
+            .correlationId("corr").requestId("req").traceId("trace").build();
+        WebhookSubscription sub = WebhookSubscription.builder().subscriptionId("wh-1")
+            .tenantId("tenant-1").status(WebhookStatus.ACTIVE).build();
+        when(webhookRepository.findMatchingSubscriptions("tenant-1", null, "tenant:tenant-1"))
+            .thenReturn(List.of(sub));
+        doThrow(new IllegalStateException("save failed")).when(deliveryRepository).save(any());
+
+        webhookDispatchService.dispatch(untyped);
+
+        assertThat(meterRegistry.counter("cycles_admin_webhook_dispatched_total", "result", "failure").count())
+            .isEqualTo(2.0);
+    }
+
+    @Test
+    void ownershipBoundaryHandlesPartiallyClassifiedEvents() {
+        WebhookSubscription tenant = WebhookSubscription.builder().subscriptionId("wh-tenant")
+            .tenantId("tenant-1").status(WebhookStatus.ACTIVE).build();
+        Event categoryOnly = Event.builder().category(EventCategory.SYSTEM).build();
+        Event typeOnly = Event.builder().eventType(EventType.API_KEY_CREATED).build();
+
+        assertThat(webhookDispatchService.isBlockedByOwnershipBoundary(categoryOnly, tenant)).isTrue();
+        assertThat(webhookDispatchService.isBlockedByOwnershipBoundary(typeOnly, tenant)).isTrue();
+    }
+
+    @Test
+    void requestTraceSnapshotUsesAttributesAndFallsBackToEventTrace() {
+        WebhookSubscription sub = WebhookSubscription.builder().subscriptionId("wh-trace")
+            .tenantId("tenant-1").status(WebhookStatus.ACTIVE).build();
+        when(webhookRepository.findById("wh-trace")).thenReturn(sub);
+        Event event = Event.builder().eventId("evt-trace").eventType(EventType.BUDGET_CREATED)
+            .category(EventCategory.BUDGET).tenantId("tenant-1").traceId("event-trace").build();
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+        try {
+            request.setAttribute("traceparentInboundValid", "not-boolean");
+            assertThat(webhookDispatchService.dispatchToSubscription(event, sub))
+                .isEqualTo(WebhookDispatchService.DispatchOutcome.ENQUEUED);
+            verify(deliveryRepository).save(argThat(d -> "event-trace".equals(d.getTraceId())
+                && d.getTraceFlags() == null && d.getTraceparentInboundValid() == null));
+
+            reset(deliveryRepository);
+            request.setAttribute("traceId", "request-trace");
+            request.setAttribute("traceFlags", "00");
+            request.setAttribute("traceparentInboundValid", true);
+            assertThat(webhookDispatchService.dispatchToSubscription(event, sub))
+                .isEqualTo(WebhookDispatchService.DispatchOutcome.ENQUEUED);
+            verify(deliveryRepository).save(argThat(d -> "request-trace".equals(d.getTraceId())
+                && "00".equals(d.getTraceFlags()) && Boolean.TRUE.equals(d.getTraceparentInboundValid())));
+        } finally {
+            RequestContextHolder.resetRequestAttributes();
+        }
+    }
+
+    @Test
+    void outerDispatchFailureHandlesUntypedEventDiagnostics() {
+        Event event = Event.builder().eventId("evt-outer").tenantId("tenant-1")
+            .scope("tenant:tenant-1").correlationId("corr").requestId("req").traceId("trace").build();
+        when(webhookRepository.findMatchingSubscriptions("tenant-1", null, "tenant:tenant-1"))
+            .thenThrow(new IllegalStateException("lookup failed"));
+
+        webhookDispatchService.dispatch(event);
+
+        assertThat(meterRegistry.counter("cycles_admin_webhook_dispatched_total", "result", "failure").count())
+            .isEqualTo(1.0);
+    }
+
+    @Test
+    void replayNullCurrentRowIsInactiveAndUntypedEnqueueFailureIsReported() {
+        WebhookSubscription sub = WebhookSubscription.builder().subscriptionId("wh-current")
+            .tenantId("tenant-1").status(WebhookStatus.ACTIVE).build();
+        Event event = Event.builder().eventId("evt-current").tenantId("tenant-1")
+            .category(EventCategory.BUDGET).build();
+        when(webhookRepository.findById("wh-current")).thenReturn(null);
+        assertThat(webhookDispatchService.dispatchToSubscription(event, sub))
+            .isEqualTo(WebhookDispatchService.DispatchOutcome.INACTIVE);
+
+        when(webhookRepository.findById("wh-current")).thenReturn(sub);
+        when(jedisPool.getResource()).thenThrow(new IllegalStateException("queue unavailable"));
+        assertThat(webhookDispatchService.dispatchToSubscription(event, sub))
+            .isEqualTo(WebhookDispatchService.DispatchOutcome.ENQUEUE_FAILED);
     }
 }

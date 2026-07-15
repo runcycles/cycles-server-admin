@@ -1699,4 +1699,153 @@ class BudgetRepositoryTest {
         assertThat(outcomes).hasSize(1);
         assertThat(outcomes.get(0).releasedReservedAmount()).isZero();
     }
+
+    @Test
+    void sortedListCoversMissingCorruptFilteredBlankCursorAndLimitBranches() {
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(new LinkedHashSet<>(List.of(
+            "budget:missing:USD_MICROCENTS", "budget:bad:USD_MICROCENTS",
+            "budget:other:USD_MICROCENTS", "budget:good-a:USD_MICROCENTS",
+            "budget:good-b:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:missing:USD_MICROCENTS")).thenReturn(Map.of());
+        when(jedis.hgetAll("budget:bad:USD_MICROCENTS")).thenReturn(
+            Map.of("ledger_id", "bad", "scope", "bad", "unit", "NOT_A_UNIT"));
+        when(jedis.hgetAll("budget:other:USD_MICROCENTS")).thenReturn(
+            createBudgetHash("other", "other", "USD_MICROCENTS"));
+        when(jedis.hgetAll("budget:good-a:USD_MICROCENTS")).thenReturn(
+            createBudgetHash("good-a", "good/a", "USD_MICROCENTS"));
+        when(jedis.hgetAll("budget:good-b:USD_MICROCENTS")).thenReturn(
+            createBudgetHash("good-b", "good/b", "USD_MICROCENTS"));
+        BudgetListFilters filters = new BudgetListFilters("good", null, null, null, null, null, null);
+        SortSpec byScope = SortSpec.of("scope", SortDirection.ASC);
+
+        assertThat(repository.list("tenant-1", filters, " ", 1, byScope))
+            .extracting(BudgetLedger::getLedgerId).containsExactly("good-a");
+        assertThat(repository.list("tenant-1", null, "good-a", 10, byScope))
+            .extracting(BudgetLedger::getLedgerId).contains("good-b", "other");
+        assertThat(repository.list("tenant-1", null, "not-present", 10, byScope)).isEmpty();
+    }
+
+    @Test
+    void budgetComparatorHandlesEveryNullableDerivedValueAndDefaultField() {
+        BudgetLedger populated = BudgetLedger.builder().ledgerId("a").tenantId("tenant-a")
+            .scope("a").unit(UnitEnum.USD_MICROCENTS).status(BudgetStatus.ACTIVE)
+            .allocated(new Amount(UnitEnum.USD_MICROCENTS, 100L))
+            .spent(new Amount(UnitEnum.USD_MICROCENTS, 50L))
+            .debt(new Amount(UnitEnum.USD_MICROCENTS, 10L)).build();
+        BudgetLedger nulls = BudgetLedger.builder().ledgerId("z").build();
+        BudgetLedger zeroAllocated = BudgetLedger.builder().ledgerId("zero")
+            .allocated(new Amount(UnitEnum.USD_MICROCENTS, 0L)).build();
+        BudgetLedger noSpent = BudgetLedger.builder().ledgerId("no-spent")
+            .allocated(new Amount(UnitEnum.USD_MICROCENTS, 100L)).build();
+
+        assertThat(BudgetRepository.budgetComparator(SortSpec.of("tenant_id", SortDirection.ASC))
+            .compare(nulls, populated)).isPositive();
+        assertThat(BudgetRepository.budgetComparator(SortSpec.of("unit", SortDirection.ASC))
+            .compare(nulls, populated)).isPositive();
+        assertThat(BudgetRepository.budgetComparator(SortSpec.of("status", SortDirection.ASC))
+            .compare(nulls, populated)).isPositive();
+        assertThat(BudgetRepository.budgetComparator(SortSpec.of("debt", SortDirection.ASC))
+            .compare(nulls, populated)).isNegative();
+        assertThat(BudgetRepository.budgetComparator(SortSpec.of("ledger_id", SortDirection.ASC))
+            .compare(nulls, populated)).isNegative();
+        assertThat(BudgetRepository.budgetComparator(new SortSpec(null, SortDirection.ASC))
+            .compare(nulls, populated)).isNegative();
+        assertThat(BudgetRepository.budgetComparator(SortSpec.of("utilization", SortDirection.ASC))
+            .compare(zeroAllocated, populated)).isNegative();
+        assertThat(BudgetRepository.budgetComparator(SortSpec.of("utilization", SortDirection.ASC))
+            .compare(noSpent, populated)).isNegative();
+    }
+
+    @Test
+    void crossTenantSortedListCoversHydrationFailuresFiltersAndCursorForms() {
+        when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-b")));
+        when(jedis.scard("budgets:tenant-a")).thenReturn(3L);
+        when(jedis.scard("budgets:tenant-b")).thenReturn(1L);
+        when(jedis.smembers("budgets:tenant-a")).thenReturn(new LinkedHashSet<>(List.of(
+            "budget:missing:USD_MICROCENTS", "budget:bad:USD_MICROCENTS", "budget:a:USD_MICROCENTS")));
+        when(jedis.smembers("budgets:tenant-b")).thenReturn(Set.of("budget:b:USD_MICROCENTS"));
+        when(jedis.hgetAll("budget:missing:USD_MICROCENTS")).thenReturn(Map.of());
+        when(jedis.hgetAll("budget:bad:USD_MICROCENTS")).thenReturn(
+            Map.of("ledger_id", "bad", "scope", "bad", "unit", "INVALID"));
+        when(jedis.hgetAll("budget:a:USD_MICROCENTS")).thenReturn(
+            hashWith("a", "a", "USD_MICROCENTS", 100, 0, 0, false, "tenant-a"));
+        when(jedis.hgetAll("budget:b:USD_MICROCENTS")).thenReturn(
+            hashWith("b", "b", "USD_MICROCENTS", 100, 0, 0, false, "tenant-b"));
+        SortSpec byScope = SortSpec.of("scope", SortDirection.ASC);
+
+        assertThat(repository.listAllTenants(null, " ", 1, byScope))
+            .extracting(BudgetLedger::getLedgerId).containsExactly("a");
+        assertThat(repository.listAllTenants(null, "a", 10, byScope))
+            .extracting(BudgetLedger::getLedgerId).containsExactly("b");
+        assertThat(repository.listAllTenants(null, "tenant-b|a", 10, byScope)).isEmpty();
+        BudgetListFilters misses = new BudgetListFilters("none", null, null, null, null, null, null);
+        assertThat(repository.listAllTenants(misses, null, 10, byScope)).isEmpty();
+    }
+
+    @Test
+    void legacyListCoversNullFiltersCursorDiagnosticsAndZeroLimit() {
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(
+            new LinkedHashSet<>(List.of("budget:missing:USD_MICROCENTS", "budget:bad:USD_MICROCENTS")));
+        when(jedis.hgetAll("budget:missing:USD_MICROCENTS")).thenReturn(Map.of());
+        when(jedis.hgetAll("budget:bad:USD_MICROCENTS")).thenReturn(
+            Map.of("ledger_id", "bad", "scope", "bad", "unit", "INVALID"));
+
+        assertThat(repository.list("tenant-1", (BudgetListFilters) null, " ", 10)).isEmpty();
+        assertThat(repository.list("tenant-1", (BudgetListFilters) null, "after", 10)).isEmpty();
+
+        when(jedis.smembers("tenants")).thenReturn(Set.of("tenant-1"));
+        assertThat(repository.listAllTenants(null, " ", 0, null)).isEmpty();
+        assertThat(repository.listAllTenants(null, "tenant-1", 10, null)).isEmpty();
+    }
+
+    @Test
+    void createUpdateTransitionFundingAndExactLookupCoverAlternateDiagnostics() {
+        BudgetCreateRequest create = new BudgetCreateRequest();
+        create.setScope("Meta");
+        create.setUnit(UnitEnum.USD_MICROCENTS);
+        create.setAllocated(new Amount(UnitEnum.USD_MICROCENTS, 10L));
+        create.setMetadata(Map.of("owner", "ops"));
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        assertThat(repository.create("tenant-1", create).getMetadata()).containsEntry("owner", "ops");
+
+        BudgetUpdateRequest update = new BudgetUpdateRequest();
+        update.setMetadata(Map.of("tier", "gold"));
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("OK"));
+        Map<String, String> updated = createBudgetHash("updated", "meta", "USD_MICROCENTS");
+        when(jedis.hgetAll("budget:meta:USD_MICROCENTS")).thenReturn(updated);
+        assertThat(repository.update(null, "meta", UnitEnum.USD_MICROCENTS, update).getLedgerId())
+            .isEqualTo("updated");
+
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("INVALID_TRANSITION"));
+        assertThatThrownBy(() -> repository.freeze("meta", UnitEnum.USD_MICROCENTS))
+            .isInstanceOf(GovernanceException.class);
+
+        BudgetFundingRequest funding = new BudgetFundingRequest();
+        funding.setOperation(FundingOperation.RESET_SPENT);
+        funding.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 0L));
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("INVALID_REQUEST"));
+        assertThatThrownBy(() -> repository.fund("tenant-1", "meta", UnitEnum.USD_MICROCENTS, funding))
+            .isInstanceOf(GovernanceException.class).hasMessageContaining("Invalid request");
+
+        Map<String, String> minimal = new LinkedHashMap<>();
+        minimal.put("ledger_id", "minimal");
+        minimal.put("scope", "minimal");
+        minimal.put("unit", "USD_MICROCENTS");
+        minimal.put("metadata_json", "{bad-json");
+        when(jedis.hgetAll("budget:minimal:USD_MICROCENTS")).thenReturn(minimal);
+        assertThat(repository.getByExactScope("minimal", UnitEnum.USD_MICROCENTS).getCreatedAt()).isNotNull();
+        when(jedis.hgetAll("budget:null:USD_MICROCENTS")).thenReturn(Map.of());
+        assertThatThrownBy(() -> repository.getByExactScope(null, UnitEnum.USD_MICROCENTS))
+            .isInstanceOf(GovernanceException.class);
+    }
+
+    @Test
+    void exactBulkCountWithNullFiltersCountsMatchesAndSkipsNonMatches() {
+        Map<String, String> good = createBudgetHash("good", "good", "USD_MICROCENTS");
+        when(jedis.smembers("budgets:tenant-1")).thenReturn(Set.of("good", "missing"));
+        when(jedis.hgetAll("good")).thenReturn(good);
+        when(jedis.hgetAll("missing")).thenReturn(Map.of());
+
+        assertThat(repository.countForBulk("tenant-1", null)).isEqualTo(1);
+    }
 }

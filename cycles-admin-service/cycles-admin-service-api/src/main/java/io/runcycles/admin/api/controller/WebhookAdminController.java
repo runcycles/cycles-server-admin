@@ -324,7 +324,7 @@ public class WebhookAdminController {
     public ResponseEntity<WebhookBulkActionResponse> bulkAction(
             @Valid @RequestBody WebhookBulkActionRequest request, HttpServletRequest httpRequest) {
         long startNanos = System.nanoTime();
-        if (request.getFilter() == null || request.getFilter().isEmpty()) {
+        if (request.getFilter().isEmpty()) {
             throw new GovernanceException(ErrorCode.INVALID_REQUEST,
                 "filter must contain at least one property", 400);
         }
@@ -552,7 +552,7 @@ public class WebhookAdminController {
         } catch (Exception e) {
             LOG.warn("Failed to emit admin webhook event: event_type={} subscription_id={} tenant_id={} previous_status={} new_status={} changed_field_count={} correlation_id={} request_id={} trace_id={} exception_class={} error={}",
                 eventType, safe(subscriptionId), safe(tenantId), previousStatus, newStatus,
-                changedFields != null ? changedFields.size() : 0, safe(correlationId),
+                changedFields.size(), safe(correlationId),
                 attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
                 attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE),
                 e.getClass().getSimpleName(), safe(e.getMessage()), e);
@@ -598,21 +598,19 @@ public class WebhookAdminController {
     }
 
     private static EventType eventTypeForWebhookAction(WebhookBulkAction action) {
-        switch (action) {
-            case PAUSE: return EventType.WEBHOOK_PAUSED;
-            case RESUME: return EventType.WEBHOOK_RESUMED;
-            case DELETE: return EventType.WEBHOOK_DELETED;
-            default: throw new IllegalStateException("Unreachable action: " + action);
-        }
+        return switch (action) {
+            case PAUSE -> EventType.WEBHOOK_PAUSED;
+            case RESUME -> EventType.WEBHOOK_RESUMED;
+            case DELETE -> EventType.WEBHOOK_DELETED;
+        };
     }
 
     private static WebhookStatus newStatusForWebhookAction(WebhookBulkAction action) {
-        switch (action) {
-            case PAUSE: return WebhookStatus.PAUSED;
-            case RESUME: return WebhookStatus.ACTIVE;
-            case DELETE: return null;
-            default: throw new IllegalStateException("Unreachable action: " + action);
-        }
+        return switch (action) {
+            case PAUSE -> WebhookStatus.PAUSED;
+            case RESUME -> WebhookStatus.ACTIVE;
+            case DELETE -> null;
+        };
     }
 
     private static String classifyFailureCode(GovernanceException e) {

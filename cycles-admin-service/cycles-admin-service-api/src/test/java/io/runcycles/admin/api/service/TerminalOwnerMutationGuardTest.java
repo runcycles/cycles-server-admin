@@ -70,6 +70,13 @@ class TerminalOwnerMutationGuardTest {
     }
 
     @Test
+    void assertTenantOpen_nullRepositoryResult_passesThrough() {
+        when(tenantRepository.get("t-raced-away")).thenReturn(null);
+
+        guard.assertTenantOpen("t-raced-away");
+    }
+
+    @Test
     void assertTenantOpen_nullOrBlank_noLookup() {
         // A controller that has no tenant id yet (e.g. still computing it from
         // the request) must not be rejected with 409 — the caller's own
@@ -136,6 +143,13 @@ class TerminalOwnerMutationGuardTest {
             GovernanceException.webhookNotFound("missing"));
 
         guard.assertOpenForWebhook("missing");
+    }
+
+    @Test
+    void assertOpenForWebhook_nullRepositoryResult_skipped() {
+        when(webhookRepository.findById("raced-away")).thenReturn(null);
+
+        guard.assertOpenForWebhook("raced-away");
     }
 
     @Test

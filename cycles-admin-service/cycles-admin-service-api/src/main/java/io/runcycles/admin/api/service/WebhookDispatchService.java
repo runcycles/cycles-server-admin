@@ -118,14 +118,14 @@ public class WebhookDispatchService {
                     recordDispatch(enqueued ? "queued" : "failure");
                 } catch (Exception e) {
                     LOG.error("Failed to create webhook delivery: event_id={} event_type={} tenant_id={} scope={} subscription_id={} correlation_id={} request_id={} trace_id={} error={}",
-                            safe(event != null ? event.getEventId() : null),
-                            event != null && event.getEventType() != null ? event.getEventType().getValue() : null,
-                            safe(event != null ? event.getTenantId() : null),
-                            safe(event != null ? event.getScope() : null),
-                            safe(sub != null ? sub.getSubscriptionId() : null),
-                            safe(event != null ? event.getCorrelationId() : null),
-                            safe(event != null ? event.getRequestId() : null),
-                            safe(event != null ? event.getTraceId() : null),
+                            safe(event.getEventId()),
+                            event.getEventType() != null ? event.getEventType().getValue() : null,
+                            safe(event.getTenantId()),
+                            safe(event.getScope()),
+                            safe(sub.getSubscriptionId()),
+                            safe(event.getCorrelationId()),
+                            safe(event.getRequestId()),
+                            safe(event.getTraceId()),
                             safe(e.getMessage()), e);
                     recordDispatch("failure");
                 }

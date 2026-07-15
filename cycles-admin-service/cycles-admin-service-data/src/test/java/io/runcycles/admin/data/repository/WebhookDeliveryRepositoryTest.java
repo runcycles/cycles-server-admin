@@ -258,6 +258,36 @@ class WebhookDeliveryRepositoryTest {
     }
 
     @Test
+    void save_handlesBlankAndExistingIds() {
+        WebhookDelivery blank = WebhookDelivery.builder().deliveryId(" ")
+                .subscriptionId("whsub_1").attemptedAt(Instant.now()).build();
+        WebhookDelivery existing = WebhookDelivery.builder().deliveryId("del-existing")
+                .subscriptionId("whsub_1").attemptedAt(Instant.now()).build();
+
+        repository.save(blank);
+        repository.save(existing);
+
+        assertThat(blank.getDeliveryId()).startsWith("del_");
+        assertThat(existing.getDeliveryId()).isEqualTo("del-existing");
+    }
+
+    @Test
+    void saveFailureDiagnostics_handleNullDeliveryAndPresentEventType() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
+
+        assertThatThrownBy(() -> repository.save(null))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Failed to save webhook delivery");
+
+        WebhookDelivery typed = WebhookDelivery.builder().deliveryId("del-typed")
+                .subscriptionId("whsub_1").eventType(EventType.BUDGET_CREATED)
+                .attemptedAt(Instant.now()).build();
+        assertThatThrownBy(() -> repository.save(typed))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Failed to save webhook delivery");
+    }
+
+    @Test
     void findById_redisException_throwsRuntimeException() {
         when(jedis.get("delivery:del_err")).thenThrow(new RuntimeException("Redis down"));
 
@@ -359,6 +389,37 @@ class WebhookDeliveryRepositoryTest {
                 .status(DeliveryStatus.SUCCESS).attemptedAt(Instant.now()).build();
 
         assertThatThrownBy(() -> repository.update(delivery))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Failed to update webhook delivery");
+    }
+
+    @Test
+    void update_preservesPositiveTtl() {
+        WebhookDelivery delivery = WebhookDelivery.builder()
+                .deliveryId("del-ttl").subscriptionId("whsub_1")
+                .attemptedAt(Instant.now()).build();
+        when(jedis.get("delivery:del-ttl")).thenReturn("existing");
+        when(jedis.ttl("delivery:del-ttl")).thenReturn(120L);
+
+        repository.update(delivery);
+
+        verify(jedis).expire("delivery:del-ttl", 120L);
+    }
+
+    @Test
+    void updateFailureDiagnostics_handleNullDeliveryAndPresentEventType() {
+        assertThatThrownBy(() -> repository.update(null))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Failed to update webhook delivery");
+
+        WebhookDelivery typed = WebhookDelivery.builder().deliveryId("del-typed")
+                .subscriptionId("whsub_1").eventType(EventType.BUDGET_CREATED)
+                .attemptedAt(Instant.now()).build();
+        when(jedis.get("delivery:del-typed")).thenReturn("existing");
+        when(jedis.set(eq("delivery:del-typed"), anyString()))
+                .thenThrow(new RuntimeException("Redis down"));
+
+        assertThatThrownBy(() -> repository.update(typed))
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("Failed to update webhook delivery");
     }

@@ -101,6 +101,14 @@ class CryptoServiceTest {
     }
 
     @Test
+    void constructor_nullKey_matchesMissingKeySemantics() {
+        assertThat(new CryptoService(null, false).isEnabled()).isFalse();
+        assertThatThrownBy(() -> new CryptoService(null, true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("encryption key is required");
+    }
+
+    @Test
     void isEnabled_trueWithKey() {
         CryptoService service = new CryptoService(generateKey());
         assertThat(service.isEnabled()).isTrue();

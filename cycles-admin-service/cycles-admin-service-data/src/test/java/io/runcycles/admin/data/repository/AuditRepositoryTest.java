@@ -1347,4 +1347,68 @@ class AuditRepositoryTest {
         // controller's empty-normalisation would be load-bearing.
         assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_1");
     }
+
+    @Test
+    void log_preservesExistingIdentityAndDiagnosticsHandleNullEntry() {
+        Instant timestamp = Instant.parse("2026-01-01T00:00:00Z");
+        AuditLogEntry existing = AuditLogEntry.builder().logId("log-existing")
+                .tenantId("tenant-1").operation("updateTenant")
+                .resourceType("tenant").resourceId("tenant-1")
+                .status(200).timestamp(timestamp).build();
+
+        repository.log(existing);
+        repository.log(null);
+
+        assertThat(existing.getLogId()).isEqualTo("log-existing");
+        assertThat(existing.getTimestamp()).isEqualTo(timestamp);
+    }
+
+    @Test
+    void list_traceAndRequestFiltersRequireBothExactMatches() throws Exception {
+        Instant now = Instant.now();
+        AuditLogEntry match = log("log-match", "tenant-1", "key-1", "updateTenant", "tenant", 200, now);
+        match.setTraceId("trace-1");
+        match.setRequestId("request-1");
+        AuditLogEntry wrongTrace = log("log-wrong-trace", "tenant-1", "key-1", "updateTenant", "tenant", 200, now);
+        wrongTrace.setTraceId("other");
+        wrongTrace.setRequestId("request-1");
+        AuditLogEntry wrongRequest = log("log-wrong-request", "tenant-1", "key-1", "updateTenant", "tenant", 200, now);
+        wrongRequest.setTraceId("trace-1");
+        wrongRequest.setRequestId("other");
+        stubZSet("audit:logs:tenant-1", false, List.of(wrongTrace, wrongRequest, match));
+
+        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null,
+                null, null, null, null, null, 10, null, null,
+                null, null, null, null, "trace-1", "request-1");
+
+        assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log-match");
+    }
+
+    @Test
+    void list_emptyCollectionsAndStatusMaxNullStatusHaveDefinedSemantics() throws Exception {
+        AuditLogEntry nullStatus = AuditLogEntry.builder().logId("log-null")
+                .tenantId("tenant-1").operation("updateTenant")
+                .resourceType("tenant").timestamp(Instant.now()).build();
+        stubZSet("audit:logs:tenant-1", false, List.of(nullStatus));
+
+        assertThat(repository.list("tenant-1", null, List.of(), null, List.of(), null,
+                null, null, null, 10, null, null,
+                null, null, null, null)).hasSize(1);
+        assertThat(repository.list("tenant-1", null, List.of(), null, List.of(), null,
+                null, null, null, 10, null, null,
+                null, null, null, 499)).isEmpty();
+    }
+
+    @Test
+    void sortedList_appliesSearchBeforeBlankCursorTraversal() throws Exception {
+        AuditLogEntry entry = log("log-1", "tenant-1", "key-1", "updateTenant", "tenant", 200, Instant.now());
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble()))
+                .thenReturn(List.of("log-1"));
+        String json = objectMapper.writeValueAsString(entry);
+        when(jedis.get("audit:log:log-1")).thenReturn(json);
+
+        assertThat(repository.list("tenant-1", null, null, null, null, null,
+                null, null, " ", 10, SortSpec.of("operation", SortDirection.ASC), "no-match"))
+                .isEmpty();
+    }
 }

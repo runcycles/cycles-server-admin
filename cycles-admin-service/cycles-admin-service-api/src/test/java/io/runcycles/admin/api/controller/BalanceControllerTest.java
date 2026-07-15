@@ -184,4 +184,15 @@ class BalanceControllerTest {
                 .andExpect(jsonPath("$.has_more").value(true))
                 .andExpect(jsonPath("$.next_cursor").value("led-last"));
     }
+
+    @Test
+    void queryBalancesBlankRequestedTenantAndCursorRemainAbsentDiagnostics() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("tenant-1"), any(), any(), any(), any(), anyInt()))
+            .thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/balances").header("X-Cycles-API-Key", "valid-api-key")
+                .param("tenant_id", " ").param("cursor", " "))
+            .andExpect(status().isOk());
+    }
 }

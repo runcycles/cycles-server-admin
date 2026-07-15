@@ -262,4 +262,28 @@ class ScopeValidatorTest {
     @Test void mixedPunctuationMidIdAccepted() {
         ScopeValidator.validateBudgetScope("tenant:a.b_c-d.v2");
     }
+
+    @Test void emptyTenantIdExtractsAsNull() {
+        assertThat(ScopeValidator.extractTenantId("tenant:")).isNull();
+        assertThat(ScopeValidator.extractTenantId("tenant:/workspace:prod")).isNull();
+    }
+
+    @Test void policyPatternCannotStartWithBareWildcard() {
+        assertThatThrownBy(() -> ScopeValidator.validatePolicyScopePattern("*"))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("must start with 'tenant:<id>'");
+    }
+
+    @Test void budgetScopeRejectsIdWildcardForm() {
+        assertThatThrownBy(() -> ScopeValidator.validateBudgetScope("tenant:acme/agent:*"))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("wildcards are not allowed");
+    }
+
+    @Test void overlongIdRejected() {
+        String overlong = "a".repeat(129);
+        assertThatThrownBy(() -> ScopeValidator.validateBudgetScope("tenant:" + overlong))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("exceeds 128 characters");
+    }
 }

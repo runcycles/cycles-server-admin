@@ -96,4 +96,65 @@ class ZSetAdaptivePagerTest {
         verify(jedis).zrangeByScore("events", 100.0, 100.0, 0, 1024);
         verify(jedis).zrangeByScore("events", 100.0, 100.0, 1024, 1024);
     }
+
+    @Test
+    void emptyAndInvalidRangesReturnWithoutReadingRedis() {
+        assertThat(ZSetAdaptivePager.collect(jedis, "events", 0, 100,
+            null, 0, true, id -> id)).isEmpty();
+        assertThat(ZSetAdaptivePager.collect(jedis, "events", 101, 100,
+            null, 1, true, id -> id)).isEmpty();
+    }
+
+    @Test
+    void blankCursorStartsAtFirstPageAndAscendingBoundaryContinues() {
+        List<Tuple> first = new ArrayList<>();
+        for (int i = 0; i < 64; i++) first.add(new Tuple("id-" + i, 100.0));
+        when(jedis.zrangeByScoreWithScores("events", 0.0, 200.0, 0, 64)).thenReturn(first);
+        when(jedis.zrangeByScore("events", 100.0, 100.0, 0, 1024))
+            .thenReturn(List.of("id-63", "z-match"));
+
+        List<String> rows = ZSetAdaptivePager.collect(jedis, "events", 0, 200,
+            " ", 1, true, id -> id.equals("z-match") ? id : null);
+
+        assertThat(rows).containsExactly("z-match");
+    }
+
+    @Test
+    void cursorOutsideRequestedScoreRangeIsRejected() {
+        when(jedis.zscore("events", "below")).thenReturn(-1.0);
+        when(jedis.zscore("events", "above")).thenReturn(101.0);
+
+        assertThatThrownBy(() -> ZSetAdaptivePager.collect(jedis, "events",
+            0, 100, "below", 1, true, id -> id)).isInstanceOf(GovernanceException.class);
+        assertThatThrownBy(() -> ZSetAdaptivePager.collect(jedis, "events",
+            0, 100, "above", 1, true, id -> id)).isInstanceOf(GovernanceException.class);
+    }
+
+    @Test
+    void cursorAtRangeEdgeCanExhaustWithoutAnotherScoreRead() {
+        when(jedis.zscore("events", "last")).thenReturn(100.0);
+        when(jedis.zrangeByScore("events", 100.0, 100.0, 0, 1024))
+            .thenReturn(List.of("last"));
+
+        assertThat(ZSetAdaptivePager.collect(jedis, "events", 0, 100,
+            "last", 1, true, id -> id)).isEmpty();
+    }
+
+    @Test
+    void emptyTieBucketAndFilteredTieRowsAreSkipped() {
+        when(jedis.zscore("events", "cursor-empty")).thenReturn(50.0);
+        when(jedis.zrangeByScore("events", 50.0, 50.0, 0, 1024)).thenReturn(List.of());
+        when(jedis.zrangeByScoreWithScores("events", Math.nextUp(50.0), 100.0, 0, 64))
+            .thenReturn(List.of(new Tuple("next", 51.0)));
+
+        assertThat(ZSetAdaptivePager.collect(jedis, "events", 0, 100,
+            "cursor-empty", 1, true, id -> id)).containsExactly("next");
+
+        when(jedis.zscore("events", "cursor-filtered")).thenReturn(60.0);
+        when(jedis.zrangeByScore("events", 60.0, 60.0, 0, 1024))
+            .thenReturn(List.of("cursor-filtered", "filtered", "z-accepted"));
+        assertThat(ZSetAdaptivePager.collect(jedis, "events", 0, 100,
+            "cursor-filtered", 1, true, id -> id.equals("z-accepted") ? id : null))
+            .containsExactly("z-accepted");
+    }
 }

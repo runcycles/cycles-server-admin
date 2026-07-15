@@ -524,4 +524,42 @@ class PolicyControllerTest {
                 entry.getMetadata() != null &&
                 "api_key".equals(entry.getMetadata().get("actor_type"))));
     }
+
+    @Test
+    void updatePolicyAllAuditMetadataFieldsAndEmptyPatchAreHandled() throws Exception {
+        when(policyRepository.getScopePattern("pol_all")).thenReturn("tenant:tenant-1/*");
+        Policy updated = Policy.builder().policyId("pol_all").tenantId("tenant-1")
+            .scopePattern("tenant:tenant-1/*").status(PolicyStatus.DISABLED).createdAt(Instant.now()).build();
+        when(policyRepository.update(isNull(), eq("pol_all"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/policies/pol_all").header("X-Admin-API-Key", "test-admin-key")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"All\",\"priority\":7,\"status\":\"DISABLED\",\"caps\":{\"max_tokens\":10},\"commit_overage_policy\":\"REJECT\"}"))
+            .andExpect(status().isOk());
+        verify(auditRepository).log(argThat(entry -> entry.getMetadata() != null
+            && entry.getMetadata().containsKey("caps_updated")
+            && entry.getMetadata().containsKey("commit_overage_policy")
+            && entry.getMetadata().containsKey("priority")
+            && entry.getMetadata().containsKey("new_status")));
+
+        reset(auditRepository);
+        mockMvc.perform(patch("/v1/admin/policies/pol_all").header("X-Admin-API-Key", "test-admin-key")
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+            .andExpect(status().isOk());
+        verify(auditRepository).log(argThat(entry -> entry.getMetadata() != null
+            && entry.getMetadata().size() == 2
+            && entry.getMetadata().containsKey("scope_pattern")
+            && entry.getMetadata().containsKey("actor_type")));
+    }
+
+    @Test
+    void blankAdminTenantIsRejectedForCreateAndList() throws Exception {
+        mockMvc.perform(post("/v1/admin/policies").header("X-Admin-API-Key", "test-admin-key")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"tenant_id\":\" \",\"name\":\"Blank\",\"scope_pattern\":\"tenant:tenant-1/*\"}"))
+            .andExpect(status().isBadRequest());
+        mockMvc.perform(get("/v1/admin/policies").header("X-Admin-API-Key", "test-admin-key")
+                .param("tenant_id", " "))
+            .andExpect(status().isBadRequest());
+    }
 }

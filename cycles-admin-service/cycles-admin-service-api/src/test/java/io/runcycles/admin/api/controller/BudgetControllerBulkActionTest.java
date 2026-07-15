@@ -641,6 +641,8 @@ class BudgetControllerBulkActionTest {
                 .newAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1500L))
                 .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1500L))
+                .previousDebt(new Amount(UnitEnum.USD_MICROCENTS, 0L))
+                .newDebt(new Amount(UnitEnum.USD_MICROCENTS, 0L))
                 .previousSpent(new Amount(UnitEnum.USD_MICROCENTS, 0L))
                 .newSpent(new Amount(UnitEnum.USD_MICROCENTS, 0L))
                 .build();
@@ -869,5 +871,69 @@ class BudgetControllerBulkActionTest {
                 .andExpect(jsonPath("$.succeeded.length()").value(0));
 
         verify(budgetRepository, never()).fund(anyString(), anyString(), any(), any());
+    }
+
+    @Test
+    void bulkActionRepayDebtWithNullDebtIsSkipped() throws Exception {
+        noReplay();
+        BudgetLedger ledger = BudgetLedger.builder().ledgerId("ledger-null-debt").tenantId(TENANT)
+            .scope("tenant:acme/workspace:eng").unit(UnitEnum.USD_MICROCENTS)
+            .status(BudgetStatus.ACTIVE).debt(null).build();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(), eq(500))).thenReturn(List.of(ledger));
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body(filter(""), "REPAY_DEBT", "k_null_debt",
+                    "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1}")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.skipped[0].reason").value("ALREADY_IN_TARGET_STATE"));
+    }
+
+    @Test
+    void bulkActionNullFundingStateStillEmitsCompleteLifecycleShape() throws Exception {
+        noReplay();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(), eq(500)))
+            .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+            .thenReturn(BudgetFundingResponse.builder().operation(FundingOperation.CREDIT).build());
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body(filter(""), "CREDIT", "k_null_state",
+                    "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1}")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.succeeded.length()").value(1));
+
+        verify(eventService).emit(eq(EventType.BUDGET_FUNDED), eq(TENANT), anyString(),
+            eq("cycles-admin"), any(), any(), anyString(), any());
+    }
+
+    @Test
+    void bulkActionExpectedCountEqualToMatchesProceeds() throws Exception {
+        noReplay();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(), eq(500)))
+            .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any())).thenReturn(fundResponse());
+        String request = body(filter(""), "CREDIT", "k_expected_equal",
+            "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1}");
+        request = request.substring(0, request.length() - 1) + ",\"expected_count\":1}";
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON).content(request))
+            .andExpect(status().isOk());
+    }
+
+    @Test
+    void bulkResetSpentWithoutOverrideMarksOverrideFalse() throws Exception {
+        noReplay();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(), eq(500)))
+            .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any())).thenReturn(fundResponse());
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body(filter(""), "RESET_SPENT", "k_no_override",
+                    "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1}")))
+            .andExpect(status().isOk());
     }
 }

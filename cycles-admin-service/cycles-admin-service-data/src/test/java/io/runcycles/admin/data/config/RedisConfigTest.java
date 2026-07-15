@@ -71,6 +71,24 @@ class RedisConfigTest {
         pool.close();
     }
 
+    @Test
+    void jedisPool_nullPassword_createsPoolWithoutAuth() throws Exception {
+        setField("password", null);
+
+        try (JedisPool pool = redisConfig.jedisPool()) {
+            assertThat(pool).isNotNull();
+        }
+    }
+
+    @Test
+    void jedisPool_whitespacePassword_exercisesConfiguredButNonEmptyPath() throws Exception {
+        setField("password", " ");
+
+        try (JedisPool pool = redisConfig.jedisPool()) {
+            assertThat(pool).isNotNull();
+        }
+    }
+
     public static class MapperFixture {
         public String name;
     }

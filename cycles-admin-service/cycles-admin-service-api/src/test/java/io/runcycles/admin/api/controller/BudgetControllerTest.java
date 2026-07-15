@@ -30,6 +30,7 @@ import redis.clients.jedis.JedisPool;
 import java.time.Instant;
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -40,6 +41,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class BudgetControllerTest {
 
     @Autowired private MockMvc mockMvc;
+    @Autowired private BudgetController budgetController;
     @Autowired private ObjectMapper objectMapper;
     @MockitoBean private BudgetRepository budgetRepository;
     @MockitoBean private AuditRepository auditRepository;
@@ -1682,5 +1684,172 @@ class BudgetControllerTest {
 
         verify(budgetRepository, never()).list(any(), any(BudgetListFilters.class), any(), anyInt(), any());
         verify(budgetRepository, never()).listAllTenants(any(BudgetListFilters.class), any(), anyInt(), any());
+    }
+
+    @Test
+    void listBudgetsRejectsOppositeOutOfRangeBoundsAndAcceptsEqualBounds() throws Exception {
+        mockMvc.perform(get("/v1/admin/budgets").header("X-Admin-API-Key", "test-admin-key")
+                .param("utilization_min", "1.01"))
+            .andExpect(status().isBadRequest());
+        mockMvc.perform(get("/v1/admin/budgets").header("X-Admin-API-Key", "test-admin-key")
+                .param("utilization_max", "-0.01"))
+            .andExpect(status().isBadRequest());
+
+        when(budgetRepository.listAllTenants(any(), any(), anyInt(), any())).thenReturn(List.of());
+        mockMvc.perform(get("/v1/admin/budgets").header("X-Admin-API-Key", "test-admin-key")
+                .param("utilization_min", "0.5").param("utilization_max", "0.5"))
+            .andExpect(status().isOk());
+    }
+
+    @Test
+    void listBudgetsBlankAdminTenantUsesCrossTenantPath() throws Exception {
+        when(budgetRepository.listAllTenants(any(), any(), anyInt(), any())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/budgets").header("X-Admin-API-Key", "test-admin-key")
+                .param("tenant_id", " "))
+            .andExpect(status().isOk());
+
+        verify(budgetRepository).listAllTenants(any(), any(), anyInt(), any());
+    }
+
+    @Test
+    void createBudgetBlankAdminTenantAndMatchingOptionalOverdraftCoverValidationBoundaries() throws Exception {
+        mockMvc.perform(post("/v1/admin/budgets").header("X-Admin-API-Key", "test-admin-key")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"tenant_id\":\" \",\"scope\":\"tenant:tenant-1\",\"unit\":\"USD_MICROCENTS\",\"allocated\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1}}"))
+            .andExpect(status().isBadRequest());
+
+        BudgetLedger ledger = BudgetLedger.builder().ledgerId("ledger-overdraft").tenantId("tenant-1")
+            .scope("tenant:tenant-1").unit(UnitEnum.USD_MICROCENTS).status(BudgetStatus.ACTIVE)
+            .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1L))
+            .remaining(new Amount(UnitEnum.USD_MICROCENTS, 1L))
+            .reserved(new Amount(UnitEnum.USD_MICROCENTS, 0L))
+            .spent(new Amount(UnitEnum.USD_MICROCENTS, 0L))
+            .debt(new Amount(UnitEnum.USD_MICROCENTS, 0L))
+            .overdraftLimit(new Amount(UnitEnum.USD_MICROCENTS, 2L))
+            .isOverLimit(false).createdAt(Instant.now()).build();
+        when(budgetRepository.create(eq("tenant-1"), any())).thenReturn(ledger);
+        mockMvc.perform(post("/v1/admin/budgets").header("X-Admin-API-Key", "test-admin-key")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"tenant_id\":\"tenant-1\",\"scope\":\"tenant:tenant-1\",\"unit\":\"USD_MICROCENTS\",\"allocated\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1},\"overdraft_limit\":{\"unit\":\"USD_MICROCENTS\",\"amount\":2}}"))
+            .andExpect(status().isCreated());
+    }
+
+    @Test
+    void fundBudgetNullStateAmountsRemainAValidBestEffortEvent() throws Exception {
+        setupApiKeyAuth();
+        BudgetFundingResponse funding = BudgetFundingResponse.builder().operation(FundingOperation.CREDIT).build();
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1"),
+            eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+
+        mockMvc.perform(post("/v1/admin/budgets/fund").header("X-Cycles-API-Key", "valid-api-key")
+                .param("scope", "tenant:tenant-1").param("unit", "USD_MICROCENTS")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1}}"))
+            .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(EventType.BUDGET_FUNDED), eq("tenant-1"), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void fundBudgetNullRepositoryResponseDoesNotBreakAuditPath() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1"),
+            eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(null);
+
+        mockMvc.perform(post("/v1/admin/budgets/fund").header("X-Cycles-API-Key", "valid-api-key")
+                .param("scope", "tenant:tenant-1").param("unit", "USD_MICROCENTS")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1}}"))
+            .andExpect(status().isOk());
+    }
+
+    @Test
+    void directTenantScopedUpdateUsesApiActorAndAllUpdateMetadata() {
+        org.springframework.mock.web.MockHttpServletRequest request = new org.springframework.mock.web.MockHttpServletRequest();
+        request.setAttribute("authenticated_tenant_id", "tenant-direct");
+        request.setAttribute("authenticated_key_id", "key-direct");
+        BudgetUpdateRequest update = new BudgetUpdateRequest();
+        update.setOverdraftLimit(new Amount(UnitEnum.USD_MICROCENTS, 25L));
+        update.setCommitOveragePolicy(io.runcycles.admin.model.shared.CommitOveragePolicy.REJECT);
+        BudgetLedger ledger = BudgetLedger.builder().ledgerId("ledger-direct").tenantId("tenant-direct")
+            .scope("tenant:tenant-direct").unit(UnitEnum.USD_MICROCENTS).status(BudgetStatus.ACTIVE).build();
+        when(budgetRepository.update("tenant-direct", "tenant:tenant-direct",
+            UnitEnum.USD_MICROCENTS, update)).thenReturn(ledger);
+
+        assertThat(budgetController.update("tenant:tenant-direct", UnitEnum.USD_MICROCENTS,
+            update, request).getBody()).isSameAs(ledger);
+
+        verify(eventService).emit(eq(EventType.BUDGET_UPDATED), eq("tenant-direct"), any(), any(),
+            argThat(actor -> actor.getType() == io.runcycles.admin.model.event.ActorType.API_KEY),
+            any(), any(), isNull());
+        verify(auditRepository).log(argThat(entry -> entry.getMetadata().containsKey("overdraft_limit")
+            && entry.getMetadata().containsKey("commit_overage_policy")));
+    }
+
+    @Test
+    void fundBudgetBlankAdminTenantIsRejected() throws Exception {
+        mockMvc.perform(post("/v1/admin/budgets/fund").header("X-Admin-API-Key", "test-admin-key")
+                .param("tenant_id", " ").param("scope", "tenant:tenant-1")
+                .param("unit", "USD_MICROCENTS").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1}}"))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void directFundWithoutRequestIdCoversCompleteStateAndOptionalAuditMetadata() {
+        org.springframework.mock.web.MockHttpServletRequest request = new org.springframework.mock.web.MockHttpServletRequest();
+        request.setAttribute("authenticated_tenant_id", "tenant-direct");
+        request.setAttribute("authenticated_key_id", "key-direct");
+        BudgetFundingRequest fundingRequest = new BudgetFundingRequest();
+        fundingRequest.setOperation(FundingOperation.CREDIT);
+        fundingRequest.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 10L));
+        fundingRequest.setReason("manual adjustment");
+        fundingRequest.setIdempotencyKey("idem-direct");
+        BudgetFundingResponse response = BudgetFundingResponse.builder()
+            .operation(FundingOperation.CREDIT)
+            .previousAllocated(new Amount(UnitEnum.USD_MICROCENTS, 100L))
+            .newAllocated(new Amount(UnitEnum.USD_MICROCENTS, 110L))
+            .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 90L))
+            .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 100L))
+            .previousDebt(new Amount(UnitEnum.USD_MICROCENTS, 5L))
+            .newDebt(new Amount(UnitEnum.USD_MICROCENTS, 5L))
+            .previousSpent(new Amount(UnitEnum.USD_MICROCENTS, 10L))
+            .newSpent(new Amount(UnitEnum.USD_MICROCENTS, 10L))
+            .build();
+        when(budgetRepository.fund("tenant-direct", "tenant:tenant-direct",
+            UnitEnum.USD_MICROCENTS, fundingRequest)).thenReturn(response);
+
+        assertThat(budgetController.fund(null, "tenant:tenant-direct", UnitEnum.USD_MICROCENTS,
+            fundingRequest, request).getBody()).isSameAs(response);
+
+        verify(eventService).emit(eq(EventType.BUDGET_FUNDED), eq("tenant-direct"), any(), any(),
+            any(), any(), isNull(), isNull());
+        verify(auditRepository).log(argThat(entry ->
+            "manual adjustment".equals(entry.getMetadata().get("reason"))
+                && "idem-direct".equals(entry.getMetadata().get("idempotency_key"))
+                && Long.valueOf(10L).equals(entry.getMetadata().get("previous_spent"))
+                && Long.valueOf(10L).equals(entry.getMetadata().get("new_spent"))));
+    }
+
+    @Test
+    void directFreezeAndUnfreezeAllowOmittedBodyAndRequestId() {
+        org.springframework.mock.web.MockHttpServletRequest request = new org.springframework.mock.web.MockHttpServletRequest();
+        BudgetLedger frozen = BudgetLedger.builder().ledgerId("ledger-freeze").tenantId("tenant-direct")
+            .scope("tenant:tenant-direct").unit(UnitEnum.USD_MICROCENTS).status(BudgetStatus.FROZEN).build();
+        BudgetLedger active = BudgetLedger.builder().ledgerId("ledger-unfreeze").tenantId("tenant-direct")
+            .scope("tenant:tenant-direct").unit(UnitEnum.USD_MICROCENTS).status(BudgetStatus.ACTIVE).build();
+        when(budgetRepository.freeze("tenant:tenant-direct", UnitEnum.USD_MICROCENTS)).thenReturn(frozen);
+        when(budgetRepository.unfreeze("tenant:tenant-direct", UnitEnum.USD_MICROCENTS)).thenReturn(active);
+
+        assertThat(budgetController.freeze("tenant:tenant-direct", UnitEnum.USD_MICROCENTS,
+            null, request).getBody()).isSameAs(frozen);
+        assertThat(budgetController.unfreeze("tenant:tenant-direct", UnitEnum.USD_MICROCENTS,
+            null, request).getBody()).isSameAs(active);
+
+        verify(eventService).emit(eq(EventType.BUDGET_FROZEN), eq("tenant-direct"), any(), any(),
+            any(), any(), isNull(), isNull());
+        verify(eventService).emit(eq(EventType.BUDGET_UNFROZEN), eq("tenant-direct"), any(), any(),
+            any(), any(), isNull(), isNull());
     }
 }

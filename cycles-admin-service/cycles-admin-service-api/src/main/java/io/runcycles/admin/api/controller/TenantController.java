@@ -297,7 +297,7 @@ public class TenantController {
     public ResponseEntity<TenantBulkActionResponse> bulkAction(
             @Valid @RequestBody TenantBulkActionRequest request, HttpServletRequest httpRequest) {
         long startNanos = System.nanoTime();
-        if (request.getFilter() == null || request.getFilter().isEmpty()) {
+        if (request.getFilter().isEmpty()) {
             throw new GovernanceException(ErrorCode.INVALID_REQUEST,
                 "filter must contain at least one property", 400);
         }
@@ -376,12 +376,11 @@ public class TenantController {
     }
 
     private static TenantStatus targetStatus(TenantBulkAction action) {
-        switch (action) {
-            case SUSPEND: return TenantStatus.SUSPENDED;
-            case REACTIVATE: return TenantStatus.ACTIVE;
-            case CLOSE: return TenantStatus.CLOSED;
-            default: throw new IllegalStateException("Unreachable action: " + action);
-        }
+        return switch (action) {
+            case SUSPEND -> TenantStatus.SUSPENDED;
+            case REACTIVATE -> TenantStatus.ACTIVE;
+            case CLOSE -> TenantStatus.CLOSED;
+        };
     }
 
     /**
@@ -517,25 +516,24 @@ public class TenantController {
         if (request.getStatus() == null) {
             return EventType.TENANT_UPDATED;
         }
-        switch (request.getStatus()) {
-            case SUSPENDED: return EventType.TENANT_SUSPENDED;
-            case ACTIVE: return EventType.TENANT_REACTIVATED;
-            case CLOSED:
+        return switch (request.getStatus()) {
+            case SUSPENDED -> EventType.TENANT_SUSPENDED;
+            case ACTIVE -> EventType.TENANT_REACTIVATED;
+            case CLOSED -> {
                 // Rule 1(c) convergence: emit TENANT_CLOSED only on the
                 // freshwire transition. Retry PATCHes still run cascade but
                 // fall through to TENANT_UPDATED at the parent level.
-                return isFreshClose ? EventType.TENANT_CLOSED : EventType.TENANT_UPDATED;
-            default: return EventType.TENANT_UPDATED;
-        }
+                yield isFreshClose ? EventType.TENANT_CLOSED : EventType.TENANT_UPDATED;
+            }
+        };
     }
 
     private static EventType eventTypeForTenantAction(TenantBulkAction action) {
-        switch (action) {
-            case SUSPEND: return EventType.TENANT_SUSPENDED;
-            case REACTIVATE: return EventType.TENANT_REACTIVATED;
-            case CLOSE: return EventType.TENANT_CLOSED;
-            default: throw new IllegalStateException("Unreachable action: " + action);
-        }
+        return switch (action) {
+            case SUSPEND -> EventType.TENANT_SUSPENDED;
+            case REACTIVATE -> EventType.TENANT_REACTIVATED;
+            case CLOSE -> EventType.TENANT_CLOSED;
+        };
     }
 
     private void logEventEmissionFailure(EventType eventType, String tenantId, String correlationId,

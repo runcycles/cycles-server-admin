@@ -10,6 +10,9 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 import java.time.Instant;
 import java.util.List;
@@ -330,5 +333,51 @@ class EventServiceTest {
             "type", EventType.BUDGET_CREATED.getValue(),
             "expected_class", "EventDataBudgetLifecycle").count();
         assertThat(invalidCount).isEqualTo(1.0);
+    }
+
+    @Test
+    void emitFailureDiagnosticsHandleNullEventAndNullEventType() {
+        eventService.emit((Event) null);
+
+        Event untyped = Event.builder()
+            .tenantId("tenant-1").scope("tenant:tenant-1")
+            .correlationId("corr").requestId("req").traceId("trace").source("test")
+            .build();
+        doThrow(new IllegalStateException("storage failed")).when(eventRepository).save(untyped);
+        eventService.emit(untyped);
+
+        assertThat(meterRegistry.counter("cycles_admin_events_emitted_total",
+            "type", "unknown", "result", "failure").count()).isEqualTo(2.0);
+    }
+
+    @Test
+    void traceContextIsCopiedWhenPresentAndRemainsNullWhenAbsent() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+        try {
+            Event absent = Event.builder().eventType(EventType.BUDGET_CREATED).build();
+            eventService.emitRequired(absent);
+            assertThat(absent.getTraceId()).isNull();
+
+            request.setAttribute("traceId", "trace-from-request");
+            Event present = Event.builder().eventType(EventType.BUDGET_CREATED).build();
+            eventService.emitRequired(present);
+            assertThat(present.getTraceId()).isEqualTo("trace-from-request");
+        } finally {
+            RequestContextHolder.resetRequestAttributes();
+        }
+    }
+
+    @Test
+    void emitRequired_preservesExistingTimestamp() {
+        Instant timestamp = Instant.parse("2026-01-01T00:00:00Z");
+        Event event = Event.builder()
+            .eventType(EventType.BUDGET_CREATED)
+            .timestamp(timestamp)
+            .build();
+
+        eventService.emitRequired(event);
+
+        assertThat(event.getTimestamp()).isEqualTo(timestamp);
     }
 }

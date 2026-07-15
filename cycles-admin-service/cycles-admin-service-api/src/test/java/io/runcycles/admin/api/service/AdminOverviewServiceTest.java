@@ -23,7 +23,9 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
@@ -191,5 +193,57 @@ class AdminOverviewServiceTest {
         assertThat(result.getQuotaHealth()).isNull();
         assertThat(result.getAccessControlStats()).isNull();
         assertThat(result.getTenantCounts().getInObserveMode()).isNull();
+    }
+
+    @Test
+    void buildOverviewCoversPaginationNullSafeAggregatesAndReasonFiltering() {
+        List<Tenant> tenants = new ArrayList<>();
+        for (int i = 0; i < 100; i++) {
+            tenants.add(Tenant.builder().tenantId("tenant-" + i)
+                .status(i == 0 ? null : TenantStatus.ACTIVE).build());
+        }
+        when(tenantRepository.list(isNull(), isNull(), isNull(), eq(100))).thenReturn(tenants);
+        when(tenantRepository.list(isNull(), isNull(), eq("tenant-99"), eq(100))).thenReturn(List.of());
+
+        List<BudgetLedger> budgets = List.of(
+            BudgetLedger.builder().ledgerId("nulls").unit(UnitEnum.TOKENS).status(null)
+                .isOverLimit(true).build(),
+            BudgetLedger.builder().ledgerId("frozen").unit(UnitEnum.TOKENS).status(BudgetStatus.FROZEN)
+                .debt(new Amount(UnitEnum.TOKENS, 5L)).build(),
+            BudgetLedger.builder().ledgerId("closed").unit(UnitEnum.TOKENS).status(BudgetStatus.CLOSED)
+                .debt(new Amount(UnitEnum.TOKENS, 0L)).build());
+        when(budgetRepository.list(anyString())).thenReturn(budgets);
+
+        List<WebhookSubscription> webhooks = new ArrayList<>();
+        for (int i = 0; i < 100; i++) {
+            webhooks.add(WebhookSubscription.builder().subscriptionId("wh-" + i)
+                .status(i == 0 ? null : i == 1 ? WebhookStatus.DISABLED : WebhookStatus.ACTIVE)
+                .consecutiveFailures(i == 0 ? null : i == 1 ? 0 : 2).build());
+        }
+        when(webhookRepository.listAll(isNull(), isNull(), isNull(), eq(100))).thenReturn(webhooks);
+        when(webhookRepository.listAll(isNull(), isNull(), eq("wh-99"), eq(100))).thenReturn(List.of());
+
+        List<Event> events = new ArrayList<>();
+        for (int i = 0; i < 100; i++) {
+            events.add(Event.builder().eventId("evt-" + i)
+                .category(i == 0 ? null : EventCategory.BUDGET).build());
+        }
+        when(eventRepository.list(isNull(), isNull(), isNull(), isNull(), isNull(),
+            any(Instant.class), any(Instant.class), isNull(), eq(100))).thenReturn(events);
+        when(eventRepository.list(isNull(), isNull(), isNull(), isNull(), isNull(),
+            any(Instant.class), any(Instant.class), eq("evt-99"), eq(100))).thenReturn(List.of());
+        List<Event> denials = List.of(
+            Event.builder().data(null).build(),
+            Event.builder().data(Map.of("reason_code", 42)).build(),
+            Event.builder().data(Map.of("reason_code", " ")).build(),
+            Event.builder().data(Map.of("reason_code", "QUOTA_EXCEEDED")).build());
+        when(eventRepository.list(isNull(), eq("reservation.denied"), isNull(), isNull(), isNull(),
+            any(Instant.class), any(Instant.class), isNull(), eq(10))).thenReturn(denials);
+
+        AdminOverviewResponse response = overviewService.buildOverview();
+
+        assertThat(response.getRecentDenialsByReason()).containsEntry("QUOTA_EXCEEDED", 1);
+        assertThat(response.getOverLimitScopes().get(0).getAllocated()).isZero();
+        assertThat(response.getDebtScopes().get(0).getOverdraftLimit()).isZero();
     }
 }

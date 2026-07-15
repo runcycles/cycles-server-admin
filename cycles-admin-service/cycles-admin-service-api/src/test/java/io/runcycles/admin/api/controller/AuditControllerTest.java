@@ -13,12 +13,14 @@ import org.springframework.context.annotation.Import;
 import io.runcycles.admin.api.support.MetricsTestConfiguration;
 import io.runcycles.admin.api.contract.ContractValidationConfig;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import redis.clients.jedis.JedisPool;
 
 import java.time.Instant;
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -34,6 +36,18 @@ class AuditControllerTest {
     @MockitoBean private JedisPool jedisPool;
 
     private static final String ADMIN_KEY = "test-admin-key";
+
+    @Test
+    void parseCodeList_handlesEmptyInputAndNullElements() {
+        List<String> empty = ReflectionTestUtils.invokeMethod(
+            AuditController.class, "parseCodeList", List.of(), "error_code");
+        List<String> normalized = ReflectionTestUtils.invokeMethod(
+            AuditController.class, "parseCodeList",
+            java.util.Arrays.asList(null, " A , B "), "error_code");
+
+        assertThat(empty).isNull();
+        assertThat(normalized).containsExactly("A", "B");
+    }
 
     // 18-arg canonical matcher suite per spec v0.1.25.27:
     // tenantId, keyId, operations, status, resourceTypes, resourceId,

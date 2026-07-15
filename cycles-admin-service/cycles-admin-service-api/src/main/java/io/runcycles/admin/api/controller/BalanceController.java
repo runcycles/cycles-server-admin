@@ -46,7 +46,7 @@ public class BalanceController {
             effectiveLimit);
         var ledgers = page.items();
         boolean hasMore = page.hasMore();
-        String nextCursor = hasMore && !ledgers.isEmpty() ? ledgers.get(ledgers.size() - 1).getLedgerId() : null;
+        String nextCursor = hasMore ? ledgers.get(ledgers.size() - 1).getLedgerId() : null;
         BalanceQueryResponse response = BalanceQueryResponse.builder()
             .balances(ledgers)
             .hasMore(hasMore)

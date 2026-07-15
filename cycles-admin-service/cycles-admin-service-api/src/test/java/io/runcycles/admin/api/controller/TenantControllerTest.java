@@ -1397,4 +1397,34 @@ class TenantControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.succeeded.length()").value(1));
     }
+
+    @Test
+    void updateTenantEmptyPatchProducesNullChangeMetadata() throws Exception {
+        Tenant unchanged = tenantRow("tenant-empty", TenantStatus.ACTIVE);
+        when(tenantRepository.update(eq("tenant-empty"), any())).thenReturn(unchanged);
+
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-empty")
+                .header("X-Admin-API-Key", ADMIN_KEY).contentType(MediaType.APPLICATION_JSON)
+                .content("{}"))
+            .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry -> entry.getMetadata() == null));
+    }
+
+    @Test
+    void bulkActionNullLiveStatusDefaultsActiveAndEqualExpectedCountProceeds() throws Exception {
+        Tenant snapshot = tenantRow("tenant-null-status", TenantStatus.ACTIVE);
+        when(tenantRepository.matchForBulk(eq(TenantStatus.ACTIVE), isNull(), isNull(), eq(500)))
+            .thenReturn(List.of(snapshot));
+        when(tenantRepository.get("tenant-null-status"))
+            .thenReturn(tenantRow("tenant-null-status", null));
+        when(tenantRepository.update(eq("tenant-null-status"), any()))
+            .thenReturn(tenantRow("tenant-null-status", TenantStatus.SUSPENDED));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                .header("X-Admin-API-Key", ADMIN_KEY).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"SUSPEND\",\"expected_count\":1,\"idempotency_key\":\"equal-count\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.succeeded.length()").value(1));
+    }
 }

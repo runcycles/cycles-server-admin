@@ -618,4 +618,123 @@ class ApiKeyControllerTest {
         verify(apiKeyRepository, never()).list(any(), any(), any(), anyInt(), any(), any());
         verify(apiKeyRepository, never()).listAllTenants(any(), any(), anyInt(), any(), any());
     }
+
+    @Test
+    void createApiKeyWithExplicitPermissionsIncludesPermissionAuditBranch() throws Exception {
+        ApiKeyCreateResponse response = ApiKeyCreateResponse.builder().keyId("key-perms")
+            .keySecret("secret").keyPrefix("prefix").tenantId("tenant-1")
+            .permissions(List.of("budgets:read")).createdAt(Instant.now()).build();
+        when(apiKeyRepository.create(any())).thenReturn(response);
+
+        mockMvc.perform(post("/v1/admin/api-keys").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"tenant_id\":\"tenant-1\",\"name\":\"Permitted\",\"permissions\":[\"budgets:read\"]}"))
+            .andExpect(status().isCreated());
+
+        verify(auditRepository).log(argThat(entry -> entry.getMetadata() != null
+            && entry.getMetadata().containsKey("permissions")));
+    }
+
+    @Test
+    void updateApiKeyUnchangedPermissionsAndScopeDoesNotEmit() throws Exception {
+        ApiKey oldKey = ApiKey.builder().keyId("key-same").tenantId("tenant-1")
+            .permissions(List.of("budgets:read")).scopeFilter(List.of("tenant:tenant-1"))
+            .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        redis.clients.jedis.Jedis jedis = mock(redis.clients.jedis.Jedis.class);
+        when(jedisPool.getResource()).thenReturn(jedis);
+        when(jedis.get("apikey:key-same")).thenReturn(objectMapper.writeValueAsString(oldKey));
+        when(apiKeyRepository.update(eq("key-same"), any())).thenReturn(oldKey);
+
+        mockMvc.perform(patch("/v1/admin/api-keys/key-same").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"permissions\":[\"budgets:read\"],\"scope_filter\":[\"tenant:tenant-1\"]}"))
+            .andExpect(status().isOk());
+
+        verify(eventService, never()).emit(eq(io.runcycles.admin.model.event.EventType.API_KEY_PERMISSIONS_CHANGED),
+            any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void updateApiKeyMissingSnapshotTreatsPermissionAndScopePresenceAsChange() throws Exception {
+        redis.clients.jedis.Jedis jedis = mock(redis.clients.jedis.Jedis.class);
+        when(jedisPool.getResource()).thenReturn(jedis);
+        when(jedis.get("apikey:key-nosnapshot")).thenReturn(null);
+        ApiKey updated = ApiKey.builder().keyId("key-nosnapshot").tenantId("tenant-1")
+            .permissions(List.of("budgets:read")).scopeFilter(List.of("tenant:tenant-1"))
+            .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(apiKeyRepository.update(eq("key-nosnapshot"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/api-keys/key-nosnapshot").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"permissions\":[\"budgets:read\"],\"scope_filter\":[\"tenant:tenant-1\"]}"))
+            .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(io.runcycles.admin.model.event.EventType.API_KEY_PERMISSIONS_CHANGED),
+            eq("tenant-1"), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void blankTenantListUsesCrossTenantPath() throws Exception {
+        when(apiKeyRepository.listAllTenants(any(), any(), anyInt(), any(), any())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/api-keys").header("X-Admin-API-Key", ADMIN_KEY)
+                .param("tenant_id", " "))
+            .andExpect(status().isOk());
+
+        verify(apiKeyRepository).listAllTenants(any(), any(), anyInt(), any(), any());
+    }
+
+    @Test
+    void emptyUpdateUsesNullAuditMetadata() throws Exception {
+        ApiKey unchanged = ApiKey.builder().keyId("key-empty").tenantId("tenant-1")
+            .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(apiKeyRepository.update(eq("key-empty"), any())).thenReturn(unchanged);
+
+        mockMvc.perform(patch("/v1/admin/api-keys/key-empty").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+            .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry -> entry.getMetadata() == null));
+    }
+
+    @Test
+    void scopeOnlyChangeEmitsPermissionsChangedEvent() throws Exception {
+        ApiKey oldKey = ApiKey.builder().keyId("key-scope").tenantId("tenant-1")
+            .scopeFilter(List.of("tenant:old")).status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        ApiKey updated = ApiKey.builder().keyId("key-scope").tenantId("tenant-1")
+            .scopeFilter(List.of("tenant:new")).status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        redis.clients.jedis.Jedis jedis = mock(redis.clients.jedis.Jedis.class);
+        when(jedisPool.getResource()).thenReturn(jedis);
+        when(jedis.get("apikey:key-scope")).thenReturn(objectMapper.writeValueAsString(oldKey));
+        when(apiKeyRepository.update(eq("key-scope"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/api-keys/key-scope").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"scope_filter\":[\"tenant:new\"]}"))
+            .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(io.runcycles.admin.model.event.EventType.API_KEY_PERMISSIONS_CHANGED),
+            eq("tenant-1"), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void revokeOwnerResolutionCoversMissingPresentAndMalformedRows() throws Exception {
+        redis.clients.jedis.Jedis jedis = mock(redis.clients.jedis.Jedis.class);
+        when(jedisPool.getResource()).thenReturn(jedis);
+        ApiKey stored = ApiKey.builder().keyId("present").tenantId("tenant-1").build();
+        when(jedis.get("apikey:missing")).thenReturn(null);
+        when(jedis.get("apikey:present")).thenReturn(objectMapper.writeValueAsString(stored));
+        when(jedis.get("apikey:malformed")).thenReturn("{bad-json");
+        when(apiKeyRepository.revoke(anyString(), any())).thenAnswer(invocation ->
+            ApiKey.builder().keyId(invocation.getArgument(0)).tenantId("tenant-1")
+                .status(ApiKeyStatus.REVOKED).createdAt(Instant.now()).build());
+
+        for (String keyId : List.of("missing", "present", "malformed")) {
+            mockMvc.perform(delete("/v1/admin/api-keys/" + keyId)
+                    .header("X-Admin-API-Key", ADMIN_KEY).param("reason", "cleanup"))
+                .andExpect(status().isOk());
+        }
+        verify(mutationGuard).assertTenantOpen("tenant-1");
+        verify(mutationGuard, times(2)).assertTenantOpen(isNull());
+    }
 }
