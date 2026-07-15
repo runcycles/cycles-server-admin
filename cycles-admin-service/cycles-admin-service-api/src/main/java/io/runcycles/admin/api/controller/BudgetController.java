@@ -20,6 +20,7 @@ import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.api.service.BulkActionAuditMetadataBuilder;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.api.service.TerminalOwnerMutationGuard;
+import io.runcycles.admin.api.support.PageSlice;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.*;
@@ -181,16 +182,18 @@ public class BudgetController {
         boolean crossTenant;
         if (authTenantId != null) {
             crossTenant = false;
-            ledgers = repository.list(authTenantId, filters, cursor, effectiveLimit, sortSpec);
+            ledgers = repository.list(authTenantId, filters, cursor, effectiveLimit + 1, sortSpec);
         } else if (tenant_id != null && !tenant_id.isBlank()) {
             crossTenant = false;
-            ledgers = repository.list(tenant_id, filters, cursor, effectiveLimit, sortSpec);
+            ledgers = repository.list(tenant_id, filters, cursor, effectiveLimit + 1, sortSpec);
         } else {
             crossTenant = true;
-            ledgers = repository.listAllTenants(filters, cursor, effectiveLimit, sortSpec);
+            ledgers = repository.listAllTenants(filters, cursor, effectiveLimit + 1, sortSpec);
         }
+        var page = PageSlice.from(ledgers, effectiveLimit);
+        ledgers = page.items();
         String nextCursor = null;
-        if (ledgers.size() >= effectiveLimit) {
+        if (page.hasMore()) {
             BudgetLedger last = ledgers.get(ledgers.size() - 1);
             // Cross-tenant cursor format is "{tenantId}|{ledgerId}" so the
             // next page can resume inside the correct tenant; per-tenant
@@ -202,7 +205,7 @@ public class BudgetController {
         }
         BudgetListResponse response = BudgetListResponse.builder()
             .ledgers(ledgers)
-            .hasMore(ledgers.size() >= effectiveLimit)
+            .hasMore(page.hasMore())
             .nextCursor(nextCursor)
             .build();
         return ResponseEntity.ok(response);
@@ -466,32 +469,36 @@ public class BudgetController {
         BudgetBulkFilter filter = request.getFilter();
         filter.setSearch(searchNorm);
 
-        var cached = idempotencyStore.lookup(
-            BULK_IDEMPOTENCY_ENDPOINT, request.getIdempotencyKey(),
-            BudgetBulkActionResponse.class);
-        if (cached.isPresent()) {
-            return ResponseEntity.ok(cached.get());
+        IdempotencyStore.Claim<BudgetBulkActionResponse> idempotencyClaim =
+            idempotencyStore.begin(BULK_IDEMPOTENCY_ENDPOINT,
+                request.getIdempotencyKey(), request, BudgetBulkActionResponse.class);
+        if (idempotencyClaim.isReplay()) {
+            return ResponseEntity.ok(idempotencyClaim.replayResponse());
         }
-
-        // Fetch up to cap+1 so size > cap is detectable without hydrating
-        // the remainder. The +1 is the "this filter is too wide" sentinel.
-        List<BudgetLedger> matched = repository.matchForBulk(
-            filter.getTenantId(),
-            BudgetListFilters.fromBulkFilter(filter),
-            BULK_ACTION_LIMIT);
-        if (matched.size() > BULK_ACTION_LIMIT) {
-            throw new GovernanceException(ErrorCode.LIMIT_EXCEEDED,
-                "filter matches more than " + BULK_ACTION_LIMIT
-                    + " budgets; narrow the filter and retry",
-                400,
-                Map.of("total_matched", matched.size()));
-        }
-        if (request.getExpectedCount() != null && request.getExpectedCount() != matched.size()) {
-            throw new GovernanceException(ErrorCode.COUNT_MISMATCH,
-                "expected_count " + request.getExpectedCount()
-                    + " differs from server-counted matches " + matched.size(),
-                409,
-                Map.of("total_matched", matched.size()));
+        List<BudgetLedger> matched;
+        try {
+            // Claim before mutable match reads: a retry must replay the original
+            // envelope even when the first invocation changed this filter's set.
+            matched = repository.matchForBulk(filter.getTenantId(),
+                BudgetListFilters.fromBulkFilter(filter), BULK_ACTION_LIMIT);
+            if (matched.size() > BULK_ACTION_LIMIT) {
+                int totalMatched = Math.max(matched.size(), repository.countForBulk(
+                    filter.getTenantId(), BudgetListFilters.fromBulkFilter(filter)));
+                throw new GovernanceException(ErrorCode.LIMIT_EXCEEDED,
+                    "filter matches more than " + BULK_ACTION_LIMIT
+                        + " budgets; narrow the filter and retry",
+                    400, Map.of("total_matched", totalMatched));
+            }
+            if (request.getExpectedCount() != null
+                    && request.getExpectedCount() != matched.size()) {
+                throw new GovernanceException(ErrorCode.COUNT_MISMATCH,
+                    "expected_count " + request.getExpectedCount()
+                        + " differs from server-counted matches " + matched.size(),
+                    409, Map.of("total_matched", matched.size()));
+            }
+        } catch (RuntimeException e) {
+            idempotencyStore.abandon(idempotencyClaim);
+            throw e;
         }
 
         List<BulkActionRowOutcome> succeeded = new ArrayList<>();
@@ -519,7 +526,7 @@ public class BudgetController {
             .idempotencyKey(request.getIdempotencyKey())
             .build();
 
-        idempotencyStore.store(BULK_IDEMPOTENCY_ENDPOINT, request.getIdempotencyKey(), response);
+        idempotencyStore.complete(idempotencyClaim, response);
 
         Map<String, Object> auditMeta = BulkActionAuditMetadataBuilder.build(
             request.getAction().name(), matched.size(),
@@ -738,14 +745,13 @@ public class BudgetController {
     }
 
     private static EventType fundEventType(FundingOperation operation) {
-        switch (operation) {
-            case CREDIT: return EventType.BUDGET_FUNDED;
-            case DEBIT: return EventType.BUDGET_DEBITED;
-            case RESET: return EventType.BUDGET_RESET;
-            case RESET_SPENT: return EventType.BUDGET_RESET_SPENT;
-            case REPAY_DEBT: return EventType.BUDGET_DEBT_REPAID;
-            default: return EventType.BUDGET_FUNDED;
-        }
+        return switch (operation) {
+            case CREDIT -> EventType.BUDGET_FUNDED;
+            case DEBIT -> EventType.BUDGET_DEBITED;
+            case RESET -> EventType.BUDGET_RESET;
+            case RESET_SPENT -> EventType.BUDGET_RESET_SPENT;
+            case REPAY_DEBT -> EventType.BUDGET_DEBT_REPAID;
+        };
     }
 
     private void logEventEmissionFailure(EventType eventType, String tenantId, String budgetId,
@@ -759,7 +765,8 @@ public class BudgetController {
     }
 
     private void validateCreateUnits(BudgetCreateRequest request) {
-        if (request.getAllocated() != null && request.getAllocated().getUnit() != request.getUnit()) {
+        // allocated is @NotNull and this helper is reached only after @Valid succeeds.
+        if (request.getAllocated().getUnit() != request.getUnit()) {
             throw GovernanceException.unitMismatch(request.getUnit().name(), request.getAllocated().getUnit().name());
         }
         if (request.getOverdraftLimit() != null && request.getOverdraftLimit().getUnit() != request.getUnit()) {

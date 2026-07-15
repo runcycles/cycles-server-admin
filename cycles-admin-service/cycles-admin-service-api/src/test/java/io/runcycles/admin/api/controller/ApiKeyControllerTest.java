@@ -15,7 +15,6 @@ import io.runcycles.admin.api.contract.ContractValidationConfig;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
-import redis.clients.jedis.JedisPool;
 
 import java.time.Instant;
 import java.util.List;
@@ -34,7 +33,6 @@ class ApiKeyControllerTest {
     @MockitoBean private ApiKeyRepository apiKeyRepository;
     @MockitoBean private AuditRepository auditRepository;
     @MockitoBean private io.runcycles.admin.api.service.EventService eventService;
-    @MockitoBean private JedisPool jedisPool;
     @MockitoBean private io.runcycles.admin.api.service.TerminalOwnerMutationGuard mutationGuard;
 
     private static final String ADMIN_KEY = "test-admin-key";
@@ -184,7 +182,7 @@ class ApiKeyControllerTest {
 
     @Test
     void listApiKeys_limitClampedToMax100() throws Exception {
-        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(100), any(), any())).thenReturn(List.of());
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(101), any(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -192,12 +190,12 @@ class ApiKeyControllerTest {
                         .param("limit", "500"))
                 .andExpect(status().isOk());
 
-        verify(apiKeyRepository).list(eq("tenant-1"), any(), any(), eq(100), any(), any());
+        verify(apiKeyRepository).list(eq("tenant-1"), any(), any(), eq(101), any(), any());
     }
 
     @Test
     void listApiKeys_limitClampedToMin1() throws Exception {
-        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(1), any(), any())).thenReturn(List.of());
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(2), any(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -205,7 +203,7 @@ class ApiKeyControllerTest {
                         .param("limit", "0"))
                 .andExpect(status().isOk());
 
-        verify(apiKeyRepository).list(eq("tenant-1"), any(), any(), eq(1), any(), any());
+        verify(apiKeyRepository).list(eq("tenant-1"), any(), any(), eq(2), any(), any());
     }
 
     @Test
@@ -298,7 +296,7 @@ class ApiKeyControllerTest {
     }
 
     @Test
-    void listApiKeys_resultCountEqualsLimit_hasMoreTrueWithCursor() throws Exception {
+    void listApiKeys_resultCountExceedsLimit_hasMoreTrueWithCursor() throws Exception {
         ApiKey k1 = ApiKey.builder()
                 .keyId("key_1").tenantId("tenant-1").keyPrefix("gov_pre1")
                 .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
@@ -307,7 +305,12 @@ class ApiKeyControllerTest {
                 .keyId("key_2").tenantId("tenant-1").keyPrefix("gov_pre2")
                 .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(86400)).build();
-        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(2), any(), any())).thenReturn(List.of(k1, k2));
+        ApiKey k3 = ApiKey.builder()
+                .keyId("key_3").tenantId("tenant-1").keyPrefix("gov_pre3")
+                .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(86400)).build();
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(3), any(), any()))
+                .thenReturn(List.of(k1, k2, k3));
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -416,9 +419,7 @@ class ApiKeyControllerTest {
                 .permissions(List.of("balances:read"))
                 .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(86400)).build();
-        redis.clients.jedis.Jedis jedisMock = mock(redis.clients.jedis.Jedis.class);
-        when(jedisPool.getResource()).thenReturn(jedisMock);
-        when(jedisMock.get("apikey:key_1")).thenReturn(objectMapper.writeValueAsString(oldKey));
+        when(apiKeyRepository.findByIdOrNull("key_1")).thenReturn(oldKey);
 
         ApiKey updated = ApiKey.builder()
                 .keyId("key_1").tenantId("tenant-1").keyPrefix("cyc_live_abc12")
@@ -477,15 +478,15 @@ class ApiKeyControllerTest {
                 .andExpect(jsonPath("$.keys[0].key_id").value("key_a"))
                 .andExpect(jsonPath("$.keys[1].key_id").value("key_b"));
 
-        verify(apiKeyRepository).listAllTenants(isNull(), isNull(), eq(50), any(), any());
+        verify(apiKeyRepository).listAllTenants(isNull(), isNull(), eq(51), any(), any());
         verify(apiKeyRepository, never()).list(anyString(), any(), any(), anyInt());
     }
 
     @Test
     void listApiKeys_crossTenant_nextCursorIsTenantKeyComposite() throws Exception {
-        // 50 results returned -> page is full -> next_cursor must be {tenantId}|{keyId}
+        // 51 results prove another page exists; the 51st look-ahead row is not returned.
         List<ApiKey> fullPage = new java.util.ArrayList<>();
-        for (int i = 0; i < 50; i++) {
+        for (int i = 0; i < 51; i++) {
             fullPage.add(ApiKey.builder()
                     .keyId("key_" + i).tenantId("tenant-" + (i / 10))
                     .keyPrefix("cyc_live_" + i)
@@ -504,7 +505,7 @@ class ApiKeyControllerTest {
     @Test
     void listApiKeys_perTenant_nextCursorIsBareKeyId() throws Exception {
         List<ApiKey> fullPage = new java.util.ArrayList<>();
-        for (int i = 0; i < 50; i++) {
+        for (int i = 0; i < 51; i++) {
             fullPage.add(ApiKey.builder()
                     .keyId("key_" + i).tenantId("tenant-1").keyPrefix("cyc_live_" + i)
                     .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
@@ -524,7 +525,7 @@ class ApiKeyControllerTest {
 
     @Test
     void listApiKeys_crossTenant_passesStatusAndCursor() throws Exception {
-        when(apiKeyRepository.listAllTenants(eq(ApiKeyStatus.REVOKED), eq("tenant-9|key_abc"), eq(25), any(), any()))
+        when(apiKeyRepository.listAllTenants(eq(ApiKeyStatus.REVOKED), eq("tenant-9|key_abc"), eq(26), any(), any()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
@@ -534,7 +535,7 @@ class ApiKeyControllerTest {
                         .param("limit", "25"))
                 .andExpect(status().isOk());
 
-        verify(apiKeyRepository).listAllTenants(eq(ApiKeyStatus.REVOKED), eq("tenant-9|key_abc"), eq(25), any(), any());
+        verify(apiKeyRepository).listAllTenants(eq(ApiKeyStatus.REVOKED), eq("tenant-9|key_abc"), eq(26), any(), any());
     }
 
     // --- v0.1.25.24 sort support ---
@@ -612,5 +613,122 @@ class ApiKeyControllerTest {
 
         verify(apiKeyRepository, never()).list(any(), any(), any(), anyInt(), any(), any());
         verify(apiKeyRepository, never()).listAllTenants(any(), any(), anyInt(), any(), any());
+    }
+
+    @Test
+    void createApiKeyWithExplicitPermissionsIncludesPermissionAuditBranch() throws Exception {
+        ApiKeyCreateResponse response = ApiKeyCreateResponse.builder().keyId("key-perms")
+            .keySecret("secret").keyPrefix("prefix").tenantId("tenant-1")
+            .permissions(List.of("budgets:read")).createdAt(Instant.now()).build();
+        when(apiKeyRepository.create(any())).thenReturn(response);
+
+        mockMvc.perform(post("/v1/admin/api-keys").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"tenant_id\":\"tenant-1\",\"name\":\"Permitted\",\"permissions\":[\"budgets:read\"]}"))
+            .andExpect(status().isCreated());
+
+        verify(auditRepository).log(argThat(entry -> entry.getMetadata() != null
+            && entry.getMetadata().containsKey("permissions")));
+    }
+
+    @Test
+    void updateApiKeyUnchangedPermissionsAndScopeDoesNotEmit() throws Exception {
+        ApiKey oldKey = ApiKey.builder().keyId("key-same").tenantId("tenant-1")
+            .permissions(List.of("budgets:read")).scopeFilter(List.of("tenant:tenant-1"))
+            .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(apiKeyRepository.findByIdOrNull("key-same")).thenReturn(oldKey);
+        when(apiKeyRepository.update(eq("key-same"), any())).thenReturn(oldKey);
+
+        mockMvc.perform(patch("/v1/admin/api-keys/key-same").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"permissions\":[\"budgets:read\"],\"scope_filter\":[\"tenant:tenant-1\"]}"))
+            .andExpect(status().isOk());
+
+        verify(eventService, never()).emit(eq(io.runcycles.admin.model.event.EventType.API_KEY_PERMISSIONS_CHANGED),
+            any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void updateApiKeyMissingSnapshotTreatsPermissionAndScopePresenceAsChange() throws Exception {
+        when(apiKeyRepository.findByIdOrNull("key-nosnapshot")).thenReturn(null);
+        ApiKey updated = ApiKey.builder().keyId("key-nosnapshot").tenantId("tenant-1")
+            .permissions(List.of("budgets:read")).scopeFilter(List.of("tenant:tenant-1"))
+            .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(apiKeyRepository.update(eq("key-nosnapshot"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/api-keys/key-nosnapshot").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"permissions\":[\"budgets:read\"],\"scope_filter\":[\"tenant:tenant-1\"]}"))
+            .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(io.runcycles.admin.model.event.EventType.API_KEY_PERMISSIONS_CHANGED),
+            eq("tenant-1"), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void blankTenantListUsesCrossTenantPath() throws Exception {
+        when(apiKeyRepository.listAllTenants(any(), any(), anyInt(), any(), any())).thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/admin/api-keys").header("X-Admin-API-Key", ADMIN_KEY)
+                .param("tenant_id", " "))
+            .andExpect(status().isOk());
+
+        verify(apiKeyRepository).listAllTenants(any(), any(), anyInt(), any(), any());
+    }
+
+    @Test
+    void emptyUpdateUsesNullAuditMetadata() throws Exception {
+        ApiKey unchanged = ApiKey.builder().keyId("key-empty").tenantId("tenant-1")
+            .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(apiKeyRepository.update(eq("key-empty"), any())).thenReturn(unchanged);
+
+        mockMvc.perform(patch("/v1/admin/api-keys/key-empty").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+            .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry -> entry.getMetadata() == null));
+    }
+
+    @Test
+    void scopeOnlyChangeEmitsPermissionsChangedEvent() throws Exception {
+        ApiKey oldKey = ApiKey.builder().keyId("key-scope").tenantId("tenant-1")
+            .scopeFilter(List.of("tenant:old")).status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        ApiKey updated = ApiKey.builder().keyId("key-scope").tenantId("tenant-1")
+            .scopeFilter(List.of("tenant:new")).status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(apiKeyRepository.findByIdOrNull("key-scope")).thenReturn(oldKey);
+        when(apiKeyRepository.update(eq("key-scope"), any())).thenReturn(updated);
+
+        mockMvc.perform(patch("/v1/admin/api-keys/key-scope").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"scope_filter\":[\"tenant:new\"]}"))
+            .andExpect(status().isOk());
+
+        verify(eventService).emit(eq(io.runcycles.admin.model.event.EventType.API_KEY_PERMISSIONS_CHANGED),
+            eq("tenant-1"), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void revokeOwnerResolutionFailsClosedForMalformedRows() throws Exception {
+        ApiKey stored = ApiKey.builder().keyId("present").tenantId("tenant-1").build();
+        when(apiKeyRepository.findByIdOrNull("missing")).thenReturn(null);
+        when(apiKeyRepository.findByIdOrNull("present")).thenReturn(stored);
+        when(apiKeyRepository.findByIdOrNull("malformed"))
+            .thenThrow(new IllegalStateException("Malformed API-key storage row"));
+        when(apiKeyRepository.revoke(anyString(), any())).thenAnswer(invocation ->
+            ApiKey.builder().keyId(invocation.getArgument(0)).tenantId("tenant-1")
+                .status(ApiKeyStatus.REVOKED).createdAt(Instant.now()).build());
+
+        for (String keyId : List.of("missing", "present")) {
+            mockMvc.perform(delete("/v1/admin/api-keys/" + keyId)
+                    .header("X-Admin-API-Key", ADMIN_KEY).param("reason", "cleanup"))
+                .andExpect(status().isOk());
+        }
+        mockMvc.perform(delete("/v1/admin/api-keys/malformed")
+                .header("X-Admin-API-Key", ADMIN_KEY).param("reason", "cleanup"))
+            .andExpect(status().isInternalServerError());
+
+        verify(mutationGuard).assertTenantOpen("tenant-1");
+        verify(mutationGuard).assertTenantOpen(isNull());
+        verify(apiKeyRepository, never()).revoke(eq("malformed"), any());
     }
 }

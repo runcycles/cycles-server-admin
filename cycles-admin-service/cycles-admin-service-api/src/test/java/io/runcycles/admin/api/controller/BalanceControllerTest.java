@@ -48,7 +48,7 @@ class BalanceControllerTest {
                 .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .remaining(new Amount(UnitEnum.USD_MICROCENTS, 800L))
                 .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(budgetRepository.list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(50)))
+        when(budgetRepository.list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(51)))
                 .thenReturn(List.of(ledger));
 
         mockMvc.perform(get("/v1/balances")
@@ -61,7 +61,7 @@ class BalanceControllerTest {
     @Test
     void queryBalances_emptyResult_returnsEmptyList() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(50)))
+        when(budgetRepository.list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(51)))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/balances")
@@ -80,7 +80,7 @@ class BalanceControllerTest {
     @Test
     void queryBalances_usesScopePrefixFilter() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), eq("org/"), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(50)))
+        when(budgetRepository.list(eq("tenant-1"), eq("org/"), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(51)))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/balances")
@@ -88,13 +88,13 @@ class BalanceControllerTest {
                         .param("scope_prefix", "org/"))
                 .andExpect(status().isOk());
 
-        verify(budgetRepository).list(eq("tenant-1"), eq("org/"), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(50));
+        verify(budgetRepository).list(eq("tenant-1"), eq("org/"), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(51));
     }
 
     @Test
     void queryBalances_usesAuthenticatedTenantId_ignoresUserSupplied() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(50)))
+        when(budgetRepository.list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(51)))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/balances")
@@ -102,13 +102,13 @@ class BalanceControllerTest {
                         .param("tenant_id", "attacker-tenant"))
                 .andExpect(status().isOk());
 
-        verify(budgetRepository).list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(50));
+        verify(budgetRepository).list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(51));
     }
 
     @Test
     void queryBalances_emptyResult_nextCursorIsNull() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(50)))
+        when(budgetRepository.list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(51)))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/balances")
@@ -121,7 +121,7 @@ class BalanceControllerTest {
     @Test
     void queryBalances_withUnitFilter_passesUnitToRepository() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), any(), eq(UnitEnum.TOKENS), eq(BudgetStatus.ACTIVE), isNull(), eq(50)))
+        when(budgetRepository.list(eq("tenant-1"), any(), eq(UnitEnum.TOKENS), eq(BudgetStatus.ACTIVE), isNull(), eq(51)))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/balances")
@@ -129,13 +129,13 @@ class BalanceControllerTest {
                         .param("unit", "TOKENS"))
                 .andExpect(status().isOk());
 
-        verify(budgetRepository).list(eq("tenant-1"), any(), eq(UnitEnum.TOKENS), eq(BudgetStatus.ACTIVE), isNull(), eq(50));
+        verify(budgetRepository).list(eq("tenant-1"), any(), eq(UnitEnum.TOKENS), eq(BudgetStatus.ACTIVE), isNull(), eq(51));
     }
 
     @Test
     void queryBalances_withCursorParam_passesToRepository() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), eq("led-abc"), eq(50)))
+        when(budgetRepository.list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), eq("led-abc"), eq(51)))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/balances")
@@ -143,13 +143,13 @@ class BalanceControllerTest {
                         .param("cursor", "led-abc"))
                 .andExpect(status().isOk());
 
-        verify(budgetRepository).list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), eq("led-abc"), eq(50));
+        verify(budgetRepository).list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), eq("led-abc"), eq(51));
     }
 
     @Test
     void queryBalances_withCustomLimit_passesToRepository() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(10)))
+        when(budgetRepository.list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(11)))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/balances")
@@ -157,20 +157,25 @@ class BalanceControllerTest {
                         .param("limit", "10"))
                 .andExpect(status().isOk());
 
-        verify(budgetRepository).list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(10));
+        verify(budgetRepository).list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(11));
     }
 
     @Test
     void queryBalances_hasMoreTrue_returnsNextCursor() throws Exception {
         setupApiKeyAuth();
-        // Return exactly 'limit' results to trigger hasMore=true
+        // Return one look-ahead row beyond the requested limit.
         BudgetLedger ledger = BudgetLedger.builder()
                 .ledgerId("led-last").scope("org/team1").unit(UnitEnum.USD_MICROCENTS)
                 .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .remaining(new Amount(UnitEnum.USD_MICROCENTS, 800L))
                 .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(budgetRepository.list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(1)))
-                .thenReturn(List.of(ledger));
+        BudgetLedger lookahead = BudgetLedger.builder()
+                .ledgerId("led-extra").scope("org/team2").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 800L))
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(budgetRepository.list(eq("tenant-1"), any(), any(), eq(BudgetStatus.ACTIVE), isNull(), eq(2)))
+                .thenReturn(List.of(ledger, lookahead));
 
         mockMvc.perform(get("/v1/balances")
                         .header("X-Cycles-API-Key", "valid-api-key")
@@ -178,5 +183,16 @@ class BalanceControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.has_more").value(true))
                 .andExpect(jsonPath("$.next_cursor").value("led-last"));
+    }
+
+    @Test
+    void queryBalancesBlankRequestedTenantAndCursorRemainAbsentDiagnostics() throws Exception {
+        setupApiKeyAuth();
+        when(budgetRepository.list(eq("tenant-1"), any(), any(), any(), any(), anyInt()))
+            .thenReturn(List.of());
+
+        mockMvc.perform(get("/v1/balances").header("X-Cycles-API-Key", "valid-api-key")
+                .param("tenant_id", " ").param("cursor", " "))
+            .andExpect(status().isOk());
     }
 }

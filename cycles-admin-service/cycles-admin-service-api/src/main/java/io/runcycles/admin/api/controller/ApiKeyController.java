@@ -13,6 +13,7 @@ import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.api.service.TerminalOwnerMutationGuard;
+import io.runcycles.admin.api.support.PageSlice;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -28,7 +29,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
-import redis.clients.jedis.JedisPool;
 @RestController @RequestMapping("/v1/admin/api-keys") @Tag(name = "API Keys")
 public class ApiKeyController {
     private static final Logger LOG = LoggerFactory.getLogger(ApiKeyController.class);
@@ -41,7 +41,6 @@ public class ApiKeyController {
     @Autowired private AuditRepository auditRepository;
     @Autowired private EventService eventService;
     @Autowired private ObjectMapper objectMapper;
-    @Autowired private JedisPool jedisPool;
     @Autowired private TerminalOwnerMutationGuard mutationGuard;
     @PostMapping @Operation(operationId = "createApiKey")
     public ResponseEntity<ApiKeyCreateResponse> create(@Valid @RequestBody ApiKeyCreateRequest request, HttpServletRequest httpRequest) {
@@ -92,14 +91,16 @@ public class ApiKeyController {
         boolean crossTenant;
         if (tenant_id != null && !tenant_id.isBlank()) {
             crossTenant = false;
-            keys = repository.list(tenant_id, status, cursor, effectiveLimit, sortSpec, searchNorm);
+            keys = repository.list(tenant_id, status, cursor, effectiveLimit + 1, sortSpec, searchNorm);
         } else {
             crossTenant = true;
-            keys = repository.listAllTenants(status, cursor, effectiveLimit, sortSpec, searchNorm);
+            keys = repository.listAllTenants(status, cursor, effectiveLimit + 1, sortSpec, searchNorm);
         }
+        var page = PageSlice.from(keys, effectiveLimit);
+        keys = page.items();
         var responses = keys.stream().map(ApiKeyResponse::from).collect(Collectors.toList());
         String nextCursor = null;
-        if (keys.size() >= effectiveLimit) {
+        if (page.hasMore()) {
             ApiKey last = keys.get(keys.size() - 1);
             nextCursor = crossTenant
                 ? last.getTenantId() + "|" + last.getKeyId()
@@ -107,7 +108,7 @@ public class ApiKeyController {
         }
         ApiKeyListResponse response = ApiKeyListResponse.builder()
             .keys(responses)
-            .hasMore(keys.size() >= effectiveLimit)
+            .hasMore(page.hasMore())
             .nextCursor(nextCursor)
             .build();
         return ResponseEntity.ok(response);
@@ -144,15 +145,7 @@ public class ApiKeyController {
     public ResponseEntity<ApiKeyResponse> update(@PathVariable("key_id") String keyId,
             @Valid @RequestBody ApiKeyUpdateRequest request, HttpServletRequest httpRequest) {
         // Read old key state for change detection + owner-tenant resolution (Rule 2).
-        ApiKey oldKey = null;
-        try (var jedis = jedisPool.getResource()) {
-            String data = jedis.get("apikey:" + keyId);
-            if (data != null) oldKey = objectMapper.readValue(data, ApiKey.class);
-        } catch (Exception e) {
-            LOG.warn("Failed to read API key before update for change detection: key_id={} request_id={} trace_id={} error={}",
-                safe(keyId), attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
-                attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE), safe(e.getMessage()), e);
-        }
+        ApiKey oldKey = repository.findByIdOrNull(keyId);
         if (oldKey != null) mutationGuard.assertTenantOpen(oldKey.getTenantId());
 
         ApiKey updated = repository.update(keyId, request);
@@ -225,13 +218,8 @@ public class ApiKeyController {
     }
 
     private String resolveKeyTenantId(String keyId) {
-        try (var jedis = jedisPool.getResource()) {
-            String data = jedis.get("apikey:" + keyId);
-            if (data == null) return null;
-            return objectMapper.readValue(data, ApiKey.class).getTenantId();
-        } catch (Exception e) {
-            return null;
-        }
+        ApiKey key = repository.findByIdOrNull(keyId);
+        return key != null ? key.getTenantId() : null;
     }
 
     private Map<String, Object> buildRevokeMeta(String name, String reason) {

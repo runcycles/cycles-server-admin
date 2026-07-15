@@ -47,6 +47,7 @@ class ApiKeyRepositoryTest {
     @BeforeEach
     void setUp() {
         lenient().when(jedisPool.getResource()).thenReturn(jedis);
+        RedisBatchTestStubs.installStringReads(jedis);
     }
 
     @Test
@@ -67,6 +68,77 @@ class ApiKeyRepositoryTest {
         assertThat(response.getKeyPrefix()).isEqualTo("cyc_live_abc12");
         assertThat(response.getTenantId()).isEqualTo("test-tenant");
         assertThat(response.getPermissions()).isNotEmpty();
+    }
+
+    @Test
+    void create_prefixCollision_regeneratesWithoutOverwritingExistingLookup() {
+        when(keyService.generateKeySecret("cyc_live"))
+            .thenReturn("cyc_live_collision000", "cyc_live_unique111");
+        when(keyService.extractPrefix("cyc_live_collision000")).thenReturn("cyc_live_colli");
+        when(keyService.extractPrefix("cyc_live_unique111")).thenReturn("cyc_live_uniqu");
+        when(keyService.hashKey("cyc_live_collision000")).thenReturn("hash-collision");
+        when(keyService.hashKey("cyc_live_unique111")).thenReturn("hash-unique");
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("PREFIX_COLLISION"), List.of("CREATED"));
+
+        ApiKeyCreateRequest request = new ApiKeyCreateRequest();
+        request.setTenantId("test-tenant");
+        request.setName("Test Key");
+
+        ApiKeyCreateResponse response = repository.create(request);
+
+        assertThat(response.getKeySecret()).isEqualTo("cyc_live_unique111");
+        assertThat(response.getKeyPrefix()).isEqualTo("cyc_live_uniqu");
+        verify(jedis, times(2)).eval(anyString(), anyList(), anyList());
+    }
+
+    @Test
+    void findByIdOrNull_toleratesFieldsWrittenByNewerReplica() throws Exception {
+        ApiKey key = ApiKey.builder().keyId("key-future").tenantId("tenant-closed")
+            .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String json = objectMapper.writeValueAsString(key);
+        String futureJson = json.substring(0, json.length() - 1)
+            + ",\"future_replica_field\":\"value\"}";
+        when(jedis.get("apikey:key-future")).thenReturn(futureJson);
+
+        assertThat(repository.findByIdOrNull("key-future").getTenantId())
+            .isEqualTo("tenant-closed");
+    }
+
+    @Test
+    void create_keyIdCollisionRegeneratesAndCollisionExhaustionFailsClosed() {
+        when(keyService.generateKeySecret("cyc_live")).thenReturn("cyc_live_collision");
+        when(keyService.extractPrefix(anyString())).thenReturn("cyc_live_colli");
+        when(keyService.hashKey(anyString())).thenReturn("hash");
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("KEY_ID_COLLISION"), List.of("CREATED"));
+        ApiKeyCreateRequest request = new ApiKeyCreateRequest();
+        request.setTenantId("tenant-1");
+        request.setName("Key");
+        assertThat(repository.create(request).getKeySecret()).isEqualTo("cyc_live_collision");
+
+        reset(jedis);
+        when(jedisPool.getResource()).thenReturn(jedis);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("PREFIX_COLLISION"));
+        assertThatThrownBy(() -> repository.create(request))
+            .isInstanceOf(RuntimeException.class)
+            .hasRootCauseMessage("Unable to allocate a unique API key lookup prefix");
+        verify(jedis, times(10)).eval(anyString(), anyList(), anyList());
+    }
+
+    @Test
+    void create_unexpectedLuaStatusFailsClosed() {
+        when(keyService.generateKeySecret("cyc_live")).thenReturn("cyc_live_unexpected");
+        when(keyService.extractPrefix(anyString())).thenReturn("cyc_live_unexp");
+        when(keyService.hashKey(anyString())).thenReturn("hash");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("UNKNOWN"));
+        ApiKeyCreateRequest request = new ApiKeyCreateRequest();
+        request.setTenantId("tenant-1");
+        request.setName("Key");
+
+        assertThatThrownBy(() -> repository.create(request))
+            .isInstanceOf(RuntimeException.class)
+            .hasRootCauseMessage("Unexpected API key create result: UNKNOWN");
     }
 
     @Test
@@ -721,14 +793,13 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
-    void list_cursorNotFound_returnsNoEntriesAfterCursor() throws Exception {
+    void list_cursorNotFound_requiresPaginationRestart() throws Exception {
         Set<String> ids = new LinkedHashSet<>(List.of("key_1", "key_2"));
         when(jedis.smembers("apikeys:tenant-1")).thenReturn(ids);
 
-        // Cursor points to nonexistent key - nothing comes after it
-        List<ApiKey> result = repository.list("tenant-1", null, "nonexistent", 50);
-
-        assertThat(result).isEmpty();
+        assertThatThrownBy(() -> repository.list("tenant-1", null, "nonexistent", 50))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("restart pagination");
     }
 
     @Test
@@ -897,6 +968,74 @@ class ApiKeyRepositoryTest {
         assertThat(result.getScopeFilter()).containsExactly("workspace:eng");
     }
 
+    @Test
+    void update_allOptionalFieldsAndNoOpRequestAreHandled() throws Exception {
+        ApiKey existing = ApiKey.builder().keyId("key-all").tenantId("tenant-1")
+            .keyPrefix("cyc_live_all").keyHash("hash").name("Old")
+            .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String json = objectMapper.writeValueAsString(existing);
+        when(jedis.get("apikey:key-all")).thenReturn(json);
+        ApiKeyUpdateRequest all = new ApiKeyUpdateRequest();
+        all.setName("New");
+        all.setDescription("Description");
+        all.setPermissions(List.of("budgets:read"));
+        all.setScopeFilter(List.of("tenant:tenant-1"));
+        all.setMetadata(Map.of("owner", "ops"));
+
+        ApiKey updated = repository.update("key-all", all);
+        assertThat(updated.getDescription()).isEqualTo("Description");
+        assertThat(updated.getScopeFilter()).containsExactly("tenant:tenant-1");
+        assertThat(updated.getMetadata()).containsEntry("owner", "ops");
+
+        String updatedJson = objectMapper.writeValueAsString(updated);
+        when(jedis.get("apikey:key-all")).thenReturn(updatedJson);
+        assertThat(repository.update("key-all", new ApiKeyUpdateRequest()).getName()).isEqualTo("New");
+    }
+
+    @Test
+    void listSearchChecksKeyIdThenNameAndRejectsNonMatches() throws Exception {
+        ApiKey byId = ApiKey.builder().keyId("key-needle").tenantId("tenant-1")
+            .name("Other").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        ApiKey byName = ApiKey.builder().keyId("key-two").tenantId("tenant-1")
+            .name("Needle Name").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        ApiKey miss = ApiKey.builder().keyId("key-three").tenantId("tenant-1")
+            .name("Other").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(jedis.smembers("apikeys:tenant-1"))
+            .thenReturn(new LinkedHashSet<>(List.of("key-needle", "key-two", "key-three")));
+        String byIdJson = objectMapper.writeValueAsString(byId);
+        String byNameJson = objectMapper.writeValueAsString(byName);
+        String missJson = objectMapper.writeValueAsString(miss);
+        when(jedis.get("apikey:key-needle")).thenReturn(byIdJson);
+        when(jedis.get("apikey:key-two")).thenReturn(byNameJson);
+        when(jedis.get("apikey:key-three")).thenReturn(missJson);
+
+        assertThat(repository.list("tenant-1", null, " ", 10, null, "needle"))
+            .extracting(ApiKey::getKeyId).containsExactly("key-needle", "key-two");
+    }
+
+    @Test
+    void sortedList_skipsMissingMalformedFilteredAndSearchMissRows() throws Exception {
+        ApiKey nullStatus = ApiKey.builder().keyId("key-null").tenantId("tenant-1")
+            .name("Needle").status(null).createdAt(Instant.now()).build();
+        ApiKey activeMiss = ApiKey.builder().keyId("key-miss").tenantId("tenant-1")
+            .name("Other").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String nullJson = objectMapper.writeValueAsString(nullStatus);
+        String missJson = objectMapper.writeValueAsString(activeMiss);
+        when(jedis.smembers("apikeys:tenant-1")).thenReturn(
+            new LinkedHashSet<>(List.of("missing", "malformed", "key-null", "key-miss")));
+        when(jedis.get("apikey:missing")).thenReturn(null);
+        when(jedis.get("apikey:malformed")).thenReturn("{bad-json");
+        when(jedis.get("apikey:key-null")).thenReturn(nullJson);
+        when(jedis.get("apikey:key-miss")).thenReturn(missJson);
+
+        assertThat(repository.list("tenant-1", ApiKeyStatus.ACTIVE, " ", 10,
+            SortSpec.of("status", SortDirection.ASC), "needle")).isEmpty();
+
+        assertThat(repository.list("tenant-1", null, null, 10,
+            SortSpec.of("status", SortDirection.ASC), null))
+            .extracting(ApiKey::getKeyId).containsExactly("key-miss", "key-null");
+    }
+
     // --- v0.1.25.22 cross-tenant listAllTenants ---
 
     private ApiKey buildKey(String tenantId, String keyId) throws Exception {
@@ -1027,21 +1166,16 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
-    void listAllTenants_cursorTenantDeleted_skipsForwardToNextTenant() throws Exception {
+    void listAllTenants_cursorTenantDeleted_requiresPaginationRestart() throws Exception {
         // Cursor points at tenant-b, but tenant-b has been deleted between pages.
         // Must not stall at empty: should resume at tenant-c (sorts strictly after).
-        String jsonC1 = objectMapper.writeValueAsString(buildKey("tenant-c", "key_c1"));
-        String jsonC2 = objectMapper.writeValueAsString(buildKey("tenant-c", "key_c2"));
         when(jedis.smembers("tenants"))
                 .thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-c")));
-        when(jedis.smembers("apikeys:tenant-c"))
-                .thenReturn(new LinkedHashSet<>(List.of("key_c1", "key_c2")));
-        lenient().when(jedis.get("apikey:key_c1")).thenReturn(jsonC1);
-        lenient().when(jedis.get("apikey:key_c2")).thenReturn(jsonC2);
 
-        List<ApiKey> result = repository.listAllTenants(null, "tenant-b|key_b1", 50);
-
-        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_c1", "key_c2");
+        assertThatThrownBy(() -> repository.listAllTenants(
+                null, "tenant-b|key_b1", 50))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("restart pagination");
     }
 
     // --- v0.1.25.24 sort support ---
@@ -1207,27 +1341,19 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
-    void listAllTenants_nullSortSpec_preservesLegacySkipForward() throws Exception {
-        Instant now = Instant.parse("2026-01-01T00:00:00Z");
-        ApiKey c1 = buildKeySorted("tenant-c", "key_c1", "C", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
-        String jsonC1 = objectMapper.writeValueAsString(c1);
+    void listAllTenants_nullSortSpec_rejectsDeletedCursor() throws Exception {
         when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-c")));
-        when(jedis.smembers("apikeys:tenant-c")).thenReturn(new LinkedHashSet<>(List.of("key_c1")));
-        lenient().when(jedis.get("apikey:key_c1")).thenReturn(jsonC1);
 
-        // Null SortSpec → legacy path; cursor tenant-b is deleted → skip forward to tenant-c
-        List<ApiKey> result = repository.listAllTenants(null, "tenant-b|key_b1", 50, null);
-
-        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_c1");
+        assertThatThrownBy(() -> repository.listAllTenants(
+                null, "tenant-b|key_b1", 50, null))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("restart pagination");
     }
 
     @Test
-    void listAllTenants_sorted_stopsAtHydrationCap() throws Exception {
-        // Hydrate SORTED_HYDRATE_CAP+10 keys under a single tenant; the sorted
-        // cross-tenant path must stop hydrating at the cap and still return a
-        // valid sorted page from the capped window. Page size 5 ensures the
-        // page fills from the capped slice regardless of global population.
-        int cap = ApiKeyRepository.SORTED_HYDRATE_CAP;
+    void listAllTenants_sorted_hydratesCompletePopulation() throws Exception {
+        // Regression: the former 2,000-row cap silently hid later keys.
+        int cap = 2000;
         int total = cap + 10;
         Instant now = Instant.parse("2026-01-01T00:00:00Z");
         LinkedHashSet<String> keyIds = new LinkedHashSet<>();
@@ -1248,10 +1374,8 @@ class ApiKeyRepositoryTest {
         List<ApiKey> result = repository.listAllTenants(null, null, 5,
                 SortSpec.of("key_id", SortDirection.ASC));
 
-        // We never observe more than `cap` hydrations, so `jedis.get` is called at most `cap` times.
-        // Page requested is 5 rows, delivered from the capped slice.
         assertThat(result).hasSize(5);
-        verify(jedis, atMost(cap)).get(anyString());
+        verify(jedis, times(total)).get(anyString());
     }
 
     // --- cascadeRevoke (spec v0.1.25.29 Rule 1) ---
@@ -1260,10 +1384,36 @@ class ApiKeyRepositoryTest {
     void cascadeRevoke_noOwnedKeys_returnsEmpty() {
         when(jedis.smembers("apikeys:tenant-1")).thenReturn(Collections.emptySet());
 
-        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "tenant_closed");
+        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "tenant_closed").succeeded();
 
         assertThat(outcomes).isEmpty();
         verify(jedis, never()).set(anyString(), anyString());
+    }
+
+    @Test
+    void cascadeRevoke_nullIndexMissingRowsAndRetryExhaustionAreHandled() throws Exception {
+        when(jedis.smembers("apikeys:tenant-1")).thenReturn(null);
+        assertThat(repository.cascadeRevoke("tenant-1", "closed").succeeded()).isEmpty();
+
+        reset(jedis);
+        when(jedisPool.getResource()).thenReturn(jedis);
+        when(jedis.smembers("apikeys:tenant-1")).thenReturn(Set.of("missing"));
+        when(jedis.get("apikey:missing")).thenReturn(null);
+        assertThat(repository.cascadeRevoke("tenant-1", "closed").succeeded()).isEmpty();
+        verify(jedis).srem("apikeys:tenant-1", "missing");
+
+        reset(jedis);
+        when(jedisPool.getResource()).thenReturn(jedis);
+        ApiKey active = ApiKey.builder().keyId("key-raced").tenantId("tenant-1")
+            .name("Raced").status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String json = objectMapper.writeValueAsString(active);
+        when(jedis.smembers("apikeys:tenant-1")).thenReturn(Set.of("key-raced"));
+        when(jedis.get("apikey:key-raced")).thenReturn(json);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(0L);
+
+        assertThat(repository.cascadeRevoke("tenant-1", "closed").failed())
+            .extracting(f -> f.resourceId()).containsExactly("key-raced");
+        verify(jedis, times(3)).get("apikey:key-raced");
     }
 
     @Test
@@ -1285,8 +1435,9 @@ class ApiKeyRepositoryTest {
         when(jedis.get("apikey:key_1")).thenReturn(json1);
         when(jedis.get("apikey:key_2")).thenReturn(json2);
         when(jedis.get("apikey:key_3")).thenReturn(json3);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
 
-        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "tenant_closed");
+        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "tenant_closed").succeeded();
 
         assertThat(outcomes).hasSize(1);
         assertThat(outcomes.get(0).keyId()).isEqualTo("key_1");
@@ -1294,9 +1445,7 @@ class ApiKeyRepositoryTest {
         assertThat(outcomes.get(0).name()).isEqualTo("ci");
         assertThat(outcomes.get(0).toString()).contains("key_1");
 
-        verify(jedis).set(eq("apikey:key_1"), anyString());
-        verify(jedis, never()).set(eq("apikey:key_2"), anyString());
-        verify(jedis, never()).set(eq("apikey:key_3"), anyString());
+        verify(jedis).eval(anyString(), anyList(), anyList());
     }
 
     @Test
@@ -1307,8 +1456,9 @@ class ApiKeyRepositoryTest {
         when(jedis.smembers("apikeys:tenant-1"))
             .thenReturn(new LinkedHashSet<>(List.of("key_1")));
         when(jedis.get("apikey:key_1")).thenReturn(json);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
 
-        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", null);
+        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", null).succeeded();
 
         assertThat(outcomes).hasSize(1);
     }
@@ -1321,8 +1471,9 @@ class ApiKeyRepositoryTest {
         when(jedis.smembers("apikeys:tenant-1"))
             .thenReturn(new LinkedHashSet<>(List.of("key_1")));
         when(jedis.get("apikey:key_1")).thenReturn(json);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
 
-        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "");
+        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "").succeeded();
 
         assertThat(outcomes).hasSize(1);
     }
@@ -1339,13 +1490,87 @@ class ApiKeyRepositoryTest {
             .thenReturn(new LinkedHashSet<>(List.of("key_1", "key_2")));
         when(jedis.get("apikey:key_1")).thenReturn(json1);
         when(jedis.get("apikey:key_2")).thenReturn(json2);
-        when(jedis.set(eq("apikey:key_1"), anyString()))
+        when(jedis.eval(anyString(), eq(List.of(
+                "apikey:key_1",
+                TenantCloseWorkRepository.outboxItemKey("tenant-1", "api_key:key_1"),
+                TenantCloseWorkRepository.outboxKey("tenant-1"))), anyList()))
             .thenThrow(new RuntimeException("redis down"));
-        when(jedis.set(eq("apikey:key_2"), anyString())).thenReturn("OK");
+        when(jedis.eval(anyString(), eq(List.of(
+                "apikey:key_2",
+                TenantCloseWorkRepository.outboxItemKey("tenant-1", "api_key:key_2"),
+                TenantCloseWorkRepository.outboxKey("tenant-1"))), anyList()))
+            .thenReturn(1L);
 
-        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "tenant_closed");
+        var report = repository.cascadeRevoke("tenant-1", "tenant_closed");
+        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = report.succeeded();
 
         assertThat(outcomes).hasSize(1);
         assertThat(outcomes.get(0).keyId()).isEqualTo("key_2");
+        assertThat(report.failed()).extracting(f -> f.resourceId()).containsExactly("key_1");
+    }
+
+    @Test
+    void crossTenantSortedListCoversFilteringFailuresCursorFormsAndLimits() throws Exception {
+        ApiKey inactive = ApiKey.builder().keyId("inactive").tenantId("tenant-a")
+            .name("Needle inactive").status(ApiKeyStatus.REVOKED).build();
+        ApiKey searchMiss = ApiKey.builder().keyId("miss").tenantId("tenant-a")
+            .name("Other").status(ApiKeyStatus.ACTIVE).build();
+        ApiKey first = ApiKey.builder().keyId("first").tenantId("tenant-a")
+            .name("Needle first").status(ApiKeyStatus.ACTIVE).build();
+        ApiKey second = ApiKey.builder().keyId("second").tenantId("tenant-b")
+            .name("Needle second").status(ApiKeyStatus.ACTIVE).build();
+        String inactiveJson = objectMapper.writeValueAsString(inactive);
+        String missJson = objectMapper.writeValueAsString(searchMiss);
+        String firstJson = objectMapper.writeValueAsString(first);
+        String secondJson = objectMapper.writeValueAsString(second);
+        when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-b")));
+        when(jedis.scard("apikeys:tenant-a")).thenReturn(5L);
+        when(jedis.scard("apikeys:tenant-b")).thenReturn(1L);
+        when(jedis.smembers("apikeys:tenant-a")).thenReturn(
+            new LinkedHashSet<>(List.of("missing", "malformed", "inactive", "miss", "first")));
+        when(jedis.smembers("apikeys:tenant-b")).thenReturn(Set.of("second"));
+        when(jedis.get("apikey:missing")).thenReturn(null);
+        when(jedis.get("apikey:malformed")).thenReturn("{bad-json");
+        when(jedis.get("apikey:inactive")).thenReturn(inactiveJson);
+        when(jedis.get("apikey:miss")).thenReturn(missJson);
+        when(jedis.get("apikey:first")).thenReturn(firstJson);
+        when(jedis.get("apikey:second")).thenReturn(secondJson);
+        SortSpec byName = SortSpec.of("name", SortDirection.ASC);
+
+        assertThat(repository.listAllTenants(ApiKeyStatus.ACTIVE, " ", 10, byName, "needle"))
+            .extracting(ApiKey::getKeyId).containsExactly("first", "second");
+        assertThat(repository.listAllTenants(null, "first", 10, byName, null))
+            .extracting(ApiKey::getKeyId).contains("second");
+        assertThat(repository.listAllTenants(null, "tenant-a|first", 1, byName, null))
+            .hasSize(1);
+        assertThatThrownBy(() -> repository.listAllTenants(
+                null, "tenant-b|first", 10, byName, null))
+            .isInstanceOf(GovernanceException.class);
+        assertThatThrownBy(() -> repository.listAllTenants(
+                null, "not-present", 10, byName, " "))
+            .isInstanceOf(GovernanceException.class);
+    }
+
+    @Test
+    void comparatorAndLegacyBoundaryBranchesRemainTotal() throws Exception {
+        ApiKey withoutTenant = ApiKey.builder().keyId("b").tenantId(null).build();
+        ApiKey withTenant = ApiKey.builder().keyId("a").tenantId("tenant-a").build();
+        assertThat(ApiKeyRepository.apiKeyComparator(
+            SortSpec.of("tenant_id", SortDirection.ASC)).compare(withoutTenant, withTenant)).isPositive();
+        assertThat(ApiKeyRepository.apiKeyComparator(
+            SortSpec.of("key_id", SortDirection.DESC)).compare(withoutTenant, withTenant)).isNegative();
+
+        when(jedis.smembers("tenants")).thenReturn(Set.of("tenant-a"));
+        assertThat(repository.listAllTenants(null, " ", 0, null, null)).isEmpty();
+    }
+
+    @Test
+    void revokeWithEmptyReasonDoesNotPersistAReason() throws Exception {
+        ApiKey key = ApiKey.builder().keyId("key-empty-reason").tenantId("tenant-a")
+            .status(ApiKeyStatus.ACTIVE).build();
+        String json = objectMapper.writeValueAsString(key);
+        when(jedis.get("apikey:key-empty-reason")).thenReturn(json);
+
+        assertThat(repository.revoke("key-empty-reason", "").getRevokedReason()).isNull();
     }
 }

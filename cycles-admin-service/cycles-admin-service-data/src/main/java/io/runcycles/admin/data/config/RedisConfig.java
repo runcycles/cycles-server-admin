@@ -19,14 +19,33 @@ public class RedisConfig {
         config.setMaxTotal(50);
         config.setMaxIdle(10);
         config.setMinIdle(5);
-        return password.isEmpty() ? new JedisPool(config, host, port, 2000) :
-                                    new JedisPool(config, host, port, 2000, password);
+        DefaultJedisClientConfig.Builder clientConfig = DefaultJedisClientConfig.builder()
+            .connectionTimeoutMillis(2000)
+            .socketTimeoutMillis(2000);
+        if (password != null && !password.isEmpty()) {
+            clientConfig.password(password);
+        }
+        return new JedisPool(config, new HostAndPort(host, port), clientConfig.build());
     }
     @Bean
+    @Primary
     public ObjectMapper objectMapper() {
         ObjectMapper mapper = new ObjectMapper();
         mapper.registerModule(new JavaTimeModule());
         mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        mapper.enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+        return mapper;
+    }
+
+    /**
+     * Redis records are an internal persistence format and may contain fields
+     * written by a newer rolling-deployment peer. Keep that reader tolerant
+     * without weakening the primary HTTP ObjectMapper used for spec-strict
+     * request bodies.
+     */
+    @Bean("redisObjectMapper")
+    public ObjectMapper redisObjectMapper() {
+        ObjectMapper mapper = objectMapper().copy();
         mapper.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
         return mapper;
     }

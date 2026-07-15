@@ -5,9 +5,11 @@ import io.runcycles.admin.model.policy.PolicyCreateRequest;
 import io.runcycles.admin.model.policy.PolicyStatus;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Repository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.logging.LogSanitizer;
+import io.runcycles.admin.data.repository.support.CursorSupport;
 import io.runcycles.admin.model.policy.PolicyUpdateRequest;
 import redis.clients.jedis.*;
 import java.time.Instant;
@@ -16,7 +18,7 @@ import java.util.*;
 public class PolicyRepository {
     private static final Logger LOG = LoggerFactory.getLogger(PolicyRepository.class);
     @Autowired private JedisPool jedisPool;
-    @Autowired private ObjectMapper objectMapper;
+    @Autowired @Qualifier("redisObjectMapper") private ObjectMapper objectMapper;
 
     // Lua script for atomic policy creation: validates tenant exists and is ACTIVE,
     // then SET + SADD in one call.
@@ -144,12 +146,9 @@ public class PolicyRepository {
             List<String> sortedIds = new ArrayList<>(ids);
             Collections.sort(sortedIds);
             List<Policy> policies = new ArrayList<>();
-            boolean pastCursor = (cursor == null || cursor.isBlank());
-            for (String id : sortedIds) {
-                if (!pastCursor) {
-                    if (id.equals(cursor)) pastCursor = true;
-                    continue;
-                }
+            int start = CursorSupport.startAfterIds(sortedIds, cursor);
+            for (int i = start; i < sortedIds.size(); i++) {
+                String id = sortedIds.get(i);
                 try {
                     String data = jedis.get("policy:" + id);
                     if (data == null) {

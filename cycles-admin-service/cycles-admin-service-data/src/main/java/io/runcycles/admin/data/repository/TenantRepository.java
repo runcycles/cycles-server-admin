@@ -1,6 +1,10 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.logging.LogSanitizer;
+import io.runcycles.admin.data.repository.support.SortedQueryGuard;
+import io.runcycles.admin.data.repository.support.CursorSupport;
+import io.runcycles.admin.data.repository.support.RedisBatchReader;
+import io.runcycles.admin.data.repository.support.TenantCloseOutboxItem;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.model.shared.CommitOveragePolicy;
 import io.runcycles.admin.model.shared.SearchSpec;
@@ -11,6 +15,7 @@ import io.runcycles.admin.model.tenant.TenantStatus;
 import io.runcycles.admin.model.tenant.TenantUpdateRequest;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.*;
 import java.time.Instant;
@@ -19,7 +24,7 @@ import java.util.*;
 public class TenantRepository {
     private static final Logger LOG = LoggerFactory.getLogger(TenantRepository.class);
     @Autowired private JedisPool jedisPool;
-    @Autowired private ObjectMapper objectMapper;
+    @Autowired @Qualifier("redisObjectMapper") private ObjectMapper objectMapper;
     // Lua script for atomic tenant creation with conflict detection.
     // Returns {'CREATED'} if new, {'EXISTS', json} if idempotent replay (same name),
     // or {'CONFLICT', json} if tenant_id exists with a different name (spec: 409).
@@ -35,6 +40,36 @@ public class TenantRepository {
         "redis.call('SET', KEYS[1], ARGV[1])\n" +
         "redis.call('SADD', KEYS[2], ARGV[2])\n" +
         "return {'CREATED'}\n";
+    private static final String UPDATE_TENANT_CAS_LUA =
+        "if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end "
+            + "redis.call('SET', KEYS[1], ARGV[2]); return 1";
+    private static final String CLOSE_TENANT_LUA =
+        "local existing = redis.call('GET', KEYS[1])\n"
+            + "if not existing then return {'NOT_FOUND'} end\n"
+            + "if existing ~= ARGV[1] then return {'RETRY'} end\n"
+            + "if redis.call('EXISTS', KEYS[2]) == 0 then return {'MISSING_INTENT'} end\n"
+            + "local tenant = cjson.decode(existing)\n"
+            + "if tenant['status'] == 'CLOSED' then return {'ALREADY_CLOSED',existing} end\n"
+            + "redis.call('SET', KEYS[1], ARGV[2])\n"
+            + "redis.call('SET', KEYS[4], '1')\n"
+            + "redis.call('SET', KEYS[5], ARGV[5])\n"
+            + "redis.call('SADD', KEYS[6], ARGV[6])\n"
+            + "redis.call('ZADD', KEYS[3], ARGV[3], ARGV[4])\n"
+            + "return {'CLOSED'}";
+    private static final String BACKFILL_CLOSED_DURABILITY_LUA =
+        "if redis.call('EXISTS', KEYS[4]) == 1 then return {'ALREADY_DURABLE'} end\n"
+            + "local existing = redis.call('GET', KEYS[1])\n"
+            + "if not existing then return {'NOT_FOUND'} end\n"
+            + "if existing ~= ARGV[1] then return {'RETRY'} end\n"
+            + "if redis.call('EXISTS', KEYS[2]) == 0 then return {'MISSING_INTENT'} end\n"
+            + "local tenant = cjson.decode(existing)\n"
+            + "if tenant['status'] ~= 'CLOSED' then return {'RETRY'} end\n"
+            + "redis.call('SET', KEYS[4], '1')\n"
+            + "redis.call('SET', KEYS[5], ARGV[4])\n"
+            + "redis.call('SADD', KEYS[6], ARGV[5])\n"
+            + "redis.call('ZADD', KEYS[3], ARGV[2], ARGV[3])\n"
+            + "return {'BACKFILLED'}";
+    private static final int UPDATE_RETRIES = 5;
 
     // NOTE: tenant update was previously an atomic Lua script that round-tripped
     // the full Tenant JSON through cjson.decode/encode. Tenant's only collection
@@ -124,14 +159,16 @@ public class TenantRepository {
                 return listLegacy(jedis, status, parentTenantId, search, cursor, limit);
             }
             Set<String> ids = jedis.smembers("tenants");
+            SortedQueryGuard.requireScannable(ids.size(), "tenant");
             List<Tenant> hydrated = new ArrayList<>();
+            Map<String, String> rows = RedisBatchReader.getById(jedis, "tenant:", ids);
             for (String id : ids) {
                 try {
-                    String data = jedis.get("tenant:" + id);
+                    String data = rows.get(id);
                     if (data == null) {
                         LOG.warn("Tenant index points to missing row: tenant_id={} index_key=tenants status_filter={} parent_tenant_id_filter={} search_present={} sort_field={}",
                             LogSanitizer.safe(id), status, LogSanitizer.safe(parentTenantId), search != null && !search.isBlank(),
-                            sortSpec != null ? sortSpec.field() : null);
+                            sortSpec.field());
                         continue;
                     }
                     Tenant t = objectMapper.readValue(data, Tenant.class);
@@ -140,17 +177,15 @@ public class TenantRepository {
                 } catch (Exception e) {
                     LOG.warn("Failed to parse tenant row: tenant_id={} index_key=tenants status_filter={} parent_tenant_id_filter={} search_present={} sort_field={}",
                         LogSanitizer.safe(id), status, LogSanitizer.safe(parentTenantId), search != null && !search.isBlank(),
-                        sortSpec != null ? sortSpec.field() : null, e);
+                        sortSpec.field(), e);
                 }
             }
+            SortedQueryGuard.requireBounded(hydrated.size(), "tenant");
             hydrated.sort(tenantComparator(sortSpec));
             List<Tenant> page = new ArrayList<>();
-            boolean pastCursor = (cursor == null || cursor.isBlank());
-            for (Tenant t : hydrated) {
-                if (!pastCursor) {
-                    if (t.getTenantId().equals(cursor)) pastCursor = true;
-                    continue;
-                }
+            int start = CursorSupport.startAfter(hydrated, cursor, Tenant::getTenantId);
+            for (int i = start; i < hydrated.size(); i++) {
+                Tenant t = hydrated.get(i);
                 page.add(t);
                 if (page.size() >= limit) break;
             }
@@ -164,12 +199,9 @@ public class TenantRepository {
         List<String> sortedIds = new ArrayList<>(ids);
         Collections.sort(sortedIds);
         List<Tenant> tenants = new ArrayList<>();
-        boolean pastCursor = (cursor == null || cursor.isBlank());
-        for (String id : sortedIds) {
-            if (!pastCursor) {
-                if (id.equals(cursor)) pastCursor = true;
-                continue;
-            }
+        int start = CursorSupport.startAfterIds(sortedIds, cursor);
+        for (int i = start; i < sortedIds.size(); i++) {
+            String id = sortedIds.get(i);
             try {
                 String data = jedis.get("tenant:" + id);
                 if (data == null) {
@@ -215,9 +247,6 @@ public class TenantRepository {
     private static Comparator<Tenant> tenantComparator(SortSpec sortSpec) {
         Comparator<String> nullLastStr = Comparator.nullsLast(Comparator.naturalOrder());
         Comparator<Tenant> tid = Comparator.comparing(Tenant::getTenantId, nullLastStr);
-        if (sortSpec == null) {
-            return tid;
-        }
         String field = sortSpec.field() != null ? sortSpec.field() : "tenant_id";
         Comparator<Tenant> primary;
         switch (field) {
@@ -274,79 +303,139 @@ public class TenantRepository {
         }
     }
 
+    /** Exact match count used only for an over-limit bulk rejection response. */
+    public int countForBulk(TenantStatus status, String parentTenantId, String search) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            int count = 0;
+            for (String id : jedis.smembers("tenants")) {
+                try {
+                    String data = jedis.get("tenant:" + id);
+                    if (data == null) continue;
+                    Tenant tenant = objectMapper.readValue(data, Tenant.class);
+                    if (matchesFilters(tenant, status, parentTenantId, search)) count++;
+                } catch (Exception e) {
+                    LOG.warn("Failed to parse tenant row during exact bulk count: tenant_id={}",
+                        LogSanitizer.safe(id), e);
+                }
+            }
+            return count;
+        }
+    }
+
     public Tenant update(String tenantId, TenantUpdateRequest request) {
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "tenant:" + tenantId;
-            String json = jedis.get(key);
-            if (json == null) {
-                throw GovernanceException.tenantNotFound(tenantId);
-            }
-            Tenant tenant = objectMapper.readValue(json, Tenant.class);
-            Instant now = Instant.now();
-
-            // Apply name change
-            if (request.getName() != null) {
-                tenant.setName(request.getName());
-            }
-
-            // Validate and apply status transition
-            if (request.getStatus() != null) {
-                TenantStatus oldStatus = tenant.getStatus() != null ? tenant.getStatus() : TenantStatus.ACTIVE;
+            for (int attempt = 0; attempt < UPDATE_RETRIES; attempt++) {
+                String originalJson = jedis.get(key);
+                if (originalJson == null) throw GovernanceException.tenantNotFound(tenantId);
+                Tenant tenant = objectMapper.readValue(originalJson, Tenant.class);
+                TenantStatus oldStatus = tenant.getStatus() != null
+                    ? tenant.getStatus() : TenantStatus.ACTIVE;
                 TenantStatus newStatus = request.getStatus();
-                // Spec v0.1.25.29: re-issuing close on an already-CLOSED tenant
-                // is a no-op (matches the CASCADE SEMANTICS idempotency clause);
-                // any other transition away from CLOSED is still rejected.
-                if (oldStatus == TenantStatus.CLOSED) {
+                if (oldStatus == TenantStatus.CLOSED && newStatus != null) {
                     if (newStatus == TenantStatus.CLOSED) {
-                        return tenant;
+                        TenantCloseOutboxItem parentItem = parentCloseItem(tenant, null);
+                        @SuppressWarnings("unchecked")
+                        List<String> result = (List<String>) jedis.eval(
+                            BACKFILL_CLOSED_DURABILITY_LUA,
+                            closeWorkKeys(key, tenantId, parentItem.itemId()),
+                            List.of(originalJson,
+                                String.valueOf(System.currentTimeMillis()
+                                    + TenantCloseWorkRepository.PREPARE_GRACE_MILLIS),
+                                tenantId, objectMapper.writeValueAsString(parentItem),
+                                parentItem.itemId()));
+                        switch (result.get(0)) {
+                            case "ALREADY_DURABLE", "BACKFILLED" -> { return tenant; }
+                            case "NOT_FOUND" -> throw GovernanceException.tenantNotFound(tenantId);
+                            case "MISSING_INTENT" -> throw new IllegalStateException(
+                                "Tenant-close intent disappeared before durability backfill");
+                            case "RETRY" -> { continue; }
+                            default -> throw new IllegalStateException(
+                                "Unexpected tenant-close backfill result: " + result);
+                        }
                     }
                     throw new GovernanceException(
                         io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
                         "Cannot transition from CLOSED", 400);
                 }
-                // From ACTIVE: -> ACTIVE, SUSPENDED, CLOSED
-                // From SUSPENDED: -> ACTIVE, SUSPENDED, CLOSED
-                // (Both sets are the same after CLOSED is excluded as a source state.)
-                if (!(newStatus == TenantStatus.ACTIVE
-                        || newStatus == TenantStatus.SUSPENDED
-                        || newStatus == TenantStatus.CLOSED)) {
-                    throw new GovernanceException(
-                        io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
-                        "Invalid status transition: " + oldStatus + " -> " + newStatus, 400);
-                }
-                tenant.setStatus(newStatus);
-                if (newStatus == TenantStatus.SUSPENDED) {
-                    tenant.setSuspendedAt(now);
-                } else if (newStatus == TenantStatus.CLOSED) {
-                    tenant.setClosedAt(now);
-                }
-            }
 
-            // Metadata replace (match prior Lua behavior: a non-null metadata on the
-            // request replaces the stored metadata wholesale)
-            if (request.getMetadata() != null) {
-                tenant.setMetadata(request.getMetadata());
+                Instant now = Instant.now();
+                applyUpdate(tenant, request, now);
+                String updatedJson = objectMapper.writeValueAsString(tenant);
+                if (newStatus == TenantStatus.CLOSED) {
+                    TenantCloseOutboxItem parentItem = parentCloseItem(
+                        tenant, oldStatus.name());
+                    @SuppressWarnings("unchecked")
+                    List<String> result = (List<String>) jedis.eval(CLOSE_TENANT_LUA,
+                        closeWorkKeys(key, tenantId, parentItem.itemId()),
+                        List.of(originalJson, updatedJson,
+                            String.valueOf(System.currentTimeMillis()
+                                + TenantCloseWorkRepository.PREPARE_GRACE_MILLIS),
+                            tenantId, objectMapper.writeValueAsString(parentItem),
+                            parentItem.itemId()));
+                    switch (result.get(0)) {
+                        case "CLOSED" -> { return tenant; }
+                        case "ALREADY_CLOSED" -> {
+                            return objectMapper.readValue(result.get(1), Tenant.class);
+                        }
+                        case "NOT_FOUND" -> throw GovernanceException.tenantNotFound(tenantId);
+                        case "MISSING_INTENT" -> throw new IllegalStateException(
+                            "Tenant-close intent disappeared before the atomic status flip");
+                        case "RETRY" -> { continue; }
+                        default -> throw new IllegalStateException(
+                            "Unexpected tenant-close result: " + result);
+                    }
+                }
+                Object changed = jedis.eval(UPDATE_TENANT_CAS_LUA,
+                    List.of(key), List.of(originalJson, updatedJson));
+                if (Long.valueOf(1L).equals(changed)) return tenant;
             }
-            if (request.getDefaultCommitOveragePolicy() != null) {
-                tenant.setDefaultCommitOveragePolicy(request.getDefaultCommitOveragePolicy());
-            }
-            if (request.getDefaultReservationTtlMs() != null) {
-                tenant.setDefaultReservationTtlMs(request.getDefaultReservationTtlMs());
-            }
-            if (request.getMaxReservationTtlMs() != null) {
-                tenant.setMaxReservationTtlMs(request.getMaxReservationTtlMs());
-            }
-            if (request.getMaxReservationExtensions() != null) {
-                tenant.setMaxReservationExtensions(request.getMaxReservationExtensions());
-            }
-            tenant.setUpdatedAt(now);
-
-            jedis.set(key, objectMapper.writeValueAsString(tenant));
-            return tenant;
+            throw new GovernanceException(
+                io.runcycles.admin.model.shared.ErrorCode.INTERNAL_ERROR,
+                "Tenant was modified concurrently; retry the request", 500);
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private static void applyUpdate(Tenant tenant, TenantUpdateRequest request, Instant now) {
+        if (request.getName() != null) tenant.setName(request.getName());
+        if (request.getStatus() != null) {
+            tenant.setStatus(request.getStatus());
+            if (request.getStatus() == TenantStatus.SUSPENDED) tenant.setSuspendedAt(now);
+            if (request.getStatus() == TenantStatus.CLOSED) tenant.setClosedAt(now);
+        }
+        if (request.getMetadata() != null) tenant.setMetadata(request.getMetadata());
+        if (request.getDefaultCommitOveragePolicy() != null) {
+            tenant.setDefaultCommitOveragePolicy(request.getDefaultCommitOveragePolicy());
+        }
+        if (request.getDefaultReservationTtlMs() != null) {
+            tenant.setDefaultReservationTtlMs(request.getDefaultReservationTtlMs());
+        }
+        if (request.getMaxReservationTtlMs() != null) {
+            tenant.setMaxReservationTtlMs(request.getMaxReservationTtlMs());
+        }
+        if (request.getMaxReservationExtensions() != null) {
+            tenant.setMaxReservationExtensions(request.getMaxReservationExtensions());
+        }
+        tenant.setUpdatedAt(now);
+    }
+
+    private static TenantCloseOutboxItem parentCloseItem(Tenant tenant,
+                                                          String priorStatus) {
+        return new TenantCloseOutboxItem(
+            "tenant:" + tenant.getTenantId(), tenant.getTenantId(), "tenant",
+            tenant.getTenantId(), tenant.getName(), null, null, priorStatus, 0L);
+    }
+
+    private static List<String> closeWorkKeys(String tenantKey, String tenantId,
+                                               String itemId) {
+        return List.of(tenantKey, TenantCloseWorkRepository.intentKey(tenantId),
+            TenantCloseWorkRepository.PENDING_KEY,
+            TenantCloseWorkRepository.committedKey(tenantId),
+            TenantCloseWorkRepository.outboxItemKey(tenantId, itemId),
+            TenantCloseWorkRepository.outboxKey(tenantId));
     }
 }

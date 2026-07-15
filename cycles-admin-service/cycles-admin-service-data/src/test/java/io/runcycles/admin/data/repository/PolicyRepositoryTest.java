@@ -173,6 +173,23 @@ class PolicyRepositoryTest {
     }
 
     @Test
+    void list_blankCursorStartsAtBeginningAndLaterCursorScansEarlierIds() throws Exception {
+        Set<String> ids = new LinkedHashSet<>(List.of("pol_1", "pol_2", "pol_3"));
+        when(jedis.smembers("policies:tenant1")).thenReturn(ids);
+        for (String id : ids) {
+            Policy policy = Policy.builder().policyId(id).scopePattern("scope")
+                    .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+            String json = objectMapper.writeValueAsString(policy);
+            when(jedis.get("policy:" + id)).thenReturn(json);
+        }
+
+        assertThat(repository.list("tenant1", null, null, " ", 10))
+                .extracting(Policy::getPolicyId).containsExactly("pol_1", "pol_2", "pol_3");
+        assertThat(repository.list("tenant1", null, null, "pol_2", 10))
+                .extracting(Policy::getPolicyId).containsExactly("pol_3");
+    }
+
+    @Test
     void list_respectsLimit() throws Exception {
         Set<String> ids = new LinkedHashSet<>(List.of("pol_1", "pol_2"));
         when(jedis.smembers("policies:tenant1")).thenReturn(ids);
@@ -312,6 +329,20 @@ class PolicyRepositoryTest {
         assertThat(result.getPriority()).isEqualTo(10);
         assertThat(result.getUpdatedAt()).isNotNull();
         verify(jedis).set(eq("policy:pol_123"), anyString());
+    }
+
+    @Test
+    void update_blankOrMatchingTenantOwnershipIsAccepted() throws Exception {
+        Policy stored = Policy.builder().policyId("pol-owned").tenantId("tenant1")
+                .name("Old").scopePattern("org/*").status(PolicyStatus.ACTIVE)
+                .createdAt(Instant.now()).build();
+        when(jedis.get("policy:pol-owned")).thenReturn("stored");
+        doReturn(stored).when(objectMapper).readValue("stored", Policy.class);
+        PolicyUpdateRequest request = new PolicyUpdateRequest();
+        request.setName("Updated");
+
+        assertThat(repository.update("", "pol-owned", request).getName()).isEqualTo("Updated");
+        assertThat(repository.update("tenant1", "pol-owned", request).getName()).isEqualTo("Updated");
     }
 
     @Test

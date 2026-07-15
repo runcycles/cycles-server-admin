@@ -64,13 +64,14 @@ class WebhookSecurityConfigControllerTest {
         WebhookSecurityConfig updated = WebhookSecurityConfig.builder()
             .allowHttp(true)
             .blockedCidrRanges(List.of("10.0.0.0/8"))
+            .allowedUrlPatterns(List.of("https://*.example.com/*"))
             .build();
         when(repository.get()).thenReturn(updated);
 
         mockMvc.perform(put("/v1/admin/config/webhook-security")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"allow_http\":true,\"blocked_cidr_ranges\":[\"10.0.0.0/8\"]}"))
+                        .content("{\"allow_http\":true,\"blocked_cidr_ranges\":[\"10.0.0.0/8\"],\"allowed_url_patterns\":[\"https://*.example.com/*\"]}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.allow_http").value(true));
 
@@ -78,6 +79,23 @@ class WebhookSecurityConfigControllerTest {
         verify(auditRepository).log(argThat(entry ->
                 "updateWebhookSecurityConfig".equals(entry.getOperation()) &&
                 entry.getStatus() == 200));
+    }
+
+    @Test
+    void updateConfigNullOptionalFieldsUseSafeAuditDefaults() throws Exception {
+        WebhookSecurityConfig stored = WebhookSecurityConfig.builder().allowHttp(false)
+            .blockedCidrRanges(List.of()).allowedUrlPatterns(List.of()).build();
+        when(repository.get()).thenReturn(stored);
+
+        mockMvc.perform(put("/v1/admin/config/webhook-security")
+                .header("X-Admin-API-Key", ADMIN_KEY).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"allow_http\":null,\"blocked_cidr_ranges\":null,\"allowed_url_patterns\":null}"))
+            .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry -> Boolean.FALSE.equals(
+            entry.getMetadata().get("allow_http"))
+            && !entry.getMetadata().containsKey("blocked_cidr_count")
+            && !entry.getMetadata().containsKey("allowed_url_pattern_count")));
     }
 
     @Test

@@ -1,6 +1,10 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.logging.LogSanitizer;
+import io.runcycles.admin.data.repository.support.ZSetAdaptivePager;
+import io.runcycles.admin.data.repository.support.SortedQueryGuard;
+import io.runcycles.admin.data.repository.support.CursorSupport;
+import io.runcycles.admin.data.repository.support.RedisBatchReader;
 import io.runcycles.admin.model.event.Event;
 import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventType;
@@ -9,6 +13,7 @@ import io.runcycles.admin.model.shared.SortSpec;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.*;
@@ -18,7 +23,7 @@ import java.util.*;
 public class EventRepository {
     private static final Logger LOG = LoggerFactory.getLogger(EventRepository.class);
     @Autowired private JedisPool jedisPool;
-    @Autowired private ObjectMapper objectMapper;
+    @Autowired @Qualifier("redisObjectMapper") private ObjectMapper objectMapper;
 
     @Value("${events.retention.event-ttl-days:90}")
     private int eventTtlDays;
@@ -118,12 +123,12 @@ public class EventRepository {
      *       {@link Jedis#zrevrangeByScore} walk (unchanged behaviour).
      *   <li>{@code field=timestamp, dir=ASC} → {@link Jedis#zrangeByScore}
      *       walk with the cursor's score as the new minScore floor.
-     *   <li>Non-timestamp fields → hydrate up to {@link #SORTED_HYDRATE_CAP}
-     *       IDs from the ZSET window, apply all filters, sort in-memory by
+     *   <li>Non-timestamp fields → hydrate the complete ZSET window, apply
+     *       all filters, sort in-memory by
      *       {@link #eventComparator}, then walk event_id cursor.
      * </ul>
-     * Callers requesting non-timestamp sort on very large windows should
-     * pass narrower {@code from}/{@code to} to keep hydration bounded.
+     * Callers should pass narrower {@code from}/{@code to} windows where
+     * possible; completeness is never traded for a silent hydration cap.
      */
     public List<Event> list(String tenantId, String eventType, String category, String scope,
                             String correlationId, Instant from, Instant to, String cursor, int limit,
@@ -135,7 +140,7 @@ public class EventRepository {
         try (Jedis jedis = jedisPool.getResource()) {
             if (correlationId != null && !correlationId.isBlank()) {
                 List<Event> byCorrelation = listByCorrelation(
-                    jedis, correlationId, tenantId, eventType, category, scope, limit,
+                    jedis, correlationId, tenantId, eventType, category, scope, cursor, limit,
                     sortSpec, search, traceId, requestId);
                 return byCorrelation;
             }
@@ -160,14 +165,11 @@ public class EventRepository {
      *
      * <p>Provided for webhook replay (governance #209, approach B): replay
      * hydrates fixed BATCHES over this whole id list instead of walking
-     * {@link #list}'s score-cursor, which sidesteps three cursor hazards on a
-     * millisecond-scored
-     * ZSET — equal-timestamp members skipped when the cursor advances by
-     * {@code score+1}, a hydration-thinned short page misread as range
-     * exhaustion, and duplicate pages when a cursor member has vanished. The ZSET
-     * range is inherently ordered, de-duplicated and stable, so none of those
-     * apply. Does NOT touch {@code list()} or its cursor, so other callers are
-     * unaffected. Capped at {@code maxIds} (the replay scan ceiling).
+     * {@link #list}'s request cursor. The fixed selection is important for
+     * replay's all-or-narrow completeness check: hydration-thinned batches and
+     * concurrent expiry cannot be mistaken for selection exhaustion. The ZSET
+     * range is inherently ordered and de-duplicated. Capped at {@code maxIds}
+     * (the replay scan ceiling).
      *
      * @return chronologically ordered IDs (ascending score; ties by member),
      *         at most {@code maxIds}; empty when the window has no events
@@ -216,14 +218,6 @@ public class EventRepository {
         return events;
     }
 
-    /**
-     * Upper bound on IDs hydrated for a non-timestamp sort pass. Sorted
-     * walks need to see the full filter-matching population before the
-     * cursor walk; without a ceiling a broad time window would OOM. At
-     * scale, operators should narrow the time window.
-     */
-    private static final int SORTED_HYDRATE_CAP = 2000;
-
     private List<Event> listByTimestamp(Jedis jedis, String tenantId, String eventType,
                                         String category, String scope, Instant from, Instant to,
                                         String cursor, int limit, SortSpec sortSpec, String search,
@@ -233,40 +227,25 @@ public class EventRepository {
         String indexKey = (tenantId != null) ? "events:" + tenantId : "events:_all";
         boolean ascending = sortSpec != null && sortSpec.isAscending();
 
-        if (cursor != null && !cursor.isBlank()) {
-            Double cursorScore = jedis.zscore(indexKey, cursor);
-            if (cursorScore != null) {
-                if (ascending) {
-                    minScore = Math.max(minScore, cursorScore + 1);
-                } else {
-                    maxScore = Math.min(maxScore, cursorScore - 1);
-                }
-            }
-        }
-
-        List<String> ids = ascending
-            ? jedis.zrangeByScore(indexKey, minScore, maxScore, 0, limit * 3)
-            : jedis.zrevrangeByScore(indexKey, maxScore, minScore, 0, limit * 3);
-        List<Event> events = new ArrayList<>();
-        for (String id : ids) {
+        return ZSetAdaptivePager.collect(jedis, indexKey, minScore, maxScore,
+            cursor, limit, ascending, "event", id -> {
             try {
                 String data = jedis.get("event:" + id);
                 if (data == null) {
                     LOG.warn("Admin event index points to missing row: event_id={} index_key={} tenant_id={} event_type_filter={} category_filter={} scope_filter={} request_id_filter={} trace_id_filter={}",
                         LogSanitizer.safe(id), LogSanitizer.safe(indexKey), LogSanitizer.safe(tenantId), eventType, category, LogSanitizer.safe(scope), requestId, traceId);
-                    continue;
+                    return null;
                 }
                 Event event = objectMapper.readValue(data, Event.class);
-                if (!matchesFilters(event, eventType, category, scope, traceId, requestId)) continue;
-                if (!matchesSearch(event, search)) continue;
-                events.add(event);
-                if (events.size() >= limit) break;
+                if (!matchesFilters(event, eventType, category, scope, traceId, requestId)) return null;
+                if (!matchesSearch(event, search)) return null;
+                return event;
             } catch (Exception e) {
                 LOG.warn("Failed to parse admin event row: event_id={} index_key={} tenant_id={} event_type_filter={} category_filter={} scope_filter={} request_id_filter={} trace_id_filter={}",
                     LogSanitizer.safe(id), LogSanitizer.safe(indexKey), LogSanitizer.safe(tenantId), eventType, category, LogSanitizer.safe(scope), requestId, traceId, e);
+                return null;
             }
-        }
-        return events;
+        });
     }
 
     private List<Event> listSortedNonTimestamp(Jedis jedis, String tenantId, String eventType,
@@ -276,12 +255,15 @@ public class EventRepository {
         double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
         double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
         String indexKey = (tenantId != null) ? "events:" + tenantId : "events:_all";
-        // Hydrate a bounded window — cursor is applied after sort on event_id.
-        List<String> ids = jedis.zrevrangeByScore(indexKey, maxScore, minScore, 0, SORTED_HYDRATE_CAP);
+        SortedQueryGuard.requireScannable(jedis.zcount(indexKey, minScore, maxScore),
+            "event", "narrow the indexed tenant/time window");
+        // A correct non-primary sort must see the complete filtered window.
+        List<String> ids = jedis.zrevrangeByScore(indexKey, maxScore, minScore);
         List<Event> all = new ArrayList<>();
+        Map<String, String> rows = RedisBatchReader.getById(jedis, "event:", ids);
         for (String id : ids) {
             try {
-                String data = jedis.get("event:" + id);
+                String data = rows.get(id);
                 if (data == null) continue;
                 Event event = objectMapper.readValue(data, Event.class);
                 if (!matchesFilters(event, eventType, category, scope, traceId, requestId)) continue;
@@ -292,14 +274,12 @@ public class EventRepository {
                     LogSanitizer.safe(id), LogSanitizer.safe(indexKey), LogSanitizer.safe(tenantId), eventType, category, LogSanitizer.safe(scope), requestId, traceId, e);
             }
         }
+        SortedQueryGuard.requireBounded(all.size(), "event");
         all.sort(eventComparator(sortSpec));
         List<Event> results = new ArrayList<>();
-        boolean pastCursor = (cursor == null || cursor.isBlank());
-        for (Event e : all) {
-            if (!pastCursor) {
-                if (cursor.equals(e.getEventId())) pastCursor = true;
-                continue;
-            }
+        int start = CursorSupport.startAfter(all, cursor, Event::getEventId);
+        for (int i = start; i < all.size(); i++) {
+            Event e = all.get(i);
             results.add(e);
             if (results.size() >= limit) break;
         }
@@ -374,15 +354,18 @@ public class EventRepository {
     }
 
     private List<Event> listByCorrelation(Jedis jedis, String correlationId, String tenantId,
-                                          String eventType, String category, String scope, int limit,
+                                          String eventType, String category, String scope,
+                                          String cursor, int limit,
                                           SortSpec sortSpec, String search,
                                           String traceId, String requestId) {
         Set<String> ids = jedis.smembers("events:correlation:" + correlationId);
         if (ids == null || ids.isEmpty()) return new ArrayList<>();
+        SortedQueryGuard.requireScannable(ids.size(), "correlation event");
         List<Event> events = new ArrayList<>();
+        Map<String, String> rows = RedisBatchReader.getById(jedis, "event:", ids);
         for (String id : ids) {
             try {
-                String data = jedis.get("event:" + id);
+                String data = rows.get(id);
                 if (data == null) continue;
                 Event event = objectMapper.readValue(data, Event.class);
                 if (tenantId != null && !tenantId.equals(event.getTenantId())) continue;
@@ -394,9 +377,13 @@ public class EventRepository {
                     LogSanitizer.safe(id), correlationId, LogSanitizer.safe(tenantId), eventType, category, LogSanitizer.safe(scope), requestId, traceId, e);
             }
         }
-        if (sortSpec != null) {
-            events.sort(eventComparator(sortSpec));
-        }
-        return events.size() > limit ? events.subList(0, limit) : events;
+        SortedQueryGuard.requireBounded(events.size(), "correlation event");
+        SortSpec effectiveSort = sortSpec != null
+            ? sortSpec
+            : new SortSpec("timestamp", io.runcycles.admin.model.shared.SortDirection.DESC);
+        events.sort(eventComparator(effectiveSort));
+        int start = CursorSupport.startAfter(events, cursor, Event::getEventId);
+        int end = Math.min(events.size(), start + limit);
+        return new ArrayList<>(events.subList(start, end));
     }
 }

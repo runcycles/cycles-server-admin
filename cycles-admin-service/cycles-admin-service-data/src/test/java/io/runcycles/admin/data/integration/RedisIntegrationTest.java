@@ -5,7 +5,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.idempotency.IdempotencyStore;
 import io.runcycles.admin.data.repository.*;
+import io.runcycles.admin.data.repository.support.TenantCloseOutboxItem;
+import io.runcycles.admin.data.repository.support.ZSetAdaptivePager;
+import io.runcycles.admin.data.service.CryptoService;
 import io.runcycles.admin.data.service.KeyService;
 import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.auth.*;
@@ -15,6 +19,8 @@ import io.runcycles.admin.model.shared.Amount;
 import io.runcycles.admin.model.shared.CommitOveragePolicy;
 import io.runcycles.admin.model.shared.UnitEnum;
 import io.runcycles.admin.model.tenant.*;
+import io.runcycles.admin.model.webhook.WebhookStatus;
+import io.runcycles.admin.model.webhook.WebhookSubscription;
 import org.junit.jupiter.api.*;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -22,10 +28,15 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
+import redis.clients.jedis.Jedis;
 
 import java.lang.reflect.Field;
 import java.time.Instant;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -47,6 +58,9 @@ class RedisIntegrationTest {
     private static BudgetRepository budgetRepository;
     private static PolicyRepository policyRepository;
     private static AuditRepository auditRepository;
+    private static WebhookRepository webhookRepository;
+    private static TenantCloseWorkRepository tenantCloseWorkRepository;
+    private static IdempotencyStore idempotencyStore;
 
     @BeforeAll
     static void setupAll() throws Exception {
@@ -81,6 +95,14 @@ class RedisIntegrationTest {
         auditRepository = new AuditRepository();
         injectField(auditRepository, "jedisPool", jedisPool);
         injectField(auditRepository, "objectMapper", objectMapper);
+
+        webhookRepository = new WebhookRepository();
+        injectField(webhookRepository, "jedisPool", jedisPool);
+        injectField(webhookRepository, "objectMapper", objectMapper);
+        injectField(webhookRepository, "cryptoService", new CryptoService(""));
+
+        tenantCloseWorkRepository = new TenantCloseWorkRepository(jedisPool, objectMapper);
+        idempotencyStore = new IdempotencyStore(jedisPool, objectMapper);
     }
 
     private static void injectField(Object target, String fieldName, Object value) throws Exception {
@@ -88,6 +110,13 @@ class RedisIntegrationTest {
         Field field = clazz.getDeclaredField(fieldName);
         field.setAccessible(true);
         field.set(target, value);
+    }
+
+    private static void prepareClose(String tenantId) {
+        tenantCloseWorkRepository.prepare(new TenantCloseWorkRepository.Intent(
+            tenantId, "integration-request", "integration-trace",
+            "tenant_close_cascade:" + tenantId + ":integration-request",
+            "127.0.0.1", "integration-test", Instant.now()));
     }
 
     @AfterAll
@@ -269,6 +298,8 @@ class RedisIntegrationTest {
         TenantUpdateRequest request = new TenantUpdateRequest();
         request.setStatus(TenantStatus.CLOSED);
 
+        prepareClose("integ-close-test");
+
         Tenant updated = tenantRepository.update("integ-close-test", request);
 
         assertThat(updated.getStatus()).isEqualTo(TenantStatus.CLOSED);
@@ -318,6 +349,7 @@ class RedisIntegrationTest {
 
         TenantUpdateRequest close = new TenantUpdateRequest();
         close.setStatus(TenantStatus.CLOSED);
+        prepareClose("integ-suspend-close");
         Tenant closed = tenantRepository.update("integ-suspend-close", close);
 
         assertThat(closed.getStatus()).isEqualTo(TenantStatus.CLOSED);
@@ -340,6 +372,7 @@ class RedisIntegrationTest {
         // SUSPENDED -> SUSPENDED is allowed (no-op), but verify CLOSED -> ACTIVE fails
         TenantUpdateRequest close = new TenantUpdateRequest();
         close.setStatus(TenantStatus.CLOSED);
+        prepareClose("integ-invalid-trans");
         tenantRepository.update("integ-invalid-trans", close);
 
         TenantUpdateRequest reactivate = new TenantUpdateRequest();
@@ -637,5 +670,254 @@ class RedisIntegrationTest {
 
         List<AuditLogEntry> logs = auditRepository.list("integ-tenant", null, List.of("createTenant"), null, null, null, null, null, null, 50);
         assertThat(logs).allSatisfy(l -> assertThat(l.getOperation()).isEqualTo("createTenant"));
+    }
+
+    @Test
+    @Order(77)
+    void equalScoreCursorBeyondScanBudgetResumesInBothDirections() {
+        String index = "integration:equal-score";
+        Map<String, Double> members = new LinkedHashMap<>();
+        for (int i = 0; i < 6_002; i++) {
+            members.put("id-" + String.format("%05d", i), 100.0);
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.del(index);
+            jedis.zadd(index, members);
+
+            assertThat(ZSetAdaptivePager.collect(jedis, index, 0, 200,
+                "id-05500", 2, true, id -> id))
+                .containsExactly("id-05501", "id-05502");
+            assertThat(ZSetAdaptivePager.collect(jedis, index, 0, 200,
+                "id-00501", 2, false, id -> id))
+                .containsExactly("id-00500", "id-00499");
+        }
+    }
+
+    @Test
+    @Order(78)
+    void tenantCloseDeadLetterRequeue_executesPackagedLuaAtomically() {
+        String tenantId = "integration-requeue";
+        String itemId = "budget:ledger-1";
+        String deadLetter = "tenant-close:outbox:dead-letter:" + tenantId;
+        String outbox = "tenant-close:outbox:" + tenantId;
+        String attempts = "tenant-close:outbox:attempts:" + tenantId;
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.sadd(deadLetter, itemId);
+            jedis.hset(attempts, itemId, "8");
+            jedis.srem(outbox, itemId);
+            jedis.zrem(TenantCloseWorkRepository.PENDING_KEY, tenantId);
+        }
+
+        assertThat(tenantCloseWorkRepository.requeueDeadLetter(tenantId, itemId)).isTrue();
+        assertThat(tenantCloseWorkRepository.requeueDeadLetter(tenantId, itemId)).isFalse();
+        try (Jedis jedis = jedisPool.getResource()) {
+            assertThat(jedis.sismember(deadLetter, itemId)).isFalse();
+            assertThat(jedis.sismember(outbox, itemId)).isTrue();
+            assertThat(jedis.hexists(attempts, itemId)).isFalse();
+            assertThat(jedis.zscore(TenantCloseWorkRepository.PENDING_KEY, tenantId))
+                .isNotNull();
+        }
+    }
+
+    @Test
+    @Order(79)
+    void bulkIdempotency_legacyEntryFailsClosedWithoutCreatingV2Claim()
+            throws Exception {
+        String legacyKey = "idem:integration-legacy:legacy-key";
+        String v2Key = "idem:v2:integration-legacy:legacy-key";
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.setex(legacyKey, 900,
+                objectMapper.writeValueAsString(Map.of("action", "CLOSE")));
+            jedis.del(v2Key);
+        }
+
+        assertThatThrownBy(() -> idempotencyStore.begin(
+            "integration-legacy", "legacy-key", Map.of("action", "SUSPEND"), Map.class))
+            .isInstanceOf(GovernanceException.class)
+            .satisfies(error -> {
+                GovernanceException governance = (GovernanceException) error;
+                assertThat(governance.getErrorCode()).isEqualTo(
+                    io.runcycles.admin.model.shared.ErrorCode.IDEMPOTENCY_MISMATCH);
+                assertThat(governance.getHttpStatus()).isEqualTo(409);
+            });
+        try (Jedis jedis = jedisPool.getResource()) {
+            assertThat(jedis.exists(v2Key)).isFalse();
+        }
+    }
+
+    @Test
+    @Order(80)
+    void bulkIdempotency_concurrentEqualRequestReplaysAndDifferentPayloadMismatches()
+            throws Exception {
+        Map<String, Object> request = Map.of("action", "CLOSE", "filter", Map.of("status", "ACTIVE"));
+        IdempotencyStore.Claim<Map> owner = idempotencyStore.begin(
+            "integration-bulk", "same-key", request, Map.class);
+        assertThat(owner.isReplay()).isFalse();
+
+        CompletableFuture<IdempotencyStore.Claim<Map>> waiter = CompletableFuture.supplyAsync(
+            () -> idempotencyStore.begin("integration-bulk", "same-key", request, Map.class));
+        Thread.sleep(100L);
+        Map<String, Object> response = Map.of("total_matched", 2, "action", "CLOSE");
+        idempotencyStore.complete(owner, response);
+
+        IdempotencyStore.Claim<Map> replay = waiter.get(3, TimeUnit.SECONDS);
+        assertThat(replay.isReplay()).isTrue();
+        assertThat(replay.replayResponse()).containsAllEntriesOf(response);
+        assertThatThrownBy(() -> idempotencyStore.begin(
+            "integration-bulk", "same-key", Map.of("action", "SUSPEND"), Map.class))
+            .isInstanceOf(GovernanceException.class)
+            .satisfies(error -> assertThat(((GovernanceException) error).getHttpStatus())
+                .isEqualTo(409));
+    }
+
+    @Test
+    @Order(81)
+    void tenantCloseMutations_atomicallyCreateDurableOutboxAndAreIdempotent()
+            throws Exception {
+        String tenantId = "integ-cascade";
+        TenantCreateRequest tenantRequest = new TenantCreateRequest();
+        tenantRequest.setTenantId(tenantId);
+        tenantRequest.setName("Cascade Integration");
+        tenantRepository.create(tenantRequest);
+
+        BudgetCreateRequest budgetRequest = new BudgetCreateRequest();
+        budgetRequest.setScope("tenant:" + tenantId);
+        budgetRequest.setUnit(UnitEnum.USD_MICROCENTS);
+        budgetRequest.setAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
+        budgetRepository.create(tenantId, budgetRequest);
+
+        ApiKeyCreateRequest keyRequest = new ApiKeyCreateRequest();
+        keyRequest.setTenantId(tenantId);
+        keyRequest.setName("cascade-key");
+        ApiKeyCreateResponse key = apiKeyRepository.create(keyRequest);
+
+        WebhookSubscription webhook = WebhookSubscription.builder()
+            .subscriptionId("wh_cascade").tenantId(tenantId).name("cascade-hook")
+            .url("https://example.com/hook").eventTypes(List.of())
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.set("webhook:wh_cascade", objectMapper.writeValueAsString(webhook));
+            jedis.sadd("webhooks:" + tenantId, "wh_cascade");
+        }
+
+        TenantCloseWorkRepository.Intent intent = new TenantCloseWorkRepository.Intent(
+            tenantId, "req-integration", "trace-integration",
+            "tenant_close_cascade:" + tenantId + ":req-integration",
+            "127.0.0.1", "integration-test", Instant.now());
+        tenantCloseWorkRepository.prepare(intent);
+        tenantCloseWorkRepository.prepare(new TenantCloseWorkRepository.Intent(
+            tenantId, "replacement-must-not-win", null, "replacement", null, null, Instant.now()));
+        assertThat(tenantCloseWorkRepository.findIntent(tenantId))
+            .get().extracting(TenantCloseWorkRepository.Intent::requestId)
+            .isEqualTo("req-integration");
+
+        TenantUpdateRequest closeRequest = new TenantUpdateRequest();
+        closeRequest.setStatus(TenantStatus.CLOSED);
+        assertThat(tenantRepository.update(tenantId, closeRequest).getStatus())
+            .isEqualTo(TenantStatus.CLOSED);
+        try (Jedis jedis = jedisPool.getResource()) {
+            assertThat(jedis.get(TenantCloseWorkRepository.committedKey(tenantId)))
+                .isEqualTo("1");
+        }
+
+        String lease = tenantCloseWorkRepository.tryAcquireLease(tenantId);
+        assertThat(lease).isNotBlank();
+        assertThat(tenantCloseWorkRepository.tryAcquireLease(tenantId)).isNull();
+
+        assertThat(budgetRepository.cascadeClose(tenantId).succeeded()).hasSize(1);
+        assertThat(webhookRepository.cascadeDisable(tenantId).succeeded()).hasSize(1);
+        assertThat(apiKeyRepository.cascadeRevoke(tenantId, "tenant_closed").succeeded())
+            .extracting(ApiKeyRepository.CascadeRevokeOutcome::keyId)
+            .containsExactly(key.getKeyId());
+
+        List<TenantCloseOutboxItem> outbox = tenantCloseWorkRepository.listOutbox(tenantId);
+        assertThat(outbox).hasSize(4);
+        assertThat(outbox).extracting(TenantCloseOutboxItem::resourceType)
+            .containsExactlyInAnyOrder("tenant", "budget", "webhook_subscription", "api_key");
+        assertThat(tenantCloseWorkRepository.completeIfDrained(tenantId)).isFalse();
+
+        assertThat(budgetRepository.cascadeClose(tenantId).succeeded()).isEmpty();
+        assertThat(webhookRepository.cascadeDisable(tenantId).succeeded()).isEmpty();
+        assertThat(apiKeyRepository.cascadeRevoke(tenantId, "tenant_closed").succeeded()).isEmpty();
+        outbox.forEach(item -> tenantCloseWorkRepository.acknowledge(tenantId, item.itemId()));
+        assertThat(tenantCloseWorkRepository.completeIfDrained(tenantId)).isTrue();
+        assertThat(tenantCloseWorkRepository.findIntent(tenantId)).isEmpty();
+        try (Jedis jedis = jedisPool.getResource()) {
+            assertThat(jedis.get(TenantCloseWorkRepository.committedKey(tenantId)))
+                .as("permanent close marker prevents duplicate parent-event backfill")
+                .isEqualTo("1");
+        }
+        tenantCloseWorkRepository.releaseLease(tenantId, lease);
+        String replacementLease = tenantCloseWorkRepository.tryAcquireLease(tenantId);
+        assertThat(replacementLease).isNotNull();
+        tenantCloseWorkRepository.releaseLease(tenantId, replacementLease);
+    }
+
+    @Test
+    @Order(82)
+    void tenantClosePrepareDiscardRace_hasNoClosedTenantWithoutDurableIntent() {
+        String tenantId = "integ-close-discard-race";
+        TenantCreateRequest create = new TenantCreateRequest();
+        create.setTenantId(tenantId);
+        create.setName("Close Discard Race");
+        tenantRepository.create(create);
+
+        prepareClose(tenantId);
+        assertThat(tenantCloseWorkRepository.discardIfUncommitted(tenantId)).isTrue();
+        TenantUpdateRequest close = new TenantUpdateRequest();
+        close.setStatus(TenantStatus.CLOSED);
+        assertThatThrownBy(() -> tenantRepository.update(tenantId, close))
+            .hasRootCauseMessage(
+                "Tenant-close intent disappeared before the atomic status flip");
+        assertThat(tenantRepository.get(tenantId).getStatus()).isEqualTo(TenantStatus.ACTIVE);
+
+        prepareClose(tenantId);
+        assertThat(tenantRepository.update(tenantId, close).getStatus())
+            .isEqualTo(TenantStatus.CLOSED);
+        assertThat(tenantCloseWorkRepository.discardIfUncommitted(tenantId)).isFalse();
+    }
+
+    @Test
+    @Order(83)
+    void alreadyClosedPreUpgradeTenant_backfillsParentEventObligationAtomically()
+            throws Exception {
+        String tenantId = "integ-close-backfill";
+        TenantCreateRequest create = new TenantCreateRequest();
+        create.setTenantId(tenantId);
+        create.setName("Close Backfill");
+        Tenant legacyClosed = tenantRepository.create(create).tenant();
+        legacyClosed.setStatus(TenantStatus.CLOSED);
+        legacyClosed.setClosedAt(Instant.now());
+        legacyClosed.setUpdatedAt(Instant.now());
+
+        // Simulate a CLOSED row written before the committed marker and parent
+        // event outbox were introduced.
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.set("tenant:" + tenantId, objectMapper.writeValueAsString(legacyClosed));
+            jedis.del(TenantCloseWorkRepository.committedKey(tenantId));
+            jedis.zrem(TenantCloseWorkRepository.PENDING_KEY, tenantId);
+        }
+
+        prepareClose(tenantId);
+        TenantUpdateRequest close = new TenantUpdateRequest();
+        close.setStatus(TenantStatus.CLOSED);
+        assertThat(tenantRepository.update(tenantId, close).getStatus())
+            .isEqualTo(TenantStatus.CLOSED);
+
+        try (Jedis jedis = jedisPool.getResource()) {
+            assertThat(jedis.get(TenantCloseWorkRepository.committedKey(tenantId)))
+                .isEqualTo("1");
+            assertThat(jedis.zscore(TenantCloseWorkRepository.PENDING_KEY, tenantId))
+                .isNotNull();
+        }
+        List<TenantCloseOutboxItem> items = tenantCloseWorkRepository.listOutbox(tenantId);
+        assertThat(items).singleElement()
+            .satisfies(item -> {
+                assertThat(item.itemId()).isEqualTo("tenant:" + tenantId);
+                assertThat(item.resourceType()).isEqualTo("tenant");
+            });
+
+        tenantCloseWorkRepository.acknowledge(tenantId, items.getFirst().itemId());
+        assertThat(tenantCloseWorkRepository.completeIfDrained(tenantId)).isTrue();
     }
 }

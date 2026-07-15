@@ -11,6 +11,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -298,7 +299,7 @@ class WebhookServiceTest {
     @Test
     void listByTenant_delegatesAndMasksSecrets() {
         WebhookSubscription sub = buildSubscription("whsub_1", "tenant-1");
-        when(webhookRepository.listByTenant(eq("tenant-1"), isNull(), isNull(), isNull(), eq(50), any(), any()))
+        when(webhookRepository.listByTenant(eq("tenant-1"), isNull(), isNull(), isNull(), eq(51), any(), any()))
             .thenReturn(List.of(sub));
 
         WebhookListResponse response = webhookService.listByTenant("tenant-1", null, null, null, 50);
@@ -310,14 +311,14 @@ class WebhookServiceTest {
     @Test
     void listAll_withTenantId_delegatesToListByTenant() {
         WebhookSubscription sub1 = buildSubscription("whsub_1", "tenant-1");
-        when(webhookRepository.listByTenant(eq("tenant-1"), isNull(), isNull(), isNull(), eq(50), any(), any()))
+        when(webhookRepository.listByTenant(eq("tenant-1"), isNull(), isNull(), isNull(), eq(51), any(), any()))
             .thenReturn(List.of(sub1));
 
         WebhookListResponse response = webhookService.listAll("tenant-1", null, null, null, 50);
 
         assertThat(response.getSubscriptions()).hasSize(1);
         assertThat(response.getSubscriptions().get(0).getTenantId()).isEqualTo("tenant-1");
-        verify(webhookRepository).listByTenant(eq("tenant-1"), isNull(), isNull(), isNull(), eq(50), any(), any());
+        verify(webhookRepository).listByTenant(eq("tenant-1"), isNull(), isNull(), isNull(), eq(51), any(), any());
         verify(webhookRepository, never()).listAll(any(), any(), any(), anyInt(), any(), any());
     }
 
@@ -325,7 +326,7 @@ class WebhookServiceTest {
     void listAll_noTenantFilter_returnsAll() {
         WebhookSubscription sub1 = buildSubscription("whsub_1", "tenant-1");
         WebhookSubscription sub2 = buildSubscription("whsub_2", "tenant-2");
-        when(webhookRepository.listAll(isNull(), isNull(), isNull(), eq(50), any(), any()))
+        when(webhookRepository.listAll(isNull(), isNull(), isNull(), eq(51), any(), any()))
             .thenReturn(List.of(sub1, sub2));
 
         WebhookListResponse response = webhookService.listAll(null, null, null, null, 50);
@@ -349,7 +350,7 @@ class WebhookServiceTest {
         WebhookDelivery delivery = WebhookDelivery.builder()
             .deliveryId("del_1").subscriptionId("whsub_1").eventId("evt_1")
             .status(DeliveryStatus.PENDING).attemptedAt(Instant.now()).build();
-        when(deliveryRepository.listBySubscription(eq("whsub_1"), any(), any(), any(), any(), eq(50)))
+        when(deliveryRepository.listBySubscription(eq("whsub_1"), any(), any(), any(), any(), eq(51)))
             .thenReturn(List.of(delivery));
 
         WebhookDeliveryListResponse response = webhookService.listDeliveries("whsub_1", null, null, null, null, 50);
@@ -1024,8 +1025,9 @@ class WebhookServiceTest {
         // so hasMore and nextCursor reflect tenant-scoped pagination
         WebhookSubscription sub1 = buildSubscription("whsub_1", "tenant-1");
         WebhookSubscription sub2 = buildSubscription("whsub_2", "tenant-1");
-        when(webhookRepository.listByTenant(eq("tenant-1"), isNull(), isNull(), isNull(), eq(2), any(), any()))
-            .thenReturn(List.of(sub1, sub2));
+        WebhookSubscription sub3 = buildSubscription("whsub_3", "tenant-1");
+        when(webhookRepository.listByTenant(eq("tenant-1"), isNull(), isNull(), isNull(), eq(3), any(), any()))
+            .thenReturn(List.of(sub1, sub2, sub3));
 
         WebhookListResponse response = webhookService.listAll("tenant-1", null, null, null, 2);
 
@@ -1096,5 +1098,146 @@ class WebhookServiceTest {
         field.setAccessible(true);
         java.net.http.HttpClient client = (java.net.http.HttpClient) field.get(null);
         assertThat(client.version()).isEqualTo(java.net.http.HttpClient.Version.HTTP_1_1);
+    }
+
+    @Test
+    void createBlankSecretUsesDefaultsWhileExplicitOptionsArePreserved() {
+        WebhookCreateRequest defaults = createRequest();
+        defaults.setSigningSecret(" ");
+        WebhookCreateResponse generated = webhookService.create("tenant-1", defaults);
+        assertThat(generated.getSigningSecret()).startsWith("whsec_");
+        assertThat(generated.getSubscription().getDisableAfterFailures()).isEqualTo(10);
+        assertThat(generated.getSubscription().getRetryPolicy()).isNotNull();
+
+        WebhookCreateRequest explicit = createRequest();
+        WebhookRetryPolicy retry = WebhookRetryPolicy.builder().maxRetries(7).build();
+        explicit.setRetryPolicy(retry);
+        explicit.setDisableAfterFailures(20);
+        WebhookSubscription subscription = webhookService.create("tenant-1", explicit).getSubscription();
+        assertThat(subscription.getRetryPolicy()).isSameAs(retry);
+        assertThat(subscription.getDisableAfterFailures()).isEqualTo(20);
+    }
+
+    @Test
+    void updateAppliesEveryOptionalFieldAndPausedDoesNotResetFailures() {
+        WebhookSubscription existing = buildSubscription("whsub-all", "tenant-1");
+        existing.setConsecutiveFailures(4);
+        when(webhookRepository.findById("whsub-all")).thenReturn(existing);
+        WebhookThresholdConfig thresholds = WebhookThresholdConfig.builder().build();
+        WebhookRetryPolicy retry = WebhookRetryPolicy.builder().maxRetries(6).build();
+        WebhookUpdateRequest request = WebhookUpdateRequest.builder()
+            .url("https://example.org/new").name("New").description("Description")
+            .eventTypes(List.of(EventType.BUDGET_UPDATED)).eventCategories(List.of())
+            .scopeFilter("tenant:tenant-1").thresholds(thresholds)
+            .signingSecret("whsec_new").headers(Map.of("X-Test", "value"))
+            .retryPolicy(retry).disableAfterFailures(12).metadata(Map.of("owner", "ops"))
+            .status(WebhookStatus.PAUSED).build();
+
+        webhookService.update("whsub-all", request);
+
+        assertThat(existing.getDescription()).isEqualTo("Description");
+        assertThat(existing.getThresholds()).isSameAs(thresholds);
+        assertThat(existing.getConsecutiveFailures()).isEqualTo(4);
+        verify(urlValidator).validate("https://example.org/new");
+    }
+
+    @Test
+    void listPaginationReturnsNextCursorsAndClampsLimits() {
+        List<WebhookSubscription> subscriptions = new ArrayList<>();
+        for (int i = 0; i < 2; i++) subscriptions.add(buildSubscription("whsub_" + i, "tenant-1"));
+        when(webhookRepository.listAll(isNull(), isNull(), isNull(), eq(2), any(), any()))
+            .thenReturn(subscriptions);
+        WebhookListResponse all = webhookService.listAll(null, null, null, null, 1);
+        assertThat(all.isHasMore()).isTrue();
+        assertThat(all.getNextCursor()).isEqualTo("whsub_0");
+
+        WebhookSubscription sub = buildSubscription("whsub-deliveries", "tenant-1");
+        when(webhookRepository.findById("whsub-deliveries")).thenReturn(sub);
+        List<WebhookDelivery> deliveries = List.of(
+            WebhookDelivery.builder().deliveryId("del-1").build(),
+            WebhookDelivery.builder().deliveryId("del-2").build());
+        when(deliveryRepository.listBySubscription(eq("whsub-deliveries"), any(), any(), any(), any(), eq(2)))
+            .thenReturn(deliveries);
+        WebhookDeliveryListResponse page = webhookService.listDeliveries(
+            "whsub-deliveries", null, null, null, null, 1);
+        assertThat(page.isHasMore()).isTrue();
+        assertThat(page.getNextCursor()).isEqualTo("del-1");
+    }
+
+    @Test
+    void replayRejectsCandidateWindowsBeyondConfiguredScanLimit() {
+        WebhookSubscription sub = buildSubscription("whsub-overflow", "tenant-1");
+        when(webhookRepository.findById("whsub-overflow")).thenReturn(sub);
+        when(webhookRepository.acquireReplayLock(eq("whsub-overflow"), any())).thenReturn(true);
+        ReflectionTestUtils.setField(webhookService, "replayMaxScan", 1);
+        when(eventRepository.listEventIdsInRange(eq("tenant-1"), any(), any(), eq(2)))
+            .thenReturn(List.of("evt-1", "evt-2"));
+        ReplayRequest request = ReplayRequest.builder().from(Instant.EPOCH).to(Instant.now()).build();
+
+        assertThatThrownBy(() -> webhookService.replay("whsub-overflow", request))
+            .isInstanceOf(GovernanceException.class).hasMessageContaining("scan limit");
+        verify(webhookRepository).releaseReplayLock(eq("whsub-overflow"), anyString());
+    }
+
+    @Test
+    void deliveryErrorClassificationCoversAllNetworkFamilies() {
+        assertThat(WebhookService.classifyDeliveryError(
+            new java.net.http.HttpConnectTimeoutException("connect"))).isEqualTo("Connection timed out");
+        assertThat(WebhookService.classifyDeliveryError(
+            new java.net.http.HttpTimeoutException("request"))).isEqualTo("Request timed out");
+        assertThat(WebhookService.classifyDeliveryError(
+            new javax.net.ssl.SSLException("tls"))).isEqualTo("TLS/SSL error: tls");
+        assertThat(WebhookService.classifyDeliveryError(
+            new java.net.SocketException("network"))).isEqualTo("Network error: network");
+    }
+
+    @Test
+    void webhookTestClassifiesEveryHttpStatusRangeAndBlankSecret() throws Exception {
+        com.sun.net.httpserver.HttpServer server = com.sun.net.httpserver.HttpServer.create(
+            new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            int status = exchange.getRequestURI().getPath().contains("ok") ? 204 : 500;
+            exchange.sendResponseHeaders(status, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            when(objectMapper.writeValueAsString(any())).thenReturn("{\"test\":true}");
+            when(webhookRepository.getSigningSecret(anyString())).thenReturn(" ");
+            int port = server.getAddress().getPort();
+            for (String path : List.of("ok", "high")) {
+                WebhookSubscription sub = buildSubscription("whsub-http", "tenant-1");
+                sub.setUrl("http://127.0.0.1:" + port + "/" + path);
+                when(webhookRepository.findById("whsub-http")).thenReturn(sub);
+                WebhookTestResponse result = webhookService.test("whsub-http");
+                assertThat(result.isSuccess()).isEqualTo(path.equals("ok"));
+                if (path.equals("ok")) assertThat(result.getErrorMessage()).isNull();
+                else assertThat(result.getErrorMessage()).startsWith("HTTP ");
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void webhookTestMalformedUriUsesGeneralFailureDiagnostic() throws Exception {
+        WebhookSubscription sub = buildSubscription("whsub-malformed", "tenant-1");
+        sub.setUrl("https://[invalid");
+        when(webhookRepository.findById("whsub-malformed")).thenReturn(sub);
+        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+
+        assertThat(webhookService.test("whsub-malformed").isSuccess()).isFalse();
+    }
+
+    @Test
+    void updateAllowsNullTypeListWhenCategorySelectorRemains() {
+        WebhookSubscription existing = buildSubscription("whsub-category", "tenant-1");
+        existing.setEventTypes(null);
+        existing.setEventCategories(List.of(io.runcycles.admin.model.event.EventCategory.BUDGET));
+        when(webhookRepository.findById("whsub-category")).thenReturn(existing);
+
+        webhookService.update("whsub-category", WebhookUpdateRequest.builder().name("category-only").build());
+
+        verify(webhookRepository).update("whsub-category", existing);
     }
 }

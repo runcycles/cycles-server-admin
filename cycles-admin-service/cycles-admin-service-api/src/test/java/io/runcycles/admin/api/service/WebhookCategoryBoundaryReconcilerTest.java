@@ -87,6 +87,36 @@ class WebhookCategoryBoundaryReconcilerTest {
     }
 
     @Test
+    void reconcile_dryRun_reportsEveryRepairAction() {
+        tune(true, 1);
+        when(webhookRepository.reconcileTenantCategoryBoundary(true)).thenReturn(complete(
+            new CategoryBoundaryRepairOutcome("wh1", "t1", CategoryBoundaryAction.STRIPPED_ADMIN_SELECTORS, List.of()),
+            new CategoryBoundaryRepairOutcome("wh2", "t2", CategoryBoundaryAction.STRIPPED_AND_DISABLED, List.of()),
+            new CategoryBoundaryRepairOutcome("wh3", "t3", CategoryBoundaryAction.DISABLED_EMPTY_BOTH, List.of()),
+            new CategoryBoundaryRepairOutcome("wh4", null, CategoryBoundaryAction.NORMALIZED_NULL_OWNER, List.of()),
+            new CategoryBoundaryRepairOutcome("wh5", null, CategoryBoundaryAction.INDEXED_SYSTEM_MEMBER, List.of())));
+
+        ReconcileResult result = reconciler.reconcile();
+
+        assertThat(result.repaired()).hasSize(5);
+        assertThat(result.isComplete()).isTrue();
+    }
+
+    @Test
+    void reconcileWithRetry_alreadyInterrupted_doesNotTouchRepository() {
+        tune(false, 1);
+        Thread.currentThread().interrupt();
+        try {
+            reconciler.reconcileWithRetry();
+        } finally {
+            // Do not leak interruption into the JUnit worker thread.
+            Thread.interrupted();
+        }
+
+        verifyNoInteractions(webhookRepository);
+    }
+
+    @Test
     void reconcile_repositoryThrows_swallowed_returnsIncomplete() {
         tune(false, 1);
         when(webhookRepository.reconcileTenantCategoryBoundary(false))

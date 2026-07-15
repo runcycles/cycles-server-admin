@@ -207,4 +207,38 @@ class TraceContextFilterTest {
         assertThat(res.getHeader(TraceContextFilter.TRACE_ID_HEADER)).isNotNull();
         assertThat(res.getHeader(TraceContextFilter.TRACE_ID_HEADER)).matches(TRACE_ID_32_HEX);
     }
+
+    @Test
+    void blankTraceparent_fallsThroughToCyclesHeader() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest();
+        req.addHeader(TraceContextFilter.TRACEPARENT_HEADER, "   ");
+        req.addHeader(TraceContextFilter.TRACE_ID_HEADER, "abcdef0123456789abcdef0123456789");
+
+        filter.doFilter(req, new MockHttpServletResponse(), mock(FilterChain.class));
+
+        assertThat(req.getAttribute(TraceContextFilter.TRACE_ID_ATTRIBUTE))
+            .isEqualTo("abcdef0123456789abcdef0123456789");
+    }
+
+    @Test
+    void malformedSpanId_isRejected() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest();
+        req.addHeader(TraceContextFilter.TRACEPARENT_HEADER,
+            "00-0af7651916cd43dd8448eb211c80319c-NOTHEX0000000000-01");
+
+        filter.doFilter(req, new MockHttpServletResponse(), mock(FilterChain.class));
+
+        assertThat(req.getAttribute(TraceContextFilter.TRACE_PARENT_VALID_ATTRIBUTE)).isEqualTo(false);
+    }
+
+    @Test
+    void malformedTraceFlags_areRejected() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest();
+        req.addHeader(TraceContextFilter.TRACEPARENT_HEADER,
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-zz");
+
+        filter.doFilter(req, new MockHttpServletResponse(), mock(FilterChain.class));
+
+        assertThat(req.getAttribute(TraceContextFilter.TRACE_PARENT_VALID_ATTRIBUTE)).isEqualTo(false);
+    }
 }

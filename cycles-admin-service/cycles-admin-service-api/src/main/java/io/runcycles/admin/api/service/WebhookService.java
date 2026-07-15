@@ -10,6 +10,7 @@ import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.event.*;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.SortSpec;
+import io.runcycles.admin.api.support.PageSlice;
 import io.runcycles.admin.model.webhook.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -214,7 +215,7 @@ public class WebhookService {
             java.net.http.HttpResponse<String> response = HTTP_CLIENT
                 .send(reqBuilder.build(), java.net.http.HttpResponse.BodyHandlers.ofString());
             int elapsed = (int) (System.currentTimeMillis() - start);
-            boolean success = response.statusCode() >= 200 && response.statusCode() < 300;
+            boolean success = response.statusCode() / 100 == 2;
             return WebhookTestResponse.builder()
                 .success(success)
                 .responseStatus(response.statusCode())
@@ -262,12 +263,15 @@ public class WebhookService {
     public WebhookListResponse listByTenant(String tenantId, String status, String eventType,
                                              String cursor, int limit, SortSpec sortSpec, String search) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
-        List<WebhookSubscription> subs = webhookRepository.listByTenant(tenantId, status, eventType, cursor, effectiveLimit, sortSpec, search);
+        List<WebhookSubscription> subs = webhookRepository.listByTenant(
+            tenantId, status, eventType, cursor, effectiveLimit + 1, sortSpec, search);
+        var page = PageSlice.from(subs, effectiveLimit);
+        subs = page.items();
         subs.forEach(s -> { s.setSigningSecret(null); }); // Mask secrets
         return WebhookListResponse.builder()
             .subscriptions(subs)
-            .hasMore(subs.size() >= effectiveLimit)
-            .nextCursor(subs.size() >= effectiveLimit ? subs.get(subs.size() - 1).getSubscriptionId() : null)
+            .hasMore(page.hasMore())
+            .nextCursor(page.hasMore() ? subs.get(subs.size() - 1).getSubscriptionId() : null)
             .build();
     }
 
@@ -287,12 +291,15 @@ public class WebhookService {
             return listByTenant(tenantId, status, eventType, cursor, limit, sortSpec, search);
         }
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
-        List<WebhookSubscription> subs = webhookRepository.listAll(status, eventType, cursor, effectiveLimit, sortSpec, search);
+        List<WebhookSubscription> subs = webhookRepository.listAll(
+            status, eventType, cursor, effectiveLimit + 1, sortSpec, search);
+        var page = PageSlice.from(subs, effectiveLimit);
+        subs = page.items();
         subs.forEach(s -> { s.setSigningSecret(null); });
         return WebhookListResponse.builder()
             .subscriptions(subs)
-            .hasMore(subs.size() >= effectiveLimit)
-            .nextCursor(subs.size() >= effectiveLimit ? subs.get(subs.size() - 1).getSubscriptionId() : null)
+            .hasMore(page.hasMore())
+            .nextCursor(page.hasMore() ? subs.get(subs.size() - 1).getSubscriptionId() : null)
             .build();
     }
 
@@ -300,11 +307,14 @@ public class WebhookService {
                                                        Instant from, Instant to, String cursor, int limit) {
         webhookRepository.findById(subscriptionId); // Throws if not found
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
-        List<WebhookDelivery> deliveries = deliveryRepository.listBySubscription(subscriptionId, status, from, to, cursor, effectiveLimit);
+        List<WebhookDelivery> deliveries = deliveryRepository.listBySubscription(
+            subscriptionId, status, from, to, cursor, effectiveLimit + 1);
+        var page = PageSlice.from(deliveries, effectiveLimit);
+        deliveries = page.items();
         return WebhookDeliveryListResponse.builder()
             .deliveries(deliveries)
-            .hasMore(deliveries.size() >= effectiveLimit)
-            .nextCursor(deliveries.size() >= effectiveLimit ? deliveries.get(deliveries.size() - 1).getDeliveryId() : null)
+            .hasMore(page.hasMore())
+            .nextCursor(page.hasMore() ? deliveries.get(deliveries.size() - 1).getDeliveryId() : null)
             .build();
     }
 

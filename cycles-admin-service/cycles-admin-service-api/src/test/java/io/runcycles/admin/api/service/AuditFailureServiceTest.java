@@ -257,6 +257,24 @@ class AuditFailureServiceTest {
     }
 
     @Test
+    void logFailure_emptyMessage_omitsErrorMessageKey() {
+        service.logFailure(request, 400, ErrorCode.INVALID_REQUEST, "", null);
+
+        ArgumentCaptor<AuditLogEntry> captor = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditRepository).log(captor.capture());
+        assertThat(captor.getValue().getMetadata()).doesNotContainKey("error_message");
+    }
+
+    @Test
+    void logFailure_nullErrorCode_isRecordedWithoutCode() {
+        service.logFailure(request, 500, null, "unclassified", null);
+
+        ArgumentCaptor<AuditLogEntry> captor = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditRepository).log(captor.capture());
+        assertThat(captor.getValue().getErrorCode()).isNull();
+    }
+
+    @Test
     void logFailure_extrasMerged_alongsideDefaultMetadata() {
         java.util.Map<String, Object> extras = new java.util.HashMap<>();
         extras.put("exception_class", "java.lang.RuntimeException");
@@ -285,6 +303,17 @@ class AuditFailureServiceTest {
 
         assertThat(counter("error")).isEqualTo(1.0);
         assertThat(counter("written")).isEqualTo(0.0);
+    }
+
+    @Test
+    void logFailure_nullRequestAndRepositoryFailure_remainsNonThrowing() {
+        org.mockito.Mockito.doThrow(new RuntimeException("Redis down"))
+            .when(auditRepository)
+            .log(org.mockito.ArgumentMatchers.any(AuditLogEntry.class));
+
+        service.logFailure(null, 500, ErrorCode.INTERNAL_ERROR, "storage failed", null);
+
+        assertThat(counter("error")).isEqualTo(1.0);
     }
 
     @Test

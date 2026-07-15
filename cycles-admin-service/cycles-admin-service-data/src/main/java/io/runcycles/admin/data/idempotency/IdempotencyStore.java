@@ -1,37 +1,47 @@
 package io.runcycles.admin.data.idempotency;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.logging.LogSanitizer;
+import io.runcycles.admin.model.shared.ErrorCode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
+
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.locks.LockSupport;
+
 /**
- * Redis-backed idempotency cache for admin bulk-action endpoints
- * (spec v0.1.25.21). Stores the full JSON response envelope keyed by
- * {@code (endpoint, idempotencyKey)} with a 15-minute TTL so a retried
- * request returns the original response without re-applying the action.
+ * Redis-backed atomic idempotency coordinator for admin bulk-action endpoints
+ * (spec v0.1.25.21). A request claims {@code (endpoint, idempotencyKey,
+ * payloadHash)} before reading mutable match state, then publishes one immutable
+ * JSON response envelope for the 15-minute replay window.
  *
- * <p>Key shape: {@code idem:{endpoint}:{key}} — {@code endpoint} is a
+ * <p>Key shape: {@code idem:v2:{endpoint}:{key}} — {@code endpoint} is a
  * short caller-owned discriminator (e.g. {@code "tenants-bulk"},
  * {@code "webhooks-bulk"}) so distinct endpoints cannot collide on the
  * same operator-supplied key.
  *
- * <p>NOTE — design divergence from the v0.1.25.26 release plan: this
- * store is NOT a drop-in replacement for the {@code BudgetController.fund}
+ * <p>This store is not a replacement for the {@code BudgetController.fund}
  * idempotency embedded in {@code BudgetRepository}'s Lua script. The
  * fund-path idempotency is check-and-cache inside the same atomic Lua
  * transaction as the balance mutation — externalising it would lose the
  * atomic "never apply twice under concurrent retry" guarantee. Bulk-action
- * idempotency has a different shape: the mutation is a per-row loop that
- * completes before the envelope is cached, so a standalone JSON cache is
- * correct here.
+ * idempotency has a different shape: the mutation is a per-row loop, so the
+ * owner claim serializes equal retries. In-progress ownership deliberately has
+ * no automatic takeover: after an ambiguous process failure, re-executing a
+ * destructive bulk request is less safe than requiring an operator to inspect
+ * the durable per-row effects and explicitly clear the claim.
  */
 @Component
 public class IdempotencyStore {
@@ -39,22 +49,56 @@ public class IdempotencyStore {
     /** 15-minute replay window per spec v0.1.25.21. */
     public static final int TTL_SECONDS = 900;
     private static final String KEY_PREFIX = "idem:";
+    private static final String V2_KEY_PREFIX = "idem:v2:";
+    private static final long WAIT_NANOS = 5_000_000_000L;
+    private static final String BEGIN_LUA =
+        "local state = redis.call('HGET', KEYS[1], 'state')\n" +
+        "if not state then\n" +
+        " local legacy = redis.call('GET', KEYS[2])\n" +
+        " if legacy then return {'LEGACY_PRESENT'} end\n" +
+        " redis.call('HSET', KEYS[1], 'state','IN_PROGRESS','payload_hash',ARGV[1],'owner',ARGV[2],'started_at',ARGV[3])\n" +
+        " redis.call('PERSIST', KEYS[1]); return {'ACQUIRED'}\n" +
+        "end\n" +
+        "local stored_hash = redis.call('HGET', KEYS[1], 'payload_hash') or ''\n" +
+        "if stored_hash ~= ARGV[1] then return {'MISMATCH'} end\n" +
+        "if state == 'COMPLETE' then return {'COMPLETE', redis.call('HGET', KEYS[1], 'response') or ''} end\n" +
+        "return {'IN_PROGRESS', redis.call('HGET', KEYS[1], 'started_at') or ''}\n";
+    private static final String COMPLETE_LUA =
+        "if redis.call('HGET', KEYS[1], 'owner') ~= ARGV[1] then return 0 end\n" +
+        "redis.call('HSET', KEYS[1], 'state','COMPLETE','response',ARGV[2])\n" +
+        "redis.call('EXPIRE', KEYS[1], ARGV[3]); return 1\n";
+    private static final String ABANDON_LUA =
+        "if redis.call('HGET', KEYS[1], 'owner') ~= ARGV[1] then return 0 end\n" +
+        "if redis.call('HGET', KEYS[1], 'state') ~= 'IN_PROGRESS' then return 0 end\n" +
+        "return redis.call('DEL', KEYS[1])\n";
 
     private final JedisPool jedisPool;
     private final ObjectMapper objectMapper;
+    private final long waitNanos;
 
     @Autowired
-    public IdempotencyStore(JedisPool jedisPool, ObjectMapper objectMapper) {
+    public IdempotencyStore(JedisPool jedisPool,
+                            @Qualifier("redisObjectMapper") ObjectMapper objectMapper) {
+        this(jedisPool, objectMapper, WAIT_NANOS);
+    }
+
+    IdempotencyStore(JedisPool jedisPool, ObjectMapper objectMapper,
+                     long waitNanos) {
         this.jedisPool = jedisPool;
         this.objectMapper = objectMapper;
+        this.waitNanos = Math.max(0L, waitNanos);
     }
 
     /**
-     * Look up a cached response envelope for this (endpoint, key) pair.
+     * Look up a legacy pre-v2 response envelope for this (endpoint, key) pair.
      * Returns an empty Optional on cache miss OR on any deserialisation
      * failure — corrupt cache entries degrade to a fresh apply instead of
      * propagating the parse error to the caller, because the mutation is
      * still a bounded operation.
+     *
+     * <p>Legacy only: entries do not carry a payload hash and therefore cannot
+     * safely satisfy current bulk requests. Retained for rolling-upgrade
+     * diagnostics; {@link #begin} fails closed while one is present.
      */
     public <T> Optional<T> lookup(String endpoint, String key, Class<T> type) {
         String redisKey = redisKey(endpoint, key);
@@ -73,15 +117,105 @@ public class IdempotencyStore {
         }
     }
 
+    /** Ownership token for one atomic bulk invocation, or an immutable replay. */
+    public record Claim<T>(String endpoint, String key, String ownerToken,
+                           T replayResponse) {
+        public boolean isReplay() { return replayResponse != null; }
+    }
+
     /**
-     * Cache a response envelope for 15 minutes. Uses Redis {@code SET ... EX}
-     * so repeated stores under the same key refresh the TTL — this is the
-     * desired semantics when a client retries with the same idempotency
-     * key after a partial failure in the caller (the freshest response
-     * wins). Store failures are logged but not thrown; the caller has
-     * already returned to the user, and a missed cache just means the
-     * next retry will re-apply (safe because the bulk op is deterministic
-     * given the same filter + action).
+     * Atomically claim a bulk idempotency key. Concurrent equal requests wait
+     * briefly for and then replay the first immutable response; different
+     * payloads receive IDEMPOTENCY_MISMATCH.
+     */
+    public <T> Claim<T> begin(String endpoint, String key, Object request, Class<T> type) {
+        String payloadHash;
+        try {
+            payloadHash = fingerprint(objectMapper.writeValueAsString(request));
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to fingerprint idempotent request", e);
+        }
+        String owner = UUID.randomUUID().toString();
+        long deadline = System.nanoTime() + waitNanos;
+        while (true) {
+            try (Jedis jedis = jedisPool.getResource()) {
+                @SuppressWarnings("unchecked")
+                List<String> result = (List<String>) jedis.eval(BEGIN_LUA,
+                    List.of(v2RedisKey(endpoint, key), redisKey(endpoint, key)),
+                    List.of(payloadHash, owner, String.valueOf(System.currentTimeMillis())));
+                switch (result.get(0)) {
+                    case "ACQUIRED": return new Claim<>(endpoint, key, owner, null);
+                    case "COMPLETE": return new Claim<>(endpoint, key, null,
+                        objectMapper.readValue(result.get(1), type));
+                    case "LEGACY_PRESENT": throw new GovernanceException(
+                        ErrorCode.IDEMPOTENCY_MISMATCH,
+                        "A legacy idempotency entry exists but cannot be payload-verified; "
+                            + "retry with a new key or after the 15-minute replay window",
+                        409);
+                    case "MISMATCH": throw new GovernanceException(ErrorCode.IDEMPOTENCY_MISMATCH,
+                        "Idempotency key was already used with a different request", 409);
+                    case "IN_PROGRESS": {
+                        if (System.nanoTime() >= deadline) {
+                            throw new GovernanceException(ErrorCode.INTERNAL_ERROR,
+                                "An invocation with this idempotency key is still in progress", 503);
+                        }
+                        if (Thread.currentThread().isInterrupted()) {
+                            throw new GovernanceException(ErrorCode.INTERNAL_ERROR,
+                                "Interrupted while waiting for an idempotent invocation", 503);
+                        }
+                        break;
+                    }
+                    default: throw new IllegalStateException("Unexpected idempotency result: " + result);
+                }
+            } catch (GovernanceException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IllegalStateException("Failed to claim idempotency key", e);
+            }
+            LockSupport.parkNanos(50_000_000L);
+        }
+    }
+
+    public <T> void complete(Claim<?> claim, T envelope) {
+        if (claim == null || claim.isReplay()) return;
+        try (Jedis jedis = jedisPool.getResource()) {
+            String json = objectMapper.writeValueAsString(envelope);
+            Object result = jedis.eval(COMPLETE_LUA,
+                List.of(v2RedisKey(claim.endpoint(), claim.key())),
+                List.of(claim.ownerToken(), json, String.valueOf(TTL_SECONDS)));
+            if (!Long.valueOf(1L).equals(result)) {
+                throw new IllegalStateException("Idempotency ownership was lost before completion");
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to complete idempotency response", e);
+        }
+    }
+
+    /**
+     * Release an owner claim when a pre-mutation match/count gate rejects the
+     * request. The compare-and-delete script cannot remove another invocation's
+     * claim or a completed replay envelope.
+     */
+    public void abandon(Claim<?> claim) {
+        if (claim == null || claim.isReplay()) return;
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.eval(ABANDON_LUA,
+                List.of(v2RedisKey(claim.endpoint(), claim.key())),
+                List.of(claim.ownerToken()));
+        } catch (Exception e) {
+            LOG.warn("Failed to abandon idempotency claim: endpoint={} key_present={} key_sha256={} error={}",
+                claim.endpoint(), claim.key() != null && !claim.key().isBlank(),
+                fingerprint(claim.key()), LogSanitizer.safe(e.getMessage()), e);
+        }
+    }
+
+    /**
+     * Write a legacy pre-v2 replay entry.
+     *
+     * <p>Legacy only. Current callers use
+     * {@link #begin(String, String, Object, Class)} and
+     * {@link #complete(Claim, Object)} so the payload is verified and
+     * concurrent invocations cannot both mutate rows.
      */
     public <T> void store(String endpoint, String key, T envelope) {
         String redisKey = redisKey(endpoint, key);
@@ -97,6 +231,10 @@ public class IdempotencyStore {
 
     private static String redisKey(String endpoint, String key) {
         return KEY_PREFIX + endpoint + ":" + key;
+    }
+
+    private static String v2RedisKey(String endpoint, String key) {
+        return V2_KEY_PREFIX + endpoint + ":" + key;
     }
 
     private static String fingerprint(String key) {

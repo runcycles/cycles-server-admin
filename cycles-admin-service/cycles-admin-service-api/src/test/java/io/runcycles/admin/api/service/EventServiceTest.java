@@ -10,6 +10,9 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 import java.time.Instant;
 import java.util.List;
@@ -38,7 +41,7 @@ class EventServiceTest {
         eventService.emit(event);
 
         verify(eventRepository).save(event);
-        verify(webhookDispatchService).dispatch(event);
+        verify(webhookDispatchService).dispatchWithSummary(event);
     }
 
     @Test
@@ -111,12 +114,13 @@ class EventServiceTest {
             .eventType(EventType.BUDGET_CREATED)
             .tenantId("tenant-1")
             .build();
-        doThrow(new RuntimeException("Dispatch failed")).when(webhookDispatchService).dispatch(any());
+        doThrow(new RuntimeException("Dispatch failed"))
+            .when(webhookDispatchService).dispatchWithSummary(any());
 
         // Should not throw
         eventService.emit(event);
 
-        verify(webhookDispatchService).dispatch(any());
+        verify(webhookDispatchService).dispatchWithSummary(any());
     }
 
     @Test
@@ -132,30 +136,31 @@ class EventServiceTest {
 
     @Test
     void list_clampsLimitToMax100() {
-        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(100), any(), any(), any(), any()))
+        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(101), any(), any(), any(), any()))
             .thenReturn(List.of());
 
         eventService.list(null, null, null, null, null, null, null, null, 500);
 
-        verify(eventRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), eq(100), any(), any(), any(), any());
+        verify(eventRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), eq(101), any(), any(), any(), any());
     }
 
     @Test
     void list_clampsLimitToMin1() {
-        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(1), any(), any(), any(), any()))
+        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(2), any(), any(), any(), any()))
             .thenReturn(List.of());
 
         eventService.list(null, null, null, null, null, null, null, null, 0);
 
-        verify(eventRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), eq(1), any(), any(), any(), any());
+        verify(eventRepository).list(any(), any(), any(), any(), any(), any(), any(), any(), eq(2), any(), any(), any(), any());
     }
 
     @Test
-    void list_returnsHasMoreTrueWhenResultCountEqualsLimit() {
+    void list_returnsHasMoreTrueWhenResultCountExceedsLimit() {
         Event e1 = Event.builder().eventId("evt_1").build();
         Event e2 = Event.builder().eventId("evt_2").build();
-        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(2), any(), any(), any(), any()))
-            .thenReturn(List.of(e1, e2));
+        Event e3 = Event.builder().eventId("evt_3").build();
+        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(3), any(), any(), any(), any()))
+            .thenReturn(List.of(e1, e2, e3));
 
         EventListResponse response = eventService.list(null, null, null, null, null, null, null, null, 2);
 
@@ -166,7 +171,7 @@ class EventServiceTest {
     @Test
     void list_returnsHasMoreFalseWhenResultCountLessThanLimit() {
         Event e1 = Event.builder().eventId("evt_1").build();
-        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any(), any(), any()))
+        when(eventRepository.list(any(), any(), any(), any(), any(), any(), any(), any(), eq(51), any(), any(), any(), any()))
             .thenReturn(List.of(e1));
 
         EventListResponse response = eventService.list(null, null, null, null, null, null, null, null, 50);
@@ -196,7 +201,7 @@ class EventServiceTest {
             event.getEventType() == EventType.TENANT_CREATED &&
             "tenant-1".equals(event.getTenantId()) &&
             EventCategory.TENANT == event.getCategory()));
-        verify(webhookDispatchService).dispatch(any());
+        verify(webhookDispatchService).dispatchWithSummary(any());
     }
 
     @Test
@@ -253,7 +258,7 @@ class EventServiceTest {
             "expected_class", "EventDataBudgetLifecycle").count();
         assertThat(invalidCount).isEqualTo(0.0);
         verify(eventRepository).save(event);
-        verify(webhookDispatchService).dispatch(event);
+        verify(webhookDispatchService).dispatchWithSummary(event);
     }
 
     @Test
@@ -283,10 +288,29 @@ class EventServiceTest {
 
         // Event still delivered — observability, not enforcement
         verify(eventRepository).save(event);
-        verify(webhookDispatchService).dispatch(event);
+        verify(webhookDispatchService).dispatchWithSummary(event);
         double emittedCount = meterRegistry.counter("cycles_admin_events_emitted_total",
             "type", EventType.BUDGET_CREATED.getValue(), "result", "success").count();
         assertThat(emittedCount).isEqualTo(1.0);
+    }
+
+    @Test
+    void emit_dispatchEnqueueFailureIncrementsFailureMetric() {
+        Event event = Event.builder()
+            .eventType(EventType.BUDGET_CREATED)
+            .tenantId("tenant-1")
+            .build();
+        when(webhookDispatchService.dispatchWithSummary(event))
+            .thenReturn(new WebhookDispatchService.DispatchSummary(0, 0, 1));
+
+        eventService.emitRequired(event);
+
+        assertThat(meterRegistry.counter("cycles_admin_events_emitted_total",
+            "type", EventType.BUDGET_CREATED.getValue(), "result", "failure").count())
+            .isEqualTo(1.0);
+        assertThat(meterRegistry.counter("cycles_admin_events_emitted_total",
+            "type", EventType.BUDGET_CREATED.getValue(), "result", "success").count())
+            .isZero();
     }
 
     @Test
@@ -329,5 +353,51 @@ class EventServiceTest {
             "type", EventType.BUDGET_CREATED.getValue(),
             "expected_class", "EventDataBudgetLifecycle").count();
         assertThat(invalidCount).isEqualTo(1.0);
+    }
+
+    @Test
+    void emitFailureDiagnosticsHandleNullEventAndNullEventType() {
+        eventService.emit((Event) null);
+
+        Event untyped = Event.builder()
+            .tenantId("tenant-1").scope("tenant:tenant-1")
+            .correlationId("corr").requestId("req").traceId("trace").source("test")
+            .build();
+        doThrow(new IllegalStateException("storage failed")).when(eventRepository).save(untyped);
+        eventService.emit(untyped);
+
+        assertThat(meterRegistry.counter("cycles_admin_events_emitted_total",
+            "type", "unknown", "result", "failure").count()).isEqualTo(2.0);
+    }
+
+    @Test
+    void traceContextIsCopiedWhenPresentAndRemainsNullWhenAbsent() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+        try {
+            Event absent = Event.builder().eventType(EventType.BUDGET_CREATED).build();
+            eventService.emitRequired(absent);
+            assertThat(absent.getTraceId()).isNull();
+
+            request.setAttribute("traceId", "trace-from-request");
+            Event present = Event.builder().eventType(EventType.BUDGET_CREATED).build();
+            eventService.emitRequired(present);
+            assertThat(present.getTraceId()).isEqualTo("trace-from-request");
+        } finally {
+            RequestContextHolder.resetRequestAttributes();
+        }
+    }
+
+    @Test
+    void emitRequired_preservesExistingTimestamp() {
+        Instant timestamp = Instant.parse("2026-01-01T00:00:00Z");
+        Event event = Event.builder()
+            .eventType(EventType.BUDGET_CREATED)
+            .timestamp(timestamp)
+            .build();
+
+        eventService.emitRequired(event);
+
+        assertThat(event.getTimestamp()).isEqualTo(timestamp);
     }
 }

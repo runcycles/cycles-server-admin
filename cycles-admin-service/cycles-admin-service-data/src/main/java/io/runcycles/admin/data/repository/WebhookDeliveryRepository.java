@@ -1,11 +1,13 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.logging.LogSanitizer;
+import io.runcycles.admin.data.repository.support.ZSetAdaptivePager;
 import io.runcycles.admin.model.webhook.DeliveryStatus;
 import io.runcycles.admin.model.webhook.WebhookDelivery;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.*;
@@ -15,7 +17,7 @@ import java.util.*;
 public class WebhookDeliveryRepository {
     private static final Logger LOG = LoggerFactory.getLogger(WebhookDeliveryRepository.class);
     @Autowired private JedisPool jedisPool;
-    @Autowired private ObjectMapper objectMapper;
+    @Autowired @Qualifier("redisObjectMapper") private ObjectMapper objectMapper;
 
     @Value("${events.retention.delivery-ttl-days:14}")
     private int deliveryTtlDays;
@@ -26,6 +28,13 @@ public class WebhookDeliveryRepository {
         "redis.call('EXPIRE', KEYS[1], ARGV[4])\n" +
         "redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3])\n" +
         "return 1\n";
+    private static final String SAVE_AND_ENQUEUE_ONCE_LUA =
+        "if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end\n"
+            + "redis.call('SET', KEYS[1], ARGV[1])\n"
+            + "redis.call('EXPIRE', KEYS[1], ARGV[4])\n"
+            + "redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3])\n"
+            + "redis.call('LPUSH', KEYS[3], ARGV[3])\n"
+            + "return 1";
 
     public void save(WebhookDelivery delivery) {
         try (Jedis jedis = jedisPool.getResource()) {
@@ -58,6 +67,30 @@ public class WebhookDeliveryRepository {
         }
     }
 
+    /**
+     * Atomically persist and enqueue a deterministic delivery once. Returning
+     * {@code false} means the same delivery already exists and was therefore
+     * enqueued by the winning attempt; callers may acknowledge their outbox.
+     */
+    public boolean saveAndEnqueueOnce(WebhookDelivery delivery, String queueKey) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            if (delivery.getDeliveryId() == null || delivery.getDeliveryId().isBlank()) {
+                throw new IllegalArgumentException("Deterministic delivery_id is required");
+            }
+            if (delivery.getAttemptedAt() == null) delivery.setAttemptedAt(Instant.now());
+            String json = objectMapper.writeValueAsString(delivery);
+            String score = String.valueOf(delivery.getAttemptedAt().toEpochMilli());
+            Object result = jedis.eval(SAVE_AND_ENQUEUE_ONCE_LUA,
+                List.of("delivery:" + delivery.getDeliveryId(),
+                    "deliveries:" + delivery.getSubscriptionId(), queueKey),
+                List.of(json, score, delivery.getDeliveryId(),
+                    String.valueOf(deliveryTtlDays * 86400L)));
+            return Long.valueOf(1L).equals(result);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to atomically save and enqueue webhook delivery", e);
+        }
+    }
+
     public WebhookDelivery findById(String deliveryId) {
         try (Jedis jedis = jedisPool.getResource()) {
             String data = jedis.get("delivery:" + deliveryId);
@@ -86,34 +119,25 @@ public class WebhookDeliveryRepository {
             double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
             String indexKey = "deliveries:" + subscriptionId;
 
-            if (cursor != null && !cursor.isBlank()) {
-                Double cursorScore = jedis.zscore(indexKey, cursor);
-                if (cursorScore != null) {
-                    maxScore = Math.min(maxScore, cursorScore - 1);
-                }
-            }
-
-            List<String> ids = jedis.zrevrangeByScore(indexKey, maxScore, minScore, 0, limit * 3);
-            List<WebhookDelivery> deliveries = new ArrayList<>();
-            for (String id : ids) {
+            return ZSetAdaptivePager.collect(jedis, indexKey, minScore, maxScore,
+                cursor, limit, false, "webhook-delivery", id -> {
                 try {
                     String data = jedis.get("delivery:" + id);
                     if (data == null) {
                         LOG.warn("Webhook delivery index points to missing row: delivery_id={} subscription_id={} index_key={} status_filter={}",
                             LogSanitizer.safe(id), LogSanitizer.safe(subscriptionId), LogSanitizer.safe(indexKey), status);
-                        continue;
+                        return null;
                     }
                     WebhookDelivery delivery = objectMapper.readValue(data, WebhookDelivery.class);
                     if (status != null && (delivery.getStatus() == null ||
-                            !status.equals(delivery.getStatus().name()))) continue;
-                    deliveries.add(delivery);
-                    if (deliveries.size() >= limit) break;
+                            !status.equals(delivery.getStatus().name()))) return null;
+                    return delivery;
                 } catch (Exception e) {
                     LOG.warn("Failed to parse webhook delivery row: delivery_id={} subscription_id={} index_key={} status_filter={}",
                         LogSanitizer.safe(id), LogSanitizer.safe(subscriptionId), LogSanitizer.safe(indexKey), status, e);
+                    return null;
                 }
-            }
-            return deliveries;
+            });
         }
     }
 

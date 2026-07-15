@@ -1,6 +1,11 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.logging.LogSanitizer;
+import io.runcycles.admin.data.repository.support.CascadeMutationResult;
+import io.runcycles.admin.data.repository.support.TenantCloseOutboxItem;
+import io.runcycles.admin.data.repository.support.SortedQueryGuard;
+import io.runcycles.admin.data.repository.support.CursorSupport;
+import io.runcycles.admin.data.repository.support.RedisBatchReader;
 import io.runcycles.admin.data.service.CryptoService;
 import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventType;
@@ -11,6 +16,7 @@ import io.runcycles.admin.model.webhook.WebhookSubscription;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.*;
 import redis.clients.jedis.params.ScanParams;
@@ -21,8 +27,15 @@ import java.util.*;
 public class WebhookRepository {
     private static final Logger LOG = LoggerFactory.getLogger(WebhookRepository.class);
     @Autowired private JedisPool jedisPool;
-    @Autowired private ObjectMapper objectMapper;
+    @Autowired @Qualifier("redisObjectMapper") private ObjectMapper objectMapper;
     @Autowired private CryptoService cryptoService;
+
+    private static final String CASCADE_SET_OUTBOX_LUA =
+        "if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end\n" +
+        "redis.call('SET', KEYS[1], ARGV[2])\n" +
+        "redis.call('SET', KEYS[2], ARGV[3])\n" +
+        "redis.call('SADD', KEYS[3], ARGV[4])\n" +
+        "return 1\n";
 
     // Lua script for atomic webhook creation: SET JSON + SADD tenant index + SADD global index
     private static final String SAVE_WEBHOOK_LUA =
@@ -117,29 +130,49 @@ public class WebhookRepository {
      * interceptor) blocks any subsequent re-enable for closed-owner rows,
      * making DISABLED effectively-terminal without widening the enum.
      */
-    public List<CascadeDisableOutcome> cascadeDisable(String tenantId) {
-        List<CascadeDisableOutcome> outcomes = new ArrayList<>();
+    public CascadeMutationResult<CascadeDisableOutcome> cascadeDisable(String tenantId) {
+        var outcomes = CascadeMutationResult.<CascadeDisableOutcome>builder();
         try (Jedis jedis = jedisPool.getResource()) {
             Set<String> ids = jedis.smembers("webhooks:" + tenantId);
-            if (ids == null || ids.isEmpty()) return outcomes;
+            if (ids == null || ids.isEmpty()) return outcomes.build();
             for (String id : ids) {
-                try {
-                    String data = jedis.get("webhook:" + id);
-                    if (data == null) continue;
-                    WebhookSubscription sub = objectMapper.readValue(data, WebhookSubscription.class);
-                    if (sub.getStatus() == WebhookStatus.DISABLED) continue;
-                    WebhookStatus prior = sub.getStatus();
-                    sub.setStatus(WebhookStatus.DISABLED);
-                    sub.setUpdatedAt(Instant.now());
-                    jedis.set("webhook:" + id, objectMapper.writeValueAsString(sub));
-                    outcomes.add(new CascadeDisableOutcome(id, sub.getName(), prior));
-                } catch (Exception e) {
-                    LOG.warn("Cascade-disable skipped webhook subscription: subscription_id={} tenant_id={} error={}",
-                        LogSanitizer.safe(id), LogSanitizer.safe(tenantId), LogSanitizer.safe(e.getMessage()), e);
+                boolean resolved = false;
+                for (int attempt = 0; attempt < 3 && !resolved; attempt++) {
+                    try {
+                        String data = jedis.get("webhook:" + id);
+                        if (data == null) { resolved = true; continue; }
+                        WebhookSubscription sub = objectMapper.readValue(data, WebhookSubscription.class);
+                        if (sub.getStatus() == WebhookStatus.DISABLED) { resolved = true; continue; }
+                        WebhookStatus prior = sub.getStatus();
+                        sub.setStatus(WebhookStatus.DISABLED);
+                        sub.setUpdatedAt(Instant.now());
+                        String itemId = "webhook:" + id;
+                        TenantCloseOutboxItem item = new TenantCloseOutboxItem(
+                            itemId, tenantId, "webhook_subscription", id, sub.getName(),
+                            null, null, prior.name(), 0L);
+                        Object cas = jedis.eval(CASCADE_SET_OUTBOX_LUA,
+                            List.of("webhook:" + id,
+                                TenantCloseWorkRepository.outboxItemKey(tenantId, itemId),
+                                TenantCloseWorkRepository.outboxKey(tenantId)),
+                            List.of(data, objectMapper.writeValueAsString(sub),
+                                objectMapper.writeValueAsString(item), itemId));
+                        if (Long.valueOf(1L).equals(cas)) {
+                            outcomes.succeeded(new CascadeDisableOutcome(id, sub.getName(), prior));
+                            resolved = true;
+                        }
+                    } catch (Exception e) {
+                        outcomes.failed(id, e);
+                        LOG.warn("Cascade-disable skipped webhook subscription: subscription_id={} tenant_id={} error={}",
+                            LogSanitizer.safe(id), LogSanitizer.safe(tenantId), LogSanitizer.safe(e.getMessage()), e);
+                        resolved = true;
+                    }
+                }
+                if (!resolved) {
+                    outcomes.failed(id, new IllegalStateException("concurrent modification retry exhausted"));
                 }
             }
         }
-        return outcomes;
+        return outcomes.build();
     }
 
     /**
@@ -509,6 +542,26 @@ public class WebhookRepository {
         }
     }
 
+    /** Exact match count used only for an over-limit bulk rejection response. */
+    public int countForBulk(String tenantId, WebhookStatus status,
+                            EventType eventType, String search) {
+        String setKey = (tenantId != null && !tenantId.isBlank())
+            ? "webhooks:" + tenantId : "webhooks:_all";
+        String statusStr = status != null ? status.name() : null;
+        String eventTypeStr = eventType != null ? eventType.getValue() : null;
+        int count = 0;
+        try (Jedis jedis = jedisPool.getResource()) {
+            for (String id : jedis.smembers(setKey)) {
+                WebhookSubscription sub = tryHydrate(jedis, id);
+                if (sub == null) continue;
+                if (!matchesStatusAndEventType(sub, statusStr, eventTypeStr)) continue;
+                if (!matchesSearch(sub, search)) continue;
+                count++;
+            }
+        }
+        return count;
+    }
+
     public List<WebhookSubscription> findMatchingSubscriptions(String tenantId, EventType eventType, String scope) {
         try (Jedis jedis = jedisPool.getResource()) {
             List<WebhookSubscription> matching = new ArrayList<>();
@@ -643,15 +696,7 @@ public class WebhookRepository {
         // chains don't break.
         List<String> sortedIds = new ArrayList<>(ids);
         Collections.sort(sortedIds);
-        int startIdx = 0;
-        if (cursor != null && !cursor.isBlank()) {
-            for (int i = 0; i < sortedIds.size(); i++) {
-                if (sortedIds.get(i).equals(cursor)) {
-                    startIdx = i + 1;
-                    break;
-                }
-            }
-        }
+        int startIdx = CursorSupport.startAfterIds(sortedIds, cursor);
         List<WebhookSubscription> results = new ArrayList<>();
         for (int i = startIdx; i < sortedIds.size() && results.size() < limit; i++) {
             WebhookSubscription sub = tryHydrate(jedis, sortedIds.get(i));
@@ -666,25 +711,26 @@ public class WebhookRepository {
     private List<WebhookSubscription> listSorted(Jedis jedis, Set<String> ids, String status,
                                                   String eventType, String cursor, int limit,
                                                   SortSpec sortSpec, String search) {
+        SortedQueryGuard.requireScannable(ids.size(), "webhook");
         // Sorted path: hydrate all, filter, sort, walk cursor strictly-after.
         // Cursor remains the subscription_id (wire-compat); caller must pass the
         // same sortSpec on follow-up pages for stable traversal.
         List<WebhookSubscription> all = new ArrayList<>();
+        Map<String, String> rows = RedisBatchReader.getById(jedis, "webhook:", ids);
         for (String id : ids) {
-            WebhookSubscription sub = tryHydrate(jedis, id);
+            WebhookSubscription sub = tryHydrate(id, rows.get(id));
             if (sub == null) continue;
             if (!matchesStatusAndEventType(sub, status, eventType)) continue;
             if (!matchesSearch(sub, search)) continue;
             all.add(sub);
         }
+        SortedQueryGuard.requireBounded(all.size(), "webhook");
         all.sort(webhookComparator(sortSpec));
         List<WebhookSubscription> results = new ArrayList<>();
-        boolean pastCursor = (cursor == null || cursor.isBlank());
-        for (WebhookSubscription sub : all) {
-            if (!pastCursor) {
-                if (cursor.equals(sub.getSubscriptionId())) pastCursor = true;
-                continue;
-            }
+        int start = CursorSupport.startAfter(
+            all, cursor, WebhookSubscription::getSubscriptionId);
+        for (int i = start; i < all.size(); i++) {
+            WebhookSubscription sub = all.get(i);
             results.add(sub);
             if (results.size() >= limit) break;
         }
@@ -694,10 +740,20 @@ public class WebhookRepository {
     private WebhookSubscription tryHydrate(Jedis jedis, String id) {
         try {
             String data = jedis.get("webhook:" + id);
-            if (data == null) return null;
-            return objectMapper.readValue(data, WebhookSubscription.class);
+            return tryHydrate(id, data);
         } catch (Exception e) {
             LOG.warn("Failed to parse webhook subscription row: subscription_id={}", LogSanitizer.safe(id), e);
+            return null;
+        }
+    }
+
+    private WebhookSubscription tryHydrate(String id, String data) {
+        if (data == null) return null;
+        try {
+            return objectMapper.readValue(data, WebhookSubscription.class);
+        } catch (Exception e) {
+            LOG.warn("Failed to parse webhook subscription row: subscription_id={}",
+                LogSanitizer.safe(id), e);
             return null;
         }
     }

@@ -1,5 +1,8 @@
 package io.runcycles.admin.api.config;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.api.service.AuditFailureService;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
@@ -11,9 +14,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.util.ReflectionTestUtils;
+import jakarta.servlet.http.HttpServletRequest;
 
 import java.util.List;
 
@@ -1050,6 +1055,54 @@ class AuthInterceptorTest {
     }
 
     @Test
+    void preHandle_uniqueSourceFlood_keepsFailureTrackerBounded() throws Exception {
+        ReflectionTestUtils.setField(interceptor, "authFailureRateLimitEnabled", true);
+        ReflectionTestUtils.setField(interceptor, "authFailureRateLimitMaxPerMinute", 10);
+        ReflectionTestUtils.setField(interceptor, "authFailureRateLimitMaxTrackedSources", 2);
+
+        for (int i = 1; i <= 3; i++) {
+            MockHttpServletRequest failedRequest = new MockHttpServletRequest();
+            failedRequest.setMethod("POST");
+            failedRequest.setRequestURI("/v1/admin/tenants");
+            failedRequest.setRemoteAddr("192.0.2." + i);
+
+            assertThat(interceptor.preHandle(
+                failedRequest, new MockHttpServletResponse(), new Object())).isFalse();
+        }
+
+        assertThat(interceptor.trackedAuthFailureSourceCount()).isLessThanOrEqualTo(2);
+    }
+
+    @Test
+    void preHandle_uniqueSourceFlood_warnsOnlyOncePerWindow() throws Exception {
+        ReflectionTestUtils.setField(interceptor, "authFailureRateLimitEnabled", true);
+        ReflectionTestUtils.setField(interceptor, "authFailureRateLimitMaxPerMinute", 10);
+        ReflectionTestUtils.setField(interceptor, "authFailureRateLimitMaxTrackedSources", 1);
+        Logger logger = (Logger) LoggerFactory.getLogger(AuthInterceptor.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            for (int i = 1; i <= 3; i++) {
+                MockHttpServletRequest failedRequest = new MockHttpServletRequest();
+                failedRequest.setMethod("POST");
+                failedRequest.setRequestURI("/v1/admin/tenants");
+                failedRequest.setRemoteAddr("198.51.100." + i);
+                interceptor.preHandle(
+                    failedRequest, new MockHttpServletResponse(), new Object());
+            }
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        assertThat(appender.list.stream()
+            .filter(event -> event.getFormattedMessage().contains(
+                "tracked-source cap exceeded")))
+            .hasSize(1);
+    }
+
+    @Test
     void preHandle_adminKeyValid_noFailureAuditWritten() throws Exception {
         // Single-write invariant sanity check — success paths never trigger
         // a failure-side write. Controllers do their own (richer) success
@@ -1061,5 +1114,50 @@ class AuthInterceptorTest {
         interceptor.preHandle(request, response, new Object());
 
         verify(auditFailure, never()).logFailure(any(), anyInt(), any(), anyString(), any());
+    }
+
+    @Test
+    void dualAuthFallsBackToRequestUriWhenServletPathIsNull() throws Exception {
+        HttpServletRequest servletRequest = mock(HttpServletRequest.class);
+        when(servletRequest.getMethod()).thenReturn("GET");
+        when(servletRequest.getRequestURI()).thenReturn("/v1/admin/budgets");
+        when(servletRequest.getServletPath()).thenReturn(null);
+        lenient().when(servletRequest.getHeader("X-Admin-API-Key")).thenReturn(null);
+        when(servletRequest.getHeader("X-Cycles-API-Key")).thenReturn("tenant-secret");
+        when(apiKeyRepository.validate("tenant-secret")).thenReturn(ApiKeyValidationResponse.builder()
+            .valid(true).tenantId("tenant-1").keyId("key-1")
+            .permissions(List.of("budgets:read")).build());
+
+        assertThat(interceptor.preHandle(servletRequest, response, new Object())).isTrue();
+        verify(servletRequest).setAttribute("authenticated_tenant_id", "tenant-1");
+    }
+
+    @Test
+    void authFailureLimiterHandlesNullRequestsDisabledLimitsAndStatusClasses() {
+        ReflectionTestUtils.setField(interceptor, "authFailureRateLimitEnabled", true);
+        ReflectionTestUtils.setField(interceptor, "authFailureRateLimitMaxPerMinute", 0);
+        assertThat((Boolean) ReflectionTestUtils.invokeMethod(
+            interceptor, "shouldThrottleAuthFailure", (Object) null, 401)).isFalse();
+
+        ReflectionTestUtils.setField(interceptor, "authFailureRateLimitMaxPerMinute", 1);
+        assertThat((Boolean) ReflectionTestUtils.invokeMethod(
+            interceptor, "shouldThrottleAuthFailure", (Object) null, 400)).isFalse();
+        assertThat((Boolean) ReflectionTestUtils.invokeMethod(
+            interceptor, "shouldThrottleAuthFailure", (Object) null, 403)).isFalse();
+        assertThat((Boolean) ReflectionTestUtils.invokeMethod(
+            interceptor, "shouldThrottleAuthFailure", (Object) null, 403)).isTrue();
+
+        assertThat((String) ReflectionTestUtils.invokeMethod(
+            interceptor, "authFailurePathClass", " ")).isEqualTo("unknown");
+        assertThat((String) ReflectionTestUtils.invokeMethod(
+            interceptor, "authFailurePathClass", "/v1/auth/introspect")).isEqualTo("auth");
+        assertThat((String) ReflectionTestUtils.invokeMethod(
+            interceptor, "authFailurePathClass", "/v1/balances")).isEqualTo("tenant");
+    }
+
+    @Test
+    void bareAdminPrefixDoesNotCountAsResourceId() {
+        assertThat((Boolean) ReflectionTestUtils.invokeMethod(interceptor,
+            "matchesAdminPrefix", "PATCH", "/v1/admin/policies/")).isFalse();
     }
 }

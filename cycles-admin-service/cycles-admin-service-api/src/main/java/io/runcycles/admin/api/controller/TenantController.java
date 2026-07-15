@@ -24,6 +24,7 @@ import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.api.service.BulkActionAuditMetadataBuilder;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.api.service.TenantCloseCascadeService;
+import io.runcycles.admin.api.support.PageSlice;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -53,6 +54,7 @@ public class TenantController {
     // "tenants-bulk" partitions this store from any other future caller
     // so admin-supplied keys cannot collide across endpoints.
     private static final int BULK_ACTION_LIMIT = 500;
+    private static final String CASCADE_STATUS_HEADER = "X-Cycles-Cascade-Status";
     private static final String BULK_IDEMPOTENCY_ENDPOINT = "tenants-bulk";
 
     @Autowired private TenantRepository repository;
@@ -98,11 +100,14 @@ public class TenantController {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         SortSpec sortSpec = parseSortSpec(sort_by, sort_dir);
         String searchNorm = parseSearch(search);
-        var tenants = repository.list(status, parent_tenant_id, searchNorm, cursor, effectiveLimit, sortSpec);
+        var page = PageSlice.from(
+            repository.list(status, parent_tenant_id, searchNorm, cursor, effectiveLimit + 1, sortSpec),
+            effectiveLimit);
+        var tenants = page.items();
         TenantListResponse response = TenantListResponse.builder()
             .tenants(tenants)
-            .hasMore(tenants.size() >= effectiveLimit)
-            .nextCursor(tenants.size() >= effectiveLimit ? tenants.get(tenants.size() - 1).getTenantId() : null)
+            .hasMore(page.hasMore())
+            .nextCursor(page.hasMore() ? tenants.get(tenants.size() - 1).getTenantId() : null)
             .build();
         return ResponseEntity.ok(response);
     }
@@ -125,50 +130,65 @@ public class TenantController {
         // already-CLOSED tenant is a tenant-level no-op but picks up any
         // children left non-terminal by a prior partial failure. This is
         // how this server satisfies spec v0.1.25.31 Rule 1(c)
-        // bounded-convergence for Mode B — operator-issued re-close is the
-        // documented recovery path in OPERATIONS.md.
-        boolean isFreshClose = false;
+         // bounded-convergence for Mode B. The scheduled reconciler retries
+         // automatically; an operator-issued re-close remains an immediate
+         // recovery option.
         boolean isCloseRequest = request.getStatus() == TenantStatus.CLOSED;
+        String cascadeCorrelationId = isCloseRequest
+            ? TenantCloseCascadeService.correlationIdFor(tenantId, httpRequest) : null;
         if (isCloseRequest) {
-            Tenant prior = repository.get(tenantId);
-            isFreshClose = prior.getStatus() != TenantStatus.CLOSED;
+            // Do not create durable work for a nonexistent tenant. The
+            // reconciler also cleans a tenant deleted in the narrow race after
+            // this read, but the common 404 path should leave no queue debris.
+            repository.get(tenantId);
+            // Durable retry intent is written before the Mode-B status flip so
+            // a process stop between the flip and child fan-out cannot strand
+            // the tenant without reconciliation work.
+            tenantCloseCascadeService.prepare(
+                tenantId, httpRequest, cascadeCorrelationId);
         }
         Tenant updated = repository.update(tenantId, request);
         TenantCloseCascadeService.CascadeResult cascadeResult = null;
-        String cascadeCorrelationId = null;
         if (isCloseRequest) {
-            cascadeCorrelationId = TenantCloseCascadeService.correlationIdFor(tenantId, httpRequest);
-            cascadeResult = tenantCloseCascadeService.cascade(tenantId, httpRequest);
+            cascadeResult = runCloseCascade(tenantId, httpRequest);
         }
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
             .resourceType("tenant").resourceId(tenantId)
             .operation("updateTenant")
-            .status(200)
+            .status(cascadeResult != null && !cascadeResult.complete()
+                && !cascadeResult.inProgress() ? 500 : 200)
             .metadata(enrichWithCascade(buildUpdateTenantMeta(request), cascadeResult))
             .build());
-        EventType eventType = tenantUpdateEventType(request, isFreshClose);
-        try {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> eventData = objectMapper.convertValue(EventDataTenantLifecycle.builder()
-                .tenantId(tenantId)
-                .newStatus(updated.getStatus())
-                .changedFields(List.of()).build(), Map.class);
-            if (cascadeResult != null) {
-                eventData.put("cascade", cascadeSummaryMap(cascadeResult));
+        if (!isCloseRequest) {
+            EventType eventType = tenantUpdateEventType(request, false);
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> eventData = objectMapper.convertValue(EventDataTenantLifecycle.builder()
+                    .tenantId(tenantId)
+                    .newStatus(updated.getStatus())
+                    .changedFields(List.of()).build(), Map.class);
+                eventService.emit(eventType, tenantId, null, "cycles-admin",
+                    Actor.builder().type(ActorType.ADMIN).build(),
+                    eventData, null,
+                    httpRequest.getAttribute("requestId") != null
+                        ? httpRequest.getAttribute("requestId").toString() : null);
+            } catch (Exception e) {
+                logEventEmissionFailure(eventType, tenantId, null, httpRequest, e);
             }
-            // TODO actor-parity: hardcoded ADMIN with no keyId. Bulk path (emitBulkTenantEvent)
-            // populates keyId from authenticated_key_id; single-op here does not. Aligning
-            // would change event wire shape, so deferred — tracked as hygiene follow-up.
-            eventService.emit(eventType, tenantId, null, "cycles-admin",
-                Actor.builder().type(ActorType.ADMIN).build(),
-                eventData,
-                cascadeCorrelationId,
-                httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
-        } catch (Exception e) {
-            logEventEmissionFailure(eventType, tenantId, cascadeCorrelationId, httpRequest, e);
         }
-        return ResponseEntity.ok(updated);
+        if (cascadeResult != null && !cascadeResult.complete()
+                && !cascadeResult.inProgress()) {
+            throw new GovernanceException(ErrorCode.INTERNAL_ERROR,
+                "Tenant closed, but one or more owned resources did not reach terminal state",
+                500, Map.of("failed_resources", cascadeResult.failedResources()));
+        }
+        ResponseEntity.BodyBuilder response = ResponseEntity.ok();
+        if (cascadeResult != null && cascadeResult.inProgress()) {
+            response.header(CASCADE_STATUS_HEADER, "in_progress")
+                .header("Retry-After", "1");
+        }
+        return response.body(updated);
     }
 
     private static Map<String, Object> enrichWithCascade(Map<String, Object> meta,
@@ -186,7 +206,32 @@ public class TenantController {
         m.put("webhooks_disabled", r.webhooksDisabled());
         m.put("api_keys_revoked", r.apiKeysRevoked());
         m.put("reservations_released", r.reservationsReleased());
+        m.put("in_progress", r.inProgress());
+        m.put("failures_count", r.failedResources().size());
+        if (!r.failedResources().isEmpty()) {
+            m.put("failed_resources", r.failedResources());
+        }
         return m;
+    }
+
+    /**
+     * Preserve parent-level visibility when the cascade orchestration itself
+     * throws before it can return per-row outcomes. The tenant status is
+     * already committed at this point (Mode B), so callers must observe a
+     * failed cascade rather than losing the parent audit/event entirely.
+     */
+    private TenantCloseCascadeService.CascadeResult runCloseCascade(
+            String tenantId, HttpServletRequest httpRequest) {
+        try {
+            return tenantCloseCascadeService.cascade(tenantId, httpRequest);
+        } catch (Exception e) {
+            LOG.error("Tenant-close cascade orchestration failed after tenant flip: tenant_id={} request_id={} trace_id={} exception_class={}",
+                safe(tenantId), attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
+                attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE),
+                e.getClass().getSimpleName(), e);
+            return new TenantCloseCascadeService.CascadeResult(
+                0, 0, 0, 0L, List.of("cascade:*:" + e.getClass().getSimpleName()));
+        }
     }
 
     private Map<String, Object> buildUpdateTenantMeta(TenantUpdateRequest request) {
@@ -262,47 +307,48 @@ public class TenantController {
     public ResponseEntity<TenantBulkActionResponse> bulkAction(
             @Valid @RequestBody TenantBulkActionRequest request, HttpServletRequest httpRequest) {
         long startNanos = System.nanoTime();
-        if (request.getFilter() == null || request.getFilter().isEmpty()) {
+        if (request.getFilter().isEmpty()) {
             throw new GovernanceException(ErrorCode.INVALID_REQUEST,
                 "filter must contain at least one property", 400);
         }
         String searchNorm = parseSearch(request.getFilter().getSearch());
+        request.getFilter().setSearch(searchNorm);
 
-        // Idempotency short-circuit: a cached envelope under the same
-        // idempotency_key is returned verbatim. Cache miss falls through to
-        // the apply path; success is re-cached at the end with 15-min TTL.
-        var cached = idempotencyStore.lookup(
-            BULK_IDEMPOTENCY_ENDPOINT, request.getIdempotencyKey(),
-            TenantBulkActionResponse.class);
-        if (cached.isPresent()) {
-            return ResponseEntity.ok(cached.get());
+        IdempotencyStore.Claim<TenantBulkActionResponse> idempotencyClaim =
+            idempotencyStore.begin(BULK_IDEMPOTENCY_ENDPOINT,
+                request.getIdempotencyKey(), request, TenantBulkActionResponse.class);
+        if (idempotencyClaim.isReplay()) {
+            return ResponseEntity.ok(idempotencyClaim.replayResponse());
         }
-
-        // Fetch up to cap+1 so size > cap is detectable without hydrating
-        // the remainder. The +1 is the "this filter is too wide" sentinel.
-        List<Tenant> matched = repository.matchForBulk(
-            request.getFilter().getStatus(),
-            request.getFilter().getParentTenantId(),
-            searchNorm,
-            BULK_ACTION_LIMIT);
-        if (matched.size() > BULK_ACTION_LIMIT) {
-            throw new GovernanceException(ErrorCode.LIMIT_EXCEEDED,
-                "filter matches more than " + BULK_ACTION_LIMIT
-                    + " tenants; narrow the filter and retry",
-                400,
-                Map.of("total_matched", matched.size()));
-        }
-        if (request.getExpectedCount() != null && request.getExpectedCount() != matched.size()) {
-            throw new GovernanceException(ErrorCode.COUNT_MISMATCH,
-                "expected_count " + request.getExpectedCount()
-                    + " differs from server-counted matches " + matched.size(),
-                409,
-                Map.of("total_matched", matched.size()));
+        List<Tenant> matched;
+        try {
+            matched = repository.matchForBulk(request.getFilter().getStatus(),
+                request.getFilter().getParentTenantId(), searchNorm, BULK_ACTION_LIMIT);
+            if (matched.size() > BULK_ACTION_LIMIT) {
+                int totalMatched = Math.max(matched.size(), repository.countForBulk(
+                    request.getFilter().getStatus(),
+                    request.getFilter().getParentTenantId(), searchNorm));
+                throw new GovernanceException(ErrorCode.LIMIT_EXCEEDED,
+                    "filter matches more than " + BULK_ACTION_LIMIT
+                        + " tenants; narrow the filter and retry",
+                    400, Map.of("total_matched", totalMatched));
+            }
+            if (request.getExpectedCount() != null
+                    && request.getExpectedCount() != matched.size()) {
+                throw new GovernanceException(ErrorCode.COUNT_MISMATCH,
+                    "expected_count " + request.getExpectedCount()
+                        + " differs from server-counted matches " + matched.size(),
+                    409, Map.of("total_matched", matched.size()));
+            }
+        } catch (RuntimeException e) {
+            idempotencyStore.abandon(idempotencyClaim);
+            throw e;
         }
 
         List<BulkActionRowOutcome> succeeded = new ArrayList<>();
         List<BulkActionRowOutcome> failed = new ArrayList<>();
         List<BulkActionRowOutcome> skipped = new ArrayList<>();
+        List<String> cascadeInProgress = new ArrayList<>();
         TenantStatus target = targetStatus(request.getAction());
         // Per-invocation correlation_id for every per-row Event emitted below.
         // Spec v0.1.25.32: parent tenant event stamped here; the cascade fan-out
@@ -315,7 +361,7 @@ public class TenantController {
             + (requestId != null ? requestId : "no-req");
         for (Tenant t : matched) {
             applyTenantAction(t, request.getAction(), target, succeeded, failed, skipped,
-                httpRequest, correlationId, requestId);
+                cascadeInProgress, httpRequest, correlationId, requestId);
         }
 
         TenantBulkActionResponse response = TenantBulkActionResponse.builder()
@@ -327,27 +373,34 @@ public class TenantController {
             .idempotencyKey(request.getIdempotencyKey())
             .build();
 
-        idempotencyStore.store(BULK_IDEMPOTENCY_ENDPOINT, request.getIdempotencyKey(), response);
+        idempotencyStore.complete(idempotencyClaim, response);
 
         Map<String, Object> auditMeta = BulkActionAuditMetadataBuilder.build(
             request.getAction().name(), matched.size(),
             succeeded, failed, skipped,
             request.getIdempotencyKey(), request.getFilter(), startNanos);
+        if (!cascadeInProgress.isEmpty()) {
+            auditMeta.put("cascade_in_progress_ids", List.copyOf(cascadeInProgress));
+        }
         auditRepository.log(buildAuditEntry(httpRequest)
             .resourceType("tenant").resourceId("bulk-action")
             .operation("bulkActionTenants").status(200)
             .metadata(auditMeta)
             .build());
-        return ResponseEntity.ok(response);
+        ResponseEntity.BodyBuilder responseBuilder = ResponseEntity.ok();
+        if (!cascadeInProgress.isEmpty()) {
+            responseBuilder.header(CASCADE_STATUS_HEADER, "in_progress")
+                .header("Retry-After", "1");
+        }
+        return responseBuilder.body(response);
     }
 
     private static TenantStatus targetStatus(TenantBulkAction action) {
-        switch (action) {
-            case SUSPEND: return TenantStatus.SUSPENDED;
-            case REACTIVATE: return TenantStatus.ACTIVE;
-            case CLOSE: return TenantStatus.CLOSED;
-            default: throw new IllegalStateException("Unreachable action: " + action);
-        }
+        return switch (action) {
+            case SUSPEND -> TenantStatus.SUSPENDED;
+            case REACTIVATE -> TenantStatus.ACTIVE;
+            case CLOSE -> TenantStatus.CLOSED;
+        };
     }
 
     /**
@@ -360,6 +413,7 @@ public class TenantController {
                                     List<BulkActionRowOutcome> succeeded,
                                     List<BulkActionRowOutcome> failed,
                                     List<BulkActionRowOutcome> skipped,
+                                    List<String> cascadeInProgress,
                                     HttpServletRequest httpRequest,
                                     String correlationId,
                                     String requestId) {
@@ -382,32 +436,50 @@ public class TenantController {
                     .message("Cannot transition from CLOSED").build());
                 return;
             }
+            if (action == TenantBulkAction.CLOSE) {
+                tenantCloseCascadeService.prepare(id, httpRequest, correlationId);
+            }
             // Spec v0.1.25.29 Rule 1 + v0.1.25.31 Rule 1(c): flip the tenant
             // to CLOSED FIRST, then cascade. Flipping first activates Rule 2's
             // mutation guard so races during cascade can't resurrect a
-            // just-terminated child. Cascade failure propagates to the catch
-            // below, which buckets this row as failed; the tenant is already
-            // CLOSED and a retry against the same row picks up any remaining
-            // non-terminal children (cascade is idempotent). Skip the
-            // redundant repo.update when the tenant is already in target
-            // state (retry path).
-            //
-            // HAZARD (mirrors single-op updateTenant, lines 134-183): if
-            // cascade throws after the flip, the tenant is CLOSED on disk
-            // but NO parent `tenant.closed` Event is emitted for this row
-            // (emit happens after cascade returns, line 428). The row
-            // surfaces in `failed[]` so operators see the cascade failure;
-            // the documented recovery is re-issuing CLOSE (cascade is
-            // idempotent; retry converges). The flip-first ordering is
-            // spec-mandated by Rule 2 and cannot be reversed to avoid this.
-            if (current != target) {
+            // just-terminated child. Cascade failure is converted to a
+            // visible row failure. The durable parent-event outbox item remains
+            // ordered behind child items and is emitted when reconciliation
+            // completes, even if this invocation reports the row incomplete.
+            // The tenant is already CLOSED and a retry picks up any remaining
+            // non-terminal children (cascade is idempotent). An already-CLOSED
+            // row still passes through the repository's atomic durability
+            // check so a rolling-upgrade row can backfill a missing parent
+            // tenant.closed outbox obligation before convergence.
+            if (current != target || action == TenantBulkAction.CLOSE) {
                 TenantUpdateRequest update = new TenantUpdateRequest();
                 update.setStatus(target);
                 repository.update(id, update);
             }
             TenantCloseCascadeService.CascadeResult cascadeResult = null;
             if (action == TenantBulkAction.CLOSE) {
-                cascadeResult = tenantCloseCascadeService.cascade(id, httpRequest);
+                cascadeResult = runCloseCascade(id, httpRequest);
+                if (cascadeResult.inProgress()) {
+                    cascadeInProgress.add(id);
+                    if (current == target) {
+                        skipped.add(BulkActionRowOutcome.builder()
+                            .id(id).reason("CASCADE_IN_PROGRESS").build());
+                    } else {
+                        // The parent transition committed and another healthy
+                        // worker owns the durable child cascade.
+                        succeeded.add(BulkActionRowOutcome.builder().id(id).build());
+                    }
+                    return;
+                }
+                if (!cascadeResult.complete()) {
+                    failed.add(BulkActionRowOutcome.builder()
+                        .id(id)
+                        .errorCode(ErrorCode.INTERNAL_ERROR.name())
+                        .message("Cascade incomplete for "
+                            + cascadeResult.failedResources().size() + " owned resource(s)")
+                        .build());
+                    return;
+                }
                 if (current == target
                         && cascadeResult.budgetsClosed() == 0
                         && cascadeResult.webhooksDisabled() == 0
@@ -421,8 +493,10 @@ public class TenantController {
                 }
             }
             succeeded.add(BulkActionRowOutcome.builder().id(id).build());
-            emitBulkTenantEvent(id, action, cascadeResult, httpRequest,
-                correlationId, requestId);
+            if (action != TenantBulkAction.CLOSE) {
+                emitBulkTenantEvent(id, action, cascadeResult, httpRequest,
+                    correlationId, requestId);
+            }
         } catch (GovernanceException e) {
             failed.add(BulkActionRowOutcome.builder()
                 .id(id)
@@ -445,7 +519,8 @@ public class TenantController {
      * TENANT_REACTIVATED, CLOSE → TENANT_CLOSED). The cascade fan-out events
      * (action=CLOSE) retain their own {@code tenant_close_cascade:...}
      * correlation_id and are emitted separately by {@link TenantCloseCascadeService}.
-     * Skipped and failed rows never reach this method.
+     * Skipped and failed non-close rows never reach this method. CLOSE events
+     * are emitted by the durable cascade outbox after child work drains.
      */
     private void emitBulkTenantEvent(String tenantId, TenantBulkAction action,
                                       TenantCloseCascadeService.CascadeResult cascadeResult,
@@ -460,9 +535,6 @@ public class TenantController {
                     .tenantId(tenantId)
                     .newStatus(newStatus)
                     .changedFields(List.of()).build(), Map.class);
-            if (cascadeResult != null) {
-                eventData.put("cascade", cascadeSummaryMap(cascadeResult));
-            }
             // TODO actor-parity: hardcoded ADMIN; bulk endpoint is AdminKeyAuth-gated today
             // so the attribution is correct. If auth is ever broadened (admin-on-behalf-of),
             // mirror the BudgetController#emitBulkFundEvent dual-auth conditional here.
@@ -480,25 +552,24 @@ public class TenantController {
         if (request.getStatus() == null) {
             return EventType.TENANT_UPDATED;
         }
-        switch (request.getStatus()) {
-            case SUSPENDED: return EventType.TENANT_SUSPENDED;
-            case ACTIVE: return EventType.TENANT_REACTIVATED;
-            case CLOSED:
+        return switch (request.getStatus()) {
+            case SUSPENDED -> EventType.TENANT_SUSPENDED;
+            case ACTIVE -> EventType.TENANT_REACTIVATED;
+            case CLOSED -> {
                 // Rule 1(c) convergence: emit TENANT_CLOSED only on the
                 // freshwire transition. Retry PATCHes still run cascade but
                 // fall through to TENANT_UPDATED at the parent level.
-                return isFreshClose ? EventType.TENANT_CLOSED : EventType.TENANT_UPDATED;
-            default: return EventType.TENANT_UPDATED;
-        }
+                yield isFreshClose ? EventType.TENANT_CLOSED : EventType.TENANT_UPDATED;
+            }
+        };
     }
 
     private static EventType eventTypeForTenantAction(TenantBulkAction action) {
-        switch (action) {
-            case SUSPEND: return EventType.TENANT_SUSPENDED;
-            case REACTIVATE: return EventType.TENANT_REACTIVATED;
-            case CLOSE: return EventType.TENANT_CLOSED;
-            default: throw new IllegalStateException("Unreachable action: " + action);
-        }
+        return switch (action) {
+            case SUSPEND -> EventType.TENANT_SUSPENDED;
+            case REACTIVATE -> EventType.TENANT_REACTIVATED;
+            case CLOSE -> EventType.TENANT_CLOSED;
+        };
     }
 
     private void logEventEmissionFailure(EventType eventType, String tenantId, String correlationId,

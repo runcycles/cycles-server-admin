@@ -101,6 +101,17 @@ public class WebhookDispatchService {
      * Non-blocking: failures logged but don't propagate.
      */
     public void dispatch(Event event) {
+        dispatchWithSummary(event);
+    }
+
+    /**
+     * Dispatch variant used by required event emission so persistence metrics
+     * can distinguish a stored event whose delivery enqueue partially failed.
+     */
+    public DispatchSummary dispatchWithSummary(Event event) {
+        int queued = 0;
+        int skipped = 0;
+        int failed = 0;
         try {
             List<WebhookSubscription> subs = webhookRepository.findMatchingSubscriptions(
                 event.getTenantId(), event.getEventType(), event.getScope());
@@ -111,23 +122,26 @@ public class WebhookDispatchService {
                 // as there is on the replay path).
                 if (isBlockedByOwnershipBoundary(event, sub)) {
                     recordDispatch("boundary_skipped");
+                    skipped++;
                     continue;
                 }
                 try {
-                    boolean enqueued = createDelivery(event, sub);
+                    boolean enqueued = createDelivery(event, sub, true);
                     recordDispatch(enqueued ? "queued" : "failure");
+                    if (enqueued) queued++; else failed++;
                 } catch (Exception e) {
                     LOG.error("Failed to create webhook delivery: event_id={} event_type={} tenant_id={} scope={} subscription_id={} correlation_id={} request_id={} trace_id={} error={}",
-                            safe(event != null ? event.getEventId() : null),
-                            event != null && event.getEventType() != null ? event.getEventType().getValue() : null,
-                            safe(event != null ? event.getTenantId() : null),
-                            safe(event != null ? event.getScope() : null),
-                            safe(sub != null ? sub.getSubscriptionId() : null),
-                            safe(event != null ? event.getCorrelationId() : null),
-                            safe(event != null ? event.getRequestId() : null),
-                            safe(event != null ? event.getTraceId() : null),
+                            safe(event.getEventId()),
+                            event.getEventType() != null ? event.getEventType().getValue() : null,
+                            safe(event.getTenantId()),
+                            safe(event.getScope()),
+                            safe(sub.getSubscriptionId()),
+                            safe(event.getCorrelationId()),
+                            safe(event.getRequestId()),
+                            safe(event.getTraceId()),
                             safe(e.getMessage()), e);
                     recordDispatch("failure");
+                    failed++;
                 }
             }
         } catch (Exception e) {
@@ -141,7 +155,13 @@ public class WebhookDispatchService {
                     safe(event != null ? event.getTraceId() : null),
                     safe(e.getMessage()), e);
             recordDispatch("failure");
+            failed++;
         }
+        return new DispatchSummary(queued, skipped, failed);
+    }
+
+    public record DispatchSummary(int queued, int skipped, int failed) {
+        public boolean hasFailures() { return failed > 0; }
     }
 
     private void recordDispatch(String result) {
@@ -222,7 +242,8 @@ public class WebhookDispatchService {
             return DispatchOutcome.INACTIVE;
         }
         // ENQUEUED only if the delivery was actually enqueued; else ENQUEUE_FAILED.
-        return createDelivery(event, sub) ? DispatchOutcome.ENQUEUED : DispatchOutcome.ENQUEUE_FAILED;
+        return createDelivery(event, sub, false)
+            ? DispatchOutcome.ENQUEUED : DispatchOutcome.ENQUEUE_FAILED;
     }
 
     /**
@@ -232,10 +253,14 @@ public class WebhookDispatchService {
      * {@code false} so callers (replay counting, dispatch metrics) don't
      * over-report a delivery the worker will never pick up.
      */
-    private boolean createDelivery(Event event, WebhookSubscription sub) {
+    private boolean createDelivery(Event event, WebhookSubscription sub,
+                                   boolean idempotent) {
         TraceSnapshot trace = currentTraceSnapshot(event);
+        String deliveryId = idempotent && event.getEventId() != null
+            ? deterministicDeliveryId(event.getEventId(), sub.getSubscriptionId())
+            : "del_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         WebhookDelivery delivery = WebhookDelivery.builder()
-            .deliveryId("del_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16))
+            .deliveryId(deliveryId)
             .subscriptionId(sub.getSubscriptionId())
             .eventId(event.getEventId())
             .eventType(event.getEventType())
@@ -246,6 +271,10 @@ public class WebhookDispatchService {
             .traceFlags(trace.traceFlags)
             .traceparentInboundValid(trace.traceparentInboundValid)
             .build();
+        if (idempotent) {
+            deliveryRepository.saveAndEnqueueOnce(delivery, "dispatch:pending");
+            return true;
+        }
         deliveryRepository.save(delivery);
         // Enqueue for cycles-server-events to pick up via BRPOP
         try (Jedis jedis = jedisPool.getResource()) {
@@ -259,6 +288,12 @@ public class WebhookDispatchService {
                     safe(delivery.getTraceId()), safe(e.getMessage()), e);
             return false;
         }
+    }
+
+    private static String deterministicDeliveryId(String eventId, String subscriptionId) {
+        UUID uuid = UUID.nameUUIDFromBytes(
+            (eventId + "|" + subscriptionId).getBytes(StandardCharsets.UTF_8));
+        return "del_" + uuid.toString().replace("-", "").substring(0, 16);
     }
 
     /**

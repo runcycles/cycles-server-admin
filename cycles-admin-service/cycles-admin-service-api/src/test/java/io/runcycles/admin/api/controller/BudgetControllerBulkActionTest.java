@@ -24,6 +24,7 @@ import io.runcycles.admin.model.shared.Amount;
 import io.runcycles.admin.model.shared.BulkActionRowOutcome;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.UnitEnum;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -72,6 +73,13 @@ class BudgetControllerBulkActionTest {
     private static final String TENANT = "acme";
     private static final String BULK_NS = "budgets-bulk";
 
+    @BeforeEach
+    void defaultBulkIdempotencyOwner() {
+        lenient().doAnswer(invocation -> new IdempotencyStore.Claim<>(
+                invocation.getArgument(0), invocation.getArgument(1), "test-owner", null))
+            .when(idempotencyStore).begin(anyString(), anyString(), any(), any());
+    }
+
     private static BudgetLedger ledger(String scope, long allocated, long spent, Long debt) {
         BudgetLedger.BudgetLedgerBuilder b = BudgetLedger.builder()
                 .ledgerId("led-" + scope).tenantId(TENANT)
@@ -112,6 +120,10 @@ class BudgetControllerBulkActionTest {
     @Test
     void bulkAction_credit_happyPath_returns200_withSucceededRow() throws Exception {
         noReplay();
+        IdempotencyStore.Claim<BudgetBulkActionResponse> claim =
+            new IdempotencyStore.Claim<>(BULK_NS, "k1", "owner-1", null);
+        when(idempotencyStore.begin(eq(BULK_NS), eq("k1"), any(),
+                eq(BudgetBulkActionResponse.class))).thenReturn(claim);
         when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
                 .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
 
@@ -136,7 +148,8 @@ class BudgetControllerBulkActionTest {
         assertEquals("k1:tenant:acme/workspace:eng:USD_MICROCENTS",
                 fundArg.getValue().getIdempotencyKey());
         assertEquals(FundingOperation.CREDIT, fundArg.getValue().getOperation());
-        verify(idempotencyStore).store(eq(BULK_NS), eq("k1"), any(BudgetBulkActionResponse.class));
+        verify(idempotencyStore).complete(eq(claim), any(BudgetBulkActionResponse.class));
+        verify(idempotencyStore, never()).store(anyString(), anyString(), any());
     }
 
     @Test
@@ -388,6 +401,8 @@ class BudgetControllerBulkActionTest {
         for (int i = 0; i < 501; i++) oversized.add(ledger("tenant:acme/workspace:s" + i));
         when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
                 .thenReturn(oversized);
+        when(budgetRepository.countForBulk(eq(TENANT), any(BudgetListFilters.class)))
+                .thenReturn(1234);
 
         mockMvc.perform(post("/v1/admin/budgets/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -396,10 +411,12 @@ class BudgetControllerBulkActionTest {
                                 "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":500}")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("LIMIT_EXCEEDED"))
-                .andExpect(jsonPath("$.details.total_matched").value(501));
+                .andExpect(jsonPath("$.details.total_matched").value(1234));
 
         verify(budgetRepository, never()).fund(anyString(), anyString(), any(), any());
         verify(idempotencyStore, never()).store(anyString(), anyString(), any());
+        verify(budgetRepository).countForBulk(eq(TENANT), any(BudgetListFilters.class));
+        verify(idempotencyStore).abandon(any());
     }
 
     @Test
@@ -420,6 +437,7 @@ class BudgetControllerBulkActionTest {
 
         verify(budgetRepository, never()).fund(anyString(), anyString(), any(), any());
         verify(idempotencyStore, never()).store(anyString(), anyString(), any());
+        verify(idempotencyStore).abandon(any());
     }
 
     @Test
@@ -524,8 +542,9 @@ class BudgetControllerBulkActionTest {
                 .skipped(List.of())
                 .idempotencyKey("k1")
                 .build();
-        when(idempotencyStore.lookup(eq(BULK_NS), eq("k1"), eq(BudgetBulkActionResponse.class)))
-                .thenReturn(Optional.of(cached));
+        when(idempotencyStore.begin(eq(BULK_NS), eq("k1"), any(),
+                eq(BudgetBulkActionResponse.class)))
+            .thenReturn(new IdempotencyStore.Claim<>(BULK_NS, "k1", null, cached));
 
         mockMvc.perform(post("/v1/admin/budgets/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -622,6 +641,8 @@ class BudgetControllerBulkActionTest {
                 .newAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1500L))
                 .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1500L))
+                .previousDebt(new Amount(UnitEnum.USD_MICROCENTS, 0L))
+                .newDebt(new Amount(UnitEnum.USD_MICROCENTS, 0L))
                 .previousSpent(new Amount(UnitEnum.USD_MICROCENTS, 0L))
                 .newSpent(new Amount(UnitEnum.USD_MICROCENTS, 0L))
                 .build();
@@ -850,5 +871,69 @@ class BudgetControllerBulkActionTest {
                 .andExpect(jsonPath("$.succeeded.length()").value(0));
 
         verify(budgetRepository, never()).fund(anyString(), anyString(), any(), any());
+    }
+
+    @Test
+    void bulkActionRepayDebtWithNullDebtIsSkipped() throws Exception {
+        noReplay();
+        BudgetLedger ledger = BudgetLedger.builder().ledgerId("ledger-null-debt").tenantId(TENANT)
+            .scope("tenant:acme/workspace:eng").unit(UnitEnum.USD_MICROCENTS)
+            .status(BudgetStatus.ACTIVE).debt(null).build();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(), eq(500))).thenReturn(List.of(ledger));
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body(filter(""), "REPAY_DEBT", "k_null_debt",
+                    "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1}")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.skipped[0].reason").value("ALREADY_IN_TARGET_STATE"));
+    }
+
+    @Test
+    void bulkActionNullFundingStateStillEmitsCompleteLifecycleShape() throws Exception {
+        noReplay();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(), eq(500)))
+            .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+            .thenReturn(BudgetFundingResponse.builder().operation(FundingOperation.CREDIT).build());
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body(filter(""), "CREDIT", "k_null_state",
+                    "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1}")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.succeeded.length()").value(1));
+
+        verify(eventService).emit(eq(EventType.BUDGET_FUNDED), eq(TENANT), anyString(),
+            eq("cycles-admin"), any(), any(), anyString(), any());
+    }
+
+    @Test
+    void bulkActionExpectedCountEqualToMatchesProceeds() throws Exception {
+        noReplay();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(), eq(500)))
+            .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any())).thenReturn(fundResponse());
+        String request = body(filter(""), "CREDIT", "k_expected_equal",
+            "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1}");
+        request = request.substring(0, request.length() - 1) + ",\"expected_count\":1}";
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON).content(request))
+            .andExpect(status().isOk());
+    }
+
+    @Test
+    void bulkResetSpentWithoutOverrideMarksOverrideFalse() throws Exception {
+        noReplay();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(), eq(500)))
+            .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any())).thenReturn(fundResponse());
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body(filter(""), "RESET_SPENT", "k_no_override",
+                    "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1}")))
+            .andExpect(status().isOk());
     }
 }

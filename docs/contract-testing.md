@@ -4,7 +4,7 @@ Runtime validation of admin-server MockMvc responses against the authoritative O
 
 ## What it catches
 
-Any 2xx response whose body drifts from `cycles-governance-admin-v0.1.25.yaml` on `cycles-protocol@main` — missing required fields, extra fields (when `additionalProperties: false`), type mismatches, enum violations, `minLength`/`maxLength`/`minimum`/`maximum` constraint violations. Applies to every controller whose test imports `ContractValidationConfig`.
+Any 2xx response whose body drifts from the reviewed, commit-pinned `cycles-governance-admin-v0.1.25.yaml` — missing required fields, extra fields (when `additionalProperties: false`), type mismatches, enum violations, `minLength`/`maxLength`/`minimum`/`maximum` constraint violations. Applies to every controller whose test imports `ContractValidationConfig`.
 
 ## What it doesn't catch
 
@@ -16,7 +16,7 @@ Any 2xx response whose body drifts from `cycles-governance-admin-v0.1.25.yaml` o
 
 **Enabled by default as of v0.1.25.11.** Every controller test that imports `ContractValidationConfig` runs under contract validation unless explicitly disabled.
 
-Disable for offline / air-gapped dev (where the `cycles-protocol@main` fetch would fail):
+Disable for offline / air-gapped dev (where the pinned `cycles-protocol` fetch would fail):
 
 ```bash
 # System property
@@ -44,10 +44,14 @@ That's it. No per-test-method changes — the validator auto-applies to every `m
 
 ## Where the spec comes from
 
-`ContractSpecLoader.loadSpec()` fetches `https://raw.githubusercontent.com/runcycles/cycles-protocol/main/cycles-governance-admin-v0.1.25.yaml` on first use, caches to `target/contract/spec.yaml` with a 1-hour TTL.
+`ContractSpecLoader.loadSpec()` fetches the spec at cycles-protocol commit `469840bb2f41ce35650c89405ea12fc56e847c76` on first use and caches it under `target/contract/spec-<revision>.yaml` with a 1-hour TTL. Pinning makes PR results reproducible; use `-Dcontract.spec.url=...` while coordinating a spec upgrade, then advance the reviewed commit deliberately.
+
+The nightly `contract-drift` job compares that reviewed revision's admin YAML
+with `cycles-protocol/main`. It fails on upstream drift, forcing a deliberate
+spec review and pin advance without making ordinary CI depend on a moving branch.
 
 - **Local dev:** fetch once per hour. Fast iteration, light on network.
-- **CI:** fresh workspace = cache miss = always fetch. Catches cross-repo drift on every build.
+- **CI:** fresh workspace = cache miss = always fetch the reviewed revision. The pin is advanced deliberately when the protocol spec changes.
 - **Air-gapped / override:** `-Dcontract.spec.url=file:///path/to/local.yaml`
 
 Per-build cache lives under `target/`, cleaned by `mvn clean`.

@@ -1,6 +1,7 @@
 package io.runcycles.admin.data.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import org.junit.jupiter.api.*;
 import redis.clients.jedis.JedisPool;
@@ -35,6 +36,19 @@ class RedisConfigTest {
 
         assertThat(mapper).isNotNull();
         assertThat(mapper.isEnabled(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)).isFalse();
+        assertThat(mapper.isEnabled(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)).isTrue();
+    }
+
+    @Test
+    @DisplayName("redisObjectMapper() tolerates fields from newer rolling-deployment peers")
+    void redisObjectMapper_isTolerantWithoutWeakeningPrimaryMapper() throws Exception {
+        ObjectMapper primary = redisConfig.objectMapper();
+        ObjectMapper redis = redisConfig.redisObjectMapper();
+        String json = "{\"name\":\"row\",\"future_field\":true}";
+
+        assertThatThrownBy(() -> primary.readValue(json, MapperFixture.class))
+            .isInstanceOf(com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException.class);
+        assertThat(redis.readValue(json, MapperFixture.class).name).isEqualTo("row");
     }
 
     @Test
@@ -55,5 +69,27 @@ class RedisConfigTest {
 
         assertThat(pool).isNotNull();
         pool.close();
+    }
+
+    @Test
+    void jedisPool_nullPassword_createsPoolWithoutAuth() throws Exception {
+        setField("password", null);
+
+        try (JedisPool pool = redisConfig.jedisPool()) {
+            assertThat(pool).isNotNull();
+        }
+    }
+
+    @Test
+    void jedisPool_whitespacePassword_exercisesConfiguredButNonEmptyPath() throws Exception {
+        setField("password", " ");
+
+        try (JedisPool pool = redisConfig.jedisPool()) {
+            assertThat(pool).isNotNull();
+        }
+    }
+
+    public static class MapperFixture {
+        public String name;
     }
 }

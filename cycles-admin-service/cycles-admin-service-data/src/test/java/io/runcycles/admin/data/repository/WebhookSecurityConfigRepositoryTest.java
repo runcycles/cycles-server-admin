@@ -17,6 +17,7 @@ import redis.clients.jedis.JedisPool;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -81,5 +82,34 @@ class WebhookSecurityConfigRepositoryTest {
         repository.save(config);
 
         verify(jedis).set(eq("config:webhook-security"), argThat(json -> json.contains("10.0.0.0/8")));
+    }
+
+    @Test
+    void get_wrapsRedisFailures() {
+        when(jedis.get("config:webhook-security")).thenThrow(new RuntimeException("redis unavailable"));
+
+        assertThatThrownBy(repository::get)
+                .isInstanceOf(RuntimeException.class)
+                .hasMessage("Failed to read webhook security config")
+                .hasRootCauseMessage("redis unavailable");
+    }
+
+    @Test
+    void save_failureLogging_handlesNullConfigAndNullableCollections() {
+        doThrow(new RuntimeException("write failed")).when(jedis).set(eq("config:webhook-security"), anyString());
+
+        assertThatThrownBy(() -> repository.save(null))
+                .isInstanceOf(RuntimeException.class)
+                .hasRootCauseMessage("write failed");
+        assertThatThrownBy(() -> repository.save(WebhookSecurityConfig.builder()
+                .blockedCidrRanges(null).allowedUrlPatterns(null).build()))
+                .isInstanceOf(RuntimeException.class)
+                .hasRootCauseMessage("write failed");
+        assertThatThrownBy(() -> repository.save(WebhookSecurityConfig.builder()
+                .blockedCidrRanges(List.of("10.0.0.0/8"))
+                .allowedUrlPatterns(List.of("https://example.com/*"))
+                .build()))
+                .isInstanceOf(RuntimeException.class)
+                .hasRootCauseMessage("write failed");
     }
 }

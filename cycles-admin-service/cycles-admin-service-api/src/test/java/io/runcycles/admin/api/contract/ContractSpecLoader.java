@@ -12,8 +12,9 @@ import java.time.Duration;
 import java.time.Instant;
 
 /**
- * Loads the authoritative admin OpenAPI spec from cycles-protocol@main for
- * contract tests. Caches per-build to {@code target/contract/spec.yaml} so
+ * Loads the authoritative admin OpenAPI spec from a reviewed cycles-protocol
+ * commit for deterministic contract tests. Caches per-build to
+ * {@code target/contract/spec-&lt;revision&gt;.yaml} so
  * repeated test runs within the same build don't re-download.
  *
  * <p>Refresh policy: if the cached file exists and was written within the
@@ -26,10 +27,13 @@ import java.time.Instant;
  */
 public final class ContractSpecLoader {
 
+    public static final String SPEC_REVISION = "469840bb2f41ce35650c89405ea12fc56e847c76";
     public static final String DEFAULT_SPEC_URL =
-            "https://raw.githubusercontent.com/runcycles/cycles-protocol/main/cycles-governance-admin-v0.1.25.yaml";
+            "https://raw.githubusercontent.com/runcycles/cycles-protocol/" + SPEC_REVISION
+                + "/cycles-governance-admin-v0.1.25.yaml";
     public static final Duration CACHE_TTL = Duration.ofHours(1);
-    private static final Path CACHE_PATH = Path.of("target", "contract", "spec.yaml");
+    private static final Path CACHE_PATH = Path.of(
+        "target", "contract", "spec-" + SPEC_REVISION + ".yaml");
 
     private static String cached;
 

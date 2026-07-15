@@ -1,7 +1,10 @@
 package io.runcycles.admin.api.controller;
 
 import io.runcycles.admin.data.repository.ApiKeyRepository;
+import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.model.auth.ApiKeyValidationResponse;
+import io.runcycles.admin.model.auth.Capabilities;
+import io.runcycles.admin.model.auth.ApiKeyValidationRequest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -11,10 +14,12 @@ import io.runcycles.admin.api.contract.ContractValidationConfig;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.mock.web.MockHttpServletRequest;
 import redis.clients.jedis.JedisPool;
 
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -26,10 +31,37 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class AuthControllerTest {
 
     @Autowired private MockMvc mockMvc;
+    @Autowired private AuthController authController;
     @MockitoBean private ApiKeyRepository apiKeyRepository;
+    @MockitoBean private EventService eventService;
     @MockitoBean private JedisPool jedisPool;
 
     private static final String ADMIN_KEY = "test-admin-key";
+
+    @Test
+    void validate_invalidKey_withoutRequestId_emitsFailureEvent() {
+        when(apiKeyRepository.validate("bad-direct")).thenReturn(
+            ApiKeyValidationResponse.builder().valid(false).reason("KEY_NOT_FOUND").build());
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRemoteAddr("192.0.2.10");
+
+        authController.validate(
+            new ApiKeyValidationRequest("bad-direct"), request);
+
+        org.mockito.Mockito.verify(eventService).emit(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull());
+    }
+
+    @Test
+    void deriveTenantCapabilities_nullPermissions_deniesTenantPlaneCapabilities() {
+        Capabilities capabilities = AuthController.deriveTenantCapabilities(null);
+
+        assertThat(capabilities.isViewBudgets()).isFalse();
+        assertThat(capabilities.getManageReservations()).isFalse();
+    }
 
     @Test
     void validate_validKey_returns200WithValid() throws Exception {

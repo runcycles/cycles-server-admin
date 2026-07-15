@@ -1,0 +1,35 @@
+name: Nightly Contract Drift
+
+on:
+  schedule:
+    - cron: '30 5 * * *'
+  workflow_dispatch: {}
+
+permissions: read-all
+
+jobs:
+  contract-drift:
+    name: Pinned admin contract is current
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Compare reviewed pin with cycles-protocol main
+        shell: bash
+        run: |
+          set -euo pipefail
+          loader="cycles-admin-service/cycles-admin-service-api/src/test/java/io/runcycles/admin/api/contract/ContractSpecLoader.java"
+          revision="$(sed -n 's/.*SPEC_REVISION = "\([0-9a-f]\{40\}\)".*/\1/p' "$loader")"
+          test -n "$revision"
+          base="https://raw.githubusercontent.com/runcycles/cycles-protocol"
+          file="cycles-governance-admin-v0.1.25.yaml"
+          curl_args=(--fail --silent --show-error --location --retry 5 --retry-all-errors --retry-delay 2)
+          curl "${curl_args[@]}" "$base/$revision/$file" --output pinned.yaml
+          curl "${curl_args[@]}" "$base/main/$file" --output current.yaml
+          if ! cmp --silent pinned.yaml current.yaml; then
+            echo "::error::The authoritative admin contract changed after pinned revision $revision. Review the diff and advance ContractSpecLoader.SPEC_REVISION intentionally."
+            diff --unified=3 pinned.yaml current.yaml || true
+            exit 1
+          fi

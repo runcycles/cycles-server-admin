@@ -324,38 +324,43 @@ public class WebhookAdminController {
     public ResponseEntity<WebhookBulkActionResponse> bulkAction(
             @Valid @RequestBody WebhookBulkActionRequest request, HttpServletRequest httpRequest) {
         long startNanos = System.nanoTime();
-        if (request.getFilter() == null || request.getFilter().isEmpty()) {
+        if (request.getFilter().isEmpty()) {
             throw new GovernanceException(ErrorCode.INVALID_REQUEST,
                 "filter must contain at least one property", 400);
         }
         String searchNorm = parseSearch(request.getFilter().getSearch());
+        request.getFilter().setSearch(searchNorm);
 
-        var cached = idempotencyStore.lookup(
-            BULK_IDEMPOTENCY_ENDPOINT, request.getIdempotencyKey(),
-            WebhookBulkActionResponse.class);
-        if (cached.isPresent()) {
-            return ResponseEntity.ok(cached.get());
+        IdempotencyStore.Claim<WebhookBulkActionResponse> idempotencyClaim =
+            idempotencyStore.begin(BULK_IDEMPOTENCY_ENDPOINT,
+                request.getIdempotencyKey(), request, WebhookBulkActionResponse.class);
+        if (idempotencyClaim.isReplay()) {
+            return ResponseEntity.ok(idempotencyClaim.replayResponse());
         }
-
-        List<WebhookSubscription> matched = webhookRepository.matchForBulk(
-            request.getFilter().getTenantId(),
-            request.getFilter().getStatus(),
-            request.getFilter().getEventType(),
-            searchNorm,
-            BULK_ACTION_LIMIT);
-        if (matched.size() > BULK_ACTION_LIMIT) {
-            throw new GovernanceException(ErrorCode.LIMIT_EXCEEDED,
-                "filter matches more than " + BULK_ACTION_LIMIT
-                    + " subscriptions; narrow the filter and retry",
-                400,
-                Map.of("total_matched", matched.size()));
-        }
-        if (request.getExpectedCount() != null && request.getExpectedCount() != matched.size()) {
-            throw new GovernanceException(ErrorCode.COUNT_MISMATCH,
-                "expected_count " + request.getExpectedCount()
-                    + " differs from server-counted matches " + matched.size(),
-                409,
-                Map.of("total_matched", matched.size()));
+        List<WebhookSubscription> matched;
+        try {
+            matched = webhookRepository.matchForBulk(
+                request.getFilter().getTenantId(), request.getFilter().getStatus(),
+                request.getFilter().getEventType(), searchNorm, BULK_ACTION_LIMIT);
+            if (matched.size() > BULK_ACTION_LIMIT) {
+                int totalMatched = Math.max(matched.size(), webhookRepository.countForBulk(
+                    request.getFilter().getTenantId(), request.getFilter().getStatus(),
+                    request.getFilter().getEventType(), searchNorm));
+                throw new GovernanceException(ErrorCode.LIMIT_EXCEEDED,
+                    "filter matches more than " + BULK_ACTION_LIMIT
+                        + " subscriptions; narrow the filter and retry",
+                    400, Map.of("total_matched", totalMatched));
+            }
+            if (request.getExpectedCount() != null
+                    && request.getExpectedCount() != matched.size()) {
+                throw new GovernanceException(ErrorCode.COUNT_MISMATCH,
+                    "expected_count " + request.getExpectedCount()
+                        + " differs from server-counted matches " + matched.size(),
+                    409, Map.of("total_matched", matched.size()));
+            }
+        } catch (RuntimeException e) {
+            idempotencyStore.abandon(idempotencyClaim);
+            throw e;
         }
 
         List<BulkActionRowOutcome> succeeded = new ArrayList<>();
@@ -383,7 +388,7 @@ public class WebhookAdminController {
             .idempotencyKey(request.getIdempotencyKey())
             .build();
 
-        idempotencyStore.store(BULK_IDEMPOTENCY_ENDPOINT, request.getIdempotencyKey(), response);
+        idempotencyStore.complete(idempotencyClaim, response);
 
         Map<String, Object> auditMeta = BulkActionAuditMetadataBuilder.build(
             request.getAction().name(), matched.size(),
@@ -548,7 +553,7 @@ public class WebhookAdminController {
         } catch (Exception e) {
             LOG.warn("Failed to emit admin webhook event: event_type={} subscription_id={} tenant_id={} previous_status={} new_status={} changed_field_count={} correlation_id={} request_id={} trace_id={} exception_class={} error={}",
                 eventType, safe(subscriptionId), safe(tenantId), previousStatus, newStatus,
-                changedFields != null ? changedFields.size() : 0, safe(correlationId),
+                changedFields.size(), safe(correlationId),
                 attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
                 attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE),
                 e.getClass().getSimpleName(), safe(e.getMessage()), e);
@@ -594,21 +599,19 @@ public class WebhookAdminController {
     }
 
     private static EventType eventTypeForWebhookAction(WebhookBulkAction action) {
-        switch (action) {
-            case PAUSE: return EventType.WEBHOOK_PAUSED;
-            case RESUME: return EventType.WEBHOOK_RESUMED;
-            case DELETE: return EventType.WEBHOOK_DELETED;
-            default: throw new IllegalStateException("Unreachable action: " + action);
-        }
+        return switch (action) {
+            case PAUSE -> EventType.WEBHOOK_PAUSED;
+            case RESUME -> EventType.WEBHOOK_RESUMED;
+            case DELETE -> EventType.WEBHOOK_DELETED;
+        };
     }
 
     private static WebhookStatus newStatusForWebhookAction(WebhookBulkAction action) {
-        switch (action) {
-            case PAUSE: return WebhookStatus.PAUSED;
-            case RESUME: return WebhookStatus.ACTIVE;
-            case DELETE: return null;
-            default: throw new IllegalStateException("Unreachable action: " + action);
-        }
+        return switch (action) {
+            case PAUSE -> WebhookStatus.PAUSED;
+            case RESUME -> WebhookStatus.ACTIVE;
+            case DELETE -> null;
+        };
     }
 
     private static String classifyFailureCode(GovernanceException e) {

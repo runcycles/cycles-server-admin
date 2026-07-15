@@ -1,7 +1,7 @@
-# Complete Budget Governance v0.1.25.51 — Admin Server Audit
+# Complete Budget Governance v0.1.25.52 — Admin Server Audit
 
 **Spec:**
-[`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml)
+[`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/469840bb2f41ce35650c89405ea12fc56e847c76/cycles-governance-admin-v0.1.25.yaml)
 (OpenAPI 3.1.0, info.version `0.1.25.41`; adds CASCADE SEMANTICS — Rule 1 `POST
 /admin/tenants/{id}` PATCH→CLOSED cascades owned budgets (→CLOSED), webhook
 subscriptions (→DISABLED), and API keys (→REVOKED) under a shared correlation_id
@@ -39,10 +39,121 @@ the `/test` synthetic-ping exception — .40 and .41 both implemented here in
 0.1.25.51) in
 [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 
-**Server:** Spring Boot 3.5.15 / Java 21 / Jedis 7.5.2 · commons-lang3 3.18.0
-pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
+**Server:** Spring Boot 3.5.16 / Java 21 / Jedis 7.5.2 · commons-lang3 3.18.0
+pin · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
+
+### 2026-07-15 — full admin-server remediation and self-review
+
+**Scope.** Reviewed the complete admin server against the pinned governance
+spec, the Redis persistence behavior, list/cursor semantics, tenant-close Mode-B
+convergence, build gates, and the quality bar established by `cycles-server`.
+The pre-change suite was green, but the review found correctness defects that
+happy-path coverage did not expose: exact-limit pages lied about `has_more`,
+millisecond-score cursors skipped equal-score rows, sparse filters stopped after
+`limit * 3` candidates, sorted queries silently truncated at 2,000 hydrated
+rows, API-key lookup-prefix collisions could overwrite a credential lookup, and
+per-row cascade failures were logged but not returned to the orchestrator. The
+rigorous concurrency pass additionally found non-durable child audit/events,
+duplicate-prone cascade mutations across replicas, payload-unaware bulk
+idempotency races, sentinel rather than exact over-limit counts, unbounded auth
+source tracking, and contract tests tied to a moving upstream branch.
+
+**Remediation.** The implementation now:
+
+- derives pagination metadata from an immutable `limit + 1` `PageSlice` on all
+  list surfaces;
+- uses a shared adaptive ZSET pager for event, audit, and delivery timestamp
+  queries, including deterministic equal-score continuation, precision-safe
+  score advancement, consistent invalid-cursor rejection, and a bounded sparse-
+  filter scan budget. Correlation-filtered events now consume cursors;
+- replaces silent non-primary-sort truncation with exact results through 20,000
+  candidates and an explicit `LIMIT_EXCEEDED` all-or-narrow response above that
+  memory boundary;
+- checks API-key row and lookup-prefix collisions inside the create Lua script
+  and regenerates a credential instead of overwriting an existing lookup;
+- separates a strict primary HTTP `ObjectMapper` from a rolling-deployment-
+  tolerant Redis mapper, with every persistence injection explicitly qualified;
+- persists tenant-close intent before the Mode-B parent flip, atomically couples
+  the parent status flip to a committed marker and durable parent-event outbox,
+  and couples each child mutation to its outbox item. Per-tenant leases are
+  token-checked and renewed, stable-ID audit/event writes are storage-idempotent,
+  and poison items stop after bounded retries in an operator-visible dead-letter
+  set. A permanent commit marker backfills parent-event work for already-closed
+  tenants encountered during a rolling upgrade; aged uncommitted/missing-tenant
+  intents are discarded under the same lease and atomic status check. The
+  reconciler reads durable due work rather than scanning all tenants;
+- reports active lease ownership as `in_progress` rather than an internal error.
+  Parent close events are emitted from the durable outbox after child events, so
+  request crashes and deferred bulk convergence cannot permanently lose them;
+- coordinates bulk idempotency with an atomic payload-hash owner claim, waits
+  for concurrent equal requests, rejects different-payload reuse, publishes one
+  immutable replay envelope, and owner-safely abandons pre-mutation count-gate
+  failures. The claim precedes mutable match reads, so retries replay even when
+  the first invocation changed the filtered population;
+- reports exact over-limit bulk counts rather than the 501-row detection
+  sentinel;
+- bounds failed-auth source tracking, evicts stale/old buckets without clearing
+  the whole limiter, rate-limits cap warnings, and adds the trace headers needed
+  by browser CORS;
+- pins contract tests to reviewed cycles-protocol commit
+  `469840bb2f41ce35650c89405ea12fc56e847c76`, restores the model module to the
+  95% JaCoCo gate, enforces 95% branch coverage independently in every module,
+  adds nightly upstream-drift detection, moves jqwik configuration to JUnit
+  Platform, attaches Mockito explicitly for future-JDK compatibility, and uses
+  the current Jedis client configuration constructor.
+
+**Self-review corrections.** Multiple review rounds over the complete diff found
+and fixed defects in the remediation itself: volatile reconciler scan progress
+was replaced with the durable due queue; auth-cap eviction was changed to a
+synchronized access-ordered LRU without fail-fast iterator mutation; score
+advancement now uses `Math.nextUp` / `Math.nextDown`; equal-score traversal is
+chunked; partial single-close audit status is the truthful 500; missing outbox
+bodies fail visibly instead of leaving silently stuck work; and the first atomic
+idempotency draft was reordered so replay happens before mutable match/count
+reads. The final PR run also exposed a cold-cache build-order defect: Surefire
+referenced the Mockito agent before the model module had resolved its JAR, so
+Mockito is now an inherited parent test dependency. A final lifecycle pass also
+prevented nonexistent tenants from leaving immortal close intents, added a
+no-progress guard to internal overview paging, and raised the scheduler floor to
+two threads so reconciliation cannot starve its own lease heartbeat.
+Documentation was then cross-checked against actual single-vs-bulk event
+correlation and reconciler behavior.
+
+**Approval follow-up corrections.** The final re-review's non-blocking findings
+were resolved in this PR rather than deferred. Equal-score cursor continuation
+now computes the cursor's rank inside its score bucket and starts there, avoiding
+permanent scan-budget failures for tie buckets above 5,000; a full page may
+inspect exactly one additional candidate to determine truthful `has_more`.
+Tenant CAS exhaustion now pairs `INTERNAL_ERROR` with the pinned contract's 500
+response. Legacy idempotency entries fail closed because their payload cannot be
+verified, and Tenant/Webhook bulk requests normalize search before hashing.
+Mid-run cascade lease loss is reported as `in_progress`, while healthy lease
+contention no longer increments the incomplete metric. Redis batch readers now
+use their production MGET/pipeline contracts without Mockito-only fallbacks,
+and the affected tests provide realistic batch stubs. Dead-letter requeue has a
+single packaged Lua source shared by application and runbook. Surface-specific
+sort-limit guidance, the property-test count, timeout/corrupt-envelope behavior,
+auth-cap warning deduplication, and stale API-key controller mocks were also
+corrected or locked down by regression tests. The cascade progress headers are
+documented as additive metadata on the schema-valid 200 response; no response
+body or status extension to the pinned YAML is required. Production Compose
+continues to pin the last published image (`0.1.25.51`); the established release
+chore advances it only when `0.1.25.52` is available from GHCR.
+
+**Assessment.** The reviewed correctness, durability, specification,
+concurrency, bounded-resource, operations, and build/test gaps are addressed.
+Future performance work may add secondary indexes for broad arbitrary sorts;
+the current behavior deliberately returns `LIMIT_EXCEEDED` rather than an
+inexact page. Deployments needing a fleet-global failed-auth threshold should
+continue to enforce it at the shared edge because the application limiter is
+intentionally per replica.
+
+**Verification policy.** Release evidence belongs to the immutable PR/check run,
+not this long-lived audit narrative. Merge requires a clean Maven verification,
+Docker-backed integration tests, independent 95% JaCoCo line and branch gates
+for every code module, Compose validation, image build, and `git diff --check`.
 
 ### 2026-07-12 — declared spec alignment bump v0.1.25.39 → v0.1.25.41 (doc-only)
 

@@ -16,6 +16,7 @@ import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.webhook.*;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,7 +31,9 @@ import redis.clients.jedis.JedisPool;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -53,6 +56,13 @@ class WebhookAdminControllerTest {
     @MockitoBean private EventService eventService;
 
     private static final String ADMIN_KEY = "test-admin-key";
+
+    @BeforeEach
+    void defaultBulkIdempotencyOwner() {
+        lenient().doAnswer(invocation -> new IdempotencyStore.Claim<>(
+                invocation.getArgument(0), invocation.getArgument(1), "test-owner", null))
+            .when(idempotencyStore).begin(anyString(), anyString(), any(), any());
+    }
 
     @Test
     void createWebhook_returns201() throws Exception {
@@ -583,6 +593,10 @@ class WebhookAdminControllerTest {
     void bulkActionWebhooks_pause_happyPath_returns200() throws Exception {
         when(idempotencyStore.lookup(eq("webhooks-bulk"), anyString(), eq(WebhookBulkActionResponse.class)))
                 .thenReturn(java.util.Optional.empty());
+        IdempotencyStore.Claim<WebhookBulkActionResponse> claim =
+            new IdempotencyStore.Claim<>("webhooks-bulk", "k1", "owner-1", null);
+        when(idempotencyStore.begin(eq("webhooks-bulk"), eq("k1"), any(),
+                eq(WebhookBulkActionResponse.class))).thenReturn(claim);
         when(webhookRepository.matchForBulk(isNull(), eq(WebhookStatus.ACTIVE), isNull(), isNull(), eq(500)))
                 .thenReturn(List.of(webhookRow("w1", WebhookStatus.ACTIVE), webhookRow("w2", WebhookStatus.ACTIVE)));
         when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.ACTIVE));
@@ -602,7 +616,8 @@ class WebhookAdminControllerTest {
                 .andExpect(jsonPath("$.idempotency_key").value("k1"));
 
         verify(webhookService, times(2)).update(anyString(), any());
-        verify(idempotencyStore).store(eq("webhooks-bulk"), eq("k1"), any(WebhookBulkActionResponse.class));
+        verify(idempotencyStore).complete(eq(claim), any(WebhookBulkActionResponse.class));
+        verify(idempotencyStore, never()).store(anyString(), anyString(), any());
     }
 
     @Test
@@ -649,6 +664,7 @@ class WebhookAdminControllerTest {
 
         verify(webhookService, never()).update(anyString(), any());
         verify(webhookService, never()).delete(anyString());
+        verify(idempotencyStore).abandon(any());
     }
 
     @Test
@@ -658,6 +674,7 @@ class WebhookAdminControllerTest {
         List<WebhookSubscription> oversized = new java.util.ArrayList<>();
         for (int i = 0; i < 501; i++) oversized.add(webhookRow("w" + i, WebhookStatus.ACTIVE));
         when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500))).thenReturn(oversized);
+        when(webhookRepository.countForBulk(any(), any(), any(), any())).thenReturn(915);
 
         mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -665,10 +682,12 @@ class WebhookAdminControllerTest {
                         .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"PAUSE\",\"idempotency_key\":\"k1\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("LIMIT_EXCEEDED"))
-                .andExpect(jsonPath("$.details.total_matched").value(501));
+                .andExpect(jsonPath("$.details.total_matched").value(915));
 
         verify(webhookService, never()).update(anyString(), any());
         verify(webhookService, never()).delete(anyString());
+        verify(webhookRepository).countForBulk(any(), any(), any(), any());
+        verify(idempotencyStore).abandon(any());
     }
 
     @Test
@@ -681,8 +700,9 @@ class WebhookAdminControllerTest {
                 .skipped(List.of())
                 .idempotencyKey("k1")
                 .build();
-        when(idempotencyStore.lookup(eq("webhooks-bulk"), eq("k1"), eq(WebhookBulkActionResponse.class)))
-                .thenReturn(java.util.Optional.of(cached));
+        when(idempotencyStore.begin(eq("webhooks-bulk"), eq("k1"), any(),
+                eq(WebhookBulkActionResponse.class)))
+            .thenReturn(new IdempotencyStore.Claim<>("webhooks-bulk", "k1", null, cached));
 
         mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -1464,21 +1484,166 @@ class WebhookAdminControllerTest {
     // value and does not flip status is a no-op — MUST NOT emit.
     @Test
     void updateWebhook_patchAllFieldsWithSameValues_doesNotEmit() throws Exception {
+        WebhookThresholdConfig thresholds = WebhookThresholdConfig.builder().build();
+        WebhookRetryPolicy retry = WebhookRetryPolicy.builder().maxRetries(5).build();
         WebhookSubscription prior = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1")
             .url("https://example.com/wh").name("fixed")
+            .description("same description")
+            .eventTypes(List.of(EventType.BUDGET_CREATED))
+            .eventCategories(List.of(EventCategory.BUDGET))
+            .scopeFilter("tenant:tenant-1").thresholds(thresholds)
+            .headers(Map.of("X-Test", "same")).retryPolicy(retry)
+            .disableAfterFailures(5).metadata(Map.of("owner", "ops"))
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
         when(webhookService.get("whsub_1")).thenReturn(prior);
         when(webhookService.update(eq("whsub_1"), any())).thenReturn(prior);
+        WebhookUpdateRequest request = WebhookUpdateRequest.builder()
+            .url("https://example.com/wh").name("fixed").description("same description")
+            .eventTypes(List.of(EventType.BUDGET_CREATED))
+            .eventCategories(List.of(EventCategory.BUDGET))
+            .scopeFilter("tenant:tenant-1").thresholds(thresholds)
+            .headers(Map.of("X-Test", "same")).retryPolicy(retry)
+            .disableAfterFailures(5).metadata(Map.of("owner", "ops"))
+            .status(WebhookStatus.ACTIVE).build();
 
         mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"url\":\"https://example.com/wh\",\"name\":\"fixed\"}"))
+                        .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk());
 
         verify(eventService, never()).emit(any(EventType.class), anyString(), any(),
             anyString(), any(Actor.class), any(), anyString(), any());
+    }
+
+    @Test
+    void bulkActionWebhooks_normalizesSearchBeforeIdempotencyFingerprint() throws Exception {
+        IdempotencyStore.Claim<WebhookBulkActionResponse> claim =
+            new IdempotencyStore.Claim<>("webhooks-bulk", "k-normalized", "owner-1", null);
+        when(idempotencyStore.begin(eq("webhooks-bulk"), eq("k-normalized"),
+                any(WebhookBulkActionRequest.class), eq(WebhookBulkActionResponse.class)))
+            .thenReturn(claim);
+        when(webhookRepository.matchForBulk(isNull(), isNull(), isNull(), eq("Acme"), eq(500)))
+            .thenReturn(List.of());
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                .header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"filter\":{\"search\":\"  Acme  \"},\"action\":\"PAUSE\",\"idempotency_key\":\"k-normalized\"}"))
+            .andExpect(status().isOk());
+
+        ArgumentCaptor<WebhookBulkActionRequest> captured =
+            ArgumentCaptor.forClass(WebhookBulkActionRequest.class);
+        verify(idempotencyStore).begin(eq("webhooks-bulk"), eq("k-normalized"),
+            captured.capture(), eq(WebhookBulkActionResponse.class));
+        assertThat(captured.getValue().getFilter().getSearch()).isEqualTo("Acme");
+    }
+
+    @Test
+    void updateWebhook_patchAllChangedFields_reportsCompleteDiff() throws Exception {
+        WebhookThresholdConfig oldThresholds = WebhookThresholdConfig.builder().burnRateMultiplier(2.0).build();
+        WebhookThresholdConfig newThresholds = WebhookThresholdConfig.builder().burnRateMultiplier(4.0).build();
+        WebhookRetryPolicy oldRetry = WebhookRetryPolicy.builder().maxRetries(3).build();
+        WebhookRetryPolicy newRetry = WebhookRetryPolicy.builder().maxRetries(7).build();
+        WebhookSubscription prior = WebhookSubscription.builder()
+            .subscriptionId("whsub_all").tenantId("tenant-1")
+            .url("https://old.example/wh").name("old").description("old description")
+            .eventTypes(List.of(EventType.BUDGET_CREATED)).eventCategories(List.of(EventCategory.BUDGET))
+            .scopeFilter("tenant:tenant-1").thresholds(oldThresholds)
+            .headers(Map.of("X-Test", "old")).retryPolicy(oldRetry)
+            .disableAfterFailures(3).metadata(Map.of("owner", "old"))
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        WebhookSubscription updated = WebhookSubscription.builder()
+            .subscriptionId("whsub_all").tenantId("tenant-1")
+            .url("https://new.example/wh").name("new").description("new description")
+            .eventTypes(List.of(EventType.BUDGET_UPDATED)).eventCategories(List.of(EventCategory.RESERVATION))
+            .scopeFilter("tenant:tenant-1/app:new").thresholds(newThresholds)
+            .headers(Map.of("X-Test", "new")).retryPolicy(newRetry)
+            .disableAfterFailures(9).metadata(Map.of("owner", "new"))
+            .status(WebhookStatus.PAUSED).createdAt(prior.getCreatedAt()).build();
+        when(webhookService.get("whsub_all")).thenReturn(prior);
+        when(webhookService.update(eq("whsub_all"), any())).thenReturn(updated);
+        WebhookUpdateRequest request = WebhookUpdateRequest.builder()
+            .url(updated.getUrl()).name(updated.getName()).description(updated.getDescription())
+            .eventTypes(updated.getEventTypes()).eventCategories(updated.getEventCategories())
+            .scopeFilter(updated.getScopeFilter()).thresholds(newThresholds)
+            .signingSecret("whsec_rotated").headers(updated.getHeaders()).retryPolicy(newRetry)
+            .disableAfterFailures(9).metadata(updated.getMetadata()).status(WebhookStatus.PAUSED).build();
+
+        mockMvc.perform(patch("/v1/admin/webhooks/whsub_all")
+                .header("X-Admin-API-Key", ADMIN_KEY).contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(request)))
+            .andExpect(status().isOk());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> payload = ArgumentCaptor.forClass(Map.class);
+        verify(eventService).emit(eq(EventType.WEBHOOK_PAUSED), eq("tenant-1"), isNull(),
+            eq("cycles-admin"), any(Actor.class), payload.capture(), anyString(), any());
+        assertThat((List<String>) payload.getValue().get("changed_fields")).containsExactly(
+            "name", "description", "url", "event_types", "event_categories", "scope_filter",
+            "thresholds", "signing_secret", "headers", "retry_policy", "disable_after_failures", "metadata");
+    }
+
+    @Test
+    void testWebhookFailureWithSparseDiagnosticsBuildsConditionalAuditMetadata() throws Exception {
+        WebhookTestResponse response = WebhookTestResponse.builder().success(false)
+            .errorMessage("Connection refused").eventId("evt-failure").build();
+        when(webhookService.test("whsub-sparse")).thenReturn(response);
+
+        mockMvc.perform(post("/v1/admin/webhooks/whsub-sparse/test")
+                .header("X-Admin-API-Key", ADMIN_KEY))
+            .andExpect(status().isOk());
+
+        verify(auditRepository).log(argThat(entry -> entry.getMetadata().containsKey("error_message")
+            && !entry.getMetadata().containsKey("response_status")
+            && !entry.getMetadata().containsKey("response_time_ms")));
+    }
+
+    @Test
+    void bulkPauseNullStatusDefaultsActiveAndEqualCountProceeds() throws Exception {
+        WebhookSubscription snapshot = webhookRow("wh-null", WebhookStatus.ACTIVE);
+        when(webhookRepository.matchForBulk(isNull(), eq(WebhookStatus.ACTIVE), isNull(), isNull(), eq(500)))
+            .thenReturn(List.of(snapshot));
+        when(webhookRepository.findById("wh-null")).thenReturn(webhookRow("wh-null", null));
+        when(webhookService.update(eq("wh-null"), any())).thenReturn(webhookRow("wh-null", WebhookStatus.PAUSED));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                .header("X-Admin-API-Key", ADMIN_KEY).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"PAUSE\",\"expected_count\":1,\"idempotency_key\":\"equal-null\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.succeeded.length()").value(1));
+    }
+
+    @Test
+    void bulkPauseDisabledStatusIsAlreadyInTargetState() throws Exception {
+        WebhookSubscription snapshot = webhookRow("wh-disabled", WebhookStatus.ACTIVE);
+        when(webhookRepository.matchForBulk(isNull(), eq(WebhookStatus.ACTIVE), isNull(), isNull(), eq(500)))
+            .thenReturn(List.of(snapshot));
+        when(webhookRepository.findById("wh-disabled"))
+            .thenReturn(webhookRow("wh-disabled", WebhookStatus.DISABLED));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                .header("X-Admin-API-Key", ADMIN_KEY).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"PAUSE\",\"idempotency_key\":\"disabled\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.skipped[0].reason").value("ALREADY_IN_TARGET_STATE"));
+    }
+
+    @Test
+    void bulkDeleteConcurrentGenericNotFoundIsSkipped() throws Exception {
+        WebhookSubscription row = webhookRow("wh-delete-not-found", WebhookStatus.ACTIVE);
+        when(webhookRepository.matchForBulk(isNull(), eq(WebhookStatus.ACTIVE), isNull(), isNull(), eq(500)))
+            .thenReturn(List.of(row));
+        when(webhookRepository.findById("wh-delete-not-found")).thenReturn(row);
+        doThrow(new GovernanceException(ErrorCode.NOT_FOUND, "gone", 404))
+            .when(webhookService).delete("wh-delete-not-found");
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                .header("X-Admin-API-Key", ADMIN_KEY).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"DELETE\",\"idempotency_key\":\"gone\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.skipped[0].reason").value("ALREADY_DELETED"));
     }
 
     // v0.1.25.40 B1: single-op lifecycle emits now attribute to the

@@ -1,11 +1,16 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.logging.LogSanitizer;
+import io.runcycles.admin.data.repository.support.ZSetAdaptivePager;
+import io.runcycles.admin.data.repository.support.SortedQueryGuard;
+import io.runcycles.admin.data.repository.support.CursorSupport;
+import io.runcycles.admin.data.repository.support.RedisBatchReader;
 import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortSpec;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Repository;
@@ -18,7 +23,7 @@ import java.util.*;
 public class AuditRepository {
     private static final Logger LOG = LoggerFactory.getLogger(AuditRepository.class);
     @Autowired private JedisPool jedisPool;
-    @Autowired private ObjectMapper objectMapper;
+    @Autowired @Qualifier("redisObjectMapper") private ObjectMapper objectMapper;
 
     /**
      * Retention for entries NOT attributed to the {@code __unauth__}
@@ -82,19 +87,8 @@ public class AuditRepository {
         "return 1\n";
 
     public void log(AuditLogEntry entry) {
-        try (Jedis jedis = jedisPool.getResource()) {
-            String logId = "log_" + UUID.randomUUID().toString().substring(0, 16);
-            entry.setLogId(logId);
-            entry.setTimestamp(Instant.now());
-            String json = objectMapper.writeValueAsString(entry);
-            String score = String.valueOf(entry.getTimestamp().toEpochMilli());
-            long ttlSeconds = resolveTtlSeconds(entry);
-            // Atomic write: SET log (with optional EX) + ZADD tenant index + ZADD global index
-            jedis.eval(LOG_AUDIT_LUA,
-                List.of("audit:log:" + logId,
-                        "audit:logs:" + entry.getTenantId(),
-                        "audit:logs:_all"),
-                List.of(json, score, logId, String.valueOf(ttlSeconds)));
+        try {
+            write(entry);
         } catch (Exception e) {
             // Audit log failure should not break the business operation that triggered it
             LOG.error("Failed to write audit log; business operation continues: tenant_id={} operation={} resource_type={} resource_id={} status={} error_code={} request_id={} trace_id={}",
@@ -107,6 +101,32 @@ public class AuditRepository {
                 entry != null ? entry.getRequestId() : null,
                 entry != null ? entry.getTraceId() : null,
                 e);
+        }
+    }
+
+    /** Required-write variant used by durable mutation outboxes. */
+    public void logRequired(AuditLogEntry entry) {
+        try {
+            write(entry);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to write required audit log", e);
+        }
+    }
+
+    private void write(AuditLogEntry entry) throws Exception {
+        try (Jedis jedis = jedisPool.getResource()) {
+            String logId = entry.getLogId() != null ? entry.getLogId()
+                : "log_" + UUID.randomUUID().toString().substring(0, 16);
+            entry.setLogId(logId);
+            if (entry.getTimestamp() == null) entry.setTimestamp(Instant.now());
+            String json = objectMapper.writeValueAsString(entry);
+            String score = String.valueOf(entry.getTimestamp().toEpochMilli());
+            long ttlSeconds = resolveTtlSeconds(entry);
+            jedis.eval(LOG_AUDIT_LUA,
+                List.of("audit:log:" + logId,
+                        "audit:logs:" + entry.getTenantId(),
+                        "audit:logs:_all"),
+                List.of(json, score, logId, String.valueOf(ttlSeconds)));
         }
     }
 
@@ -272,12 +292,12 @@ public class AuditRepository {
      *       {@link Jedis#zrevrangeByScore} walk (unchanged behaviour).
      *   <li>{@code field=timestamp, dir=ASC} → {@link Jedis#zrangeByScore}
      *       walk with the cursor's score as the new minScore floor.
-     *   <li>Non-timestamp fields → hydrate up to {@link #SORTED_HYDRATE_CAP}
-     *       IDs from the ZSET window, apply all filters, sort in-memory
+     *   <li>Non-timestamp fields → hydrate the complete ZSET window, apply
+     *       all filters, sort in-memory
      *       via {@link #auditLogComparator}, then walk log_id cursor.
      * </ul>
-     * Callers requesting non-timestamp sort on very large windows should
-     * narrow {@code from}/{@code to} to keep hydration bounded.
+     * Callers should narrow {@code from}/{@code to} where possible;
+     * completeness is never traded for a silent hydration cap.
      */
     public List<AuditLogEntry> list(String tenantId, String keyId, List<String> operation, Integer status,
                                      List<String> resourceType, String resourceId,
@@ -305,14 +325,6 @@ public class AuditRepository {
         return "timestamp".equals(sortSpec.field());
     }
 
-    /**
-     * Upper bound on IDs hydrated for a non-timestamp sort pass. Sorted
-     * walks need to see the full filter-matching population before the
-     * cursor walk; without a ceiling a broad time window would OOM. At
-     * scale, operators should narrow the time window.
-     */
-    private static final int SORTED_HYDRATE_CAP = 2000;
-
     private List<AuditLogEntry> listByTimestamp(Jedis jedis, String tenantId, String keyId,
                                                  List<String> operations, Integer status,
                                                  List<String> resourceTypes, String resourceId,
@@ -326,40 +338,25 @@ public class AuditRepository {
         String indexKey = (tenantId != null) ? "audit:logs:" + tenantId : "audit:logs:_all";
         boolean ascending = sortSpec != null && sortSpec.isAscending();
 
-        if (cursor != null && !cursor.isBlank()) {
-            Double cursorScore = jedis.zscore(indexKey, cursor);
-            if (cursorScore != null) {
-                if (ascending) {
-                    minScore = Math.max(minScore, cursorScore + 1);
-                } else {
-                    maxScore = Math.min(maxScore, cursorScore - 1);
-                }
-            }
-        }
-
-        List<String> ids = ascending
-            ? jedis.zrangeByScore(indexKey, minScore, maxScore, 0, limit * 3)
-            : jedis.zrevrangeByScore(indexKey, maxScore, minScore, 0, limit * 3);
-        List<AuditLogEntry> logs = new ArrayList<>();
-        for (String id : ids) {
+        return ZSetAdaptivePager.collect(jedis, indexKey, minScore, maxScore,
+            cursor, limit, ascending, "audit-log", id -> {
             try {
                 String data = jedis.get("audit:log:" + id);
                 if (data == null) {
                     LOG.debug("Audit log data missing for id: {} (likely TTL-expired)", id);
-                    continue;
+                    return null;
                 }
                 AuditLogEntry entry = objectMapper.readValue(data, AuditLogEntry.class);
                 if (!matchesFilters(entry, keyId, operations, status, resourceTypes, resourceId,
-                        errorCodes, errorCodeExcludes, statusMin, statusMax, traceId, requestId)) continue;
-                if (!matchesSearch(entry, search)) continue;
-                logs.add(entry);
-                if (logs.size() >= limit) break;
+                        errorCodes, errorCodeExcludes, statusMin, statusMax, traceId, requestId)) return null;
+                if (!matchesSearch(entry, search)) return null;
+                return entry;
             } catch (Exception e) {
                 LOG.warn("Failed to parse audit log entry: log_id={} index_key={} tenant_id={} request_id_filter={} trace_id_filter={}",
                     LogSanitizer.safe(id), LogSanitizer.safe(indexKey), LogSanitizer.safe(tenantId), requestId, traceId, e);
+                return null;
             }
-        }
-        return logs;
+        });
     }
 
     private List<AuditLogEntry> listSortedNonTimestamp(Jedis jedis, String tenantId, String keyId,
@@ -373,12 +370,15 @@ public class AuditRepository {
         double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
         double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
         String indexKey = (tenantId != null) ? "audit:logs:" + tenantId : "audit:logs:_all";
-        // Hydrate a bounded window — cursor is applied after sort on log_id.
-        List<String> ids = jedis.zrevrangeByScore(indexKey, maxScore, minScore, 0, SORTED_HYDRATE_CAP);
+        SortedQueryGuard.requireScannable(jedis.zcount(indexKey, minScore, maxScore),
+            "audit-log", "narrow the indexed tenant/time window");
+        // A correct non-primary sort must see the complete filtered window.
+        List<String> ids = jedis.zrevrangeByScore(indexKey, maxScore, minScore);
         List<AuditLogEntry> all = new ArrayList<>();
+        Map<String, String> rows = RedisBatchReader.getById(jedis, "audit:log:", ids);
         for (String id : ids) {
             try {
-                String data = jedis.get("audit:log:" + id);
+                String data = rows.get(id);
                 if (data == null) continue;
                 AuditLogEntry entry = objectMapper.readValue(data, AuditLogEntry.class);
                 if (!matchesFilters(entry, keyId, operations, status, resourceTypes, resourceId,
@@ -390,14 +390,12 @@ public class AuditRepository {
                     LogSanitizer.safe(id), LogSanitizer.safe(indexKey), LogSanitizer.safe(tenantId), requestId, traceId, e);
             }
         }
+        SortedQueryGuard.requireBounded(all.size(), "audit-log");
         all.sort(auditLogComparator(sortSpec));
         List<AuditLogEntry> results = new ArrayList<>();
-        boolean pastCursor = (cursor == null || cursor.isBlank());
-        for (AuditLogEntry e : all) {
-            if (!pastCursor) {
-                if (cursor.equals(e.getLogId())) pastCursor = true;
-                continue;
-            }
+        int start = CursorSupport.startAfter(all, cursor, AuditLogEntry::getLogId);
+        for (int i = start; i < all.size(); i++) {
+            AuditLogEntry e = all.get(i);
             results.add(e);
             if (results.size() >= limit) break;
         }

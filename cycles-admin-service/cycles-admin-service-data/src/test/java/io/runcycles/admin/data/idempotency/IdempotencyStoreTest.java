@@ -2,6 +2,8 @@ package io.runcycles.admin.data.idempotency;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.model.shared.ErrorCode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -12,8 +14,10 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 
 import java.util.Optional;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -88,6 +92,20 @@ class IdempotencyStoreTest {
     }
 
     @Test
+    void lookupFailureDiagnostics_handleNullAndBlankKeys() {
+        when(jedis.get(anyString())).thenReturn("{not-json");
+
+        assertThat(store.lookup("tenants-bulk", null, Envelope.class)).isEmpty();
+        assertThat(store.lookup("tenants-bulk", " ", Envelope.class)).isEmpty();
+
+        reset(jedis);
+        when(jedisPool.getResource()).thenReturn(jedis);
+        when(jedis.get(anyString())).thenThrow(new RuntimeException("Redis down"));
+        assertThat(store.lookup("tenants-bulk", null, Envelope.class)).isEmpty();
+        assertThat(store.lookup("tenants-bulk", " ", Envelope.class)).isEmpty();
+    }
+
+    @Test
     void store_writesWithFifteenMinuteTtl() throws Exception {
         Envelope envelope = new Envelope("PAUSE", 7);
         String expectedJson = objectMapper.writeValueAsString(envelope);
@@ -121,7 +139,233 @@ class IdempotencyStoreTest {
     }
 
     @Test
+    void storeFailureDiagnostics_handleNullEnvelopeAndNullOrBlankKeys() {
+        doThrow(new RuntimeException("Redis down"))
+            .when(jedis).setex(anyString(), anyLong(), anyString());
+
+        store.store("tenants-bulk", null, null);
+        store.store("tenants-bulk", " ", null);
+    }
+
+    @Test
     void ttlConstant_isNineHundredSeconds() {
         assertThat(IdempotencyStore.TTL_SECONDS).isEqualTo(900);
+    }
+
+    @Test
+    void begin_atomicallyAcquiresV2Ownership() {
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("ACQUIRED"));
+
+        IdempotencyStore.Claim<Envelope> claim = store.begin(
+            "tenants-bulk", "k-atomic", new Envelope("CLOSE", 2), Envelope.class);
+
+        assertThat(claim.isReplay()).isFalse();
+        assertThat(claim.ownerToken()).isNotBlank();
+        verify(jedis).eval(anyString(), eq(List.of(
+                "idem:v2:tenants-bulk:k-atomic", "idem:tenants-bulk:k-atomic")),
+            argThat(args -> args.size() == 3
+                && args.get(0).matches("[0-9a-f]{64}")
+                && args.get(1) != null
+                && args.get(2).matches("[0-9]+")));
+    }
+
+    @Test
+    void begin_completedClaimReturnsImmutableReplay() throws Exception {
+        Envelope expected = new Envelope("SUSPEND", 4);
+        String replayJson = objectMapper.writeValueAsString(expected);
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("COMPLETE", replayJson));
+
+        IdempotencyStore.Claim<Envelope> claim = store.begin(
+            "tenants-bulk", "k-replay", new Envelope("SUSPEND", 4), Envelope.class);
+
+        assertThat(claim.isReplay()).isTrue();
+        assertThat(claim.replayResponse()).isEqualTo(expected);
+        assertThat(claim.ownerToken()).isNull();
+    }
+
+    @Test
+    void begin_reusedKeyWithDifferentPayloadReturnsMismatch() {
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("MISMATCH"));
+
+        assertThatThrownBy(() -> store.begin(
+            "tenants-bulk", "k-mismatch", new Envelope("CLOSE", 1), Envelope.class))
+            .isInstanceOf(GovernanceException.class)
+            .satisfies(error -> assertThat(((GovernanceException) error).getErrorCode())
+                .isEqualTo(ErrorCode.IDEMPOTENCY_MISMATCH));
+    }
+
+    @Test
+    void begin_requestSerializationFailureFailsBeforeRedis() throws Exception {
+        Envelope request = new Envelope("CLOSE", 1);
+        doThrow(new JsonProcessingException("cannot serialize") {})
+            .when(objectMapper).writeValueAsString(request);
+
+        assertThatThrownBy(() -> store.begin(
+            "tenants-bulk", "k-bad-request", request, Envelope.class))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("fingerprint");
+        verify(jedis, never()).eval(anyString(), anyList(), anyList());
+    }
+
+    @Test
+    void begin_unexpectedLuaResultFailsClosed() {
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("UNKNOWN"));
+
+        assertThatThrownBy(() -> store.begin(
+            "tenants-bulk", "k-unknown", new Envelope("CLOSE", 1), Envelope.class))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("claim idempotency key")
+            .hasRootCauseMessage("Unexpected idempotency result: [UNKNOWN]");
+    }
+
+    @Test
+    void complete_requiresCurrentOwnerAndStoresReplayEnvelope() {
+        IdempotencyStore.Claim<Envelope> claim = new IdempotencyStore.Claim<>(
+            "webhooks-bulk", "k-complete", "owner-1", null);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+
+        store.complete(claim, new Envelope("DELETE", 3));
+
+        verify(jedis).eval(anyString(), eq(List.of("idem:v2:webhooks-bulk:k-complete")),
+            argThat(args -> args.size() == 3
+                && "owner-1".equals(args.get(0))
+                && args.get(1).contains("DELETE")
+                && "900".equals(args.get(2))));
+    }
+
+    @Test
+    void complete_lostOwnershipFailsClosed() {
+        IdempotencyStore.Claim<Envelope> claim = new IdempotencyStore.Claim<>(
+            "webhooks-bulk", "k-lost", "old-owner", null);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(0L);
+
+        assertThatThrownBy(() -> store.complete(claim, new Envelope("PAUSE", 1)))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("complete idempotency response");
+    }
+
+    @Test
+    void abandon_compareDeletesOnlyCurrentInProgressOwner() {
+        IdempotencyStore.Claim<Envelope> claim = new IdempotencyStore.Claim<>(
+            "budgets-bulk", "k-rejected", "owner-2", null);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+
+        store.abandon(claim);
+
+        verify(jedis).eval(anyString(), eq(List.of("idem:v2:budgets-bulk:k-rejected")),
+            eq(List.of("owner-2")));
+    }
+
+    @Test
+    void abandon_redisFailureIsBestEffort() {
+        IdempotencyStore.Claim<Envelope> claim = new IdempotencyStore.Claim<>(
+            "budgets-bulk", "k-rejected", "owner-2", null);
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenThrow(new RuntimeException("Redis down"));
+
+        store.abandon(claim);
+    }
+
+    @Test
+    void begin_legacyEnvelopeFailsClosedBecausePayloadCannotBeVerified() {
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("LEGACY_PRESENT"));
+
+        assertThatThrownBy(() -> store.begin("tenants-bulk", "legacy-key",
+            new Envelope("SUSPEND", 9), Envelope.class))
+            .isInstanceOf(GovernanceException.class)
+            .satisfies(error -> {
+                GovernanceException governance = (GovernanceException) error;
+                assertThat(governance.getErrorCode()).isEqualTo(ErrorCode.IDEMPOTENCY_MISMATCH);
+                assertThat(governance.getHttpStatus()).isEqualTo(409);
+            });
+        verify(jedis).eval(anyString(), eq(List.of(
+            "idem:v2:tenants-bulk:legacy-key", "idem:tenants-bulk:legacy-key")),
+            anyList());
+    }
+
+    @Test
+    void begin_claimIsDurableAndHasNoAutomaticStaleTakeover() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("ACQUIRED"));
+
+        store.begin("tenants-bulk", "durable-key",
+            new Envelope("CLOSE", 1), Envelope.class);
+
+        verify(jedis).eval(
+            org.mockito.ArgumentMatchers.<String>argThat(script ->
+                script.contains("redis.call('PERSIST', KEYS[1])")
+                    && !script.contains("PEXPIRE")
+                    && !script.contains("started_at') <")),
+            org.mockito.ArgumentMatchers.<String>anyList(),
+            org.mockito.ArgumentMatchers.<String>anyList());
+    }
+
+    @Test
+    void abandonFailureDiagnostics_handleNullAndBlankKeys() {
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenThrow(new RuntimeException("Redis down"));
+
+        store.abandon(new IdempotencyStore.Claim<>("budgets-bulk", null, "owner-1", null));
+        store.abandon(new IdempotencyStore.Claim<>("budgets-bulk", " ", "owner-2", null));
+    }
+
+    @Test
+    void completedOrAbsentClaimsNeedNoFurtherRedisWork() {
+        IdempotencyStore.Claim<Envelope> replay = new IdempotencyStore.Claim<>(
+            "budgets-bulk", "k-replay", null, new Envelope("CREDIT", 1));
+
+        store.complete(null, new Envelope("CREDIT", 1));
+        store.complete(replay, new Envelope("CREDIT", 1));
+        store.abandon(null);
+        store.abandon(replay);
+
+        verifyNoInteractions(jedis);
+    }
+
+    @Test
+    void begin_interruptedWaitFailsPromptlyAndPreservesInterrupt() {
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("IN_PROGRESS"));
+        Thread.currentThread().interrupt();
+        try {
+            assertThatThrownBy(() -> store.begin(
+                "tenants-bulk", "k-wait", new Envelope("CLOSE", 1), Envelope.class))
+                .isInstanceOf(GovernanceException.class)
+                .hasMessageContaining("Interrupted");
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void begin_deadlineExceededReturnsRetryable503WithoutSleeping() {
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("IN_PROGRESS"));
+        IdempotencyStore noWaitStore = new IdempotencyStore(jedisPool, objectMapper, 0L);
+
+        assertThatThrownBy(() -> noWaitStore.begin(
+            "tenants-bulk", "k-timeout", new Envelope("CLOSE", 1), Envelope.class))
+            .isInstanceOf(GovernanceException.class)
+            .satisfies(error -> {
+                GovernanceException governance = (GovernanceException) error;
+                assertThat(governance.getHttpStatus()).isEqualTo(503);
+                assertThat(governance.getMessage()).contains("still in progress");
+            });
+    }
+
+    @Test
+    void begin_corruptCompletedEnvelopeFailsClosed() {
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("COMPLETE", "{not-json"));
+
+        assertThatThrownBy(() -> store.begin(
+            "tenants-bulk", "k-corrupt", new Envelope("CLOSE", 1), Envelope.class))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("Failed to claim idempotency key");
     }
 }

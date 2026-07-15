@@ -3,6 +3,7 @@ package io.runcycles.admin.data.repository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.model.shared.CommitOveragePolicy;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.shared.SortSpec;
@@ -43,6 +44,29 @@ class TenantRepositoryTest {
     @BeforeEach
     void setUp() {
         lenient().when(jedisPool.getResource()).thenReturn(jedis);
+        // Non-close updates use a compare-and-set Lua script. Individual
+        // create/close tests override this with their structured Lua result.
+        lenient().when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        RedisBatchTestStubs.installStringReads(jedis);
+    }
+
+    @Test
+    void countForBulk_returnsExactFilteredCountAndSkipsBadRows() throws Exception {
+        Tenant active = Tenant.builder().tenantId("t-active").name("Acme")
+            .status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        Tenant suspended = Tenant.builder().tenantId("t-suspended").name("Acme")
+            .status(TenantStatus.SUSPENDED).createdAt(Instant.now()).build();
+        when(jedis.smembers("tenants")).thenReturn(
+            new LinkedHashSet<>(List.of("t-active", "t-suspended", "missing", "bad")));
+        String activeJson = objectMapper.writeValueAsString(active);
+        String suspendedJson = objectMapper.writeValueAsString(suspended);
+        when(jedis.get("tenant:t-active")).thenReturn(activeJson);
+        when(jedis.get("tenant:t-suspended")).thenReturn(suspendedJson);
+        when(jedis.get("tenant:missing")).thenReturn(null);
+        when(jedis.get("tenant:bad")).thenReturn("{bad-json");
+
+        assertThat(repository.countForBulk(TenantStatus.ACTIVE, null, "acme"))
+            .isEqualTo(1);
     }
 
     @Test
@@ -351,7 +375,7 @@ class TenantRepositoryTest {
 
         assertThat(result.getName()).isEqualTo("New Name");
         assertThat(result.getUpdatedAt()).isNotNull();
-        verify(jedis).set(eq("tenant:tenant-1"), anyString());
+        verify(jedis).eval(anyString(), eq(List.of("tenant:tenant-1")), anyList());
     }
 
     @Test
@@ -372,6 +396,7 @@ class TenantRepositoryTest {
     void update_statusActiveToClosed_succeeds() throws Exception {
         String storedJson = storedTenantJson(TenantStatus.ACTIVE);
         when(jedis.get("tenant:tenant-1")).thenReturn(storedJson);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("CLOSED"));
 
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setStatus(TenantStatus.CLOSED);
@@ -380,6 +405,10 @@ class TenantRepositoryTest {
 
         assertThat(result.getStatus()).isEqualTo(TenantStatus.CLOSED);
         assertThat(result.getClosedAt()).isNotNull();
+        verify(jedis).eval(anyString(), argThat(keys -> keys.size() == 6
+            && keys.contains("tenant-close:intent:tenant-1")
+            && keys.contains("tenant-close:committed:tenant-1")
+            && keys.contains("tenant-close:outbox:tenant-1")), anyList());
     }
 
     @Test
@@ -430,12 +459,15 @@ class TenantRepositoryTest {
                 });
     }
 
-    // Spec v0.1.25.29: re-issuing CLOSE on an already-CLOSED tenant is a
-    // no-op (CASCADE SEMANTICS idempotency clause).
+    // Spec v0.1.25.29: re-issuing CLOSE on an already-CLOSED tenant does not
+    // mutate the tenant. It may backfill the durable parent-event obligation
+    // for a row closed by a pre-upgrade replica.
     @Test
-    void update_statusClosedToClosed_isNoOp() throws Exception {
+    void update_statusClosedToClosed_backfillsMissingDurabilityMarker() throws Exception {
         String storedJson = storedTenantJson(TenantStatus.CLOSED);
         when(jedis.get("tenant:tenant-1")).thenReturn(storedJson);
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("BACKFILLED"));
 
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setStatus(TenantStatus.CLOSED);
@@ -443,7 +475,71 @@ class TenantRepositoryTest {
         Tenant result = repository.update("tenant-1", req);
 
         assertThat(result.getStatus()).isEqualTo(TenantStatus.CLOSED);
-        verify(jedis, never()).set(anyString(), anyString());
+        verify(jedis).eval(anyString(), argThat(keys -> keys.size() == 6
+            && keys.contains("tenant-close:committed:tenant-1")
+            && keys.contains("tenant-close:outbox:tenant-1")), anyList());
+    }
+
+    @Test
+    void update_statusClosedToClosed_alreadyDurableReturnsStoredTenant() throws Exception {
+        String storedJson = storedTenantJson(TenantStatus.CLOSED);
+        when(jedis.get("tenant:tenant-1")).thenReturn(storedJson);
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("ALREADY_DURABLE"));
+
+        TenantUpdateRequest req = new TenantUpdateRequest();
+        req.setStatus(TenantStatus.CLOSED);
+
+        assertThat(repository.update("tenant-1", req).getStatus())
+            .isEqualTo(TenantStatus.CLOSED);
+    }
+
+    @Test
+    void update_statusClosedToClosed_missingIntentFailsClosed() throws Exception {
+        String storedJson = storedTenantJson(TenantStatus.CLOSED);
+        when(jedis.get("tenant:tenant-1")).thenReturn(storedJson);
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("MISSING_INTENT"));
+
+        TenantUpdateRequest req = new TenantUpdateRequest();
+        req.setStatus(TenantStatus.CLOSED);
+
+        assertThatThrownBy(() -> repository.update("tenant-1", req))
+            .hasRootCauseMessage(
+                "Tenant-close intent disappeared before durability backfill");
+    }
+
+    @Test
+    void update_statusClosedToClosed_retriesConcurrentChange() throws Exception {
+        String storedJson = storedTenantJson(TenantStatus.CLOSED);
+        when(jedis.get("tenant:tenant-1")).thenReturn(storedJson);
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("RETRY"), List.of("BACKFILLED"));
+
+        TenantUpdateRequest req = new TenantUpdateRequest();
+        req.setStatus(TenantStatus.CLOSED);
+
+        assertThat(repository.update("tenant-1", req).getStatus())
+            .isEqualTo(TenantStatus.CLOSED);
+        verify(jedis, times(2)).get("tenant:tenant-1");
+    }
+
+    @Test
+    void update_casRetryExhaustionUsesSpecDeclaredInternalErrorStatus() throws Exception {
+        String storedJson = storedTenantJson(TenantStatus.ACTIVE);
+        when(jedis.get("tenant:tenant-1")).thenReturn(storedJson);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(0L);
+        TenantUpdateRequest req = new TenantUpdateRequest();
+        req.setName("concurrent-update");
+
+        assertThatThrownBy(() -> repository.update("tenant-1", req))
+            .isInstanceOf(GovernanceException.class)
+            .satisfies(error -> {
+                GovernanceException governance = (GovernanceException) error;
+                assertThat(governance.getErrorCode()).isEqualTo(ErrorCode.INTERNAL_ERROR);
+                assertThat(governance.getHttpStatus()).isEqualTo(500);
+            });
+        verify(jedis, times(5)).eval(anyString(), anyList(), anyList());
     }
 
     @Test
@@ -729,5 +825,121 @@ class TenantRepositoryTest {
 
         assertThat(result).hasSize(4);
         verify(jedis, never()).get("tenant:t-5");
+    }
+
+    @Test
+    void create_explicitReservationSettingsOverrideDefaults() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("CREATED"));
+        TenantCreateRequest request = new TenantCreateRequest();
+        request.setTenantId("tenant-explicit");
+        request.setName("Explicit");
+        request.setDefaultCommitOveragePolicy(CommitOveragePolicy.REJECT);
+        request.setDefaultReservationTtlMs(12_000L);
+        request.setMaxReservationTtlMs(90_000L);
+        request.setMaxReservationExtensions(3);
+
+        Tenant result = repository.create(request).tenant();
+
+        assertThat(result.getDefaultCommitOveragePolicy()).isEqualTo(CommitOveragePolicy.REJECT);
+        assertThat(result.getDefaultReservationTtlMs()).isEqualTo(12_000L);
+        assertThat(result.getMaxReservationTtlMs()).isEqualTo(90_000L);
+        assertThat(result.getMaxReservationExtensions()).isEqualTo(3);
+    }
+
+    @Test
+    void sortedList_skipsMissingAndMalformedRowsAndStopsAtLimit() throws Exception {
+        when(jedis.smembers("tenants")).thenReturn(
+            new LinkedHashSet<>(List.of("missing", "malformed", "t-1", "t-2")));
+        when(jedis.get("tenant:missing")).thenReturn(null);
+        when(jedis.get("tenant:malformed")).thenReturn("{bad-json");
+        String firstJson = objectMapper.writeValueAsString(
+            tenantRow("t-1", "Needle One", TenantStatus.ACTIVE, null));
+        String secondJson = objectMapper.writeValueAsString(
+            tenantRow("t-2", "Needle Two", TenantStatus.ACTIVE, null));
+        when(jedis.get("tenant:t-1")).thenReturn(firstJson);
+        when(jedis.get("tenant:t-2")).thenReturn(secondJson);
+
+        List<Tenant> result = repository.list(null, null, "needle", null, 1,
+            SortSpec.of("name", SortDirection.ASC));
+
+        assertThat(result).extracting(Tenant::getTenantId).containsExactly("t-1");
+    }
+
+    @Test
+    void sortedList_statusComparatorHandlesNullAndCursorContinuation() throws Exception {
+        Tenant nullStatus = tenantRow("t-null", "Null", null, null);
+        Tenant active = tenantRow("t-active", "Active", TenantStatus.ACTIVE, null);
+        when(jedis.smembers("tenants")).thenReturn(
+            new LinkedHashSet<>(List.of("t-null", "t-active")));
+        String nullStatusJson = objectMapper.writeValueAsString(nullStatus);
+        String activeJson = objectMapper.writeValueAsString(active);
+        when(jedis.get("tenant:t-null")).thenReturn(nullStatusJson);
+        when(jedis.get("tenant:t-active")).thenReturn(activeJson);
+
+        List<Tenant> sorted = repository.list(null, null, null, null, 10,
+            SortSpec.of("status", SortDirection.ASC));
+        assertThat(sorted).extracting(Tenant::getTenantId).containsExactly("t-active", "t-null");
+
+        List<Tenant> afterCursor = repository.list(null, null, null, "t-active", 10,
+            SortSpec.of("status", SortDirection.ASC));
+        assertThat(afterCursor).extracting(Tenant::getTenantId).containsExactly("t-null");
+    }
+
+    @Test
+    void update_nullLegacyStatusAndAllOptionalSettingsAreHandled() throws Exception {
+        Tenant legacy = Tenant.builder().tenantId("tenant-1").name("Legacy")
+            .status(null).createdAt(Instant.now()).build();
+        String legacyJson = objectMapper.writeValueAsString(legacy);
+        when(jedis.get("tenant:tenant-1")).thenReturn(legacyJson);
+        TenantUpdateRequest request = new TenantUpdateRequest();
+        request.setStatus(TenantStatus.ACTIVE);
+        request.setMetadata(Map.of("tier", "gold"));
+        request.setDefaultCommitOveragePolicy(CommitOveragePolicy.REJECT);
+        request.setDefaultReservationTtlMs(5_000L);
+        request.setMaxReservationTtlMs(50_000L);
+        request.setMaxReservationExtensions(7);
+
+        Tenant result = repository.update("tenant-1", request);
+
+        assertThat(result.getStatus()).isEqualTo(TenantStatus.ACTIVE);
+        assertThat(result.getMetadata()).containsEntry("tier", "gold");
+        assertThat(result.getDefaultCommitOveragePolicy()).isEqualTo(CommitOveragePolicy.REJECT);
+        assertThat(result.getDefaultReservationTtlMs()).isEqualTo(5_000L);
+        assertThat(result.getMaxReservationTtlMs()).isEqualTo(50_000L);
+        assertThat(result.getMaxReservationExtensions()).isEqualTo(7);
+    }
+
+    @Test
+    void sortedListCoversBlankSearchNullFieldFilteringAndCursorBoundaries() throws Exception {
+        Tenant active = tenantRow("active", "Active", TenantStatus.ACTIVE, null);
+        Tenant suspended = tenantRow("suspended", "Suspended", TenantStatus.SUSPENDED, null);
+        String activeJson = objectMapper.writeValueAsString(active);
+        String suspendedJson = objectMapper.writeValueAsString(suspended);
+        when(jedis.smembers("tenants")).thenReturn(
+            new LinkedHashSet<>(List.of("missing", "malformed", "active", "suspended")));
+        when(jedis.get("tenant:missing")).thenReturn(null);
+        when(jedis.get("tenant:malformed")).thenReturn("{bad-json");
+        when(jedis.get("tenant:active")).thenReturn(activeJson);
+        when(jedis.get("tenant:suspended")).thenReturn(suspendedJson);
+        SortSpec defaultField = new SortSpec(null, SortDirection.ASC);
+
+        assertThat(repository.list(TenantStatus.ACTIVE, null, null, " ", 1, defaultField))
+            .extracting(Tenant::getTenantId).containsExactly("active");
+        assertThat(repository.list(TenantStatus.ACTIVE, null, " ", null, 1, defaultField)).isEmpty();
+        assertThatThrownBy(() -> repository.list(
+                null, null, null, "not-found", 10, defaultField))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("restart pagination");
+    }
+
+    @Test
+    void legacyListDiagnosticsCoverBlankAndPresentSearchValues() throws Exception {
+        when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("missing", "malformed")));
+        when(jedis.get("tenant:missing")).thenReturn(null);
+        when(jedis.get("tenant:malformed")).thenReturn("{bad-json");
+
+        assertThat(repository.list(null, null, " ", " ", 10, null)).isEmpty();
+        assertThat(repository.list(null, null, "needle", null, 10, null)).isEmpty();
+        assertThat(repository.matchForBulk(null, null, " ", 10)).isEmpty();
     }
 }

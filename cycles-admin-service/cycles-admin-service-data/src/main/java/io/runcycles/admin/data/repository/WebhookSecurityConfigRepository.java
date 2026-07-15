@@ -3,6 +3,7 @@ import io.runcycles.admin.model.webhook.WebhookSecurityConfig;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.*;
 @Repository
@@ -10,7 +11,7 @@ public class WebhookSecurityConfigRepository {
     private static final Logger LOG = LoggerFactory.getLogger(WebhookSecurityConfigRepository.class);
     private static final String CONFIG_KEY = "config:webhook-security";
     @Autowired private JedisPool jedisPool;
-    @Autowired private ObjectMapper objectMapper;
+    @Autowired @Qualifier("redisObjectMapper") private ObjectMapper objectMapper;
 
     public WebhookSecurityConfig get() {
         try (Jedis jedis = jedisPool.getResource()) {

@@ -6,6 +6,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.ErrorCode;
+import io.runcycles.admin.data.repository.support.ScoredJedisTestAdapter;
 import io.runcycles.admin.model.webhook.DeliveryStatus;
 import io.runcycles.admin.model.webhook.WebhookDelivery;
 import org.junit.jupiter.api.BeforeEach;
@@ -44,6 +45,7 @@ class WebhookDeliveryRepositoryTest {
     @BeforeEach
     void setUp() {
         lenient().when(jedisPool.getResource()).thenReturn(jedis);
+        ScoredJedisTestAdapter.install(jedis);
     }
 
     // ---- save() ----
@@ -183,9 +185,11 @@ class WebhookDeliveryRepositoryTest {
     @Test
     void listBySubscription_withCursor() throws Exception {
         when(jedis.zscore("deliveries:whsub_1", "del_cursor")).thenReturn(5000.0);
+        when(jedis.zrevrangeByScore("deliveries:whsub_1", 5000.0, 5000.0))
+            .thenReturn(List.of("del_cursor"));
 
         List<String> ids = List.of("del_2");
-        when(jedis.zrevrangeByScore(eq("deliveries:whsub_1"), eq(4999.0), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
+        when(jedis.zrevrangeByScore(eq("deliveries:whsub_1"), eq(Math.nextDown(5000.0)), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
 
         WebhookDelivery d2 = WebhookDelivery.builder().deliveryId("del_2").subscriptionId("whsub_1").eventId("evt_2").status(DeliveryStatus.SUCCESS).attemptedAt(Instant.now()).build();
         String d2Json = objectMapper.writeValueAsString(d2);
@@ -254,6 +258,54 @@ class WebhookDeliveryRepositoryTest {
     }
 
     @Test
+    void saveAndEnqueueOnce_usesOneAtomicScriptAndReportsDuplicate() {
+        WebhookDelivery delivery = WebhookDelivery.builder()
+            .deliveryId("del_deterministic")
+            .subscriptionId("whsub_1").eventId("evt_1")
+            .eventType(EventType.BUDGET_CREATED).status(DeliveryStatus.PENDING)
+            .attemptedAt(Instant.parse("2026-07-15T12:00:00Z")).build();
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L, 0L);
+
+        assertThat(repository.saveAndEnqueueOnce(delivery, "dispatch:pending")).isTrue();
+        assertThat(repository.saveAndEnqueueOnce(delivery, "dispatch:pending")).isFalse();
+
+        verify(jedis, times(2)).eval(anyString(), eq(List.of(
+            "delivery:del_deterministic", "deliveries:whsub_1", "dispatch:pending")),
+            argThat(args -> args.size() == 4
+                && "del_deterministic".equals(args.get(2))));
+    }
+
+    @Test
+    void save_handlesBlankAndExistingIds() {
+        WebhookDelivery blank = WebhookDelivery.builder().deliveryId(" ")
+                .subscriptionId("whsub_1").attemptedAt(Instant.now()).build();
+        WebhookDelivery existing = WebhookDelivery.builder().deliveryId("del-existing")
+                .subscriptionId("whsub_1").attemptedAt(Instant.now()).build();
+
+        repository.save(blank);
+        repository.save(existing);
+
+        assertThat(blank.getDeliveryId()).startsWith("del_");
+        assertThat(existing.getDeliveryId()).isEqualTo("del-existing");
+    }
+
+    @Test
+    void saveFailureDiagnostics_handleNullDeliveryAndPresentEventType() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
+
+        assertThatThrownBy(() -> repository.save(null))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Failed to save webhook delivery");
+
+        WebhookDelivery typed = WebhookDelivery.builder().deliveryId("del-typed")
+                .subscriptionId("whsub_1").eventType(EventType.BUDGET_CREATED)
+                .attemptedAt(Instant.now()).build();
+        assertThatThrownBy(() -> repository.save(typed))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Failed to save webhook delivery");
+    }
+
+    @Test
     void findById_redisException_throwsRuntimeException() {
         when(jedis.get("delivery:del_err")).thenThrow(new RuntimeException("Redis down"));
 
@@ -294,19 +346,14 @@ class WebhookDeliveryRepositoryTest {
     }
 
     @Test
-    void listBySubscription_cursorNotInIndex_ignoresCursor() throws Exception {
+    void listBySubscription_cursorNotInIndex_rejectsInvalidCursor() {
         when(jedis.zscore("deliveries:whsub_1", "del_unknown")).thenReturn(null);
 
-        List<String> ids = List.of("del_1");
-        when(jedis.zrevrangeByScore(eq("deliveries:whsub_1"), eq(Double.POSITIVE_INFINITY), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
-
-        WebhookDelivery d = WebhookDelivery.builder().deliveryId("del_1").subscriptionId("whsub_1").eventId("evt_1").status(DeliveryStatus.SUCCESS).attemptedAt(Instant.now()).build();
-        String dJson = objectMapper.writeValueAsString(d);
-        when(jedis.get("delivery:del_1")).thenReturn(dJson);
-
-        List<WebhookDelivery> result = repository.listBySubscription("whsub_1", null, null, null, "del_unknown", 50);
-
-        assertThat(result).hasSize(1);
+        assertThatThrownBy(() -> repository.listBySubscription(
+            "whsub_1", null, null, null, "del_unknown", 50))
+            .isInstanceOf(GovernanceException.class)
+            .extracting("errorCode")
+            .isEqualTo(ErrorCode.INVALID_REQUEST);
     }
 
     @Test
@@ -360,6 +407,37 @@ class WebhookDeliveryRepositoryTest {
                 .status(DeliveryStatus.SUCCESS).attemptedAt(Instant.now()).build();
 
         assertThatThrownBy(() -> repository.update(delivery))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Failed to update webhook delivery");
+    }
+
+    @Test
+    void update_preservesPositiveTtl() {
+        WebhookDelivery delivery = WebhookDelivery.builder()
+                .deliveryId("del-ttl").subscriptionId("whsub_1")
+                .attemptedAt(Instant.now()).build();
+        when(jedis.get("delivery:del-ttl")).thenReturn("existing");
+        when(jedis.ttl("delivery:del-ttl")).thenReturn(120L);
+
+        repository.update(delivery);
+
+        verify(jedis).expire("delivery:del-ttl", 120L);
+    }
+
+    @Test
+    void updateFailureDiagnostics_handleNullDeliveryAndPresentEventType() {
+        assertThatThrownBy(() -> repository.update(null))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Failed to update webhook delivery");
+
+        WebhookDelivery typed = WebhookDelivery.builder().deliveryId("del-typed")
+                .subscriptionId("whsub_1").eventType(EventType.BUDGET_CREATED)
+                .attemptedAt(Instant.now()).build();
+        when(jedis.get("delivery:del-typed")).thenReturn("existing");
+        when(jedis.set(eq("delivery:del-typed"), anyString()))
+                .thenThrow(new RuntimeException("Redis down"));
+
+        assertThatThrownBy(() -> repository.update(typed))
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("Failed to update webhook delivery");
     }
