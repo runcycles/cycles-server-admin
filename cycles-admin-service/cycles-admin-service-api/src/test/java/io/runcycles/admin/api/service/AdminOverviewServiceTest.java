@@ -4,6 +4,7 @@ import io.runcycles.admin.data.repository.BudgetRepository;
 import io.runcycles.admin.data.repository.EventRepository;
 import io.runcycles.admin.data.repository.TenantRepository;
 import io.runcycles.admin.data.repository.WebhookRepository;
+import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.budget.BudgetLedger;
 import io.runcycles.admin.model.budget.BudgetStatus;
 import io.runcycles.admin.model.event.Event;
@@ -11,6 +12,7 @@ import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.AdminOverviewResponse;
 import io.runcycles.admin.model.shared.Amount;
+import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.UnitEnum;
 import io.runcycles.admin.model.tenant.Tenant;
 import io.runcycles.admin.model.tenant.TenantStatus;
@@ -28,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.when;
 
@@ -245,5 +248,79 @@ class AdminOverviewServiceTest {
         assertThat(response.getRecentDenialsByReason()).containsEntry("QUOTA_EXCEEDED", 1);
         assertThat(response.getOverLimitScopes().get(0).getAllocated()).isZero();
         assertThat(response.getDebtScopes().get(0).getOverdraftLimit()).isZero();
+    }
+
+    @Test
+    void buildOverview_stopsWhenAnInternalRepositoryRepeatsTheSameFullPage() {
+        List<Tenant> tenants = new ArrayList<>();
+        for (int i = 0; i < 100; i++) {
+            tenants.add(Tenant.builder().tenantId("tenant-" + i)
+                .status(TenantStatus.ACTIVE).build());
+        }
+        when(tenantRepository.list(isNull(), isNull(), isNull(), eq(100))).thenReturn(tenants);
+        when(tenantRepository.list(isNull(), isNull(), eq("tenant-99"), eq(100))).thenReturn(tenants);
+
+        AdminOverviewResponse response = overviewService.buildOverview();
+
+        assertThat(response.getTenantCounts().getTotal()).isEqualTo(100);
+    }
+
+    @Test
+    void buildOverview_stopsWhenAFullPageHasNoUsableBoundaryId() {
+        List<Tenant> tenants = new ArrayList<>();
+        for (int i = 0; i < 99; i++) {
+            tenants.add(Tenant.builder().tenantId("tenant-" + i)
+                .status(TenantStatus.ACTIVE).build());
+        }
+        tenants.add(Tenant.builder().tenantId(null).status(TenantStatus.ACTIVE).build());
+        when(tenantRepository.list(isNull(), isNull(), isNull(), eq(100))).thenReturn(tenants);
+
+        AdminOverviewResponse response = overviewService.buildOverview();
+
+        assertThat(response.getTenantCounts().getTotal()).isEqualTo(100);
+    }
+
+    @Test
+    void buildOverview_stopsWhenAFullPageHasABlankBoundaryId() {
+        List<Tenant> tenants = new ArrayList<>();
+        for (int i = 0; i < 99; i++) {
+            tenants.add(Tenant.builder().tenantId("tenant-" + i)
+                .status(TenantStatus.ACTIVE).build());
+        }
+        tenants.add(Tenant.builder().tenantId(" ").status(TenantStatus.ACTIVE).build());
+        when(tenantRepository.list(isNull(), isNull(), isNull(), eq(100))).thenReturn(tenants);
+
+        AdminOverviewResponse response = overviewService.buildOverview();
+
+        assertThat(response.getTenantCounts().getTotal()).isEqualTo(100);
+    }
+
+    @Test
+    void buildOverview_restartsAnInternallyStaleCursor() {
+        when(tenantRepository.list(isNull(), isNull(), isNull(), eq(100)))
+            .thenThrow(new GovernanceException(ErrorCode.INVALID_REQUEST, "stale", 400))
+            .thenReturn(List.of());
+
+        AdminOverviewResponse response = overviewService.buildOverview();
+
+        assertThat(response.getTenantCounts().getTotal()).isZero();
+    }
+
+    @Test
+    void buildOverview_returnsPartialSnapshotAfterRepeatedStaleCursors() {
+        when(tenantRepository.list(isNull(), isNull(), isNull(), eq(100)))
+            .thenThrow(new GovernanceException(ErrorCode.INVALID_REQUEST, "stale", 400));
+
+        AdminOverviewResponse response = overviewService.buildOverview();
+
+        assertThat(response.getTenantCounts().getTotal()).isZero();
+    }
+
+    @Test
+    void buildOverview_doesNotSwallowUnrelatedRepositoryErrors() {
+        GovernanceException failure = GovernanceException.tenantNotFound("broken");
+        when(tenantRepository.list(isNull(), isNull(), isNull(), eq(100))).thenThrow(failure);
+
+        assertThatThrownBy(overviewService::buildOverview).isSameAs(failure);
     }
 }

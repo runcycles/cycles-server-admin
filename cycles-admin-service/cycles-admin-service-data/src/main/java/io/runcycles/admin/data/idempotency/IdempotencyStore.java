@@ -38,7 +38,10 @@ import java.util.concurrent.locks.LockSupport;
  * transaction as the balance mutation — externalising it would lose the
  * atomic "never apply twice under concurrent retry" guarantee. Bulk-action
  * idempotency has a different shape: the mutation is a per-row loop, so the
- * owner claim serializes equal retries and stale ownership can be taken over.
+ * owner claim serializes equal retries. In-progress ownership deliberately has
+ * no automatic takeover: after an ambiguous process failure, re-executing a
+ * destructive bulk request is less safe than requiring an operator to inspect
+ * the durable per-row effects and explicitly clear the claim.
  */
 @Component
 public class IdempotencyStore {
@@ -47,22 +50,19 @@ public class IdempotencyStore {
     public static final int TTL_SECONDS = 900;
     private static final String KEY_PREFIX = "idem:";
     private static final String V2_KEY_PREFIX = "idem:v2:";
-    private static final long OWNER_STALE_MILLIS = 60_000L;
     private static final long WAIT_NANOS = 5_000_000_000L;
     private static final String BEGIN_LUA =
         "local state = redis.call('HGET', KEYS[1], 'state')\n" +
         "if not state then\n" +
+        " local legacy = redis.call('GET', KEYS[2])\n" +
+        " if legacy then return {'LEGACY_COMPLETE',legacy} end\n" +
         " redis.call('HSET', KEYS[1], 'state','IN_PROGRESS','payload_hash',ARGV[1],'owner',ARGV[2],'started_at',ARGV[3])\n" +
-        " redis.call('EXPIRE', KEYS[1], ARGV[4]); return {'ACQUIRED'}\n" +
+        " redis.call('PERSIST', KEYS[1]); return {'ACQUIRED'}\n" +
         "end\n" +
         "local stored_hash = redis.call('HGET', KEYS[1], 'payload_hash') or ''\n" +
         "if stored_hash ~= ARGV[1] then return {'MISMATCH'} end\n" +
         "if state == 'COMPLETE' then return {'COMPLETE', redis.call('HGET', KEYS[1], 'response') or ''} end\n" +
-        "local started = tonumber(redis.call('HGET', KEYS[1], 'started_at') or '0')\n" +
-        "if tonumber(ARGV[3]) - started > tonumber(ARGV[5]) then\n" +
-        " redis.call('HSET', KEYS[1], 'owner',ARGV[2],'started_at',ARGV[3]); redis.call('EXPIRE', KEYS[1], ARGV[4]); return {'ACQUIRED'}\n" +
-        "end\n" +
-        "return {'IN_PROGRESS'}\n";
+        "return {'IN_PROGRESS', redis.call('HGET', KEYS[1], 'started_at') or ''}\n";
     private static final String COMPLETE_LUA =
         "if redis.call('HGET', KEYS[1], 'owner') ~= ARGV[1] then return 0 end\n" +
         "redis.call('HSET', KEYS[1], 'state','COMPLETE','response',ARGV[2])\n" +
@@ -134,13 +134,18 @@ public class IdempotencyStore {
             try (Jedis jedis = jedisPool.getResource()) {
                 @SuppressWarnings("unchecked")
                 List<String> result = (List<String>) jedis.eval(BEGIN_LUA,
-                    List.of(v2RedisKey(endpoint, key)),
-                    List.of(payloadHash, owner, String.valueOf(System.currentTimeMillis()),
-                        String.valueOf(TTL_SECONDS), String.valueOf(OWNER_STALE_MILLIS)));
+                    List.of(v2RedisKey(endpoint, key), redisKey(endpoint, key)),
+                    List.of(payloadHash, owner, String.valueOf(System.currentTimeMillis())));
                 switch (result.get(0)) {
                     case "ACQUIRED": return new Claim<>(endpoint, key, owner, null);
                     case "COMPLETE": return new Claim<>(endpoint, key, null,
                         objectMapper.readValue(result.get(1), type));
+                    case "LEGACY_COMPLETE": {
+                        LOG.info("Replaying legacy idempotency envelope during v2 rolling upgrade: endpoint={} key_sha256={}",
+                            endpoint, fingerprint(key));
+                        return new Claim<>(endpoint, key, null,
+                            objectMapper.readValue(result.get(1), type));
+                    }
                     case "MISMATCH": throw new GovernanceException(ErrorCode.IDEMPOTENCY_MISMATCH,
                         "Idempotency key was already used with a different request", 409);
                     case "IN_PROGRESS": {

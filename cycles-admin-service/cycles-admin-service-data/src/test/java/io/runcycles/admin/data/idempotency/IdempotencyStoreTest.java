@@ -162,10 +162,12 @@ class IdempotencyStoreTest {
 
         assertThat(claim.isReplay()).isFalse();
         assertThat(claim.ownerToken()).isNotBlank();
-        verify(jedis).eval(anyString(), eq(List.of("idem:v2:tenants-bulk:k-atomic")),
-            argThat(args -> args.size() == 5
+        verify(jedis).eval(anyString(), eq(List.of(
+                "idem:v2:tenants-bulk:k-atomic", "idem:tenants-bulk:k-atomic")),
+            argThat(args -> args.size() == 3
                 && args.get(0).matches("[0-9a-f]{64}")
-                && "900".equals(args.get(3))));
+                && args.get(1) != null
+                && args.get(2).matches("[0-9]+")));
     }
 
     @Test
@@ -266,6 +268,39 @@ class IdempotencyStoreTest {
             .thenThrow(new RuntimeException("Redis down"));
 
         store.abandon(claim);
+    }
+
+    @Test
+    void begin_replaysLegacyEnvelopeDuringRollingUpgrade() throws Exception {
+        Envelope expected = new Envelope("CLOSE", 3);
+        String storedEnvelope = objectMapper.writeValueAsString(expected);
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("LEGACY_COMPLETE", storedEnvelope));
+
+        IdempotencyStore.Claim<Envelope> claim = store.begin(
+            "tenants-bulk", "legacy-key", new Envelope("CLOSE", 3), Envelope.class);
+
+        assertThat(claim.isReplay()).isTrue();
+        assertThat(claim.replayResponse()).isEqualTo(expected);
+        verify(jedis).eval(anyString(), eq(List.of(
+            "idem:v2:tenants-bulk:legacy-key", "idem:tenants-bulk:legacy-key")),
+            anyList());
+    }
+
+    @Test
+    void begin_claimIsDurableAndHasNoAutomaticStaleTakeover() {
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("ACQUIRED"));
+
+        store.begin("tenants-bulk", "durable-key",
+            new Envelope("CLOSE", 1), Envelope.class);
+
+        verify(jedis).eval(
+            org.mockito.ArgumentMatchers.<String>argThat(script ->
+                script.contains("redis.call('PERSIST', KEYS[1])")
+                    && !script.contains("PEXPIRE")
+                    && !script.contains("started_at') <")),
+            org.mockito.ArgumentMatchers.<String>anyList(),
+            org.mockito.ArgumentMatchers.<String>anyList());
     }
 
     @Test

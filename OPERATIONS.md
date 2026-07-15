@@ -229,8 +229,11 @@ a cascade 409 rather than racing to resurrect a just-terminated
 child. Each child transition and its outbox record are committed in one
 Redis Lua operation. The outbox item is acknowledged only after the
 child audit row and typed event have persisted; stable audit/event IDs
-make retries duplicate-safe. On partial failure the tenant remains
-CLOSED and the durable work item remains queued.
+make retries storage-idempotent. The parent status flip, committed marker,
+and `tenant.closed` outbox item are one Redis Lua transaction, so a crash
+cannot leave a CLOSED tenant without a durable parent-event obligation. On
+partial failure the tenant remains CLOSED and the durable work item remains
+queued.
 
 **Convergence mechanism (Rule 1(c) — MUST be documented).** Spec
 v0.1.25.31 Rule 1(c) requires a Mode B implementation to document
@@ -242,18 +245,33 @@ For this server:
   scheduled reconciler reads only due work (it does not scan every
   tenant) and retries up to `max-tenants-per-run`. A 5-minute
   per-tenant distributed lease prevents concurrent replicas from
-  executing the same cascade. Child CAS scripts remain the final
-  duplicate-mutation guard if a worker outlives its lease.
+  executing the same cascade. The owner renews that lease during active
+  work; token-checked renewal/release prevents an expired owner from
+  modifying a successor's lease. Child CAS scripts remain the final
+  duplicate-mutation guard if ownership is lost between heartbeats.
+- **Contention:** a request that finds a healthy lease owner remains a
+  spec-compatible 200 and returns `X-Cycles-Cascade-Status: in_progress` plus
+  `Retry-After: 1`, rather than a 500. An already-CLOSED bulk row is also
+  classified `CASCADE_IN_PROGRESS`; a freshly committed row remains succeeded
+  because its parent transition did occur. The work remains scheduled and no
+  second worker mutates children.
 - **Bound:** with defaults and a queue depth `Q`, a due item is selected
   within approximately
   `ceil(Q / 100) × 300 seconds + cascade execution time`. Failed items
   are made eligible again after 30 seconds; the 300-second scheduler
   interval is the effective default retry cadence. Size the interval
   and per-run maximum to keep this bound inside the operational SLO.
-- **Operator acceleration:** re-issuing
+- **Poison-item bound:** an outbox item uses exponential backoff and is moved
+  to `tenant-close:outbox:dead-letter:<tenant_id>` after 8 failed emissions.
+  A tenant with dead letters is removed from the automatic pending queue, so
+  a corrupt item cannot retry forever. This pauses convergence and requires
+  operator repair/requeue; alert on
+  `cycles_admin_tenant_close_outbox_dead_letter_total`.
+- **Operator acceleration:** for ordinary transient failures, re-issuing
   `PATCH /v1/admin/tenants/{id} { "status": "CLOSED" }` is safe. It
   re-runs the durable cascade immediately; already-terminal children
-  and already-persisted outbox records do not produce duplicate rows.
+  and already-persisted outbox records do not produce duplicate rows. A
+  dead-lettered item must be repaired and explicitly requeued as below.
 - **Detection:** alert on increases in
   `cycles_admin_tenant_close_reconcile_incomplete_total` or
   `cycles_admin_tenant_close_reconcile_errors_total`. Inspect queue
@@ -267,9 +285,12 @@ For this server:
   not a permanent inconsistency.
 
 For bulk CLOSE, a row whose child cascade is incomplete is returned in
-`failed[]` and emits no parent lifecycle event, as required by the bulk
-contract. Its durable work item is still reconciled because the parent
-status flip has already committed under Mode B.
+`failed[]` (or `skipped[]` with `CASCADE_IN_PROGRESS` when another healthy
+worker owns it). Its durable work item is still reconciled because the parent
+status flip has already committed under Mode B. The durable parent lifecycle
+event is ordered after all child outbox items and is emitted only when that
+logical close converges; it is therefore neither lost nor emitted ahead of an
+incomplete cascade.
 
 **Correlation.** Every child audit entry and event emitted in one cascade
 shares:
@@ -279,9 +300,12 @@ shares:
 
 For a single PATCH, the parent `TENANT_CLOSED` event stamps the same
 `correlation_id`, so dashboards can JOIN it with the child
-`*_via_tenant_cascade` events as one logical operation. A successful bulk
-CLOSE parent uses the bulk invocation correlation ID by contract; its child
-events retain the per-tenant cascade ID and share the same request/trace IDs.
+`*_via_tenant_cascade` events as one logical operation. A bulk CLOSE parent
+uses the bulk invocation correlation ID even when a reconciler emits it later;
+its child events retain the per-tenant cascade ID and share the original
+request/trace IDs. Outbox processing is at-least-once, while deterministic IDs
+and atomic delivery enqueue make the persisted audit/event/delivery effects
+idempotent.
 
 **Audit.** One entry per touched child, `operation=tenant_close_cascade`,
 `resource_type` in `{budget, webhook_subscription, api_key}`. Metadata
@@ -319,6 +343,30 @@ GET /v1/admin/audit/logs?trace_id=<value>
 4. Confirm with `GET /v1/admin/events?event_type=budget.closed_via_tenant_cascade&tenant_id={id}`
    — you should see one event per remediated budget.
 
+**Dead-letter inspection and requeue.** First list the item IDs and inspect the
+retained body. Repair the underlying dependency or correct the body before
+requeueing; do not delete the intent or committed marker.
+
+```bash
+redis-cli SMEMBERS tenant-close:outbox:dead-letter:<tenant_id>
+redis-cli GET tenant-close:outbox:item:<tenant_id>:<item_id>
+
+# Atomically move one repaired item back to the live outbox and make it due.
+redis-cli --eval /dev/stdin \
+  tenant-close:outbox:dead-letter:<tenant_id> \
+  tenant-close:outbox:<tenant_id> \
+  tenant-close:outbox:attempts:<tenant_id> \
+  tenant-close:pending , <item_id> <tenant_id> <epoch-ms-now-plus-one> <<'LUA'
+if redis.call('SREM', KEYS[1], ARGV[1]) == 1 then
+  redis.call('SADD', KEYS[2], ARGV[1])
+  redis.call('HDEL', KEYS[3], ARGV[1])
+  redis.call('ZADD', KEYS[4], ARGV[3], ARGV[2])
+  return 1
+end
+return 0
+LUA
+```
+
 **Post-close operator mutations 409 with `TENANT_CLOSED` (Rule 2).**
 This is the expected contract — don't treat it as a bug. To change
 anything about a CLOSED tenant's objects, the tenant itself would need
@@ -345,6 +393,14 @@ auto-metrics (`http_server_requests_seconds`, `jvm_*`, `process_*`,
 | Metric | Tags | What it tells you |
 |---|---|---|
 | `cycles_admin_webhook_dispatched_total` | `result` | Every webhook-delivery enqueue attempt. `result=queued` when at least one matching subscription existed and a delivery row was created; `result=failure` on dispatch/enqueue error. This is a dispatch-path counter, not a delivery-outcome one — actual HTTP-delivery outcomes live in the sibling `cycles-server-events` service. |
+
+### Tenant-close convergence
+
+| Metric | Tags | What it tells you |
+|---|---|---|
+| `cycles_admin_tenant_close_reconcile_incomplete_total` | — | A scheduled reconciliation attempt completed without throwing but still had unfinished cascade work. Alert on sustained growth and inspect `tenant-close:pending`. |
+| `cycles_admin_tenant_close_reconcile_errors_total` | — | A scheduled reconciliation attempt failed before it could report a normal incomplete result. Any sustained increase indicates Redis, serialization, lease, or cascade-path failure. |
+| `cycles_admin_tenant_close_outbox_dead_letter_total` | `resource_type` | A required cascade audit/event outbox item exhausted eight attempts and was parked for operator repair. Any increment requires dead-letter inspection and explicit requeue. |
 
 ### Audit log writes (v0.1.25.20+)
 
@@ -510,6 +566,7 @@ with env overrides.
 | `tenant-close.reconciler.enabled` | `TENANT_CLOSE_RECONCILER_ENABLED` | `true` | Retry incomplete Mode-B cascades for tenants already marked `CLOSED`. |
 | `tenant-close.reconciler.interval-ms` | `TENANT_CLOSE_RECONCILER_INTERVAL_MS` | `300000` | Fixed delay in milliseconds between reconciliation runs. |
 | `tenant-close.reconciler.max-tenants-per-run` | `TENANT_CLOSE_RECONCILER_MAX_TENANTS_PER_RUN` | `100` | Maximum due work items processed per run. Redis score ordering and rescheduling provide durable progress across restarts and replicas. |
+| `spring.task.scheduling.pool.size` | `TASK_SCHEDULER_POOL_SIZE` | `2` | Scheduler threads. Values below `2` are raised to the enforced safety floor: one thread may run the reconciler while another renews its distributed lease. |
 | JVM options | `JAVA_OPTS` | (unset) | Extra JVM flags consumed by the Docker image entrypoint. Production Compose sets G1, `MaxRAMPercentage=75`, and string deduplication defaults. |
 | `audit.sweep.cron` | `AUDIT_SWEEP_CRON` | `0 0 3 * * *` | Cron schedule for the daily audit index sweep (`ZREMRANGEBYSCORE` on expired pointers). Default 03:00 server time. Sweep is best-effort; skipped entirely when `audit.retention.authenticated.days=0` (indefinite — nothing to sweep). |
 | `dashboard.cors.origin` | `DASHBOARD_CORS_ORIGIN` | `http://localhost:5173` | CORS allowed origin(s). Comma-separated. **In production, set to your dashboard URL** — the default only works against the local Vite dev server. |
@@ -616,11 +673,14 @@ mapped class. Engineering fix: inspect `EventPayloadTypeMapping` +
 
 ### "clients getting 400 'Malformed request body' on legitimate requests"
 
-As of v0.1.25.17, the admin API only returns generic `400 Malformed
-request body` for actual Jackson parse failures. Unknown permissions on
+Request DTO parsing is strict: an unknown JSON field is a contract violation
+and returns `400 Malformed request body`. This is intentional; remove the field
+or advance the server/spec before retrying. Redis-persisted domain rows use a
+separate tolerant mapper, so additive stored fields remain safe during rolling
+deployments. Unknown permissions on
 `/v1/admin/api-keys` now return `400 Unrecognized permission: <value>`
-naming the offender. If you see the generic message, it's a real JSON
-parse error — check the client's request body, not the admin.
+naming the offender. For the generic message, check both JSON syntax and field
+names against the pinned contract.
 
 ### "list API-keys is missing some records"
 
@@ -641,8 +701,38 @@ correct. The server permits that exact sort through 20,000 candidates and
 returns `400 LIMIT_EXCEEDED` above that boundary; it never silently truncates.
 Narrow `tenant_id` where the endpoint supports it, or narrow `from` / `to` on
 event and audit lists, then retry with the same sort. Primary/indexed order
-(for example the default timestamp order on events and audit logs) continues
-to page without this full-hydration guard.
+(for example the default timestamp order on events and audit logs) uses a
+separate 5,000-candidate sparse-filter budget. If that budget is exhausted,
+narrow the time range or filters; the server will not perform an unbounded
+Redis hydration scan.
+
+Set-backed exact sorts also enforce a 50,000-source-candidate scan ceiling
+before the 20,000 filtered-result sort ceiling. Surfaces without a useful
+narrowing filter should use their primary/indexed order at larger cardinality.
+
+### "a paginated list returns INVALID_REQUEST after records expire"
+
+Cursors identify the last boundary row. If retention, TTL, or deletion removes
+that row, every list implementation consistently returns `400 INVALID_REQUEST`
+with restart guidance instead of silently truncating the result. Restart from
+page one with no cursor and de-duplicate IDs already processed. Internal
+overview pagination performs that restart itself with a bounded retry count.
+
+### "a bulk request is stuck IDEMPOTENCY_IN_PROGRESS"
+
+In-progress v2 claims deliberately have no TTL and cannot be taken over after
+an arbitrary timeout: a slow original request must never overlap a retry and
+double-execute mutations. Normal pre-mutation failures owner-safely abandon the
+claim; successful requests replace it with a completed replay envelope that
+expires normally. During rolling upgrades, v2 lookup also honors a completed
+legacy entry.
+
+If a process dies after entering mutation and leaves a claim, first determine
+whether its effects and bulk audit envelope committed. Inspect
+`HGETALL idem:v2:<endpoint>:<idempotency_key>` and correlate the hashed key with
+the request/audit logs. Only after reconciling the affected rows may an operator
+delete that one claim and retry. Never delete an in-progress claim merely
+because it is old; the original worker may still be active.
 
 ### "after revoking an admin-key secret, old callers are still getting through"
 
@@ -669,14 +759,17 @@ entries call this out when the coordination pattern is used.
 
 ## Nightly CI coverage (v0.1.25.21+)
 
-Two scheduled workflows watch the audit-write path for emergent issues that PR-level tests can't catch:
+Three scheduled workflows watch behavior that PR-level tests or a reviewed pin
+cannot catch:
 
 | Workflow | Schedule | Purpose | Failure-signal runbook |
 |---|---|---|---|
 | [`.github/workflows/nightly-property-tests.yml`](.github/workflows/nightly-property-tests.yml) | 06:00 UTC daily | jqwik property-based invariants (6 tests, 100 tries nightly). Asserts `logFailure` correctness across arbitrary inputs — exactly-one-outcome per call, authenticated-tier never sampled, TTL tier matches tenant_id, sanitizeMessage bulletproof, non-throwing contract. | **A failure here means a real contract regression.** Download the surefire report from the failed run — jqwik embeds the minimal shrunk input (e.g. `tenantId=""`, `rate=Integer.MAX_VALUE`, `status=500`). Paste it into a unit test for fast-feedback iteration. Priority: **high** — these invariants are NORMATIVE; failing means v0.1.25.20's compliance guarantees no longer hold. |
 | [`.github/workflows/nightly-audit-soak.yml`](.github/workflows/nightly-audit-soak.yml) | 06:30 UTC daily | 10-min × 500 ops/s failure flood against real Testcontainers Redis. 5 invariants: heap stable (AS1), latency stable (AS2), counter-sum complete (AS3), index-cardinality bounded (AS4), network-error rate < 1% (AS5). | Which invariant failed determines the triage path: **AS1** — memory leak in the audit-write path; check `AuditFailureService` or `AuditRepository` for recent additions. **AS2** — p99 latency regression on the hot path; profile `logFailure` with a flame graph. **AS3** — lost counter increments under contention; examine `ThreadLocalRandom` usage and meter-registry atomics. **AS4** — orphan ZADD bug; check Lua script for divergence between SET + ZADD atomicity. **AS5** — Redis-pool exhaustion; increase pool size or investigate connection leak. Priority: **medium** — soak catches slow regressions; single-day failure is often transient (CI load variance). Two consecutive failures = genuine problem. |
+| [`.github/workflows/nightly-contract-drift.yml`](.github/workflows/nightly-contract-drift.yml) | 05:30 UTC daily | Downloads both the reviewed contract revision and `cycles-protocol/main` with bounded retries, then compares them byte-for-byte. | Review the upstream diff and advance `ContractSpecLoader.SPEC_REVISION` only with the corresponding implementation/tests. A transient download is retried five times before the job fails. |
 
-Both workflows have `workflow_dispatch` triggers — run manually via the Actions tab to reproduce on-demand, useful when triaging a failed PR before merge.
+All three workflows have `workflow_dispatch` triggers — run them manually from
+the Actions tab when reproducing a failure or reviewing a contract-pin advance.
 
 **Manual reproduction locally:**
 

@@ -4,22 +4,28 @@ import io.runcycles.admin.data.repository.BudgetRepository;
 import io.runcycles.admin.data.repository.EventRepository;
 import io.runcycles.admin.data.repository.TenantRepository;
 import io.runcycles.admin.data.repository.WebhookRepository;
+import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.budget.BudgetLedger;
 import io.runcycles.admin.model.budget.BudgetStatus;
 import io.runcycles.admin.model.event.Event;
 import io.runcycles.admin.model.shared.AdminOverviewResponse;
 import io.runcycles.admin.model.shared.AdminOverviewResponse.*;
+import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.tenant.Tenant;
 import io.runcycles.admin.model.tenant.TenantStatus;
 import io.runcycles.admin.model.webhook.WebhookStatus;
 import io.runcycles.admin.model.webhook.WebhookSubscription;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.util.*;
+import java.util.function.Function;
 
 @Service
 public class AdminOverviewService {
+    private static final Logger LOG = LoggerFactory.getLogger(AdminOverviewService.class);
 
     private static final int PAGE_SIZE = 100;
     private static final int TOP_OFFENDER_CAP = 10;
@@ -104,17 +110,9 @@ public class AdminOverviewService {
     }
 
     private List<Tenant> listAllTenants() {
-        List<Tenant> all = new ArrayList<>();
-        String cursor = null;
-        List<Tenant> page;
-        do {
-            page = tenantRepository.list(null, null, cursor, PAGE_SIZE);
-            all.addAll(page);
-            if (page.size() >= PAGE_SIZE) {
-                cursor = page.get(page.size() - 1).getTenantId();
-            }
-        } while (page.size() >= PAGE_SIZE);
-        return all;
+        return collectAllPages(
+            cursor -> tenantRepository.list(null, null, cursor, PAGE_SIZE),
+            Tenant::getTenantId, "tenant");
     }
 
     private List<BudgetLedger> listAllBudgets(List<Tenant> tenants) {
@@ -126,31 +124,57 @@ public class AdminOverviewService {
     }
 
     private List<WebhookSubscription> listAllWebhooks() {
-        List<WebhookSubscription> all = new ArrayList<>();
-        String cursor = null;
-        List<WebhookSubscription> page;
-        do {
-            page = webhookRepository.listAll(null, null, cursor, PAGE_SIZE);
-            all.addAll(page);
-            if (page.size() >= PAGE_SIZE) {
-                cursor = page.get(page.size() - 1).getSubscriptionId();
-            }
-        } while (page.size() >= PAGE_SIZE);
-        return all;
+        return collectAllPages(
+            cursor -> webhookRepository.listAll(null, null, cursor, PAGE_SIZE),
+            WebhookSubscription::getSubscriptionId, "webhook");
     }
 
     private List<Event> listEventsInWindow(Instant from, Instant to) {
-        List<Event> all = new ArrayList<>();
+        return collectAllPages(
+            cursor -> eventRepository.list(
+                null, null, null, null, null, from, to, cursor, PAGE_SIZE),
+            Event::getEventId, "event");
+    }
+
+    /**
+     * Internal overview walks tolerate a concurrently expired boundary by
+     * restarting from the head and de-duplicating rows. External list APIs
+     * still return a clear 400 for a stale cursor, but a caller that supplied
+     * no cursor never receives that internal race as its own bad request.
+     */
+    private <T> List<T> collectAllPages(Function<String, List<T>> fetchPage,
+                                        Function<T, String> idExtractor,
+                                        String surface) {
+        LinkedHashMap<String, T> rows = new LinkedHashMap<>();
         String cursor = null;
-        List<Event> page;
-        do {
-            page = eventRepository.list(null, null, null, null, null, from, to, cursor, PAGE_SIZE);
-            all.addAll(page);
-            if (page.size() >= PAGE_SIZE) {
-                cursor = page.get(page.size() - 1).getEventId();
+        int restarts = 0;
+        while (true) {
+            List<T> page;
+            try {
+                page = fetchPage.apply(cursor);
+            } catch (GovernanceException e) {
+                if (e.getErrorCode() != ErrorCode.INVALID_REQUEST || restarts++ >= 3) {
+                    if (e.getErrorCode() == ErrorCode.INVALID_REQUEST) {
+                        LOG.warn("Overview {} pagination remained unstable after cursor restarts; returning a de-duplicated partial snapshot",
+                            surface);
+                        break;
+                    }
+                    throw e;
+                }
+                cursor = null;
+                continue;
             }
-        } while (page.size() >= PAGE_SIZE);
-        return all;
+            page.forEach(row -> rows.put(idExtractor.apply(row), row));
+            if (page.size() < PAGE_SIZE) break;
+            String nextCursor = idExtractor.apply(page.get(page.size() - 1));
+            if (nextCursor == null || nextCursor.isBlank() || nextCursor.equals(cursor)) {
+                LOG.warn("Overview {} pagination made no forward progress; returning a de-duplicated partial snapshot",
+                    surface);
+                break;
+            }
+            cursor = nextCursor;
+        }
+        return new ArrayList<>(rows.values());
     }
 
     private TenantCounts countTenants(List<Tenant> tenants) {

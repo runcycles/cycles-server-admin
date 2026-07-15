@@ -1,7 +1,7 @@
 # Complete Budget Governance v0.1.25.52 — Admin Server Audit
 
 **Spec:**
-[`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml)
+[`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/469840bb2f41ce35650c89405ea12fc56e847c76/cycles-governance-admin-v0.1.25.yaml)
 (OpenAPI 3.1.0, info.version `0.1.25.41`; adds CASCADE SEMANTICS — Rule 1 `POST
 /admin/tenants/{id}` PATCH→CLOSED cascades owned budgets (→CLOSED), webhook
 subscriptions (→DISABLED), and API keys (→REVOKED) under a shared correlation_id
@@ -66,8 +66,8 @@ source tracking, and contract tests tied to a moving upstream branch.
   list surfaces;
 - uses a shared adaptive ZSET pager for event, audit, and delivery timestamp
   queries, including deterministic equal-score continuation, precision-safe
-  score advancement, invalid-cursor rejection, and scan-through of sparse
-  post-hydration filters;
+  score advancement, consistent invalid-cursor rejection, and a bounded sparse-
+  filter scan budget. Correlation-filtered events now consume cursors;
 - replaces silent non-primary-sort truncation with exact results through 20,000
   candidates and an explicit `LIMIT_EXCEEDED` all-or-narrow response above that
   memory boundary;
@@ -76,14 +76,17 @@ source tracking, and contract tests tied to a moving upstream branch.
 - separates a strict primary HTTP `ObjectMapper` from a rolling-deployment-
   tolerant Redis mapper, with every persistence injection explicitly qualified;
 - persists tenant-close intent before the Mode-B parent flip, atomically couples
-  each child mutation to an outbox item, uses per-tenant distributed leases plus
-  JSON compare-and-set guards, and acknowledges outbox items only after stable-ID
-  audit and event writes succeed. The reconciler reads durable due work rather
-  than scanning all tenants, so restarts and multiple replicas converge without
-  duplicate child transitions;
-- reports incomplete single and bulk closes visibly; failed bulk CLOSE rows emit
-  no parent lifecycle event, while a single PATCH whose parent flip committed
-  retains truthful parent audit/event visibility;
+  the parent status flip to a committed marker and durable parent-event outbox,
+  and couples each child mutation to its outbox item. Per-tenant leases are
+  token-checked and renewed, stable-ID audit/event writes are storage-idempotent,
+  and poison items stop after bounded retries in an operator-visible dead-letter
+  set. A permanent commit marker backfills parent-event work for already-closed
+  tenants encountered during a rolling upgrade; aged uncommitted/missing-tenant
+  intents are discarded under the same lease and atomic status check. The
+  reconciler reads durable due work rather than scanning all tenants;
+- reports active lease ownership as `in_progress` rather than an internal error.
+  Parent close events are emitted from the durable outbox after child events, so
+  request crashes and deferred bulk convergence cannot permanently lose them;
 - coordinates bulk idempotency with an atomic payload-hash owner claim, waits
   for concurrent equal requests, rejects different-payload reuse, publishes one
   immutable replay envelope, and owner-safely abandons pre-mutation count-gate
@@ -111,31 +114,25 @@ bodies fail visibly instead of leaving silently stuck work; and the first atomic
 idempotency draft was reordered so replay happens before mutable match/count
 reads. The final PR run also exposed a cold-cache build-order defect: Surefire
 referenced the Mockito agent before the model module had resolved its JAR, so
-Mockito is now an inherited parent test dependency. Documentation was then
-cross-checked against actual single-vs-bulk event correlation and reconciler
-behavior.
+Mockito is now an inherited parent test dependency. A final lifecycle pass also
+prevented nonexistent tenants from leaving immortal close intents, added a
+no-progress guard to internal overview paging, and raised the scheduler floor to
+two threads so reconciliation cannot starve its own lease heartbeat.
+Documentation was then cross-checked against actual single-vs-bulk event
+correlation and reconciler behavior.
 
-**Rating.** Post-remediation: **9.5/10**. The correctness, durability,
-specification, concurrency, bounded-resource, operations, and build/test gaps
-identified by this audit are addressed. The remaining half point is for
-non-blocking platform evolution rather than a known correctness defect:
-secondary indexes could make broad arbitrary sorts more convenient than the
-current explicit 20,000-candidate all-or-narrow contract; `JedisPool` can be
-migrated to the unified pooled command surface during a dependency-modernization
-release; and deployments requiring a fleet-global failed-auth threshold should
-enforce it at the shared edge (the in-process limiter is intentionally
-per-replica).
+**Assessment.** The reviewed correctness, durability, specification,
+concurrency, bounded-resource, operations, and build/test gaps are addressed.
+Future performance work may add secondary indexes for broad arbitrary sorts;
+the current behavior deliberately returns `LIMIT_EXCEEDED` rather than an
+inexact page. Deployments needing a fleet-global failed-auth threshold should
+continue to enforce it at the shared edge because the application limiter is
+intentionally per replica.
 
-**Verification.** `mvn -B -q clean verify -Pintegration-tests` against the local
-checkout of the pinned spec passed in 117.9s: **1,860 tests**, 0 failures, 0
-errors, 0 skipped, including the Docker/Testcontainers integration suites. The
-new JaCoCo line-and-branch gate passed independently in every module. Branch
-coverage is API **95.48%**, data **96.07%**, model **98.44%**; line coverage is
-API **97.56%**, data **98.32%**, model **97.85%**. Development and production
-Compose configurations validate (the production check supplies non-secret
-placeholder values for required variables), `docker build --tag
-cycles-server-admin:self-review .` succeeds, and `git diff --check` is clean.
-The resource tree contains no stale `jqwik.properties` file.
+**Verification policy.** Release evidence belongs to the immutable PR/check run,
+not this long-lived audit narrative. Merge requires a clean Maven verification,
+Docker-backed integration tests, independent 95% JaCoCo line and branch gates
+for every code module, Compose validation, image build, and `git diff --check`.
 
 ### 2026-07-12 — declared spec alignment bump v0.1.25.39 → v0.1.25.41 (doc-only)
 

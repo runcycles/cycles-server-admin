@@ -4,6 +4,8 @@ import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.logging.LogSanitizer;
 import io.runcycles.admin.data.repository.support.CascadeMutationResult;
 import io.runcycles.admin.data.repository.support.SortedQueryGuard;
+import io.runcycles.admin.data.repository.support.CursorSupport;
+import io.runcycles.admin.data.repository.support.RedisBatchReader;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.model.budget.*;
 import io.runcycles.admin.model.shared.Amount;
@@ -504,12 +506,13 @@ public class BudgetRepository {
 
     private List<BudgetLedger> collectForTenantSorted(Jedis jedis, String tenantId, BudgetListFilters filters, String cursor, int limit, SortSpec sortSpec) {
         Set<String> keys = jedis.smembers("budgets:" + tenantId);
-        SortedQueryGuard.requireBounded(keys.size(), "budget");
+        SortedQueryGuard.requireScannable(keys.size(), "budget");
         List<BudgetLedger> all = new ArrayList<>();
         BudgetListFilters effective = filters != null ? filters : BudgetListFilters.empty();
+        Map<String, Map<String, String>> rows = RedisBatchReader.getHashesByKey(jedis, keys);
         for (String key : keys) {
             try {
-                Map<String, String> hash = jedis.hgetAll(key);
+                Map<String, String> hash = rows.get(key);
                 if (hash.isEmpty()) {
                     LOG.warn("Budget index points to missing row; cleaning index: budget_key={} tenant_id={} index_key={} sort_field={}",
                         LogSanitizer.safe(key), LogSanitizer.safe(tenantId), LogSanitizer.safe("budgets:" + tenantId), sortSpec.field());
@@ -524,14 +527,12 @@ public class BudgetRepository {
                     LogSanitizer.safe(key), LogSanitizer.safe(tenantId), LogSanitizer.safe("budgets:" + tenantId), sortSpec.field(), e);
             }
         }
+        SortedQueryGuard.requireBounded(all.size(), "budget");
         all.sort(budgetComparator(sortSpec));
         List<BudgetLedger> result = new ArrayList<>();
-        boolean pastCursor = (cursor == null || cursor.isBlank());
-        for (BudgetLedger ledger : all) {
-            if (!pastCursor) {
-                if (cursor.equals(ledger.getLedgerId())) pastCursor = true;
-                continue;
-            }
+        int start = CursorSupport.startAfter(all, cursor, BudgetLedger::getLedgerId);
+        for (int i = start; i < all.size(); i++) {
+            BudgetLedger ledger = all.get(i);
             result.add(ledger);
             if (result.size() >= limit) break;
         }
@@ -611,11 +612,8 @@ public class BudgetRepository {
      * strictly after the cursor within the cursor's tenant, then
      * continues into subsequent tenants.
      *
-     * If the cursor tenant has been deleted between pages, resumes at
-     * the first tenant whose id sorts strictly after the cursor tenant,
-     * serving that tenant from the start. This avoids stalling
-     * pagination (returning empty and implying end-of-data) when the
-     * cursor tenant is gone but later tenants still have data.
+     * A cursor whose tenant or ledger has disappeared is rejected with
+     * restart guidance, consistently with the other list surfaces.
      */
     public List<BudgetLedger> listAllTenants(BudgetListFilters filters, String cursor, int limit) {
         return listAllTenants(filters, cursor, limit, null);
@@ -624,7 +622,7 @@ public class BudgetRepository {
     /**
      * Cross-tenant listing with optional sort (spec v0.1.25.20). Null SortSpec
      * preserves the v0.1.25.22 per-tenant walk (tenants iterated in id
-     * order, skip-forward when cursor tenant deleted). When present,
+     * order with strict cursor validation). When present,
      * flattens every tenant's budgets, applies filters, sorts globally
      * via {@link #budgetComparator}, then walks the composite
      * "{tenantId}|{ledgerId}" cursor to the strictly-next entry.
@@ -653,6 +651,9 @@ public class BudgetRepository {
         Set<String> tenantIds = jedis.smembers("tenants");
         List<String> sortedTenantIds = new ArrayList<>(tenantIds);
         Collections.sort(sortedTenantIds);
+        if (cursorTenantId != null && !sortedTenantIds.contains(cursorTenantId)) {
+            throw CursorSupport.invalidCursor();
+        }
         List<BudgetLedger> collected = new ArrayList<>();
         boolean pastTenantCursor = (cursorTenantId == null);
         for (String tenantId : sortedTenantIds) {
@@ -661,9 +662,7 @@ public class BudgetRepository {
                 int cmp = tenantId.compareTo(cursorTenantId);
                 if (cmp < 0) continue;
                 pastTenantCursor = true;
-                // cmp == 0: same tenant as cursor → resume inside using cursorLedgerId.
-                // cmp  > 0: cursor tenant was deleted → serve this tenant from start.
-                innerCursor = (cmp == 0) ? cursorLedgerId : null;
+                innerCursor = cursorLedgerId;
             } else {
                 innerCursor = null;
             }
@@ -679,14 +678,16 @@ public class BudgetRepository {
         Set<String> tenantIds = jedis.smembers("tenants");
         long candidates = 0L;
         for (String tenantId : tenantIds) candidates += jedis.scard("budgets:" + tenantId);
-        SortedQueryGuard.requireBounded(candidates, "cross-tenant budget");
+        SortedQueryGuard.requireScannable(candidates, "cross-tenant budget");
         List<BudgetLedger> all = new ArrayList<>();
         BudgetListFilters effective = filters != null ? filters : BudgetListFilters.empty();
         for (String tenantId : tenantIds) {
             Set<String> budgetKeys = jedis.smembers("budgets:" + tenantId);
+            Map<String, Map<String, String>> rows =
+                RedisBatchReader.getHashesByKey(jedis, budgetKeys);
             for (String key : budgetKeys) {
                 try {
-                    Map<String, String> hash = jedis.hgetAll(key);
+                    Map<String, String> hash = rows.get(key);
                     if (hash.isEmpty()) continue;
                     BudgetLedger ledger = hashToBudgetLedger(hash, key);
                     if (!effective.matches(ledger)) continue;
@@ -697,6 +698,7 @@ public class BudgetRepository {
                 }
             }
         }
+        SortedQueryGuard.requireBounded(all.size(), "cross-tenant budget");
         all.sort(budgetComparator(sortSpec));
         List<BudgetLedger> result = new ArrayList<>();
         boolean pastCursor = (cursor == null || cursor.isBlank());
@@ -721,6 +723,7 @@ public class BudgetRepository {
             result.add(ledger);
             if (result.size() >= limit) break;
         }
+        if (!pastCursor) throw CursorSupport.invalidCursor();
         return result;
     }
 
@@ -753,6 +756,7 @@ public class BudgetRepository {
                     LogSanitizer.safe(key), LogSanitizer.safe(tenantId), LogSanitizer.safe("budgets:" + tenantId), cursor != null && !cursor.isBlank(), e);
             }
         }
+        if (!pastCursor) throw CursorSupport.invalidCursor();
         return ledgers;
     }
 

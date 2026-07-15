@@ -2,6 +2,8 @@ package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.logging.LogSanitizer;
 import io.runcycles.admin.data.repository.support.ZSetAdaptivePager;
 import io.runcycles.admin.data.repository.support.SortedQueryGuard;
+import io.runcycles.admin.data.repository.support.CursorSupport;
+import io.runcycles.admin.data.repository.support.RedisBatchReader;
 import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortSpec;
@@ -337,7 +339,7 @@ public class AuditRepository {
         boolean ascending = sortSpec != null && sortSpec.isAscending();
 
         return ZSetAdaptivePager.collect(jedis, indexKey, minScore, maxScore,
-            cursor, limit, ascending, id -> {
+            cursor, limit, ascending, "audit-log", id -> {
             try {
                 String data = jedis.get("audit:log:" + id);
                 if (data == null) {
@@ -368,13 +370,14 @@ public class AuditRepository {
         double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
         double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
         String indexKey = (tenantId != null) ? "audit:logs:" + tenantId : "audit:logs:_all";
-        SortedQueryGuard.requireBounded(jedis.zcount(indexKey, minScore, maxScore), "audit-log");
+        SortedQueryGuard.requireScannable(jedis.zcount(indexKey, minScore, maxScore), "audit-log");
         // A correct non-primary sort must see the complete filtered window.
         List<String> ids = jedis.zrevrangeByScore(indexKey, maxScore, minScore);
         List<AuditLogEntry> all = new ArrayList<>();
+        Map<String, String> rows = RedisBatchReader.getById(jedis, "audit:log:", ids);
         for (String id : ids) {
             try {
-                String data = jedis.get("audit:log:" + id);
+                String data = rows.get(id);
                 if (data == null) continue;
                 AuditLogEntry entry = objectMapper.readValue(data, AuditLogEntry.class);
                 if (!matchesFilters(entry, keyId, operations, status, resourceTypes, resourceId,
@@ -386,14 +389,12 @@ public class AuditRepository {
                     LogSanitizer.safe(id), LogSanitizer.safe(indexKey), LogSanitizer.safe(tenantId), requestId, traceId, e);
             }
         }
+        SortedQueryGuard.requireBounded(all.size(), "audit-log");
         all.sort(auditLogComparator(sortSpec));
         List<AuditLogEntry> results = new ArrayList<>();
-        boolean pastCursor = (cursor == null || cursor.isBlank());
-        for (AuditLogEntry e : all) {
-            if (!pastCursor) {
-                if (cursor.equals(e.getLogId())) pastCursor = true;
-                continue;
-            }
+        int start = CursorSupport.startAfter(all, cursor, AuditLogEntry::getLogId);
+        for (int i = start; i < all.size(); i++) {
+            AuditLogEntry e = all.get(i);
             results.add(e);
             if (results.size() >= limit) break;
         }

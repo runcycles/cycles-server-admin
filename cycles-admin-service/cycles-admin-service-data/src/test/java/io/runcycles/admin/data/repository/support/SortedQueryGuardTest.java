@@ -30,4 +30,23 @@ class SortedQueryGuardTest {
                     .containsEntry("max_sort_candidates", SortedQueryGuard.MAX_CANDIDATES);
             });
     }
+
+    @Test
+    void sourceScanHasIndependentHardCeiling() {
+        assertThatCode(() -> SortedQueryGuard.requireScannable(
+            SortedQueryGuard.MAX_SCANNED_CANDIDATES, "tenant"))
+            .doesNotThrowAnyException();
+
+        long candidates = SortedQueryGuard.MAX_SCANNED_CANDIDATES + 1L;
+        assertThatThrownBy(() -> SortedQueryGuard.requireScannable(candidates, "tenant"))
+            .isInstanceOf(GovernanceException.class)
+            .satisfies(error -> {
+                GovernanceException governance = (GovernanceException) error;
+                assertThat(governance.getErrorCode()).isEqualTo(ErrorCode.LIMIT_EXCEEDED);
+                assertThat(governance.getDetails())
+                    .containsEntry("total_candidates", candidates)
+                    .containsEntry("max_scan_candidates",
+                        SortedQueryGuard.MAX_SCANNED_CANDIDATES);
+            });
+    }
 }

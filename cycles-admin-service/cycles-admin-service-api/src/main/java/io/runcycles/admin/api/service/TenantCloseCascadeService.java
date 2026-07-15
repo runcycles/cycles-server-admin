@@ -16,18 +16,25 @@ import io.runcycles.admin.model.event.ActorType;
 import io.runcycles.admin.model.event.Event;
 import io.runcycles.admin.model.event.EventType;
 import jakarta.servlet.http.HttpServletRequest;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.scheduling.TaskScheduler;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.Comparator;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Spec v0.1.25.29 CASCADE SEMANTICS (Rule 1 orchestration).
@@ -79,6 +86,8 @@ public class TenantCloseCascadeService {
     @Autowired private AuditRepository auditRepository;
     @Autowired private EventService eventService;
     @Autowired private TenantCloseWorkRepository workRepository;
+    @Autowired private TaskScheduler taskScheduler;
+    @Autowired(required = false) private MeterRegistry meterRegistry;
 
     /**
      * Result of a cascade run: counts per owned-type so the caller can
@@ -87,25 +96,34 @@ public class TenantCloseCascadeService {
      */
     public record CascadeResult(int budgetsClosed, int webhooksDisabled,
                                 int apiKeysRevoked, long reservationsReleased,
-                                List<String> failedResources) {
+                                List<String> failedResources, boolean inProgress) {
         public CascadeResult {
             failedResources = List.copyOf(failedResources);
         }
         public CascadeResult(int budgetsClosed, int webhooksDisabled,
+                             int apiKeysRevoked, long reservationsReleased,
+                             List<String> failedResources) {
+            this(budgetsClosed, webhooksDisabled, apiKeysRevoked,
+                reservationsReleased, failedResources, false);
+        }
+        public CascadeResult(int budgetsClosed, int webhooksDisabled,
                              int apiKeysRevoked, long reservationsReleased) {
             this(budgetsClosed, webhooksDisabled, apiKeysRevoked,
-                reservationsReleased, List.of());
+                reservationsReleased, List.of(), false);
         }
         public static CascadeResult empty() { return new CascadeResult(0, 0, 0, 0L); }
-        public boolean complete() { return failedResources.isEmpty(); }
+        public static CascadeResult leaseInProgress() {
+            return new CascadeResult(0, 0, 0, 0L, List.of(), true);
+        }
+        public boolean complete() { return !inProgress && failedResources.isEmpty(); }
     }
 
     /**
      * Build the shared correlation_id used to join every cascade-emitted
      * event (TENANT_CLOSED + each {@code *_via_tenant_cascade} child) for
      * one logical tenant-close operation. Exposed as a static helper so
-     * the calling controller can stamp the same id on the TENANT_CLOSED
-     * event that this service stamps on every child event.
+     * the controller can persist the parent correlation in the durable intent
+     * before the repository atomically creates the TENANT_CLOSED outbox item.
      */
     public static String correlationIdFor(String tenantId, HttpServletRequest httpRequest) {
         String requestId = attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE);
@@ -124,9 +142,10 @@ public class TenantCloseCascadeService {
         String leaseToken = workRepository.tryAcquireLease(tenantId);
         if (leaseToken == null) {
             workRepository.reschedule(tenantId, 1_000L);
-            return new CascadeResult(0, 0, 0, 0L,
-                List.of("cascade:lease:in_progress"));
+            return CascadeResult.leaseInProgress();
         }
+        AtomicBoolean leaseLost = new AtomicBoolean(false);
+        ScheduledFuture<?> heartbeat = startLeaseHeartbeat(tenantId, leaseToken, leaseLost);
         try {
             TenantCloseWorkRepository.Intent intent = workRepository.findIntent(tenantId)
                 .orElseThrow(() -> new IllegalStateException("tenant-close intent disappeared"));
@@ -135,20 +154,34 @@ public class TenantCloseCascadeService {
             var budgetResult = budgetRepository.cascadeClose(tenantId);
             List<BudgetRepository.CascadeCloseBudgetOutcome> budgets = budgetResult.succeeded();
             budgetResult.failed().forEach(f -> failures.add(f.resourceId()));
+            requireLease(leaseLost);
             long reservationsReleased = budgets.stream()
                 .mapToLong(BudgetRepository.CascadeCloseBudgetOutcome::releasedReservedAmount).sum();
 
             var webhookResult = webhookRepository.cascadeDisable(tenantId);
             List<WebhookRepository.CascadeDisableOutcome> webhooks = webhookResult.succeeded();
             webhookResult.failed().forEach(f -> failures.add("webhook:" + f.resourceId()));
+            requireLease(leaseLost);
 
             var keyResult = apiKeyRepository.cascadeRevoke(tenantId, "tenant_closed");
             List<ApiKeyRepository.CascadeRevokeOutcome> keys = keyResult.succeeded();
             keyResult.failed().forEach(f -> failures.add("api_key:" + f.resourceId()));
+            requireLease(leaseLost);
 
-            drainOutbox(tenantId, intent, failures);
-            if (!failures.isEmpty() || !workRepository.completeIfDrained(tenantId)) {
-                workRepository.reschedule(tenantId, 30_000L);
+            boolean mutationFailed = !failures.isEmpty();
+            DrainResult drain = drainOutbox(tenantId, intent, failures, leaseLost);
+            long deadLetters = workRepository.deadLetterCount(tenantId);
+            if (deadLetters > 0) {
+                failures.add("dead_letter:pending:" + deadLetters);
+            }
+            boolean completed = !mutationFailed && workRepository.completeIfDrained(tenantId);
+            if (!completed) {
+                if (failures.isEmpty()) failures.add("cascade:pending_work");
+                if (deadLetters > 0) {
+                    workRepository.parkDeadLettered(tenantId);
+                } else {
+                    workRepository.reschedule(tenantId, drain.retryDelayMillis());
+                }
             }
 
             LOG.info("Tenant-close cascade completed: tenant_id={} budgets_closed={} webhooks_disabled={} api_keys_revoked={} reserved_released={} failed_count={} correlation_id={} request_id={} trace_id={} source_ip={}",
@@ -156,30 +189,55 @@ public class TenantCloseCascadeService {
                 failures.size(), intent.correlationId(), intent.requestId(), intent.traceId(), intent.sourceIp());
             return new CascadeResult(budgets.size(), webhooks.size(), keys.size(),
                 reservationsReleased, failures);
+        } catch (LeaseLostException e) {
+            workRepository.reschedule(tenantId, 1_000L);
+            return new CascadeResult(0, 0, 0, 0L, List.of("cascade:lease:lost"));
         } finally {
+            if (heartbeat != null) heartbeat.cancel(false);
             workRepository.releaseLease(tenantId, leaseToken);
         }
     }
 
-    private void drainOutbox(String tenantId, TenantCloseWorkRepository.Intent intent,
-                             List<String> failures) {
-        for (TenantCloseOutboxItem item : workRepository.listOutbox(tenantId)) {
+    private DrainResult drainOutbox(String tenantId,
+                                    TenantCloseWorkRepository.Intent intent,
+                                    List<String> failures,
+                                    AtomicBoolean leaseLost) {
+        List<TenantCloseOutboxItem> items = new ArrayList<>(workRepository.listOutbox(tenantId));
+        items.sort(Comparator.comparing(item -> "tenant".equals(item.resourceType()) ? 1 : 0));
+        long retryDelay = 30_000L;
+        boolean childOutboxFailed = !failures.isEmpty();
+        for (TenantCloseOutboxItem item : items) {
+            if ("tenant".equals(item.resourceType()) && childOutboxFailed) continue;
             try {
+                requireLease(leaseLost);
                 switch (item.resourceType()) {
                     case "budget" -> emitBudgetItem(item, tenantId, intent);
                     case "webhook_subscription" -> emitWebhookItem(item, tenantId, intent);
                     case "api_key" -> emitApiKeyItem(item, tenantId, intent);
+                    case "tenant" -> emitTenantItem(item, tenantId, intent);
                     default -> throw new IllegalArgumentException(
                         "Unknown tenant-close outbox resource type: " + item.resourceType());
                 }
                 workRepository.acknowledge(tenantId, item.itemId());
+            } catch (LeaseLostException e) {
+                throw e;
             } catch (Exception e) {
-                failures.add("outbox:" + item.itemId());
-                LOG.error("Tenant-close outbox emission failed: tenant_id={} item_id={} resource_type={}",
-                    tenantId, item.itemId(), item.resourceType(), e);
+                TenantCloseWorkRepository.OutboxFailure failure =
+                    workRepository.recordOutboxFailure(tenantId, item.itemId());
+                childOutboxFailed |= !"tenant".equals(item.resourceType());
+                retryDelay = Math.max(retryDelay, retryDelayFor(failure.attempts()));
+                failures.add((failure.deadLettered() ? "dead_letter:" : "outbox:")
+                    + item.itemId());
+                if (failure.deadLettered()) recordDeadLetter(item.resourceType());
+                LOG.error("Tenant-close outbox emission failed: tenant_id={} item_id={} resource_type={} attempts={} dead_lettered={}",
+                    tenantId, item.itemId(), item.resourceType(), failure.attempts(),
+                    failure.deadLettered(), e);
             }
         }
+        return new DrainResult(retryDelay);
     }
+
+    private record DrainResult(long retryDelayMillis) {}
 
     private void emitBudgetItem(TenantCloseOutboxItem item, String tenantId,
                                 TenantCloseWorkRepository.Intent intent) {
@@ -217,6 +275,26 @@ public class TenantCloseCascadeService {
         writeRequiredAudit(item, tenantId, intent, data);
         emitRequired(EventType.API_KEY_REVOKED_VIA_TENANT_CASCADE, tenantId, null,
             data, intent, stableId("evt_", tenantId, item.itemId(), "api-key-revoked"));
+    }
+
+    /** Durable parent transition event, processed only after child outbox work. */
+    private void emitTenantItem(TenantCloseOutboxItem item, String tenantId,
+                                TenantCloseWorkRepository.Intent intent) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("tenant_id", tenantId);
+        if (item.priorStatus() != null) data.put("previous_status", item.priorStatus());
+        data.put("new_status", "CLOSED");
+        data.put("changed_fields", List.of());
+        eventService.emitRequired(Event.builder()
+            .eventId(stableId("evt_", tenantId, item.itemId(), "tenant-closed"))
+            .eventType(EventType.TENANT_CLOSED)
+            .category(EventType.TENANT_CLOSED.getCategory())
+            .timestamp(Instant.now()).tenantId(tenantId).source("cycles-admin")
+            .actor(Actor.builder().type(ActorType.ADMIN).keyId(intent.actorKeyId()).build())
+            .data(data)
+            .correlationId(intent.parentCorrelationId() != null
+                ? intent.parentCorrelationId() : intent.correlationId())
+            .requestId(intent.requestId()).traceId(intent.traceId()).build());
     }
 
     private Map<String, Object> baseCascadeData(TenantCloseOutboxItem item,
@@ -267,6 +345,42 @@ public class TenantCloseCascadeService {
         return prefix + uuid.toString().replace("-", "").substring(0, 16);
     }
 
+    private ScheduledFuture<?> startLeaseHeartbeat(String tenantId, String token,
+                                                    AtomicBoolean leaseLost) {
+        if (taskScheduler == null) return null;
+        return taskScheduler.scheduleAtFixedRate(() -> {
+            try {
+                if (!workRepository.renewLease(tenantId, token)) {
+                    leaseLost.set(true);
+                    LOG.error("Tenant-close lease renewal lost ownership: tenant_id={}",
+                        safe(tenantId));
+                }
+            } catch (Exception e) {
+                leaseLost.set(true);
+                LOG.error("Tenant-close lease renewal failed: tenant_id={}", safe(tenantId), e);
+            }
+        }, Duration.ofMillis(TenantCloseWorkRepository.LEASE_MILLIS / 3));
+    }
+
+    private static void requireLease(AtomicBoolean leaseLost) {
+        if (leaseLost.get()) throw new LeaseLostException();
+    }
+
+    private static long retryDelayFor(int attempts) {
+        int exponent = Math.max(0, Math.min(attempts - 1, 6));
+        return Math.min(1_800_000L, 30_000L * (1L << exponent));
+    }
+
+    private void recordDeadLetter(String resourceType) {
+        if (meterRegistry == null) return;
+        Counter.builder("cycles_admin_tenant_close_outbox_dead_letter_total")
+            .description("Tenant-close observability outbox items moved to dead letter")
+            .tag("resource_type", resourceType != null ? resourceType : "unknown")
+            .register(meterRegistry).increment();
+    }
+
+    private static final class LeaseLostException extends RuntimeException {}
+
     private static String attr(HttpServletRequest request, String name) {
         if (request == null) return null;
         Object v = request.getAttribute(name);
@@ -275,12 +389,19 @@ public class TenantCloseCascadeService {
 
     /** Persist retry intent before the tenant status flip is attempted. */
     public void prepare(String tenantId, HttpServletRequest httpRequest) {
+        prepare(tenantId, httpRequest, correlationIdFor(tenantId, httpRequest));
+    }
+
+    public void prepare(String tenantId, HttpServletRequest httpRequest,
+                        String parentCorrelationId) {
         workRepository.prepare(new TenantCloseWorkRepository.Intent(
             tenantId,
             attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
             attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE),
             correlationIdFor(tenantId, httpRequest),
-            sourceIp(httpRequest), header(httpRequest, "User-Agent"), Instant.now()));
+            sourceIp(httpRequest), header(httpRequest, "User-Agent"), Instant.now(),
+            parentCorrelationId,
+            attr(httpRequest, "authenticated_key_id")));
     }
 
     private static String sourceIp(HttpServletRequest request) {

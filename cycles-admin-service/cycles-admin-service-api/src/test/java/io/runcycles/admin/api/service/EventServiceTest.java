@@ -41,7 +41,7 @@ class EventServiceTest {
         eventService.emit(event);
 
         verify(eventRepository).save(event);
-        verify(webhookDispatchService).dispatch(event);
+        verify(webhookDispatchService).dispatchWithSummary(event);
     }
 
     @Test
@@ -114,12 +114,13 @@ class EventServiceTest {
             .eventType(EventType.BUDGET_CREATED)
             .tenantId("tenant-1")
             .build();
-        doThrow(new RuntimeException("Dispatch failed")).when(webhookDispatchService).dispatch(any());
+        doThrow(new RuntimeException("Dispatch failed"))
+            .when(webhookDispatchService).dispatchWithSummary(any());
 
         // Should not throw
         eventService.emit(event);
 
-        verify(webhookDispatchService).dispatch(any());
+        verify(webhookDispatchService).dispatchWithSummary(any());
     }
 
     @Test
@@ -200,7 +201,7 @@ class EventServiceTest {
             event.getEventType() == EventType.TENANT_CREATED &&
             "tenant-1".equals(event.getTenantId()) &&
             EventCategory.TENANT == event.getCategory()));
-        verify(webhookDispatchService).dispatch(any());
+        verify(webhookDispatchService).dispatchWithSummary(any());
     }
 
     @Test
@@ -257,7 +258,7 @@ class EventServiceTest {
             "expected_class", "EventDataBudgetLifecycle").count();
         assertThat(invalidCount).isEqualTo(0.0);
         verify(eventRepository).save(event);
-        verify(webhookDispatchService).dispatch(event);
+        verify(webhookDispatchService).dispatchWithSummary(event);
     }
 
     @Test
@@ -287,10 +288,29 @@ class EventServiceTest {
 
         // Event still delivered — observability, not enforcement
         verify(eventRepository).save(event);
-        verify(webhookDispatchService).dispatch(event);
+        verify(webhookDispatchService).dispatchWithSummary(event);
         double emittedCount = meterRegistry.counter("cycles_admin_events_emitted_total",
             "type", EventType.BUDGET_CREATED.getValue(), "result", "success").count();
         assertThat(emittedCount).isEqualTo(1.0);
+    }
+
+    @Test
+    void emit_dispatchEnqueueFailureIncrementsFailureMetric() {
+        Event event = Event.builder()
+            .eventType(EventType.BUDGET_CREATED)
+            .tenantId("tenant-1")
+            .build();
+        when(webhookDispatchService.dispatchWithSummary(event))
+            .thenReturn(new WebhookDispatchService.DispatchSummary(0, 0, 1));
+
+        eventService.emitRequired(event);
+
+        assertThat(meterRegistry.counter("cycles_admin_events_emitted_total",
+            "type", EventType.BUDGET_CREATED.getValue(), "result", "failure").count())
+            .isEqualTo(1.0);
+        assertThat(meterRegistry.counter("cycles_admin_events_emitted_total",
+            "type", EventType.BUDGET_CREATED.getValue(), "result", "success").count())
+            .isZero();
     }
 
     @Test

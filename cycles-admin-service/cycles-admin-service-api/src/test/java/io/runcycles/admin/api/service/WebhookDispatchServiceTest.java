@@ -79,9 +79,9 @@ class WebhookDispatchServiceTest {
 
         webhookDispatchService.dispatch(event);
 
-        verify(deliveryRepository).save(argThat(delivery ->
+        verify(deliveryRepository).saveAndEnqueueOnce(argThat(delivery ->
             "whsub_1".equals(delivery.getSubscriptionId()) &&
-            "evt_1".equals(delivery.getEventId())));
+            "evt_1".equals(delivery.getEventId())), eq("dispatch:pending"));
     }
 
     @Test
@@ -94,7 +94,8 @@ class WebhookDispatchServiceTest {
 
         webhookDispatchService.dispatch(event);
 
-        verify(deliveryRepository, times(2)).save(any());
+        verify(deliveryRepository, times(2))
+            .saveAndEnqueueOnce(any(), eq("dispatch:pending"));
     }
 
     @Test
@@ -115,7 +116,7 @@ class WebhookDispatchServiceTest {
 
         webhookDispatchService.dispatch(event);
 
-        verify(deliveryRepository, never()).save(any());
+        verify(deliveryRepository, never()).saveAndEnqueueOnce(any(), anyString());
     }
 
     @Test
@@ -125,13 +126,15 @@ class WebhookDispatchServiceTest {
         WebhookSubscription sub2 = buildSubscription("whsub_2");
         when(webhookRepository.findMatchingSubscriptions("tenant-1", EventType.BUDGET_CREATED, "org/team1"))
             .thenReturn(List.of(sub1, sub2));
-        doThrow(new RuntimeException("Delivery failed")).when(deliveryRepository).save(argThat(d ->
-            "whsub_1".equals(d.getSubscriptionId())));
+        doThrow(new RuntimeException("Delivery failed")).when(deliveryRepository)
+            .saveAndEnqueueOnce(argThat(d -> "whsub_1".equals(d.getSubscriptionId())),
+                eq("dispatch:pending"));
 
         // Should not throw, should still attempt second delivery
         webhookDispatchService.dispatch(event);
 
-        verify(deliveryRepository, times(2)).save(any());
+        verify(deliveryRepository, times(2))
+            .saveAndEnqueueOnce(any(), eq("dispatch:pending"));
     }
 
     @Test
@@ -195,7 +198,7 @@ class WebhookDispatchServiceTest {
         when(webhookRepository.findMatchingSubscriptions("tenant-1", EventType.API_KEY_CREATED, null))
             .thenReturn(List.of(concrete));
         webhookDispatchService.dispatch(adminEvent());
-        verify(deliveryRepository, never()).save(any());
+        verify(deliveryRepository, never()).saveAndEnqueueOnce(any(), anyString());
 
         // Tenant-accessible event to the same sub → delivered.
         reset(deliveryRepository);
@@ -203,7 +206,7 @@ class WebhookDispatchServiceTest {
         when(webhookRepository.findMatchingSubscriptions("tenant-1", EventType.BUDGET_CREATED, "org/team1"))
             .thenReturn(List.of(concrete));
         webhookDispatchService.dispatch(budget);
-        verify(deliveryRepository).save(any());
+        verify(deliveryRepository).saveAndEnqueueOnce(any(), eq("dispatch:pending"));
     }
 
     @Test
@@ -214,7 +217,7 @@ class WebhookDispatchServiceTest {
 
         webhookDispatchService.dispatch(adminEvent());
 
-        verify(deliveryRepository).save(any()); // system subs CAN receive admin events
+        verify(deliveryRepository).saveAndEnqueueOnce(any(), eq("dispatch:pending"));
     }
 
     @Test
@@ -414,7 +417,8 @@ class WebhookDispatchServiceTest {
             .tenantId("tenant-1").status(WebhookStatus.ACTIVE).build();
         when(webhookRepository.findMatchingSubscriptions("tenant-1", null, "tenant:tenant-1"))
             .thenReturn(List.of(sub));
-        doThrow(new IllegalStateException("save failed")).when(deliveryRepository).save(any());
+        doThrow(new IllegalStateException("save failed")).when(deliveryRepository)
+            .saveAndEnqueueOnce(any(), eq("dispatch:pending"));
 
         webhookDispatchService.dispatch(untyped);
 

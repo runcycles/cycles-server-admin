@@ -4,6 +4,8 @@ import io.runcycles.admin.data.logging.LogSanitizer;
 import io.runcycles.admin.data.repository.support.CascadeMutationResult;
 import io.runcycles.admin.data.repository.support.TenantCloseOutboxItem;
 import io.runcycles.admin.data.repository.support.SortedQueryGuard;
+import io.runcycles.admin.data.repository.support.CursorSupport;
+import io.runcycles.admin.data.repository.support.RedisBatchReader;
 import io.runcycles.admin.data.service.KeyService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.model.auth.*;
@@ -138,6 +140,22 @@ public class ApiKeyRepository {
             throw new RuntimeException(e);
         }
     }
+
+    /**
+     * Read one persisted API key with the rolling-deployment-tolerant Redis
+     * mapper. A missing row is returned as {@code null} so controller callers
+     * can preserve the repository mutation method's authoritative 404 path;
+     * malformed persisted data fails closed instead of silently bypassing an
+     * owner-tenant mutation guard.
+     */
+    public ApiKey findByIdOrNull(String keyId) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            String data = jedis.get("apikey:" + keyId);
+            return data == null ? null : objectMapper.readValue(data, ApiKey.class);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to read API key: " + keyId, e);
+        }
+    }
     public List<ApiKey> list(String tenantId, ApiKeyStatus statusFilter, String cursor, int limit) {
         return list(tenantId, statusFilter, cursor, limit, null, null);
     }
@@ -167,12 +185,9 @@ public class ApiKeyRepository {
         List<String> sortedIds = new ArrayList<>(ids);
         Collections.sort(sortedIds);
         List<ApiKey> keys = new ArrayList<>();
-        boolean pastCursor = (cursor == null || cursor.isBlank());
-        for (String id : sortedIds) {
-            if (!pastCursor) {
-                if (id.equals(cursor)) pastCursor = true;
-                continue;
-            }
+        int start = CursorSupport.startAfterIds(sortedIds, cursor);
+        for (int i = start; i < sortedIds.size(); i++) {
+            String id = sortedIds.get(i);
             try {
                 String data = jedis.get("apikey:" + id);
                 if (data == null) {
@@ -195,11 +210,12 @@ public class ApiKeyRepository {
 
     private List<ApiKey> listSorted(Jedis jedis, String tenantId, ApiKeyStatus statusFilter, String cursor, int limit, SortSpec sortSpec, String search) {
         Set<String> ids = jedis.smembers("apikeys:" + tenantId);
-        SortedQueryGuard.requireBounded(ids.size(), "API-key");
+        SortedQueryGuard.requireScannable(ids.size(), "API-key");
         List<ApiKey> all = new ArrayList<>();
+        Map<String, String> rows = RedisBatchReader.getById(jedis, "apikey:", ids);
         for (String id : ids) {
             try {
-                String data = jedis.get("apikey:" + id);
+                String data = rows.get(id);
                 if (data == null) continue;
                 ApiKey key = objectMapper.readValue(data, ApiKey.class);
                 if (statusFilter != null && key.getStatus() != statusFilter) continue;
@@ -210,14 +226,12 @@ public class ApiKeyRepository {
                     LogSanitizer.safe(id), LogSanitizer.safe(tenantId), LogSanitizer.safe("apikeys:" + tenantId), statusFilter, e);
             }
         }
+        SortedQueryGuard.requireBounded(all.size(), "API-key");
         all.sort(apiKeyComparator(sortSpec));
         List<ApiKey> result = new ArrayList<>();
-        boolean pastCursor = (cursor == null || cursor.isBlank());
-        for (ApiKey key : all) {
-            if (!pastCursor) {
-                if (cursor.equals(key.getKeyId())) pastCursor = true;
-                continue;
-            }
+        int start = CursorSupport.startAfter(all, cursor, ApiKey::getKeyId);
+        for (int i = start; i < all.size(); i++) {
+            ApiKey key = all.get(i);
             result.add(key);
             if (result.size() >= limit) break;
         }
@@ -277,11 +291,8 @@ public class ApiKeyRepository {
      * Cursor format: "{tenantId}|{keyId}". Resume semantics:
      *   - cursor tenant still present → resume within it using cursorKeyId
      *     (strictly after that key), then continue into later tenants.
-     *   - cursor tenant deleted between pages → advance to the first
-     *     tenant whose id is lexically greater than cursorTenantId and
-     *     serve it from the beginning. Without this "skip forward"
-     *     behaviour the iterator would stall (never match by equality)
-     *     and the client would incorrectly infer end-of-data.
+     *   - cursor tenant/key deleted between pages → reject the cursor with
+     *     restart guidance, consistently with the other list surfaces.
      */
     public List<ApiKey> listAllTenants(ApiKeyStatus statusFilter, String cursor, int limit) {
         return listAllTenants(statusFilter, cursor, limit, null, null);
@@ -320,6 +331,9 @@ public class ApiKeyRepository {
         Set<String> tenantIds = jedis.smembers("tenants");
         List<String> sortedTenantIds = new ArrayList<>(tenantIds);
         Collections.sort(sortedTenantIds);
+        if (cursorTenantId != null && !sortedTenantIds.contains(cursorTenantId)) {
+            throw CursorSupport.invalidCursor();
+        }
         List<ApiKey> collected = new ArrayList<>();
         boolean pastTenantCursor = (cursorTenantId == null);
         for (String tenantId : sortedTenantIds) {
@@ -328,9 +342,7 @@ public class ApiKeyRepository {
                 int cmp = tenantId.compareTo(cursorTenantId);
                 if (cmp < 0) continue;
                 pastTenantCursor = true;
-                // cmp == 0: same tenant as cursor → resume inside using cursorKeyId.
-                // cmp  > 0: cursor tenant was deleted → serve this tenant from start.
-                innerCursor = (cmp == 0) ? cursorKeyId : null;
+                innerCursor = cursorKeyId;
             } else {
                 innerCursor = null;
             }
@@ -346,13 +358,14 @@ public class ApiKeyRepository {
         Set<String> tenantIds = jedis.smembers("tenants");
         long candidates = 0L;
         for (String tenantId : tenantIds) candidates += jedis.scard("apikeys:" + tenantId);
-        SortedQueryGuard.requireBounded(candidates, "cross-tenant API-key");
+        SortedQueryGuard.requireScannable(candidates, "cross-tenant API-key");
         List<ApiKey> all = new ArrayList<>();
         for (String tenantId : tenantIds) {
             Set<String> keyIds = jedis.smembers("apikeys:" + tenantId);
+            Map<String, String> rows = RedisBatchReader.getById(jedis, "apikey:", keyIds);
             for (String keyId : keyIds) {
                 try {
-                    String data = jedis.get("apikey:" + keyId);
+                    String data = rows.get(keyId);
                     if (data == null) continue;
                     ApiKey key = objectMapper.readValue(data, ApiKey.class);
                     if (statusFilter != null && key.getStatus() != statusFilter) continue;
@@ -365,6 +378,7 @@ public class ApiKeyRepository {
                 }
             }
         }
+        SortedQueryGuard.requireBounded(all.size(), "cross-tenant API-key");
         all.sort(apiKeyComparator(sortSpec));
         List<ApiKey> result = new ArrayList<>();
         boolean pastCursor = (cursor == null || cursor.isBlank());
@@ -389,6 +403,7 @@ public class ApiKeyRepository {
             result.add(key);
             if (result.size() >= limit) break;
         }
+        if (!pastCursor) throw CursorSupport.invalidCursor();
         return result;
     }
 
@@ -397,12 +412,9 @@ public class ApiKeyRepository {
         List<String> sortedIds = new ArrayList<>(ids);
         Collections.sort(sortedIds);
         List<ApiKey> keys = new ArrayList<>();
-        boolean pastCursor = (cursor == null || cursor.isBlank());
-        for (String id : sortedIds) {
-            if (!pastCursor) {
-                if (id.equals(cursor)) pastCursor = true;
-                continue;
-            }
+        int start = CursorSupport.startAfterIds(sortedIds, cursor);
+        for (int i = start; i < sortedIds.size(); i++) {
+            String id = sortedIds.get(i);
             try {
                 String data = jedis.get("apikey:" + id);
                 if (data == null) {

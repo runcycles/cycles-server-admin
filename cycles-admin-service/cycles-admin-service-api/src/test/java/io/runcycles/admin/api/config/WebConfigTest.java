@@ -61,7 +61,9 @@ class WebConfigTest {
         // X-Request-Id must be exposed so browser clients can read server-assigned ids.
         ArgumentCaptor<String[]> exposed = ArgumentCaptor.forClass(String[].class);
         verify(corsReg).exposedHeaders(exposed.capture());
-        assertThat(exposed.getValue()).containsExactlyInAnyOrder("X-Request-Id", "X-Cycles-Trace-Id");
+        assertThat(exposed.getValue()).containsExactlyInAnyOrder(
+            "X-Request-Id", "X-Cycles-Trace-Id",
+            "X-Cycles-Cascade-Status", "Retry-After");
 
         // PUT must be present — PUT /v1/admin/config/webhook-security is the
         // spec-defined method for updating webhook security config. The

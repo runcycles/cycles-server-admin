@@ -3,6 +3,8 @@ import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.logging.LogSanitizer;
 import io.runcycles.admin.data.repository.support.ZSetAdaptivePager;
 import io.runcycles.admin.data.repository.support.SortedQueryGuard;
+import io.runcycles.admin.data.repository.support.CursorSupport;
+import io.runcycles.admin.data.repository.support.RedisBatchReader;
 import io.runcycles.admin.model.event.Event;
 import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventType;
@@ -138,7 +140,7 @@ public class EventRepository {
         try (Jedis jedis = jedisPool.getResource()) {
             if (correlationId != null && !correlationId.isBlank()) {
                 List<Event> byCorrelation = listByCorrelation(
-                    jedis, correlationId, tenantId, eventType, category, scope, limit,
+                    jedis, correlationId, tenantId, eventType, category, scope, cursor, limit,
                     sortSpec, search, traceId, requestId);
                 return byCorrelation;
             }
@@ -226,7 +228,7 @@ public class EventRepository {
         boolean ascending = sortSpec != null && sortSpec.isAscending();
 
         return ZSetAdaptivePager.collect(jedis, indexKey, minScore, maxScore,
-            cursor, limit, ascending, id -> {
+            cursor, limit, ascending, "event", id -> {
             try {
                 String data = jedis.get("event:" + id);
                 if (data == null) {
@@ -253,13 +255,14 @@ public class EventRepository {
         double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
         double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
         String indexKey = (tenantId != null) ? "events:" + tenantId : "events:_all";
-        SortedQueryGuard.requireBounded(jedis.zcount(indexKey, minScore, maxScore), "event");
+        SortedQueryGuard.requireScannable(jedis.zcount(indexKey, minScore, maxScore), "event");
         // A correct non-primary sort must see the complete filtered window.
         List<String> ids = jedis.zrevrangeByScore(indexKey, maxScore, minScore);
         List<Event> all = new ArrayList<>();
+        Map<String, String> rows = RedisBatchReader.getById(jedis, "event:", ids);
         for (String id : ids) {
             try {
-                String data = jedis.get("event:" + id);
+                String data = rows.get(id);
                 if (data == null) continue;
                 Event event = objectMapper.readValue(data, Event.class);
                 if (!matchesFilters(event, eventType, category, scope, traceId, requestId)) continue;
@@ -270,14 +273,12 @@ public class EventRepository {
                     LogSanitizer.safe(id), LogSanitizer.safe(indexKey), LogSanitizer.safe(tenantId), eventType, category, LogSanitizer.safe(scope), requestId, traceId, e);
             }
         }
+        SortedQueryGuard.requireBounded(all.size(), "event");
         all.sort(eventComparator(sortSpec));
         List<Event> results = new ArrayList<>();
-        boolean pastCursor = (cursor == null || cursor.isBlank());
-        for (Event e : all) {
-            if (!pastCursor) {
-                if (cursor.equals(e.getEventId())) pastCursor = true;
-                continue;
-            }
+        int start = CursorSupport.startAfter(all, cursor, Event::getEventId);
+        for (int i = start; i < all.size(); i++) {
+            Event e = all.get(i);
             results.add(e);
             if (results.size() >= limit) break;
         }
@@ -352,15 +353,18 @@ public class EventRepository {
     }
 
     private List<Event> listByCorrelation(Jedis jedis, String correlationId, String tenantId,
-                                          String eventType, String category, String scope, int limit,
+                                          String eventType, String category, String scope,
+                                          String cursor, int limit,
                                           SortSpec sortSpec, String search,
                                           String traceId, String requestId) {
         Set<String> ids = jedis.smembers("events:correlation:" + correlationId);
         if (ids == null || ids.isEmpty()) return new ArrayList<>();
+        SortedQueryGuard.requireScannable(ids.size(), "correlation event");
         List<Event> events = new ArrayList<>();
+        Map<String, String> rows = RedisBatchReader.getById(jedis, "event:", ids);
         for (String id : ids) {
             try {
-                String data = jedis.get("event:" + id);
+                String data = rows.get(id);
                 if (data == null) continue;
                 Event event = objectMapper.readValue(data, Event.class);
                 if (tenantId != null && !tenantId.equals(event.getTenantId())) continue;
@@ -372,9 +376,13 @@ public class EventRepository {
                     LogSanitizer.safe(id), correlationId, LogSanitizer.safe(tenantId), eventType, category, LogSanitizer.safe(scope), requestId, traceId, e);
             }
         }
-        if (sortSpec != null) {
-            events.sort(eventComparator(sortSpec));
-        }
-        return events.size() > limit ? events.subList(0, limit) : events;
+        SortedQueryGuard.requireBounded(events.size(), "correlation event");
+        SortSpec effectiveSort = sortSpec != null
+            ? sortSpec
+            : new SortSpec("timestamp", io.runcycles.admin.model.shared.SortDirection.DESC);
+        events.sort(eventComparator(effectiveSort));
+        int start = CursorSupport.startAfter(events, cursor, Event::getEventId);
+        int end = Math.min(events.size(), start + limit);
+        return new ArrayList<>(events.subList(start, end));
     }
 }

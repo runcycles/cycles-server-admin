@@ -98,6 +98,24 @@ class ZSetAdaptivePagerTest {
     }
 
     @Test
+    void sparseFilter_stopsAtExplicitScanBudget() {
+        when(jedis.zrevrangeByScoreWithScores("events", 100.0, 0.0, 0, 64))
+            .thenReturn(List.of(new Tuple("skip-1", 99.0),
+                new Tuple("skip-2", 98.0), new Tuple("skip-3", 97.0)));
+
+        assertThatThrownBy(() -> ZSetAdaptivePager.collect(jedis, "events",
+                0.0, 100.0, null, 1, false, "audit log", 2, id -> null))
+            .isInstanceOf(GovernanceException.class)
+            .satisfies(error -> {
+                GovernanceException governance = (GovernanceException) error;
+                assertThat(governance.getErrorCode()).isEqualTo(ErrorCode.LIMIT_EXCEEDED);
+                assertThat(governance.getDetails())
+                    .containsEntry("max_scan_candidates", 2)
+                    .containsEntry("scanned_candidates", 3);
+            });
+    }
+
+    @Test
     void emptyAndInvalidRangesReturnWithoutReadingRedis() {
         assertThat(ZSetAdaptivePager.collect(jedis, "events", 0, 100,
             null, 0, true, id -> id)).isEmpty();

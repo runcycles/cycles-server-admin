@@ -849,6 +849,34 @@ class EventRepositoryTest {
     }
 
     @Test
+    void list_correlationFilter_consumesCursorAcrossDistinctPages() throws Exception {
+        Instant base = Instant.parse("2026-07-15T12:00:00Z");
+        Event oldest = ev("evt_1", "tenant-1", EventType.TENANT_CREATED,
+            null, base);
+        Event middle = ev("evt_2", "tenant-1", EventType.TENANT_CREATED,
+            null, base.plusSeconds(1));
+        Event newest = ev("evt_3", "tenant-1", EventType.TENANT_CREATED,
+            null, base.plusSeconds(2));
+        when(jedis.smembers("events:correlation:corr-page"))
+            .thenReturn(new LinkedHashSet<>(List.of("evt_1", "evt_2", "evt_3")));
+        String oldestJson = objectMapper.writeValueAsString(oldest);
+        String middleJson = objectMapper.writeValueAsString(middle);
+        String newestJson = objectMapper.writeValueAsString(newest);
+        when(jedis.get("event:evt_1")).thenReturn(oldestJson);
+        when(jedis.get("event:evt_2")).thenReturn(middleJson);
+        when(jedis.get("event:evt_3")).thenReturn(newestJson);
+
+        List<Event> first = repository.list(null, null, null, null,
+            "corr-page", null, null, null, 2, null, null, null, null);
+        List<Event> second = repository.list(null, null, null, null,
+            "corr-page", null, null, "evt_2", 2, null, null, null, null);
+
+        assertThat(first).extracting(Event::getEventId)
+            .containsExactly("evt_3", "evt_2");
+        assertThat(second).extracting(Event::getEventId).containsExactly("evt_1");
+    }
+
+    @Test
     void eventComparator_eventTypeAndCategoryAreNullSafe() {
         Instant now = Instant.now();
         Event nullClassifiers = Event.builder().eventId("evt-null").timestamp(now).build();

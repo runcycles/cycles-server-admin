@@ -56,9 +56,9 @@ public class WebConfig implements WebMvcConfigurer {
             // X-Request-Id lets clients propagate a correlation id through the filter chain.
             .allowedHeaders("X-Admin-API-Key", "X-Cycles-API-Key", "X-Request-Id",
                 "X-Cycles-Trace-Id", "traceparent", "tracestate", "Content-Type")
-            // X-Request-Id is also exposed so browser clients can read the server-assigned id
-            // when they didn't send one.
-            .exposedHeaders("X-Request-Id", "X-Cycles-Trace-Id")
+            // Correlation and cascade-progress headers must be readable by browser operators.
+            .exposedHeaders("X-Request-Id", "X-Cycles-Trace-Id",
+                "X-Cycles-Cascade-Status", "Retry-After")
             .maxAge(3600);
     }
 }

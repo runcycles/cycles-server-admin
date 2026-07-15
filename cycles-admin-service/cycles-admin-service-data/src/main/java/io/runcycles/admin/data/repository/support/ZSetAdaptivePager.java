@@ -21,6 +21,7 @@ import java.util.function.Function;
 public final class ZSetAdaptivePager {
     private static final int MIN_BATCH_SIZE = 64;
     private static final int MAX_BATCH_SIZE = 1024;
+    public static final int DEFAULT_MAX_SCANNED_MEMBERS = 5_000;
 
     private ZSetAdaptivePager() {}
 
@@ -37,10 +38,40 @@ public final class ZSetAdaptivePager {
             int limit,
             boolean ascending,
             Function<String, T> loader) {
+        return collect(jedis, indexKey, minScore, maxScore, cursor, limit,
+            ascending, "timestamp-indexed", DEFAULT_MAX_SCANNED_MEMBERS, loader);
+    }
+
+    public static <T> List<T> collect(
+            Jedis jedis,
+            String indexKey,
+            double minScore,
+            double maxScore,
+            String cursor,
+            int limit,
+            boolean ascending,
+            String surface,
+            Function<String, T> loader) {
+        return collect(jedis, indexKey, minScore, maxScore, cursor, limit,
+            ascending, surface, DEFAULT_MAX_SCANNED_MEMBERS, loader);
+    }
+
+    static <T> List<T> collect(
+            Jedis jedis,
+            String indexKey,
+            double minScore,
+            double maxScore,
+            String cursor,
+            int limit,
+            boolean ascending,
+            String surface,
+            int maxScannedMembers,
+            Function<String, T> loader) {
         List<T> results = new ArrayList<>(Math.max(0, limit));
         if (limit <= 0 || minScore > maxScore) {
             return results;
         }
+        ScanBudget budget = new ScanBudget(surface, maxScannedMembers);
 
         double currentMin = minScore;
         double currentMax = maxScore;
@@ -50,7 +81,7 @@ public final class ZSetAdaptivePager {
                 throw invalidCursor();
             }
             if (collectAfterAtScore(jedis, indexKey, cursorScore, cursor,
-                    ascending, results, limit, loader)) {
+                    ascending, results, limit, budget, loader)) {
                 return results;
             }
             if (ascending) {
@@ -68,7 +99,7 @@ public final class ZSetAdaptivePager {
                 break;
             }
             List<String> ids = page.stream().map(Tuple::getElement).toList();
-            if (collectIds(ids, 0, results, limit, loader)) {
+            if (collectIds(ids, 0, results, limit, budget, loader)) {
                 break;
             }
             if (ids.size() < batchSize) {
@@ -80,7 +111,7 @@ public final class ZSetAdaptivePager {
             double lastScore = boundary.getScore();
 
             if (collectAfterAtScore(jedis, indexKey, lastScore, lastId,
-                    ascending, results, limit, loader)) {
+                    ascending, results, limit, budget, loader)) {
                 break;
             }
             if (ascending) {
@@ -94,8 +125,10 @@ public final class ZSetAdaptivePager {
 
     private static <T> boolean collectIds(List<String> ids, int start,
                                            List<T> results, int limit,
+                                           ScanBudget budget,
                                            Function<String, T> loader) {
         for (int i = start; i < ids.size(); i++) {
+            budget.consume();
             T row = loader.apply(ids.get(i));
             if (row != null) {
                 results.add(row);
@@ -130,6 +163,7 @@ public final class ZSetAdaptivePager {
             boolean ascending,
             List<T> results,
             int limit,
+            ScanBudget budget,
             Function<String, T> loader) {
         int offset = 0;
         while (results.size() < limit) {
@@ -138,6 +172,7 @@ public final class ZSetAdaptivePager {
                 : jedis.zrevrangeByScore(indexKey, score, score, offset, MAX_BATCH_SIZE);
             if (tied.isEmpty()) return false;
             for (String id : tied) {
+                budget.consume();
                 int comparison = id.compareTo(boundary);
                 boolean after = ascending ? comparison > 0 : comparison < 0;
                 if (!after) continue;
@@ -154,7 +189,29 @@ public final class ZSetAdaptivePager {
     }
 
     private static GovernanceException invalidCursor() {
-        return new GovernanceException(ErrorCode.INVALID_REQUEST,
-            "Cursor is not valid for this result set", 400);
+        return CursorSupport.invalidCursor();
+    }
+
+    private static final class ScanBudget {
+        private final String surface;
+        private final int maximum;
+        private int scanned;
+
+        private ScanBudget(String surface, int maximum) {
+            this.surface = surface;
+            this.maximum = Math.max(1, maximum);
+        }
+
+        private void consume() {
+            scanned++;
+            if (scanned > maximum) {
+                throw new GovernanceException(ErrorCode.LIMIT_EXCEEDED,
+                    "The " + surface + " query scanned more than " + maximum
+                        + " candidates without filling the page; narrow the tenant, time window, or filters",
+                    400, java.util.Map.of(
+                        "scanned_candidates", scanned,
+                        "max_scan_candidates", maximum));
+            }
+        }
     }
 }

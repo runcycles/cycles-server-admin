@@ -258,6 +258,24 @@ class WebhookDeliveryRepositoryTest {
     }
 
     @Test
+    void saveAndEnqueueOnce_usesOneAtomicScriptAndReportsDuplicate() {
+        WebhookDelivery delivery = WebhookDelivery.builder()
+            .deliveryId("del_deterministic")
+            .subscriptionId("whsub_1").eventId("evt_1")
+            .eventType(EventType.BUDGET_CREATED).status(DeliveryStatus.PENDING)
+            .attemptedAt(Instant.parse("2026-07-15T12:00:00Z")).build();
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L, 0L);
+
+        assertThat(repository.saveAndEnqueueOnce(delivery, "dispatch:pending")).isTrue();
+        assertThat(repository.saveAndEnqueueOnce(delivery, "dispatch:pending")).isFalse();
+
+        verify(jedis, times(2)).eval(anyString(), eq(List.of(
+            "delivery:del_deterministic", "deliveries:whsub_1", "dispatch:pending")),
+            argThat(args -> args.size() == 4
+                && "del_deterministic".equals(args.get(2))));
+    }
+
+    @Test
     void save_handlesBlankAndExistingIds() {
         WebhookDelivery blank = WebhookDelivery.builder().deliveryId(" ")
                 .subscriptionId("whsub_1").attemptedAt(Instant.now()).build();

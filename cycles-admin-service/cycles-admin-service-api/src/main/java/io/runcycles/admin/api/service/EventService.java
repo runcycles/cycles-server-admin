@@ -76,13 +76,10 @@ public class EventService {
         if (event.getTraceId() == null) event.setTraceId(currentTraceId());
         validatePayloadShape(event);
         eventRepository.save(event);
-        try {
-            webhookDispatchService.dispatch(event);
-        } catch (Exception e) {
-            LOG.error("Event persisted but webhook dispatch enqueue failed: event_id={} event_type={} error={}",
-                safe(event.getEventId()), event.getEventType(), safe(e.getMessage()), e);
-        }
-        recordEmitted(event.getEventType(), "success");
+        WebhookDispatchService.DispatchSummary dispatch =
+            webhookDispatchService.dispatchWithSummary(event);
+        recordEmitted(event.getEventType(),
+            dispatch != null && dispatch.hasFailures() ? "failure" : "success");
     }
 
     /**

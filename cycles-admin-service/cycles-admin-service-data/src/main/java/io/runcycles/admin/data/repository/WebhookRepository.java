@@ -4,6 +4,8 @@ import io.runcycles.admin.data.logging.LogSanitizer;
 import io.runcycles.admin.data.repository.support.CascadeMutationResult;
 import io.runcycles.admin.data.repository.support.TenantCloseOutboxItem;
 import io.runcycles.admin.data.repository.support.SortedQueryGuard;
+import io.runcycles.admin.data.repository.support.CursorSupport;
+import io.runcycles.admin.data.repository.support.RedisBatchReader;
 import io.runcycles.admin.data.service.CryptoService;
 import io.runcycles.admin.model.event.EventCategory;
 import io.runcycles.admin.model.event.EventType;
@@ -694,15 +696,7 @@ public class WebhookRepository {
         // chains don't break.
         List<String> sortedIds = new ArrayList<>(ids);
         Collections.sort(sortedIds);
-        int startIdx = 0;
-        if (cursor != null && !cursor.isBlank()) {
-            for (int i = 0; i < sortedIds.size(); i++) {
-                if (sortedIds.get(i).equals(cursor)) {
-                    startIdx = i + 1;
-                    break;
-                }
-            }
-        }
+        int startIdx = CursorSupport.startAfterIds(sortedIds, cursor);
         List<WebhookSubscription> results = new ArrayList<>();
         for (int i = startIdx; i < sortedIds.size() && results.size() < limit; i++) {
             WebhookSubscription sub = tryHydrate(jedis, sortedIds.get(i));
@@ -717,26 +711,26 @@ public class WebhookRepository {
     private List<WebhookSubscription> listSorted(Jedis jedis, Set<String> ids, String status,
                                                   String eventType, String cursor, int limit,
                                                   SortSpec sortSpec, String search) {
-        SortedQueryGuard.requireBounded(ids.size(), "webhook");
+        SortedQueryGuard.requireScannable(ids.size(), "webhook");
         // Sorted path: hydrate all, filter, sort, walk cursor strictly-after.
         // Cursor remains the subscription_id (wire-compat); caller must pass the
         // same sortSpec on follow-up pages for stable traversal.
         List<WebhookSubscription> all = new ArrayList<>();
+        Map<String, String> rows = RedisBatchReader.getById(jedis, "webhook:", ids);
         for (String id : ids) {
-            WebhookSubscription sub = tryHydrate(jedis, id);
+            WebhookSubscription sub = tryHydrate(id, rows.get(id));
             if (sub == null) continue;
             if (!matchesStatusAndEventType(sub, status, eventType)) continue;
             if (!matchesSearch(sub, search)) continue;
             all.add(sub);
         }
+        SortedQueryGuard.requireBounded(all.size(), "webhook");
         all.sort(webhookComparator(sortSpec));
         List<WebhookSubscription> results = new ArrayList<>();
-        boolean pastCursor = (cursor == null || cursor.isBlank());
-        for (WebhookSubscription sub : all) {
-            if (!pastCursor) {
-                if (cursor.equals(sub.getSubscriptionId())) pastCursor = true;
-                continue;
-            }
+        int start = CursorSupport.startAfter(
+            all, cursor, WebhookSubscription::getSubscriptionId);
+        for (int i = start; i < all.size(); i++) {
+            WebhookSubscription sub = all.get(i);
             results.add(sub);
             if (results.size() >= limit) break;
         }
@@ -746,10 +740,20 @@ public class WebhookRepository {
     private WebhookSubscription tryHydrate(Jedis jedis, String id) {
         try {
             String data = jedis.get("webhook:" + id);
-            if (data == null) return null;
-            return objectMapper.readValue(data, WebhookSubscription.class);
+            return tryHydrate(id, data);
         } catch (Exception e) {
             LOG.warn("Failed to parse webhook subscription row: subscription_id={}", LogSanitizer.safe(id), e);
+            return null;
+        }
+    }
+
+    private WebhookSubscription tryHydrate(String id, String data) {
+        if (data == null) return null;
+        try {
+            return objectMapper.readValue(data, WebhookSubscription.class);
+        } catch (Exception e) {
+            LOG.warn("Failed to parse webhook subscription row: subscription_id={}",
+                LogSanitizer.safe(id), e);
             return null;
         }
     }

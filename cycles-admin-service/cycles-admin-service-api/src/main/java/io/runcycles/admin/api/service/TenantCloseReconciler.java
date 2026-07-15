@@ -2,15 +2,20 @@ package io.runcycles.admin.api.service;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.repository.TenantRepository;
 import io.runcycles.admin.data.repository.TenantCloseWorkRepository;
 import io.runcycles.admin.model.tenant.Tenant;
 import io.runcycles.admin.model.tenant.TenantStatus;
+import io.runcycles.admin.model.shared.ErrorCode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+
+import java.time.Duration;
+import java.time.Instant;
 
 /** Drives interrupted Mode-B tenant-close cascades to bounded convergence. */
 @Service
@@ -48,10 +53,9 @@ public class TenantCloseReconciler {
         if (!enabled || maxTenantsPerRun <= 0) return;
         for (String tenantId : workRepository.dueTenantIds(maxTenantsPerRun)) {
             try {
-                Tenant tenant = tenantRepository.get(tenantId);
-                if (tenant.getStatus() != TenantStatus.CLOSED) {
-                    // A prepare-before-flip whose flip failed is stale work.
-                    workRepository.discard(tenantId);
+                Tenant tenant = findTenantOrNull(tenantId);
+                if (tenant == null || tenant.getStatus() != TenantStatus.CLOSED) {
+                    cleanupUncommittedIntent(tenantId);
                     continue;
                 }
                 var result = cascadeService.cascade(tenantId, null);
@@ -65,6 +69,43 @@ public class TenantCloseReconciler {
                 workRepository.reschedule(tenantId, 30_000L);
                 LOG.error("Tenant-close reconciliation failed: tenant_id={}", tenantId, e);
             }
+        }
+    }
+
+    private Tenant findTenantOrNull(String tenantId) {
+        try {
+            return tenantRepository.get(tenantId);
+        } catch (GovernanceException e) {
+            if (e.getErrorCode() == ErrorCode.TENANT_NOT_FOUND) return null;
+            throw e;
+        }
+    }
+
+    private void cleanupUncommittedIntent(String tenantId) {
+        var intent = workRepository.findIntent(tenantId);
+        if (intent.isEmpty()) return;
+        Instant createdAt = intent.get().createdAt();
+        long ageMillis = createdAt != null
+            ? Duration.between(createdAt, Instant.now()).toMillis()
+            : TenantCloseWorkRepository.PREPARE_GRACE_MILLIS;
+        if (ageMillis < TenantCloseWorkRepository.PREPARE_GRACE_MILLIS) {
+            workRepository.reschedule(tenantId,
+                TenantCloseWorkRepository.PREPARE_GRACE_MILLIS - ageMillis);
+            return;
+        }
+        String cleanupLease = workRepository.tryAcquireLease(tenantId);
+        if (cleanupLease == null) {
+            workRepository.reschedule(tenantId, 1_000L);
+            return;
+        }
+        try {
+            // Atomic with the close-commit marker and tenant status: it cannot
+            // delete an intent concurrently consumed by a successful flip.
+            if (!workRepository.discardIfUncommitted(tenantId)) {
+                workRepository.reschedule(tenantId, 1_000L);
+            }
+        } finally {
+            workRepository.releaseLease(tenantId, cleanupLease);
         }
     }
 }

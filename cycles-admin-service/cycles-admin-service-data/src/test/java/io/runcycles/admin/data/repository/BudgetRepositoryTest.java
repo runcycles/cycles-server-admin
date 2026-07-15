@@ -800,17 +800,17 @@ class BudgetRepositoryTest {
     }
 
     @Test
-    void list_cursorNotFound_includesAllEntries() {
+    void list_cursorNotFound_requiresPaginationRestart() {
         Set<String> keys = new LinkedHashSet<>(List.of("budget:a:USD_MICROCENTS", "budget:b:USD_MICROCENTS"));
         when(jedis.smembers("budgets:tenant-1")).thenReturn(keys);
 
         when(jedis.hgetAll("budget:a:USD_MICROCENTS")).thenReturn(createBudgetHash("led-a", "a", "USD_MICROCENTS"));
         when(jedis.hgetAll("budget:b:USD_MICROCENTS")).thenReturn(createBudgetHash("led-b", "b", "USD_MICROCENTS"));
 
-        // Cursor "nonexistent" won't match any ledger_id, so nothing is returned after the cursor
-        List<BudgetLedger> result = repository.list("tenant-1", null, null, null, "nonexistent", 50);
-
-        assertThat(result).isEmpty();
+        assertThatThrownBy(() -> repository.list(
+                "tenant-1", null, null, null, "nonexistent", 50))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("restart pagination");
     }
 
     private Map<String, String> createBudgetHash(String ledgerId, String scope, String unit) {
@@ -1256,25 +1256,17 @@ class BudgetRepositoryTest {
     }
 
     @Test
-    void listAllTenants_cursorTenantDeleted_skipsForwardToNextTenant() {
+    void listAllTenants_cursorTenantDeleted_requiresPaginationRestart() {
         // Cursor points at tenant-b, but tenant-b has been deleted between pages.
         // Must not stall at empty: should resume at tenant-c (sorts strictly after)
         // and serve tenant-c from the start.
         when(jedis.smembers("tenants"))
                 .thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-c")));
-        when(jedis.smembers("budgets:tenant-c"))
-                .thenReturn(new LinkedHashSet<>(List.of(
-                        "budget:c1:USD_MICROCENTS", "budget:c2:USD_MICROCENTS")));
-        when(jedis.hgetAll("budget:c1:USD_MICROCENTS"))
-                .thenReturn(hashWith("led-c1", "c1", "USD_MICROCENTS", 100, 0, 0, false, "tenant-c"));
-        when(jedis.hgetAll("budget:c2:USD_MICROCENTS"))
-                .thenReturn(hashWith("led-c2", "c2", "USD_MICROCENTS", 100, 0, 0, false, "tenant-c"));
 
-        List<BudgetLedger> result = repository.listAllTenants(
-                BudgetListFilters.empty(), "tenant-b|led-b1", 50);
-
-        assertThat(result).extracting(BudgetLedger::getLedgerId)
-                .containsExactly("led-c1", "led-c2");
+        assertThatThrownBy(() -> repository.listAllTenants(
+                BudgetListFilters.empty(), "tenant-b|led-b1", 50))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("restart pagination");
     }
 
     @Test
@@ -1549,20 +1541,14 @@ class BudgetRepositoryTest {
     }
 
     @Test
-    void listAllTenants_nullSortSpec_preservesLegacySkipForward() {
+    void listAllTenants_nullSortSpec_rejectsDeletedCursor() {
         when(jedis.smembers("tenants"))
                 .thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-c")));
-        when(jedis.smembers("budgets:tenant-c"))
-                .thenReturn(new LinkedHashSet<>(List.of("budget:c1:USD_MICROCENTS")));
-        when(jedis.hgetAll("budget:c1:USD_MICROCENTS"))
-                .thenReturn(hashWith("led-c1", "c1", "USD_MICROCENTS", 100, 0, 0, false, "tenant-c"));
 
-        // Cursor tenant-b was deleted between pages; legacy path skips forward.
-        List<BudgetLedger> result = repository.listAllTenants(
-                BudgetListFilters.empty(), "tenant-b|led-b1", 50, null);
-
-        assertThat(result).extracting(BudgetLedger::getLedgerId)
-                .containsExactly("led-c1");
+        assertThatThrownBy(() -> repository.listAllTenants(
+                BudgetListFilters.empty(), "tenant-b|led-b1", 50, null))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("restart pagination");
     }
 
     @Test
@@ -1722,7 +1708,9 @@ class BudgetRepositoryTest {
             .extracting(BudgetLedger::getLedgerId).containsExactly("good-a");
         assertThat(repository.list("tenant-1", null, "good-a", 10, byScope))
             .extracting(BudgetLedger::getLedgerId).contains("good-b", "other");
-        assertThat(repository.list("tenant-1", null, "not-present", 10, byScope)).isEmpty();
+        assertThatThrownBy(() -> repository.list(
+                "tenant-1", null, "not-present", 10, byScope))
+            .isInstanceOf(GovernanceException.class);
     }
 
     @Test
@@ -1777,7 +1765,9 @@ class BudgetRepositoryTest {
             .extracting(BudgetLedger::getLedgerId).containsExactly("a");
         assertThat(repository.listAllTenants(null, "a", 10, byScope))
             .extracting(BudgetLedger::getLedgerId).containsExactly("b");
-        assertThat(repository.listAllTenants(null, "tenant-b|a", 10, byScope)).isEmpty();
+        assertThatThrownBy(() -> repository.listAllTenants(
+                null, "tenant-b|a", 10, byScope))
+            .isInstanceOf(GovernanceException.class);
         BudgetListFilters misses = new BudgetListFilters("none", null, null, null, null, null, null);
         assertThat(repository.listAllTenants(misses, null, 10, byScope)).isEmpty();
     }
@@ -1791,7 +1781,9 @@ class BudgetRepositoryTest {
             Map.of("ledger_id", "bad", "scope", "bad", "unit", "INVALID"));
 
         assertThat(repository.list("tenant-1", (BudgetListFilters) null, " ", 10)).isEmpty();
-        assertThat(repository.list("tenant-1", (BudgetListFilters) null, "after", 10)).isEmpty();
+        assertThatThrownBy(() -> repository.list(
+                "tenant-1", (BudgetListFilters) null, "after", 10))
+            .isInstanceOf(GovernanceException.class);
 
         when(jedis.smembers("tenants")).thenReturn(Set.of("tenant-1"));
         assertThat(repository.listAllTenants(null, " ", 0, null)).isEmpty();

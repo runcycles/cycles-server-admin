@@ -92,6 +92,19 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
+    void findByIdOrNull_toleratesFieldsWrittenByNewerReplica() throws Exception {
+        ApiKey key = ApiKey.builder().keyId("key-future").tenantId("tenant-closed")
+            .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
+        String json = objectMapper.writeValueAsString(key);
+        String futureJson = json.substring(0, json.length() - 1)
+            + ",\"future_replica_field\":\"value\"}";
+        when(jedis.get("apikey:key-future")).thenReturn(futureJson);
+
+        assertThat(repository.findByIdOrNull("key-future").getTenantId())
+            .isEqualTo("tenant-closed");
+    }
+
+    @Test
     void create_keyIdCollisionRegeneratesAndCollisionExhaustionFailsClosed() {
         when(keyService.generateKeySecret("cyc_live")).thenReturn("cyc_live_collision");
         when(keyService.extractPrefix(anyString())).thenReturn("cyc_live_colli");
@@ -779,14 +792,13 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
-    void list_cursorNotFound_returnsNoEntriesAfterCursor() throws Exception {
+    void list_cursorNotFound_requiresPaginationRestart() throws Exception {
         Set<String> ids = new LinkedHashSet<>(List.of("key_1", "key_2"));
         when(jedis.smembers("apikeys:tenant-1")).thenReturn(ids);
 
-        // Cursor points to nonexistent key - nothing comes after it
-        List<ApiKey> result = repository.list("tenant-1", null, "nonexistent", 50);
-
-        assertThat(result).isEmpty();
+        assertThatThrownBy(() -> repository.list("tenant-1", null, "nonexistent", 50))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("restart pagination");
     }
 
     @Test
@@ -1153,21 +1165,16 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
-    void listAllTenants_cursorTenantDeleted_skipsForwardToNextTenant() throws Exception {
+    void listAllTenants_cursorTenantDeleted_requiresPaginationRestart() throws Exception {
         // Cursor points at tenant-b, but tenant-b has been deleted between pages.
         // Must not stall at empty: should resume at tenant-c (sorts strictly after).
-        String jsonC1 = objectMapper.writeValueAsString(buildKey("tenant-c", "key_c1"));
-        String jsonC2 = objectMapper.writeValueAsString(buildKey("tenant-c", "key_c2"));
         when(jedis.smembers("tenants"))
                 .thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-c")));
-        when(jedis.smembers("apikeys:tenant-c"))
-                .thenReturn(new LinkedHashSet<>(List.of("key_c1", "key_c2")));
-        lenient().when(jedis.get("apikey:key_c1")).thenReturn(jsonC1);
-        lenient().when(jedis.get("apikey:key_c2")).thenReturn(jsonC2);
 
-        List<ApiKey> result = repository.listAllTenants(null, "tenant-b|key_b1", 50);
-
-        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_c1", "key_c2");
+        assertThatThrownBy(() -> repository.listAllTenants(
+                null, "tenant-b|key_b1", 50))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("restart pagination");
     }
 
     // --- v0.1.25.24 sort support ---
@@ -1333,18 +1340,13 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
-    void listAllTenants_nullSortSpec_preservesLegacySkipForward() throws Exception {
-        Instant now = Instant.parse("2026-01-01T00:00:00Z");
-        ApiKey c1 = buildKeySorted("tenant-c", "key_c1", "C", ApiKeyStatus.ACTIVE, now, now.plusSeconds(3600));
-        String jsonC1 = objectMapper.writeValueAsString(c1);
+    void listAllTenants_nullSortSpec_rejectsDeletedCursor() throws Exception {
         when(jedis.smembers("tenants")).thenReturn(new LinkedHashSet<>(List.of("tenant-a", "tenant-c")));
-        when(jedis.smembers("apikeys:tenant-c")).thenReturn(new LinkedHashSet<>(List.of("key_c1")));
-        lenient().when(jedis.get("apikey:key_c1")).thenReturn(jsonC1);
 
-        // Null SortSpec → legacy path; cursor tenant-b is deleted → skip forward to tenant-c
-        List<ApiKey> result = repository.listAllTenants(null, "tenant-b|key_b1", 50, null);
-
-        assertThat(result).extracting(ApiKey::getKeyId).containsExactly("key_c1");
+        assertThatThrownBy(() -> repository.listAllTenants(
+                null, "tenant-b|key_b1", 50, null))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("restart pagination");
     }
 
     @Test
@@ -1540,10 +1542,12 @@ class ApiKeyRepositoryTest {
             .extracting(ApiKey::getKeyId).contains("second");
         assertThat(repository.listAllTenants(null, "tenant-a|first", 1, byName, null))
             .hasSize(1);
-        assertThat(repository.listAllTenants(null, "tenant-b|first", 10, byName, null))
-            .isEmpty();
-        assertThat(repository.listAllTenants(null, "not-present", 10, byName, " "))
-            .isEmpty();
+        assertThatThrownBy(() -> repository.listAllTenants(
+                null, "tenant-b|first", 10, byName, null))
+            .isInstanceOf(GovernanceException.class);
+        assertThatThrownBy(() -> repository.listAllTenants(
+                null, "not-present", 10, byName, " "))
+            .isInstanceOf(GovernanceException.class);
     }
 
     @Test

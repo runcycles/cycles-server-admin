@@ -44,6 +44,9 @@ class TenantRepositoryTest {
     @BeforeEach
     void setUp() {
         lenient().when(jedisPool.getResource()).thenReturn(jedis);
+        // Non-close updates use a compare-and-set Lua script. Individual
+        // create/close tests override this with their structured Lua result.
+        lenient().when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
     }
 
     @Test
@@ -371,7 +374,7 @@ class TenantRepositoryTest {
 
         assertThat(result.getName()).isEqualTo("New Name");
         assertThat(result.getUpdatedAt()).isNotNull();
-        verify(jedis).set(eq("tenant:tenant-1"), anyString());
+        verify(jedis).eval(anyString(), eq(List.of("tenant:tenant-1")), anyList());
     }
 
     @Test
@@ -392,6 +395,7 @@ class TenantRepositoryTest {
     void update_statusActiveToClosed_succeeds() throws Exception {
         String storedJson = storedTenantJson(TenantStatus.ACTIVE);
         when(jedis.get("tenant:tenant-1")).thenReturn(storedJson);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("CLOSED"));
 
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setStatus(TenantStatus.CLOSED);
@@ -400,6 +404,10 @@ class TenantRepositoryTest {
 
         assertThat(result.getStatus()).isEqualTo(TenantStatus.CLOSED);
         assertThat(result.getClosedAt()).isNotNull();
+        verify(jedis).eval(anyString(), argThat(keys -> keys.size() == 6
+            && keys.contains("tenant-close:intent:tenant-1")
+            && keys.contains("tenant-close:committed:tenant-1")
+            && keys.contains("tenant-close:outbox:tenant-1")), anyList());
     }
 
     @Test
@@ -450,12 +458,15 @@ class TenantRepositoryTest {
                 });
     }
 
-    // Spec v0.1.25.29: re-issuing CLOSE on an already-CLOSED tenant is a
-    // no-op (CASCADE SEMANTICS idempotency clause).
+    // Spec v0.1.25.29: re-issuing CLOSE on an already-CLOSED tenant does not
+    // mutate the tenant. It may backfill the durable parent-event obligation
+    // for a row closed by a pre-upgrade replica.
     @Test
-    void update_statusClosedToClosed_isNoOp() throws Exception {
+    void update_statusClosedToClosed_backfillsMissingDurabilityMarker() throws Exception {
         String storedJson = storedTenantJson(TenantStatus.CLOSED);
         when(jedis.get("tenant:tenant-1")).thenReturn(storedJson);
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("BACKFILLED"));
 
         TenantUpdateRequest req = new TenantUpdateRequest();
         req.setStatus(TenantStatus.CLOSED);
@@ -463,7 +474,9 @@ class TenantRepositoryTest {
         Tenant result = repository.update("tenant-1", req);
 
         assertThat(result.getStatus()).isEqualTo(TenantStatus.CLOSED);
-        verify(jedis, never()).set(anyString(), anyString());
+        verify(jedis).eval(anyString(), argThat(keys -> keys.size() == 6
+            && keys.contains("tenant-close:committed:tenant-1")
+            && keys.contains("tenant-close:outbox:tenant-1")), anyList());
     }
 
     @Test
@@ -850,7 +863,10 @@ class TenantRepositoryTest {
         assertThat(repository.list(TenantStatus.ACTIVE, null, null, " ", 1, defaultField))
             .extracting(Tenant::getTenantId).containsExactly("active");
         assertThat(repository.list(TenantStatus.ACTIVE, null, " ", null, 1, defaultField)).isEmpty();
-        assertThat(repository.list(null, null, null, "not-found", 10, defaultField)).isEmpty();
+        assertThatThrownBy(() -> repository.list(
+                null, null, null, "not-found", 10, defaultField))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("restart pagination");
     }
 
     @Test

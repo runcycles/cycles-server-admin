@@ -640,9 +640,7 @@ class ApiKeyControllerTest {
         ApiKey oldKey = ApiKey.builder().keyId("key-same").tenantId("tenant-1")
             .permissions(List.of("budgets:read")).scopeFilter(List.of("tenant:tenant-1"))
             .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
-        redis.clients.jedis.Jedis jedis = mock(redis.clients.jedis.Jedis.class);
-        when(jedisPool.getResource()).thenReturn(jedis);
-        when(jedis.get("apikey:key-same")).thenReturn(objectMapper.writeValueAsString(oldKey));
+        when(apiKeyRepository.findByIdOrNull("key-same")).thenReturn(oldKey);
         when(apiKeyRepository.update(eq("key-same"), any())).thenReturn(oldKey);
 
         mockMvc.perform(patch("/v1/admin/api-keys/key-same").header("X-Admin-API-Key", ADMIN_KEY)
@@ -718,23 +716,27 @@ class ApiKeyControllerTest {
     }
 
     @Test
-    void revokeOwnerResolutionCoversMissingPresentAndMalformedRows() throws Exception {
-        redis.clients.jedis.Jedis jedis = mock(redis.clients.jedis.Jedis.class);
-        when(jedisPool.getResource()).thenReturn(jedis);
+    void revokeOwnerResolutionFailsClosedForMalformedRows() throws Exception {
         ApiKey stored = ApiKey.builder().keyId("present").tenantId("tenant-1").build();
-        when(jedis.get("apikey:missing")).thenReturn(null);
-        when(jedis.get("apikey:present")).thenReturn(objectMapper.writeValueAsString(stored));
-        when(jedis.get("apikey:malformed")).thenReturn("{bad-json");
+        when(apiKeyRepository.findByIdOrNull("missing")).thenReturn(null);
+        when(apiKeyRepository.findByIdOrNull("present")).thenReturn(stored);
+        when(apiKeyRepository.findByIdOrNull("malformed"))
+            .thenThrow(new IllegalStateException("Malformed API-key storage row"));
         when(apiKeyRepository.revoke(anyString(), any())).thenAnswer(invocation ->
             ApiKey.builder().keyId(invocation.getArgument(0)).tenantId("tenant-1")
                 .status(ApiKeyStatus.REVOKED).createdAt(Instant.now()).build());
 
-        for (String keyId : List.of("missing", "present", "malformed")) {
+        for (String keyId : List.of("missing", "present")) {
             mockMvc.perform(delete("/v1/admin/api-keys/" + keyId)
                     .header("X-Admin-API-Key", ADMIN_KEY).param("reason", "cleanup"))
                 .andExpect(status().isOk());
         }
+        mockMvc.perform(delete("/v1/admin/api-keys/malformed")
+                .header("X-Admin-API-Key", ADMIN_KEY).param("reason", "cleanup"))
+            .andExpect(status().isInternalServerError());
+
         verify(mutationGuard).assertTenantOpen("tenant-1");
-        verify(mutationGuard, times(2)).assertTenantOpen(isNull());
+        verify(mutationGuard).assertTenantOpen(isNull());
+        verify(apiKeyRepository, never()).revoke(eq("malformed"), any());
     }
 }

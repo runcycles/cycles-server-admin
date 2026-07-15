@@ -16,23 +16,29 @@ import io.runcycles.admin.model.event.Event;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.UnitEnum;
 import io.runcycles.admin.model.webhook.WebhookStatus;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.scheduling.TaskScheduler;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ScheduledFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -49,6 +55,8 @@ class TenantCloseCascadeServiceTest {
     @Mock private AuditRepository auditRepository;
     @Mock private EventService eventService;
     @Mock private TenantCloseWorkRepository workRepository;
+    @Mock private TaskScheduler taskScheduler;
+    @Mock private ScheduledFuture<?> heartbeatFuture;
 
     private TenantCloseCascadeService service;
     private MockHttpServletRequest request;
@@ -145,6 +153,72 @@ class TenantCloseCascadeServiceTest {
     }
 
     @Test
+    void cascade_parentClosedEventIsDurableAndRunsAfterChildOutbox() {
+        TenantCloseWorkRepository.Intent durableIntent =
+            new TenantCloseWorkRepository.Intent("t1", "req_abc", "trace_xyz",
+                "tenant_close_cascade:t1:req_abc", "127.0.0.1", "test-agent",
+                Instant.parse("2026-01-01T00:00:00Z"),
+                "tenant_bulk_action:close:req_abc", "admin-key-1");
+        TenantCloseOutboxItem parent = new TenantCloseOutboxItem(
+            "tenant:t1", "t1", "tenant", "t1", "Tenant One",
+            null, null, "ACTIVE", 0L);
+        // Deliberately supply the parent first; the service must still emit it
+        // only after child observability has been durably handled.
+        readyWorkQueue(durableIntent, List.of(parent,
+            budgetItem("item-b1", "ldg_1", "tenant:t1", 0L)));
+        when(budgetRepository.cascadeClose("t1")).thenReturn(complete(List.of()));
+        when(webhookRepository.cascadeDisable("t1")).thenReturn(complete(List.of()));
+        when(apiKeyRepository.cascadeRevoke("t1", "tenant_closed"))
+            .thenReturn(complete(List.of()));
+
+        service.cascade("t1", request);
+
+        ArgumentCaptor<Event> events = ArgumentCaptor.forClass(Event.class);
+        verify(eventService, times(2)).emitRequired(events.capture());
+        assertThat(events.getAllValues()).extracting(Event::getEventType)
+            .containsExactly(EventType.BUDGET_CLOSED_VIA_TENANT_CASCADE,
+                EventType.TENANT_CLOSED);
+        Event parentEvent = events.getAllValues().get(1);
+        assertThat(parentEvent.getCorrelationId())
+            .isEqualTo("tenant_bulk_action:close:req_abc");
+        assertThat(parentEvent.getActor().getKeyId()).isEqualTo("admin-key-1");
+        verify(workRepository).acknowledge("t1", "tenant:t1");
+    }
+
+    @Test
+    void cascade_poisonOutboxDeadLettersWithBackoffAndRetainsWork() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        ReflectionTestUtils.setField(service, "meterRegistry", registry);
+        TenantCloseOutboxItem corrupt = new TenantCloseOutboxItem(
+            "item-corrupt", "t1", "corrupt", "item-corrupt", null,
+            null, null, null, 0L);
+        TenantCloseOutboxItem parent = new TenantCloseOutboxItem(
+            "tenant:t1", "t1", "tenant", "t1", "Tenant One",
+            null, null, "ACTIVE", 0L);
+        readyWorkQueue(intent("req_abc", "trace_xyz"), List.of(parent, corrupt));
+        when(budgetRepository.cascadeClose("t1")).thenReturn(complete(List.of()));
+        when(webhookRepository.cascadeDisable("t1")).thenReturn(complete(List.of()));
+        when(apiKeyRepository.cascadeRevoke("t1", "tenant_closed"))
+            .thenReturn(complete(List.of()));
+        when(workRepository.recordOutboxFailure("t1", "item-corrupt"))
+            .thenReturn(new TenantCloseWorkRepository.OutboxFailure(8, true));
+        when(workRepository.deadLetterCount("t1")).thenReturn(1L);
+        when(workRepository.completeIfDrained("t1")).thenReturn(false);
+
+        TenantCloseCascadeService.CascadeResult result = service.cascade("t1", request);
+
+        assertThat(result.complete()).isFalse();
+        assertThat(result.failedResources())
+            .contains("dead_letter:item-corrupt", "dead_letter:pending:1");
+        verify(workRepository).parkDeadLettered("t1");
+        verify(workRepository, never()).reschedule(eq("t1"), anyLong());
+        assertThat(registry.counter(
+            "cycles_admin_tenant_close_outbox_dead_letter_total",
+            "resource_type", "corrupt").count()).isEqualTo(1.0);
+        verify(workRepository, never()).acknowledge("t1", "tenant:t1");
+    }
+
+    @Test
     void cascade_onlyBudgetWithZeroReserved_skipsReservationReleaseEvent() {
         readyWorkQueue(intent("req_abc", "trace_xyz"),
             List.of(budgetItem("item-b1", "ldg_1", "tenant:t1", 0L)));
@@ -204,6 +278,9 @@ class TenantCloseCascadeServiceTest {
         when(apiKeyRepository.cascadeRevoke("t1", "tenant_closed")).thenReturn(complete(List.of()));
         doThrow(new IllegalStateException("event store unavailable"))
             .when(eventService).emitRequired(any());
+        when(workRepository.recordOutboxFailure("t1", "item-b1"))
+            .thenReturn(new TenantCloseWorkRepository.OutboxFailure(1, false));
+        when(workRepository.completeIfDrained("t1")).thenReturn(false);
 
         TenantCloseCascadeService.CascadeResult result = service.cascade("t1", request);
 
@@ -235,11 +312,113 @@ class TenantCloseCascadeServiceTest {
 
         TenantCloseCascadeService.CascadeResult result = service.cascade("t1", request);
 
-        assertThat(result.failedResources()).containsExactly("cascade:lease:in_progress");
+        assertThat(result.inProgress()).isTrue();
+        assertThat(result.failedResources()).isEmpty();
+        assertThat(result.complete()).isFalse();
         verify(workRepository).reschedule("t1", 1_000L);
         verify(budgetRepository, never()).cascadeClose(any());
         verify(webhookRepository, never()).cascadeDisable(any());
         verify(apiKeyRepository, never()).cascadeRevoke(any(), any());
+    }
+
+    @Test
+    void cascade_pendingDrainWithoutExplicitFailureReportsPendingWork() {
+        readyWorkQueue(intent("req_abc", "trace_xyz"), List.of());
+        when(budgetRepository.cascadeClose("t1")).thenReturn(complete(List.of()));
+        when(webhookRepository.cascadeDisable("t1")).thenReturn(complete(List.of()));
+        when(apiKeyRepository.cascadeRevoke("t1", "tenant_closed")).thenReturn(complete(List.of()));
+        when(workRepository.completeIfDrained("t1")).thenReturn(false);
+
+        TenantCloseCascadeService.CascadeResult result = service.cascade("t1", request);
+
+        assertThat(result.failedResources()).containsExactly("cascade:pending_work");
+        verify(workRepository).reschedule("t1", 30_000L);
+    }
+
+    @Test
+    void cascade_parentWithOptionalFieldsAbsentUsesChildCorrelation() {
+        TenantCloseOutboxItem parent = new TenantCloseOutboxItem(
+            "tenant:t1", "t1", "tenant", "t1", "Tenant One",
+            null, null, null, 0L);
+        readyWorkQueue(intent("req_abc", "trace_xyz"), List.of(parent));
+        when(budgetRepository.cascadeClose("t1")).thenReturn(complete(List.of()));
+        when(webhookRepository.cascadeDisable("t1")).thenReturn(complete(List.of()));
+        when(apiKeyRepository.cascadeRevoke("t1", "tenant_closed")).thenReturn(complete(List.of()));
+
+        service.cascade("t1", request);
+
+        ArgumentCaptor<Event> event = ArgumentCaptor.forClass(Event.class);
+        verify(eventService).emitRequired(event.capture());
+        assertThat(event.getValue().getData()).doesNotContainKey("previous_status");
+        assertThat(event.getValue().getCorrelationId())
+            .isEqualTo("tenant_close_cascade:t1:req_abc");
+    }
+
+    @Test
+    void cascade_parentDeadLetterWithoutMetricsDoesNotAcknowledge() {
+        TenantCloseOutboxItem parent = new TenantCloseOutboxItem(
+            "tenant:t1", "t1", "tenant", "t1", "Tenant One",
+            null, null, "ACTIVE", 0L);
+        readyWorkQueue(intent("req_abc", "trace_xyz"), List.of(parent));
+        when(budgetRepository.cascadeClose("t1")).thenReturn(complete(List.of()));
+        when(webhookRepository.cascadeDisable("t1")).thenReturn(complete(List.of()));
+        when(apiKeyRepository.cascadeRevoke("t1", "tenant_closed")).thenReturn(complete(List.of()));
+        doThrow(new IllegalStateException("event store unavailable"))
+            .when(eventService).emitRequired(any());
+        when(workRepository.recordOutboxFailure("t1", "tenant:t1"))
+            .thenReturn(new TenantCloseWorkRepository.OutboxFailure(8, true));
+        when(workRepository.deadLetterCount("t1")).thenReturn(1L);
+        when(workRepository.completeIfDrained("t1")).thenReturn(false);
+
+        TenantCloseCascadeService.CascadeResult result = service.cascade("t1", request);
+
+        assertThat(result.failedResources())
+            .contains("dead_letter:tenant:t1", "dead_letter:pending:1");
+        verify(workRepository, never()).acknowledge("t1", "tenant:t1");
+        verify(workRepository).parkDeadLettered("t1");
+    }
+
+    @Test
+    void cascade_heartbeatFailureAndLostOwnershipStopFurtherMutation() {
+        ReflectionTestUtils.setField(service, "taskScheduler", taskScheduler);
+        ArgumentCaptor<Runnable> heartbeatTask = ArgumentCaptor.forClass(Runnable.class);
+        doReturn(heartbeatFuture).when(taskScheduler)
+            .scheduleAtFixedRate(heartbeatTask.capture(), any(Duration.class));
+        when(workRepository.tryAcquireLease("t1")).thenReturn("lease-token");
+        when(workRepository.findIntent("t1")).thenReturn(Optional.of(intent("req_abc", "trace_xyz")));
+        when(workRepository.renewLease("t1", "lease-token"))
+            .thenReturn(true)
+            .thenThrow(new IllegalStateException("Redis unavailable"))
+            .thenReturn(false);
+        when(budgetRepository.cascadeClose("t1")).thenAnswer(invocation -> {
+            heartbeatTask.getValue().run();
+            heartbeatTask.getValue().run();
+            heartbeatTask.getValue().run();
+            return complete(List.of());
+        });
+
+        TenantCloseCascadeService.CascadeResult result = service.cascade("t1", request);
+
+        assertThat(result.failedResources()).containsExactly("cascade:lease:lost");
+        verify(webhookRepository, never()).cascadeDisable(any());
+        verify(apiKeyRepository, never()).cascadeRevoke(any(), any());
+        verify(heartbeatFuture).cancel(false);
+        verify(workRepository).reschedule("t1", 1_000L);
+    }
+
+    @Test
+    void prepare_nullRequestPersistsReconcilerProvenance() {
+        service.prepare("t1", null);
+
+        ArgumentCaptor<TenantCloseWorkRepository.Intent> intent =
+            ArgumentCaptor.forClass(TenantCloseWorkRepository.Intent.class);
+        verify(workRepository).prepare(intent.capture());
+        assertThat(intent.getValue().requestId()).isNull();
+        assertThat(intent.getValue().traceId()).isNull();
+        assertThat(intent.getValue().sourceIp()).isEqualTo("reconciler");
+        assertThat(intent.getValue().userAgent()).isNull();
+        assertThat(intent.getValue().correlationId())
+            .isEqualTo("tenant_close_cascade:t1:no-req");
     }
 
     @Test

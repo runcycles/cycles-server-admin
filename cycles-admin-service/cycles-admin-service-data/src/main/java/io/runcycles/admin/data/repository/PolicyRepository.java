@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Repository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.logging.LogSanitizer;
+import io.runcycles.admin.data.repository.support.CursorSupport;
 import io.runcycles.admin.model.policy.PolicyUpdateRequest;
 import redis.clients.jedis.*;
 import java.time.Instant;
@@ -145,12 +146,9 @@ public class PolicyRepository {
             List<String> sortedIds = new ArrayList<>(ids);
             Collections.sort(sortedIds);
             List<Policy> policies = new ArrayList<>();
-            boolean pastCursor = (cursor == null || cursor.isBlank());
-            for (String id : sortedIds) {
-                if (!pastCursor) {
-                    if (id.equals(cursor)) pastCursor = true;
-                    continue;
-                }
+            int start = CursorSupport.startAfterIds(sortedIds, cursor);
+            for (int i = start; i < sortedIds.size(); i++) {
+                String id = sortedIds.get(i);
                 try {
                     String data = jedis.get("policy:" + id);
                     if (data == null) {

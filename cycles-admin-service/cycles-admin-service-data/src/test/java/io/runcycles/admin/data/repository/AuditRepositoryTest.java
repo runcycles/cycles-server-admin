@@ -732,16 +732,16 @@ class AuditRepositoryTest {
     }
 
     @Test
-    void list_sortedNonTimestamp_cursorNotFoundInHydrated_yieldsEmpty() throws Exception {
+    void list_sortedNonTimestamp_cursorNotFound_requiresPaginationRestart() throws Exception {
         Instant t = Instant.parse("2026-04-15T12:00:00Z");
         AuditLogEntry a = log("log_a", "tenant-1", "key_1", "op", "tenant", 200, t);
         stubZSet("audit:logs:tenant-1", false, List.of(a));
 
-        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null,
-            "log_nonexistent", 50, SortSpec.of("operation", SortDirection.ASC));
-
-        // Cursor never encountered → pastCursor stays false → nothing emitted.
-        assertThat(result).isEmpty();
+        assertThatThrownBy(() -> repository.list("tenant-1", null, null, null,
+                null, null, null, null, "log_nonexistent", 50,
+                SortSpec.of("operation", SortDirection.ASC)))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("restart pagination");
     }
 
     @Test
