@@ -82,6 +82,57 @@ class ZSetAdaptivePagerTest {
     }
 
     @Test
+    void clientCursorDeletedBetweenScoreAndRankLookupsIsRejected() {
+        when(jedis.zscore("events", "gone-after-score")).thenReturn(100.0);
+        when(jedis.zrank("events", "gone-after-score")).thenReturn(null);
+
+        assertThatThrownBy(() -> ZSetAdaptivePager.collect(jedis, "events",
+            0.0, 200.0, "gone-after-score", 1, true, id -> id))
+            .isInstanceOf(GovernanceException.class)
+            .extracting("errorCode")
+            .isEqualTo(ErrorCode.INVALID_REQUEST);
+    }
+
+    @Test
+    void internalBoundaryDeletedBeforeRankLookupContinuesLexically() {
+        List<Tuple> first = new ArrayList<>();
+        for (int i = 0; i < 64; i++) {
+            first.add(new Tuple("id-" + String.format("%03d", i), 100.0));
+        }
+        when(jedis.zrangeByScoreWithScores("events", 0.0, 200.0, 0, 64))
+            .thenReturn(first);
+        // zrank(boundary) returns null: the internal boundary vanished after
+        // the first range read but before continuation.
+        when(jedis.zrank("events", "id-063")).thenReturn(null);
+        when(jedis.zrangeByScore("events", 100.0, 100.0, 0, 1024))
+            .thenReturn(List.of("id-000", "z-match"));
+
+        assertThat(ZSetAdaptivePager.collect(jedis, "events", 0, 200,
+            null, 1, true, "event", 65,
+            id -> id.equals("z-match") ? id : null))
+            .containsExactly("z-match");
+        verify(jedis).zrangeByScore("events", 100.0, 100.0, 0, 1024);
+    }
+
+    @Test
+    void descendingInternalBoundaryDeletionAlsoContinuesLexically() {
+        List<Tuple> first = new ArrayList<>();
+        for (int i = 999; i >= 936; i--) {
+            first.add(new Tuple("id-" + i, 100.0));
+        }
+        when(jedis.zrevrangeByScoreWithScores("events", 200.0, 0.0, 0, 64))
+            .thenReturn(first);
+        when(jedis.zrevrank("events", "id-936")).thenReturn(null);
+        when(jedis.zrevrangeByScore("events", 100.0, 100.0, 0, 1024))
+            .thenReturn(List.of("id-999", "a-match"));
+
+        assertThat(ZSetAdaptivePager.collect(jedis, "events", 0, 200,
+            null, 1, false, "event", 65,
+            id -> id.equals("a-match") ? id : null))
+            .containsExactly("a-match");
+    }
+
+    @Test
     void equalScoreBucket_seeksDirectlyToBoundaryRank() {
         when(jedis.zscore("events", "m-boundary")).thenReturn(100.0);
         when(jedis.zrank("events", "m-boundary")).thenReturn(6_000L);

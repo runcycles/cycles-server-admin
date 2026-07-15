@@ -87,7 +87,6 @@ new optional request fields) are **not** considered breaking.
 - `X-Cycles-Cascade-Status: in_progress` and `Retry-After: 1` remain additive
   metadata on the contract-declared successful close response; the response
   status and body continue to validate against the pinned governance schema.
-- Production Compose manifests now pin the matching `0.1.25.52` image.
 
 ## [0.1.25.51] — 2026-07-11
 

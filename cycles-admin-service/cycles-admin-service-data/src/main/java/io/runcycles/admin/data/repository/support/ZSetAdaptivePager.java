@@ -81,7 +81,7 @@ public final class ZSetAdaptivePager {
                 throw invalidCursor();
             }
             if (collectAfterAtScore(jedis, indexKey, cursorScore, cursor,
-                    ascending, results, limit, budget, loader)) {
+                    ascending, false, results, limit, budget, loader)) {
                 return results;
             }
             if (ascending) {
@@ -111,7 +111,7 @@ public final class ZSetAdaptivePager {
             double lastScore = boundary.getScore();
 
             if (collectAfterAtScore(jedis, indexKey, lastScore, lastId,
-                    ascending, results, limit, budget, loader)) {
+                    ascending, true, results, limit, budget, loader)) {
                 break;
             }
             if (ascending) {
@@ -153,7 +153,9 @@ public final class ZSetAdaptivePager {
      * strictly after {@code boundary} in Redis' lexicographic tie order. A
      * lexical comparison (instead of an index lookup) preserves progress if
      * the boundary is concurrently deleted between the initial page and this
-     * continuation read.
+     * continuation read. Missing client-supplied cursor boundaries remain an
+     * error; only a boundary read inside this invocation may fall back to a
+     * bounded offset-zero lexical scan.
      */
     private static <T> boolean collectAfterAtScore(
             Jedis jedis,
@@ -161,6 +163,7 @@ public final class ZSetAdaptivePager {
             double score,
             String boundary,
             boolean ascending,
+            boolean tolerateMissingInternalBoundary,
             List<T> results,
             int limit,
             ScanBudget budget,
@@ -168,20 +171,26 @@ public final class ZSetAdaptivePager {
         Long globalRank = ascending
             ? jedis.zrank(indexKey, boundary)
             : jedis.zrevrank(indexKey, boundary);
-        if (globalRank == null) throw invalidCursor();
-        long earlierScoreMembers = ascending
-            ? jedis.zcount(indexKey, Double.NEGATIVE_INFINITY, Math.nextDown(score))
-            : jedis.zcount(indexKey, Math.nextUp(score), Double.POSITIVE_INFINITY);
-        long equalScoreRank = Math.max(0L, globalRank - earlierScoreMembers);
-        if (equalScoreRank > Integer.MAX_VALUE) {
-            throw new GovernanceException(ErrorCode.LIMIT_EXCEEDED,
-                "The " + budget.surface + " equal-timestamp bucket is too large to page safely",
-                400, java.util.Map.of("equal_score_cursor_offset", equalScoreRank));
+        int offset;
+        if (globalRank == null) {
+            if (!tolerateMissingInternalBoundary) throw invalidCursor();
+            offset = 0;
+        } else {
+            long earlierScoreMembers = ascending
+                ? jedis.zcount(indexKey, Double.NEGATIVE_INFINITY, Math.nextDown(score))
+                : jedis.zcount(indexKey, Math.nextUp(score), Double.POSITIVE_INFINITY);
+            long equalScoreRank = Math.max(0L, globalRank - earlierScoreMembers);
+            if (equalScoreRank > Integer.MAX_VALUE) {
+                throw new GovernanceException(ErrorCode.LIMIT_EXCEEDED,
+                    "The " + budget.surface + " equal-timestamp bucket is too large to page safely",
+                    400, java.util.Map.of("equal_score_cursor_offset", equalScoreRank));
+            }
+            offset = (int) equalScoreRank;
         }
         // Start at the boundary's rank and compare lexically. If the boundary
-        // is deleted after the rank lookup, the member that shifts into its
+        // disappears before that lookup, an internal continuation starts at
+        // zero; if deletion happens after it, the member shifted into the old
         // position is still considered instead of being skipped.
-        int offset = (int) equalScoreRank;
         while (results.size() < limit) {
             List<String> tied = ascending
                 ? jedis.zrangeByScore(indexKey, score, score, offset, MAX_BATCH_SIZE)

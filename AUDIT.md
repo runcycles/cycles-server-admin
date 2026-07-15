@@ -138,9 +138,9 @@ sort-limit guidance, the property-test count, timeout/corrupt-envelope behavior,
 auth-cap warning deduplication, and stale API-key controller mocks were also
 corrected or locked down by regression tests. The cascade progress headers are
 documented as additive metadata on the schema-valid 200 response; no response
-body or status extension to the pinned YAML is required. The packaging pass
-also advanced both production Compose image pins to `0.1.25.52`, preventing the
-release manifest from silently deploying the prior build.
+body or status extension to the pinned YAML is required. Production Compose
+continues to pin the last published image (`0.1.25.51`); the established release
+chore advances it only when `0.1.25.52` is available from GHCR.
 
 **Assessment.** The reviewed correctness, durability, specification,
 concurrency, bounded-resource, operations, and build/test gaps are addressed.
