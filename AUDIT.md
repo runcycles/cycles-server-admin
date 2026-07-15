@@ -1,4 +1,4 @@
-# Complete Budget Governance v0.1.25.51 — Admin Server Audit
+# Complete Budget Governance v0.1.25.52 — Admin Server Audit
 
 **Spec:**
 [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-governance-admin-v0.1.25.yaml)
@@ -39,10 +39,99 @@ the `/test` synthetic-ping exception — .40 and .41 both implemented here in
 0.1.25.51) in
 [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 
-**Server:** Spring Boot 3.5.15 / Java 21 / Jedis 7.5.2 · commons-lang3 3.18.0
-pin (SB 3.5.15 still manages 3.17.0) · tomcat-embed-core 10.1.55 pin
+**Server:** Spring Boot 3.5.16 / Java 21 / Jedis 7.5.2 · commons-lang3 3.18.0
+pin · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
+
+### 2026-07-15 — full admin-server remediation and self-review
+
+**Scope.** Reviewed the complete admin server against the pinned governance
+spec, the Redis persistence behavior, list/cursor semantics, tenant-close Mode-B
+convergence, build gates, and the quality bar established by `cycles-server`.
+The pre-change suite was green, but the review found correctness defects that
+happy-path coverage did not expose: exact-limit pages lied about `has_more`,
+millisecond-score cursors skipped equal-score rows, sparse filters stopped after
+`limit * 3` candidates, sorted queries silently truncated at 2,000 hydrated
+rows, API-key lookup-prefix collisions could overwrite a credential lookup, and
+per-row cascade failures were logged but not returned to the orchestrator. The
+rigorous concurrency pass additionally found non-durable child audit/events,
+duplicate-prone cascade mutations across replicas, payload-unaware bulk
+idempotency races, sentinel rather than exact over-limit counts, unbounded auth
+source tracking, and contract tests tied to a moving upstream branch.
+
+**Remediation.** The implementation now:
+
+- derives pagination metadata from an immutable `limit + 1` `PageSlice` on all
+  list surfaces;
+- uses a shared adaptive ZSET pager for event, audit, and delivery timestamp
+  queries, including deterministic equal-score continuation, precision-safe
+  score advancement, invalid-cursor rejection, and scan-through of sparse
+  post-hydration filters;
+- replaces silent non-primary-sort truncation with exact results through 20,000
+  candidates and an explicit `LIMIT_EXCEEDED` all-or-narrow response above that
+  memory boundary;
+- checks API-key row and lookup-prefix collisions inside the create Lua script
+  and regenerates a credential instead of overwriting an existing lookup;
+- separates a strict primary HTTP `ObjectMapper` from a rolling-deployment-
+  tolerant Redis mapper, with every persistence injection explicitly qualified;
+- persists tenant-close intent before the Mode-B parent flip, atomically couples
+  each child mutation to an outbox item, uses per-tenant distributed leases plus
+  JSON compare-and-set guards, and acknowledges outbox items only after stable-ID
+  audit and event writes succeed. The reconciler reads durable due work rather
+  than scanning all tenants, so restarts and multiple replicas converge without
+  duplicate child transitions;
+- reports incomplete single and bulk closes visibly; failed bulk CLOSE rows emit
+  no parent lifecycle event, while a single PATCH whose parent flip committed
+  retains truthful parent audit/event visibility;
+- coordinates bulk idempotency with an atomic payload-hash owner claim, waits
+  for concurrent equal requests, rejects different-payload reuse, publishes one
+  immutable replay envelope, and owner-safely abandons pre-mutation count-gate
+  failures. The claim precedes mutable match reads, so retries replay even when
+  the first invocation changed the filtered population;
+- reports exact over-limit bulk counts rather than the 501-row detection
+  sentinel;
+- bounds failed-auth source tracking, evicts stale/old buckets without clearing
+  the whole limiter, rate-limits cap warnings, and adds the trace headers needed
+  by browser CORS;
+- pins contract tests to reviewed cycles-protocol commit
+  `469840bb2f41ce35650c89405ea12fc56e847c76`, restores the model module to the
+  95% JaCoCo gate, adds nightly upstream-drift detection, moves jqwik
+  configuration to JUnit Platform, attaches Mockito explicitly for future-JDK
+  compatibility, and uses the current Jedis client configuration constructor.
+
+**Self-review corrections.** Multiple review rounds over the complete diff found
+and fixed defects in the remediation itself: volatile reconciler scan progress
+was replaced with the durable due queue; auth-cap eviction was changed to a
+synchronized access-ordered LRU without fail-fast iterator mutation; score
+advancement now uses `Math.nextUp` / `Math.nextDown`; equal-score traversal is
+chunked; partial single-close audit status is the truthful 500; missing outbox
+bodies fail visibly instead of leaving silently stuck work; and the first atomic
+idempotency draft was reordered so replay happens before mutable match/count
+reads. Documentation was then cross-checked against actual single-vs-bulk event
+correlation and reconciler behavior.
+
+**Rating.** Post-remediation: **9.5/10**. The correctness, durability,
+specification, concurrency, bounded-resource, operations, and build/test gaps
+identified by this audit are addressed. The remaining half point is for
+non-blocking platform evolution rather than a known correctness defect:
+secondary indexes could make broad arbitrary sorts more convenient than the
+current explicit 20,000-candidate all-or-narrow contract; `JedisPool` can be
+migrated to the unified pooled command surface during a dependency-modernization
+release; and deployments requiring a fleet-global failed-auth threshold should
+enforce it at the shared edge (the in-process limiter is intentionally
+per-replica).
+
+**Verification.** `mvn -B -q clean verify -Pintegration-tests` against the local
+checkout of the pinned spec passed in 114.3s: **1,724 tests**, 0 failures, 0
+errors, 0 skipped, including 67 tests across six Docker/Testcontainers
+integration suites. JaCoCo line coverage passed in every module: API
+**95.86%** (3,036/3,167), data **95.32%** (2,218/2,327), model **96.31%**
+(313/325). Development and production Compose configurations validate (the
+production check supplies non-secret placeholder values for required variables),
+`docker build --tag cycles-server-admin:self-review .` succeeds, and
+`git diff --check` is clean. The resource tree contains no stale
+`jqwik.properties` file.
 
 ### 2026-07-12 — declared spec alignment bump v0.1.25.39 → v0.1.25.41 (doc-only)
 

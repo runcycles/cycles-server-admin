@@ -30,6 +30,30 @@ on:
 permissions: read-all
 
 jobs:
+  contract-drift:
+    name: Pinned admin contract is current
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Compare reviewed pin with cycles-protocol main
+        shell: bash
+        run: |
+          set -euo pipefail
+          loader="cycles-admin-service/cycles-admin-service-api/src/test/java/io/runcycles/admin/api/contract/ContractSpecLoader.java"
+          revision="$(sed -n 's/.*SPEC_REVISION = "\([0-9a-f]\{40\}\)".*/\1/p' "$loader")"
+          test -n "$revision"
+          base="https://raw.githubusercontent.com/runcycles/cycles-protocol"
+          file="cycles-governance-admin-v0.1.25.yaml"
+          curl --fail --silent --show-error --location "$base/$revision/$file" --output pinned.yaml
+          curl --fail --silent --show-error --location "$base/main/$file" --output current.yaml
+          if ! cmp --silent pinned.yaml current.yaml; then
+            echo "::error::The authoritative admin contract changed after pinned revision $revision. Review the diff and advance ContractSpecLoader.SPEC_REVISION intentionally."
+            diff --unified=3 pinned.yaml current.yaml || true
+            exit 1
+          fi
+
   property-tests:
     name: Property-based audit-coverage invariants
     runs-on: ubuntu-latest
@@ -39,13 +63,13 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Set up JDK 21
-        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5
         with:
           distribution: temurin
           java-version: 21
           cache: maven
 
-      # jqwik.defaultTries=100 overrides the 20 from jqwik.properties to
+      # jqwik.tries.default=100 overrides junit-platform.properties to
       # give nightly 5x deeper interleaving coverage than a PR-feedback
       # run (matching cycles-server's pattern). Use `mvn test` (not
       # `verify`) because -Pproperty-tests restricts surefire to only the
@@ -59,7 +83,7 @@ jobs:
           mvn -B test
           --file cycles-admin-service/pom.xml
           -Pproperty-tests
-          -Djqwik.defaultTries=100
+          -Djqwik.tries.default=100
           -Dsurefire.failIfNoSpecifiedTests=false
 
       - name: Upload surefire reports on failure

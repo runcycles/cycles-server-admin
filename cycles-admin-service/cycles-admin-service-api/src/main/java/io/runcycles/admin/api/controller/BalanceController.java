@@ -6,6 +6,7 @@ import io.runcycles.admin.model.shared.UnitEnum;
 import io.runcycles.admin.api.config.ScopeFilterUtil;
 import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
+import io.runcycles.admin.api.support.PageSlice;
 import static io.runcycles.admin.api.logging.LogSanitizer.safe;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -38,8 +39,13 @@ public class BalanceController {
             safe(attr(httpRequest, "authenticated_key_id")),
             attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE),
             attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE));
-        var ledgers = repository.list(effectiveTenantId, scope_prefix, unit, BudgetStatus.ACTIVE, cursor, limit);
-        boolean hasMore = ledgers.size() >= limit;
+        int effectiveLimit = Math.max(1, Math.min(limit, 100));
+        var page = PageSlice.from(
+            repository.list(effectiveTenantId, scope_prefix, unit, BudgetStatus.ACTIVE,
+                cursor, effectiveLimit + 1),
+            effectiveLimit);
+        var ledgers = page.items();
+        boolean hasMore = page.hasMore();
         String nextCursor = hasMore && !ledgers.isEmpty() ? ledgers.get(ledgers.size() - 1).getLedgerId() : null;
         BalanceQueryResponse response = BalanceQueryResponse.builder()
             .balances(ledgers)

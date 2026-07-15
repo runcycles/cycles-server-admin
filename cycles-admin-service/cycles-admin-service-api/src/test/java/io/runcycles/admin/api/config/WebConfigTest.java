@@ -55,12 +55,13 @@ class WebConfigTest {
         ArgumentCaptor<String[]> headers = ArgumentCaptor.forClass(String[].class);
         verify(corsReg).allowedHeaders(headers.capture());
         assertThat(headers.getValue())
-            .containsExactlyInAnyOrder("X-Admin-API-Key", "X-Cycles-API-Key", "X-Request-Id", "Content-Type");
+            .containsExactlyInAnyOrder("X-Admin-API-Key", "X-Cycles-API-Key", "X-Request-Id",
+                "X-Cycles-Trace-Id", "traceparent", "tracestate", "Content-Type");
 
         // X-Request-Id must be exposed so browser clients can read server-assigned ids.
         ArgumentCaptor<String[]> exposed = ArgumentCaptor.forClass(String[].class);
         verify(corsReg).exposedHeaders(exposed.capture());
-        assertThat(exposed.getValue()).containsExactly("X-Request-Id");
+        assertThat(exposed.getValue()).containsExactlyInAnyOrder("X-Request-Id", "X-Cycles-Trace-Id");
 
         // PUT must be present — PUT /v1/admin/config/webhook-security is the
         // spec-defined method for updating webhook security config. The

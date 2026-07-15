@@ -51,6 +51,23 @@ class WebhookRepositoryTest {
         lenient().when(jedisPool.getResource()).thenReturn(jedis);
     }
 
+    @Test
+    void countForBulk_returnsExactFilteredGlobalCount() throws Exception {
+        WebhookSubscription match = webhookRow("whsub-match", "tenant-1",
+            "https://acme.example/hook", WebhookStatus.ACTIVE, EventType.TENANT_CREATED);
+        WebhookSubscription wrongStatus = webhookRow("whsub-paused", "tenant-1",
+            "https://acme.example/paused", WebhookStatus.PAUSED, EventType.TENANT_CREATED);
+        when(jedis.smembers("webhooks:_all"))
+            .thenReturn(new LinkedHashSet<>(List.of("whsub-match", "whsub-paused", "missing")));
+        String matchJson = objectMapper.writeValueAsString(match);
+        String pausedJson = objectMapper.writeValueAsString(wrongStatus);
+        when(jedis.get("webhook:whsub-match")).thenReturn(matchJson);
+        when(jedis.get("webhook:whsub-paused")).thenReturn(pausedJson);
+
+        assertThat(repository.countForBulk(null, WebhookStatus.ACTIVE,
+            EventType.TENANT_CREATED, "acme")).isEqualTo(1);
+    }
+
     // ---- save() ----
 
     @Test
@@ -1238,7 +1255,7 @@ class WebhookRepositoryTest {
     void cascadeDisable_noOwnedSubscriptions_returnsEmpty() {
         when(jedis.smembers("webhooks:tenant-1")).thenReturn(Collections.emptySet());
 
-        List<WebhookRepository.CascadeDisableOutcome> outcomes = repository.cascadeDisable("tenant-1");
+        List<WebhookRepository.CascadeDisableOutcome> outcomes = repository.cascadeDisable("tenant-1").succeeded();
 
         assertThat(outcomes).isEmpty();
         verify(jedis, never()).get(anyString());
@@ -1248,7 +1265,7 @@ class WebhookRepositoryTest {
     void cascadeDisable_nullIndex_returnsEmpty() {
         when(jedis.smembers("webhooks:tenant-1")).thenReturn(null);
 
-        List<WebhookRepository.CascadeDisableOutcome> outcomes = repository.cascadeDisable("tenant-1");
+        List<WebhookRepository.CascadeDisableOutcome> outcomes = repository.cascadeDisable("tenant-1").succeeded();
 
         assertThat(outcomes).isEmpty();
     }
@@ -1273,7 +1290,7 @@ class WebhookRepositoryTest {
         when(jedis.get("webhook:whsub_2")).thenReturn(json2);
         when(jedis.get("webhook:whsub_3")).thenReturn(json3);
 
-        List<WebhookRepository.CascadeDisableOutcome> outcomes = repository.cascadeDisable("tenant-1");
+        List<WebhookRepository.CascadeDisableOutcome> outcomes = repository.cascadeDisable("tenant-1").succeeded();
 
         assertThat(outcomes).hasSize(2);
         assertThat(outcomes).extracting(WebhookRepository.CascadeDisableOutcome::subscriptionId)
@@ -1293,7 +1310,7 @@ class WebhookRepositoryTest {
         when(jedis.get("webhook:whsub_stale")).thenReturn(null);
         when(jedis.get("webhook:whsub_1")).thenReturn(json);
 
-        List<WebhookRepository.CascadeDisableOutcome> outcomes = repository.cascadeDisable("tenant-1");
+        List<WebhookRepository.CascadeDisableOutcome> outcomes = repository.cascadeDisable("tenant-1").succeeded();
 
         assertThat(outcomes).hasSize(1);
         assertThat(outcomes.get(0).subscriptionId()).isEqualTo("whsub_1");
@@ -1309,10 +1326,12 @@ class WebhookRepositoryTest {
         when(jedis.get("webhook:whsub_bad")).thenReturn("not-json");
         when(jedis.get("webhook:whsub_1")).thenReturn(json);
 
-        List<WebhookRepository.CascadeDisableOutcome> outcomes = repository.cascadeDisable("tenant-1");
+        var report = repository.cascadeDisable("tenant-1");
+        List<WebhookRepository.CascadeDisableOutcome> outcomes = report.succeeded();
 
         assertThat(outcomes).hasSize(1);
         assertThat(outcomes.get(0).subscriptionId()).isEqualTo("whsub_1");
+        assertThat(report.failed()).extracting(f -> f.resourceId()).containsExactly("whsub_bad");
     }
 
     // ---- reconcileTenantCategoryBoundary (#209 d2 hygiene) ----

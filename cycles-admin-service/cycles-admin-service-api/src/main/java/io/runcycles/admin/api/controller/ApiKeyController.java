@@ -13,6 +13,7 @@ import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.api.service.TerminalOwnerMutationGuard;
+import io.runcycles.admin.api.support.PageSlice;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -92,14 +93,16 @@ public class ApiKeyController {
         boolean crossTenant;
         if (tenant_id != null && !tenant_id.isBlank()) {
             crossTenant = false;
-            keys = repository.list(tenant_id, status, cursor, effectiveLimit, sortSpec, searchNorm);
+            keys = repository.list(tenant_id, status, cursor, effectiveLimit + 1, sortSpec, searchNorm);
         } else {
             crossTenant = true;
-            keys = repository.listAllTenants(status, cursor, effectiveLimit, sortSpec, searchNorm);
+            keys = repository.listAllTenants(status, cursor, effectiveLimit + 1, sortSpec, searchNorm);
         }
+        var page = PageSlice.from(keys, effectiveLimit);
+        keys = page.items();
         var responses = keys.stream().map(ApiKeyResponse::from).collect(Collectors.toList());
         String nextCursor = null;
-        if (keys.size() >= effectiveLimit) {
+        if (page.hasMore()) {
             ApiKey last = keys.get(keys.size() - 1);
             nextCursor = crossTenant
                 ? last.getTenantId() + "|" + last.getKeyId()
@@ -107,7 +110,7 @@ public class ApiKeyController {
         }
         ApiKeyListResponse response = ApiKeyListResponse.builder()
             .keys(responses)
-            .hasMore(keys.size() >= effectiveLimit)
+            .hasMore(page.hasMore())
             .nextCursor(nextCursor)
             .build();
         return ResponseEntity.ok(response);

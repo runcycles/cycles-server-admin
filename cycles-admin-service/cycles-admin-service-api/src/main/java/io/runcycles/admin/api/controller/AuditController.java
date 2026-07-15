@@ -6,6 +6,7 @@ import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.shared.SortSpec;
+import io.runcycles.admin.api.support.PageSlice;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -98,12 +99,14 @@ public class AuditController {
         }
 
         var logs = repository.list(tenant_id, key_id, operations, status, resourceTypes, resource_id,
-            from, to, cursor, effectiveLimit, sortSpec, searchNorm,
+            from, to, cursor, effectiveLimit + 1, sortSpec, searchNorm,
             errorCodes, errorCodeExcludes, status_min, status_max, trace_id, request_id);
+        var page = PageSlice.from(logs, effectiveLimit);
+        logs = page.items();
         AuditLogListResponse response = AuditLogListResponse.builder()
             .logs(logs)
-            .hasMore(logs.size() >= effectiveLimit)
-            .nextCursor(logs.size() >= effectiveLimit ? logs.get(logs.size() - 1).getLogId() : null)
+            .hasMore(page.hasMore())
+            .nextCursor(page.hasMore() ? logs.get(logs.size() - 1).getLogId() : null)
             .build();
         return ResponseEntity.ok(response);
     }

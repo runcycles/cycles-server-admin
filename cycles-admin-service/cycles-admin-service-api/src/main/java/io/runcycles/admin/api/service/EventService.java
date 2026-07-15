@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.runcycles.admin.api.filter.TraceContextFilter;
+import io.runcycles.admin.api.support.PageSlice;
 import io.runcycles.admin.data.repository.EventRepository;
 import io.runcycles.admin.model.event.*;
 import io.runcycles.admin.model.shared.SortSpec;
@@ -47,28 +48,7 @@ public class EventService {
      */
     public void emit(Event event) {
         try {
-            if (event.getEventId() == null) {
-                event.setEventId("evt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16));
-            }
-            if (event.getTimestamp() == null) {
-                event.setTimestamp(Instant.now());
-            }
-            if (event.getCategory() == null && event.getEventType() != null) {
-                event.setCategory(event.getEventType().getCategory());
-            }
-            // v0.1.25.31: auto-populate trace_id from the request-scoped attribute
-            // set by TraceContextFilter when the emit happens inside a servlet
-            // request (which is true for every admin-plane caller today). Avoids
-            // threading trace_id through 13 call sites. Off-request emissions
-            // (future scheduled / async work) leave trace_id null, which the spec
-            // permits.
-            if (event.getTraceId() == null) {
-                event.setTraceId(currentTraceId());
-            }
-            validatePayloadShape(event);
-            eventRepository.save(event);
-            webhookDispatchService.dispatch(event);
-            recordEmitted(event.getEventType(), "success");
+            emitRequired(event);
         } catch (Exception e) {
             LOG.error("Failed to emit admin event: event_id={} event_type={} tenant_id={} scope={} correlation_id={} request_id={} trace_id={} source={} error={}",
                     safe(event != null ? event.getEventId() : null),
@@ -82,6 +62,27 @@ public class EventService {
                     safe(e.getMessage()), e);
             recordEmitted(event != null ? event.getEventType() : null, "failure");
         }
+    }
+
+    /** Persist an event or throw; webhook queueing remains best effort. */
+    public void emitRequired(Event event) {
+        if (event.getEventId() == null) {
+            event.setEventId("evt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16));
+        }
+        if (event.getTimestamp() == null) event.setTimestamp(Instant.now());
+        if (event.getCategory() == null && event.getEventType() != null) {
+            event.setCategory(event.getEventType().getCategory());
+        }
+        if (event.getTraceId() == null) event.setTraceId(currentTraceId());
+        validatePayloadShape(event);
+        eventRepository.save(event);
+        try {
+            webhookDispatchService.dispatch(event);
+        } catch (Exception e) {
+            LOG.error("Event persisted but webhook dispatch enqueue failed: event_id={} event_type={} error={}",
+                safe(event.getEventId()), event.getEventType(), safe(e.getMessage()), e);
+        }
+        recordEmitted(event.getEventType(), "success");
     }
 
     /**
@@ -196,11 +197,13 @@ public class EventService {
                                    String traceId, String requestId) {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         List<Event> events = eventRepository.list(tenantId, eventType, category, scope,
-            correlationId, from, to, cursor, effectiveLimit, sortSpec, search, traceId, requestId);
+            correlationId, from, to, cursor, effectiveLimit + 1, sortSpec, search, traceId, requestId);
+        var page = PageSlice.from(events, effectiveLimit);
+        events = page.items();
         return EventListResponse.builder()
             .events(events)
-            .hasMore(events.size() >= effectiveLimit)
-            .nextCursor(events.size() >= effectiveLimit ? events.get(events.size() - 1).getEventId() : null)
+            .hasMore(page.hasMore())
+            .nextCursor(page.hasMore() ? events.get(events.size() - 1).getEventId() : null)
             .build();
     }
 }

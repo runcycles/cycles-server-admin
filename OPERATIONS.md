@@ -207,8 +207,9 @@ into a fixed DTO must tolerate unknown keys (Jackson
 v0.1.25.31 Rule 1 defines two conformant cascade modes; this server
 implements **Mode B**. The tenant flip commits first; Rule 2's
 `TENANT_CLOSED` guard activates; children transition per-child (not
-atomically). Convergence is operator-driven — see "Convergence
-mechanism (Rule 1(c) — MUST be documented)" below for the bound.
+atomically as one tenant-wide transaction). A durable Redis intent is
+written before the flip, and the request path plus scheduled reconciler
+drive that intent to completion.
 
 Closing a tenant via `PATCH /v1/admin/tenants/{id}` with
 `status=CLOSED` (or via `POST /v1/admin/tenants/bulk-action` with
@@ -225,50 +226,62 @@ The tenant flip happens BEFORE the cascade so spec v0.1.25.31 Rule 2
 (`TENANT_CLOSED` 409 on any mutating op against a CLOSED-owner object)
 is active during the cascade window. Concurrent admin PATCHes during
 a cascade 409 rather than racing to resurrect a just-terminated
-child. On partial cascade failure the tenant remains CLOSED — operator
-re-issues the close and remaining non-terminal children pick up (every
-cascade step is idempotent; already-terminal children are skipped).
+child. Each child transition and its outbox record are committed in one
+Redis Lua operation. The outbox item is acknowledged only after the
+child audit row and typed event have persisted; stable audit/event IDs
+make retries duplicate-safe. On partial failure the tenant remains
+CLOSED and the durable work item remains queued.
 
 **Convergence mechanism (Rule 1(c) — MUST be documented).** Spec
 v0.1.25.31 Rule 1(c) requires a Mode B implementation to document
 how an interrupted cascade reaches terminal state in bounded time.
 For this server:
 
-- **Primary mechanism:** operator-issued re-close. `PATCH /v1/admin/tenants/{id} { "status": "CLOSED" }`
-  on an already-CLOSED tenant is a no-op at the tenant level but
-  re-runs the cascade against any non-terminal child. Every cascade
-  step is idempotent (see Rule 1(b)) — already-terminal children are
-  skipped without emitting duplicate audit/event rows.
-- **Bound:** operator-reaction-time. There is no background
-  reconciler and no startup sweep in this release. The bound is
-  whatever operator-alert → operator-action latency your ops
-  organization runs at — typically minutes under normal pager
-  response, hours in the worst case.
-- **Detection:** any budget/webhook/apikey that stays non-terminal
-  under a CLOSED tenant for longer than your pager SLO should be
-  treated as a cascade-incomplete incident. Query:
-  `GET /v1/admin/budgets?tenant_id={id}&status=FROZEN`, or equivalent
-  per-child-type `GET`. See the triage recipe below.
+- **Primary mechanism:** the request attempts the cascade immediately.
+  Any incomplete result is retained in `tenant-close:pending`; the
+  scheduled reconciler reads only due work (it does not scan every
+  tenant) and retries up to `max-tenants-per-run`. A 5-minute
+  per-tenant distributed lease prevents concurrent replicas from
+  executing the same cascade. Child CAS scripts remain the final
+  duplicate-mutation guard if a worker outlives its lease.
+- **Bound:** with defaults and a queue depth `Q`, a due item is selected
+  within approximately
+  `ceil(Q / 100) × 300 seconds + cascade execution time`. Failed items
+  are made eligible again after 30 seconds; the 300-second scheduler
+  interval is the effective default retry cadence. Size the interval
+  and per-run maximum to keep this bound inside the operational SLO.
+- **Operator acceleration:** re-issuing
+  `PATCH /v1/admin/tenants/{id} { "status": "CLOSED" }` is safe. It
+  re-runs the durable cascade immediately; already-terminal children
+  and already-persisted outbox records do not produce duplicate rows.
+- **Detection:** alert on increases in
+  `cycles_admin_tenant_close_reconcile_incomplete_total` or
+  `cycles_admin_tenant_close_reconcile_errors_total`. Inspect queue
+  depth with `ZCARD tenant-close:pending` and due tenants with
+  `ZRANGEBYSCORE tenant-close:pending -inf <epoch-ms>`. A CLOSED tenant
+  with a non-terminal child beyond the calculated bound is an incident.
 - **Reads remain consistent (Rule 1(d)).** Non-terminal children of
   a CLOSED tenant are observable via `GET` until the cascade reaches
   them. Clients and dashboards should treat the combination "tenant
   CLOSED + child non-terminal" as a transient state that converges,
   not a permanent inconsistency.
 
-A background reconciler / startup sweep is a potential future
-addition if operator re-issue proves insufficient at higher tenant-
-close rates; the spec permits it under Rule 1(c) without a wire
-change.
+For bulk CLOSE, a row whose child cascade is incomplete is returned in
+`failed[]` and emits no parent lifecycle event, as required by the bulk
+contract. Its durable work item is still reconciled because the parent
+status flip has already committed under Mode B.
 
-**Correlation.** Every audit entry and event emitted in one cascade
+**Correlation.** Every child audit entry and event emitted in one cascade
 shares:
 
 - the originating PATCH's `request_id` and W3C `trace_id`
 - a dedicated `correlation_id = tenant_close_cascade:<tenant_id>:<request_id>`
 
-The parent `TENANT_CLOSED` event stamps the same `correlation_id` so
-dashboards can JOIN it with the child `*_via_tenant_cascade` events as
-one logical operation.
+For a single PATCH, the parent `TENANT_CLOSED` event stamps the same
+`correlation_id`, so dashboards can JOIN it with the child
+`*_via_tenant_cascade` events as one logical operation. A successful bulk
+CLOSE parent uses the bulk invocation correlation ID by contract; its child
+events retain the per-tenant cascade ID and share the same request/trace IDs.
 
 **Audit.** One entry per touched child, `operation=tenant_close_cascade`,
 `resource_type` in `{budget, webhook_subscription, api_key}`. Metadata
@@ -493,6 +506,10 @@ with env overrides.
 | `audit.sample.unauthenticated` | `AUDIT_SAMPLE_UNAUTHENTICATED` | `1` | Sampling rate for unauthenticated-tier entries — record 1 in N. Default `1` = record every attempt (full fidelity). Production Compose defaults to `100` to cut Redis write volume 100x on exposed deployments. Aggregate volume remains visible via the `cycles_admin_audit_writes_total` counter. Authenticated entries are **never** sampled regardless of this setting. Values `≤ 0` treated as `1` (misconfig safety). |
 | `auth.failure-rate-limit.enabled` | `AUTH_FAILURE_RATE_LIMIT_ENABLED` | `false` | Enable per-source, per-process throttling for repeated 401/403 responses. Production Compose sets this to `true`. |
 | `auth.failure-rate-limit.max-per-minute` | `AUTH_FAILURE_RATE_LIMIT_MAX_PER_MINUTE` | `300` | Failed-auth threshold per source/path class before responses become `429 LIMIT_EXCEEDED` and no extra failure audit row is written. The limiter is in-process and does not coordinate across replicas. |
+| `auth.failure-rate-limit.max-tracked-sources` | `AUTH_FAILURE_RATE_LIMIT_MAX_TRACKED_SOURCES` | `10000` | Bound the limiter's in-memory source/path buckets. Stale buckets are removed first; the oldest live bucket is evicted when the cap is reached. |
+| `tenant-close.reconciler.enabled` | `TENANT_CLOSE_RECONCILER_ENABLED` | `true` | Retry incomplete Mode-B cascades for tenants already marked `CLOSED`. |
+| `tenant-close.reconciler.interval-ms` | `TENANT_CLOSE_RECONCILER_INTERVAL_MS` | `300000` | Fixed delay in milliseconds between reconciliation runs. |
+| `tenant-close.reconciler.max-tenants-per-run` | `TENANT_CLOSE_RECONCILER_MAX_TENANTS_PER_RUN` | `100` | Maximum due work items processed per run. Redis score ordering and rescheduling provide durable progress across restarts and replicas. |
 | JVM options | `JAVA_OPTS` | (unset) | Extra JVM flags consumed by the Docker image entrypoint. Production Compose sets G1, `MaxRAMPercentage=75`, and string deduplication defaults. |
 | `audit.sweep.cron` | `AUDIT_SWEEP_CRON` | `0 0 3 * * *` | Cron schedule for the daily audit index sweep (`ZREMRANGEBYSCORE` on expired pointers). Default 03:00 server time. Sweep is best-effort; skipped entirely when `audit.retention.authenticated.days=0` (indefinite — nothing to sweep). |
 | `dashboard.cors.origin` | `DASHBOARD_CORS_ORIGIN` | `http://localhost:5173` | CORS allowed origin(s). Comma-separated. **In production, set to your dashboard URL** — the default only works against the local Vite dev server. |
@@ -574,8 +591,9 @@ implemented — plan a short cutover instead).
 is valid. Methods allowed are `GET, POST, PUT, PATCH, DELETE, OPTIONS`
 (explicitly — `PUT` is load-bearing for `PUT /v1/admin/config/webhook-security`).
 Allowed headers: `X-Admin-API-Key, X-Cycles-API-Key, X-Request-Id,
-Content-Type`. If a new auth header or a new HTTP method ever gets added
-to the spec, update `WebConfig.addCorsMappings`.
+X-Cycles-Trace-Id, traceparent, tracestate, Content-Type`. If a new auth
+header or a new HTTP method ever gets added to the spec, update
+`WebConfig.addCorsMappings`.
 
 ---
 
@@ -616,6 +634,16 @@ on read, so upgrading the admin alone (without touching stored data)
 fixes the listing. For a fleet-wide self-heal, touch each record with
 a no-op PATCH.
 
+### "a broad sorted list returns LIMIT_EXCEEDED"
+
+Arbitrary non-primary sorts must hydrate the complete candidate window to be
+correct. The server permits that exact sort through 20,000 candidates and
+returns `400 LIMIT_EXCEEDED` above that boundary; it never silently truncates.
+Narrow `tenant_id` where the endpoint supports it, or narrow `from` / `to` on
+event and audit lists, then retry with the same sort. Primary/indexed order
+(for example the default timestamp order on events and audit logs) continues
+to page without this full-hydration guard.
+
 ### "after revoking an admin-key secret, old callers are still getting through"
 
 The admin API key is a shared secret with no revocation surface — rotate
@@ -624,17 +652,14 @@ During the rolling deploy, pods with the old `ADMIN_API_KEY` env var
 will still accept the old key. This is not a security regression —
 it's the rotation semantic. Minimize the window by rolling fast.
 
-### "contract tests are red on a PR against cycles-protocol@main"
+### "the nightly pinned-contract drift job is red"
 
-`ContractValidationConfig` fetches the spec from `cycles-protocol@main`
-at build time. A breaking push to that repo will red the admin's CI
-intentionally, as an early-warning signal. Options:
-1. Fix the admin to match the new spec (usual path).
-2. Point CI at the prior spec tag temporarily:
-   `-Dcontract.spec.url=https://raw.githubusercontent.com/runcycles/cycles-protocol/<tag>/cycles-governance-admin-v0.1.25.yaml`.
-3. Disable contract validation for the local iteration:
-   `-Dcontract.validation.enabled=false`. Don't commit this — CI must
-   keep it on.
+Ordinary contract tests fetch the reviewed commit pinned in
+`ContractSpecLoader`, so PR builds are reproducible. The nightly drift job
+compares that exact YAML with `cycles-protocol/main` and fails when upstream
+changes. Review the upstream diff, update the admin and tests if needed, then
+advance `SPEC_REVISION` deliberately. Do not point ordinary CI back at a moving
+branch.
 
 For in-flight spec PRs, point the admin PR's `contract.spec.url` at the
 spec-PR branch's raw URL until the spec PR merges. The admin AUDIT.md

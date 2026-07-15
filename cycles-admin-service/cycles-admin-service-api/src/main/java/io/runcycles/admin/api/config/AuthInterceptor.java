@@ -27,8 +27,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import java.util.LinkedHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Component
 public class AuthInterceptor implements HandlerInterceptor {
@@ -121,7 +121,18 @@ public class AuthInterceptor implements HandlerInterceptor {
     @Value("${auth.failure-rate-limit.max-per-minute:300}")
     private int authFailureRateLimitMaxPerMinute;
 
-    private final ConcurrentMap<String, FailureWindow> authFailureWindows = new ConcurrentHashMap<>();
+    @Value("${auth.failure-rate-limit.max-tracked-sources:10000}")
+    private int authFailureRateLimitMaxTrackedSources;
+
+    /**
+     * Access-ordered under {@link #authFailureWindowsLock}: deterministic LRU
+     * eviction keeps recently-active throttles resident when a source-cardinality
+     * burst reaches the configured bound.
+     */
+    private final Map<String, FailureWindow> authFailureWindows =
+        new LinkedHashMap<>(16, 0.75f, true);
+    private final Object authFailureWindowsLock = new Object();
+    private final AtomicLong authFailureCapWarningWindow = new AtomicLong(Long.MIN_VALUE);
     private final Clock clock = Clock.systemUTC();
 
     private final ApiKeyRepository apiKeyRepository;
@@ -392,13 +403,47 @@ public class AuthInterceptor implements HandlerInterceptor {
         String source = request != null ? request.getRemoteAddr() : "unknown";
         String key = source + ":" + authFailurePathClass(request != null ? request.getRequestURI() : null);
         long windowMinute = clock.millis() / 60_000L;
-        FailureWindow window = authFailureWindows.compute(key, (ignored, current) -> {
-            if (current == null || current.windowMinute != windowMinute) {
-                return new FailureWindow(windowMinute, 1);
+        synchronized (authFailureWindowsLock) {
+            FailureWindow current = authFailureWindows.get(key);
+            FailureWindow window = current == null || current.windowMinute != windowMinute
+                ? new FailureWindow(windowMinute, 1)
+                : new FailureWindow(windowMinute, current.count + 1);
+            authFailureWindows.put(key, window);
+            enforceAuthFailureWindowBound(windowMinute, key);
+            return window.count > authFailureRateLimitMaxPerMinute;
+        }
+    }
+
+    private void enforceAuthFailureWindowBound(long currentWindowMinute, String currentKey) {
+        int cap = Math.max(1, authFailureRateLimitMaxTrackedSources);
+        if (authFailureWindows.size() <= cap) {
+            return;
+        }
+        authFailureWindows.entrySet().removeIf(
+            entry -> entry.getValue().windowMinute != currentWindowMinute);
+        if (authFailureWindows.size() > cap) {
+            int evicted = 0;
+            // LinkedHashMap is access ordered, so this iterator is oldest-first.
+            var iterator = authFailureWindows.entrySet().iterator();
+            while (authFailureWindows.size() > cap && iterator.hasNext()) {
+                var entry = iterator.next();
+                if (!entry.getKey().equals(currentKey)) {
+                    iterator.remove();
+                    evicted++;
+                }
             }
-            return new FailureWindow(windowMinute, current.count + 1);
-        });
-        return window.count > authFailureRateLimitMaxPerMinute;
+            if (evicted > 0
+                    && authFailureCapWarningWindow.getAndSet(currentWindowMinute) != currentWindowMinute) {
+                LOG.warn("Auth failure limiter tracked-source cap exceeded within one window; excess counters evicted: cap={} evicted={} limit_per_minute={}",
+                    cap, evicted, authFailureRateLimitMaxPerMinute);
+            }
+        }
+    }
+
+    int trackedAuthFailureSourceCount() {
+        synchronized (authFailureWindowsLock) {
+            return authFailureWindows.size();
+        }
     }
 
     private String authFailurePathClass(String path) {

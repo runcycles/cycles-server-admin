@@ -1,6 +1,9 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.logging.LogSanitizer;
+import io.runcycles.admin.data.repository.support.CascadeMutationResult;
+import io.runcycles.admin.data.repository.support.TenantCloseOutboxItem;
+import io.runcycles.admin.data.repository.support.SortedQueryGuard;
 import io.runcycles.admin.data.service.KeyService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.model.auth.*;
@@ -8,6 +11,7 @@ import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortSpec;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.*;
 import java.time.Instant;
@@ -17,32 +21,35 @@ import java.util.Comparator;
 public class ApiKeyRepository {
     private static final Logger LOG = LoggerFactory.getLogger(ApiKeyRepository.class);
     @Autowired private JedisPool jedisPool;
-    @Autowired private ObjectMapper objectMapper;
+    @Autowired @Qualifier("redisObjectMapper") private ObjectMapper objectMapper;
     @Autowired private KeyService keyService;
     private static final List<String> DEFAULT_PERMISSIONS = List.of(
         "reservations:create", "reservations:commit", "reservations:release",
         "reservations:extend", "reservations:list", "balances:read");
+    private static final int CREATE_COLLISION_RETRIES = 10;
+    private static final String CASCADE_SET_OUTBOX_LUA =
+        "if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end\n" +
+        "redis.call('SET', KEYS[1], ARGV[2])\n" +
+        "redis.call('SET', KEYS[2], ARGV[3])\n" +
+        "redis.call('SADD', KEYS[3], ARGV[4])\n" +
+        "return 1\n";
 
-    // Cross-tenant sorted list must hydrate every tenant's keys before the
-    // in-memory sort, which is unbounded in the naive case (10k tenants *
-    // 50 keys = 500k hydrations). Cap at 2000 total keys across all tenants
-    // so the admin pane cannot exhaust heap on a cross-tenant sort + broad
-    // filter. Callers that need to see beyond the cap should narrow the
-    // filter (status, tenant_id) to fit under it. Log at WARN when hit so
-    // operators can see that the sort window was truncated.
-    static final int SORTED_HYDRATE_CAP = 2000;
     // Lua script for atomic API key creation with tenant validation.
     // Validates tenant exists and is ACTIVE atomically, then creates key + index + lookup.
     // KEYS[1] = apikey:<keyId>, KEYS[2] = apikeys:<tenantId>, KEYS[3] = apikey:lookup:<prefix>,
     // KEYS[4] = tenant:<tenantId>
     // ARGV[1] = key JSON, ARGV[2] = keyId
-    // Returns: {'CREATED'}, {'TENANT_NOT_FOUND'}, or {'TENANT_INACTIVE', status}
+    // Returns: {'CREATED'}, a collision status, {'TENANT_NOT_FOUND'}, or
+    // {'TENANT_INACTIVE', status}. Collision checks must be in this script so
+    // concurrent creators cannot overwrite another credential's lookup.
     private static final String CREATE_KEY_LUA =
         "local tenant_json = redis.call('GET', KEYS[4])\n" +
         "if not tenant_json then return {'TENANT_NOT_FOUND'} end\n" +
         "local tenant = cjson.decode(tenant_json)\n" +
         "local tenant_status = tenant['status'] or 'ACTIVE'\n" +
         "if tenant_status ~= 'ACTIVE' then return {'TENANT_INACTIVE', tenant_status} end\n" +
+        "if redis.call('EXISTS', KEYS[1]) == 1 then return {'KEY_ID_COLLISION'} end\n" +
+        "if redis.call('EXISTS', KEYS[3]) == 1 then return {'PREFIX_COLLISION'} end\n" +
         "redis.call('SET', KEYS[1], ARGV[1])\n" +
         "redis.call('SADD', KEYS[2], ARGV[2])\n" +
         "redis.call('SET', KEYS[3], ARGV[2])\n" +
@@ -69,52 +76,62 @@ public class ApiKeyRepository {
                     io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
                     "Unrecognized permission: " + unknown, 400);
             }
-            String keyId = "key_" + UUID.randomUUID().toString().substring(0, 16);
-            String keySecret = keyService.generateKeySecret("cyc_live");
-            String keyPrefix = keyService.extractPrefix(keySecret);
-            String keyHash = keyService.hashKey(keySecret);
             Instant expiresAt = request.getExpiresAt() != null
                 ? request.getExpiresAt()
                 : Instant.now().plus(java.time.Duration.ofDays(90));
-            ApiKey apiKey = ApiKey.builder()
-                .keyId(keyId)
-                .tenantId(request.getTenantId())
-                .keyPrefix(keyPrefix)
-                .keyHash(keyHash)
-                .name(request.getName())
-                .description(request.getDescription())
-                .permissions(request.getPermissions() != null ? request.getPermissions() : DEFAULT_PERMISSIONS)
-                .scopeFilter(request.getScopeFilter())
-                .status(ApiKeyStatus.ACTIVE)
-                .createdAt(Instant.now())
-                .expiresAt(expiresAt)
-                .metadata(request.getMetadata())
-                .build();
-            // Atomic create with tenant validation: check tenant + SET key + SADD index + SET lookup
-            String json = objectMapper.writeValueAsString(apiKey);
-            @SuppressWarnings("unchecked")
-            List<String> result = (List<String>) jedis.eval(CREATE_KEY_LUA,
-                List.of("apikey:" + keyId, "apikeys:" + request.getTenantId(),
-                         "apikey:lookup:" + keyPrefix, "tenant:" + request.getTenantId()),
-                List.of(json, keyId));
-            String status = result.get(0);
-            if ("TENANT_NOT_FOUND".equals(status)) {
-                throw GovernanceException.tenantNotFound(request.getTenantId());
+            for (int attempt = 1; attempt <= CREATE_COLLISION_RETRIES; attempt++) {
+                String keyId = "key_" + UUID.randomUUID().toString().substring(0, 16);
+                String keySecret = keyService.generateKeySecret("cyc_live");
+                String keyPrefix = keyService.extractPrefix(keySecret);
+                String keyHash = keyService.hashKey(keySecret);
+                ApiKey apiKey = ApiKey.builder()
+                    .keyId(keyId)
+                    .tenantId(request.getTenantId())
+                    .keyPrefix(keyPrefix)
+                    .keyHash(keyHash)
+                    .name(request.getName())
+                    .description(request.getDescription())
+                    .permissions(request.getPermissions() != null ? request.getPermissions() : DEFAULT_PERMISSIONS)
+                    .scopeFilter(request.getScopeFilter())
+                    .status(ApiKeyStatus.ACTIVE)
+                    .createdAt(Instant.now())
+                    .expiresAt(expiresAt)
+                    .metadata(request.getMetadata())
+                    .build();
+                String json = objectMapper.writeValueAsString(apiKey);
+                @SuppressWarnings("unchecked")
+                List<String> result = (List<String>) jedis.eval(CREATE_KEY_LUA,
+                    List.of("apikey:" + keyId, "apikeys:" + request.getTenantId(),
+                             "apikey:lookup:" + keyPrefix, "tenant:" + request.getTenantId()),
+                    List.of(json, keyId));
+                String status = result.get(0);
+                if ("KEY_ID_COLLISION".equals(status) || "PREFIX_COLLISION".equals(status)) {
+                    LOG.warn("API key create collision; regenerating credential: collision_type={} attempt={} tenant_id={}",
+                        status, attempt, LogSanitizer.safe(request.getTenantId()));
+                    continue;
+                }
+                if ("TENANT_NOT_FOUND".equals(status)) {
+                    throw GovernanceException.tenantNotFound(request.getTenantId());
+                }
+                if ("TENANT_INACTIVE".equals(status)) {
+                    throw new GovernanceException(
+                        io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                        "Tenant is " + result.get(1) + ": " + request.getTenantId(), 400);
+                }
+                if (!"CREATED".equals(status)) {
+                    throw new IllegalStateException("Unexpected API key create result: " + status);
+                }
+                return ApiKeyCreateResponse.builder()
+                    .keyId(keyId)
+                    .keySecret(keySecret)
+                    .keyPrefix(keyPrefix)
+                    .tenantId(request.getTenantId())
+                    .permissions(apiKey.getPermissions())
+                    .createdAt(apiKey.getCreatedAt())
+                    .expiresAt(apiKey.getExpiresAt())
+                    .build();
             }
-            if ("TENANT_INACTIVE".equals(status)) {
-                throw new GovernanceException(
-                    io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
-                    "Tenant is " + result.get(1) + ": " + request.getTenantId(), 400);
-            }
-            return ApiKeyCreateResponse.builder()
-                .keyId(keyId)
-                .keySecret(keySecret)
-                .keyPrefix(keyPrefix)
-                .tenantId(request.getTenantId())
-                .permissions(apiKey.getPermissions())
-                .createdAt(apiKey.getCreatedAt())
-                .expiresAt(apiKey.getExpiresAt())
-                .build();
+            throw new IllegalStateException("Unable to allocate a unique API key lookup prefix");
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
@@ -178,6 +195,7 @@ public class ApiKeyRepository {
 
     private List<ApiKey> listSorted(Jedis jedis, String tenantId, ApiKeyStatus statusFilter, String cursor, int limit, SortSpec sortSpec, String search) {
         Set<String> ids = jedis.smembers("apikeys:" + tenantId);
+        SortedQueryGuard.requireBounded(ids.size(), "API-key");
         List<ApiKey> all = new ArrayList<>();
         for (String id : ids) {
             try {
@@ -326,13 +344,13 @@ public class ApiKeyRepository {
 
     private List<ApiKey> listAllTenantsSorted(Jedis jedis, ApiKeyStatus statusFilter, String cursor, int limit, SortSpec sortSpec, String search) {
         Set<String> tenantIds = jedis.smembers("tenants");
+        long candidates = 0L;
+        for (String tenantId : tenantIds) candidates += jedis.scard("apikeys:" + tenantId);
+        SortedQueryGuard.requireBounded(candidates, "cross-tenant API-key");
         List<ApiKey> all = new ArrayList<>();
-        boolean capped = false;
-        outer:
         for (String tenantId : tenantIds) {
             Set<String> keyIds = jedis.smembers("apikeys:" + tenantId);
             for (String keyId : keyIds) {
-                if (all.size() >= SORTED_HYDRATE_CAP) { capped = true; break outer; }
                 try {
                     String data = jedis.get("apikey:" + keyId);
                     if (data == null) continue;
@@ -346,11 +364,6 @@ public class ApiKeyRepository {
                         search != null && !search.isBlank(), e);
                 }
             }
-        }
-        if (capped) {
-            LOG.warn("API key cross-tenant sorted hydration capped: cap={} status_filter={} sort_field={} search_present={}",
-                SORTED_HYDRATE_CAP, statusFilter, sortSpec != null ? sortSpec.field() : null,
-                search != null && !search.isBlank());
         }
         all.sort(apiKeyComparator(sortSpec));
         List<ApiKey> result = new ArrayList<>();
@@ -485,27 +498,55 @@ public class ApiKeyRepository {
      * so re-issuing the cascade is a no-op. Returns one outcome per key
      * that was actually transitioned; caller emits matching audit + events.
      */
-    public List<CascadeRevokeOutcome> cascadeRevoke(String tenantId, String reason) {
-        List<CascadeRevokeOutcome> outcomes = new ArrayList<>();
-        List<ApiKey> keys = list(tenantId);
+    public CascadeMutationResult<CascadeRevokeOutcome> cascadeRevoke(String tenantId, String reason) {
+        var outcomes = CascadeMutationResult.<CascadeRevokeOutcome>builder();
         Instant now = Instant.now();
-        for (ApiKey k : keys) {
-            if (k.getStatus() != ApiKeyStatus.ACTIVE) continue;
-            ApiKeyStatus prior = k.getStatus();
-            try (Jedis jedis = jedisPool.getResource()) {
-                k.setStatus(ApiKeyStatus.REVOKED);
-                k.setRevokedAt(now);
-                if (reason != null && !reason.isEmpty()) {
-                    k.setRevokedReason(reason);
+        try (Jedis jedis = jedisPool.getResource()) {
+            Set<String> keyIds = jedis.smembers("apikeys:" + tenantId);
+            if (keyIds == null || keyIds.isEmpty()) return outcomes.build();
+            for (String keyId : keyIds) {
+                boolean resolved = false;
+                for (int attempt = 0; attempt < 3 && !resolved; attempt++) {
+                    try {
+                        String data = jedis.get("apikey:" + keyId);
+                        if (data == null) {
+                            jedis.srem("apikeys:" + tenantId, keyId);
+                            resolved = true;
+                            continue;
+                        }
+                        ApiKey k = objectMapper.readValue(data, ApiKey.class);
+                        if (k.getStatus() != ApiKeyStatus.ACTIVE) { resolved = true; continue; }
+                        ApiKeyStatus prior = k.getStatus();
+                        k.setStatus(ApiKeyStatus.REVOKED);
+                        k.setRevokedAt(now);
+                        if (reason != null && !reason.isEmpty()) k.setRevokedReason(reason);
+                        String itemId = "api_key:" + keyId;
+                        TenantCloseOutboxItem item = new TenantCloseOutboxItem(
+                            itemId, tenantId, "api_key", keyId, k.getName(), null,
+                            null, prior.name(), 0L);
+                        Object cas = jedis.eval(CASCADE_SET_OUTBOX_LUA,
+                            List.of("apikey:" + keyId,
+                                TenantCloseWorkRepository.outboxItemKey(tenantId, itemId),
+                                TenantCloseWorkRepository.outboxKey(tenantId)),
+                            List.of(data, objectMapper.writeValueAsString(k),
+                                objectMapper.writeValueAsString(item), itemId));
+                        if (Long.valueOf(1L).equals(cas)) {
+                            outcomes.succeeded(new CascadeRevokeOutcome(keyId, k.getName(), prior));
+                            resolved = true;
+                        }
+                    } catch (Exception e) {
+                        outcomes.failed(keyId, e);
+                        LOG.warn("Cascade-revoke skipped API key: key_id={} tenant_id={} reason={} error={}",
+                            LogSanitizer.safe(keyId), LogSanitizer.safe(tenantId), LogSanitizer.safe(reason), LogSanitizer.safe(e.getMessage()), e);
+                        resolved = true;
+                    }
                 }
-                jedis.set("apikey:" + k.getKeyId(), objectMapper.writeValueAsString(k));
-                outcomes.add(new CascadeRevokeOutcome(k.getKeyId(), k.getName(), prior));
-            } catch (Exception e) {
-                LOG.warn("Cascade-revoke skipped API key: key_id={} tenant_id={} reason={} error={}",
-                    LogSanitizer.safe(k.getKeyId()), LogSanitizer.safe(tenantId), LogSanitizer.safe(reason), LogSanitizer.safe(e.getMessage()), e);
+                if (!resolved) {
+                    outcomes.failed(keyId, new IllegalStateException("concurrent modification retry exhausted"));
+                }
             }
         }
-        return outcomes;
+        return outcomes.build();
     }
 
     public ApiKey revoke(String keyId, String reason) {

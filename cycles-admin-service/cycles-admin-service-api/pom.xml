@@ -142,9 +142,9 @@
              exclusion (both filename + excludedGroups) and pins to the
              `property-tests` tag. Runs only the 5 NORMATIVE invariant
              properties for the audit-write path. Nightly workflow invokes
-             with `-Djqwik.defaultTries=100` for 5× deeper interleaving
+             with `-Djqwik.tries.default=100` for 5× deeper interleaving
              coverage than a PR-feedback run would do (default 20 from
-             jqwik.properties). -->
+             junit-platform.properties). -->
         <profile>
             <id>property-tests</id>
             <build>

@@ -1050,6 +1050,25 @@ class AuthInterceptorTest {
     }
 
     @Test
+    void preHandle_uniqueSourceFlood_keepsFailureTrackerBounded() throws Exception {
+        ReflectionTestUtils.setField(interceptor, "authFailureRateLimitEnabled", true);
+        ReflectionTestUtils.setField(interceptor, "authFailureRateLimitMaxPerMinute", 10);
+        ReflectionTestUtils.setField(interceptor, "authFailureRateLimitMaxTrackedSources", 2);
+
+        for (int i = 1; i <= 3; i++) {
+            MockHttpServletRequest failedRequest = new MockHttpServletRequest();
+            failedRequest.setMethod("POST");
+            failedRequest.setRequestURI("/v1/admin/tenants");
+            failedRequest.setRemoteAddr("192.0.2." + i);
+
+            assertThat(interceptor.preHandle(
+                failedRequest, new MockHttpServletResponse(), new Object())).isFalse();
+        }
+
+        assertThat(interceptor.trackedAuthFailureSourceCount()).isLessThanOrEqualTo(2);
+    }
+
+    @Test
     void preHandle_adminKeyValid_noFailureAuditWritten() throws Exception {
         // Single-write invariant sanity check — success paths never trigger
         // a failure-side write. Controllers do their own (richer) success

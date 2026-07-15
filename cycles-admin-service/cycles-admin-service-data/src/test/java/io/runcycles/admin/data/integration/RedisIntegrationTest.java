@@ -5,7 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.admin.data.exception.GovernanceException;
+import io.runcycles.admin.data.idempotency.IdempotencyStore;
 import io.runcycles.admin.data.repository.*;
+import io.runcycles.admin.data.repository.support.TenantCloseOutboxItem;
+import io.runcycles.admin.data.service.CryptoService;
 import io.runcycles.admin.data.service.KeyService;
 import io.runcycles.admin.model.audit.AuditLogEntry;
 import io.runcycles.admin.model.auth.*;
@@ -15,6 +18,8 @@ import io.runcycles.admin.model.shared.Amount;
 import io.runcycles.admin.model.shared.CommitOveragePolicy;
 import io.runcycles.admin.model.shared.UnitEnum;
 import io.runcycles.admin.model.tenant.*;
+import io.runcycles.admin.model.webhook.WebhookStatus;
+import io.runcycles.admin.model.webhook.WebhookSubscription;
 import org.junit.jupiter.api.*;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -22,10 +27,14 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
+import redis.clients.jedis.Jedis;
 
 import java.lang.reflect.Field;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -47,6 +56,9 @@ class RedisIntegrationTest {
     private static BudgetRepository budgetRepository;
     private static PolicyRepository policyRepository;
     private static AuditRepository auditRepository;
+    private static WebhookRepository webhookRepository;
+    private static TenantCloseWorkRepository tenantCloseWorkRepository;
+    private static IdempotencyStore idempotencyStore;
 
     @BeforeAll
     static void setupAll() throws Exception {
@@ -81,6 +93,14 @@ class RedisIntegrationTest {
         auditRepository = new AuditRepository();
         injectField(auditRepository, "jedisPool", jedisPool);
         injectField(auditRepository, "objectMapper", objectMapper);
+
+        webhookRepository = new WebhookRepository();
+        injectField(webhookRepository, "jedisPool", jedisPool);
+        injectField(webhookRepository, "objectMapper", objectMapper);
+        injectField(webhookRepository, "cryptoService", new CryptoService(""));
+
+        tenantCloseWorkRepository = new TenantCloseWorkRepository(jedisPool, objectMapper);
+        idempotencyStore = new IdempotencyStore(jedisPool, objectMapper);
     }
 
     private static void injectField(Object target, String fieldName, Object value) throws Exception {
@@ -637,5 +657,99 @@ class RedisIntegrationTest {
 
         List<AuditLogEntry> logs = auditRepository.list("integ-tenant", null, List.of("createTenant"), null, null, null, null, null, null, 50);
         assertThat(logs).allSatisfy(l -> assertThat(l.getOperation()).isEqualTo("createTenant"));
+    }
+
+    @Test
+    @Order(80)
+    void bulkIdempotency_concurrentEqualRequestReplaysAndDifferentPayloadMismatches()
+            throws Exception {
+        Map<String, Object> request = Map.of("action", "CLOSE", "filter", Map.of("status", "ACTIVE"));
+        IdempotencyStore.Claim<Map> owner = idempotencyStore.begin(
+            "integration-bulk", "same-key", request, Map.class);
+        assertThat(owner.isReplay()).isFalse();
+
+        CompletableFuture<IdempotencyStore.Claim<Map>> waiter = CompletableFuture.supplyAsync(
+            () -> idempotencyStore.begin("integration-bulk", "same-key", request, Map.class));
+        Thread.sleep(100L);
+        Map<String, Object> response = Map.of("total_matched", 2, "action", "CLOSE");
+        idempotencyStore.complete(owner, response);
+
+        IdempotencyStore.Claim<Map> replay = waiter.get(3, TimeUnit.SECONDS);
+        assertThat(replay.isReplay()).isTrue();
+        assertThat(replay.replayResponse()).containsAllEntriesOf(response);
+        assertThatThrownBy(() -> idempotencyStore.begin(
+            "integration-bulk", "same-key", Map.of("action", "SUSPEND"), Map.class))
+            .isInstanceOf(GovernanceException.class)
+            .satisfies(error -> assertThat(((GovernanceException) error).getHttpStatus())
+                .isEqualTo(409));
+    }
+
+    @Test
+    @Order(81)
+    void tenantCloseMutations_atomicallyCreateDurableOutboxAndAreIdempotent()
+            throws Exception {
+        String tenantId = "integ-cascade";
+        TenantCreateRequest tenantRequest = new TenantCreateRequest();
+        tenantRequest.setTenantId(tenantId);
+        tenantRequest.setName("Cascade Integration");
+        tenantRepository.create(tenantRequest);
+
+        BudgetCreateRequest budgetRequest = new BudgetCreateRequest();
+        budgetRequest.setScope("tenant:" + tenantId);
+        budgetRequest.setUnit(UnitEnum.USD_MICROCENTS);
+        budgetRequest.setAllocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
+        budgetRepository.create(tenantId, budgetRequest);
+
+        ApiKeyCreateRequest keyRequest = new ApiKeyCreateRequest();
+        keyRequest.setTenantId(tenantId);
+        keyRequest.setName("cascade-key");
+        ApiKeyCreateResponse key = apiKeyRepository.create(keyRequest);
+
+        WebhookSubscription webhook = WebhookSubscription.builder()
+            .subscriptionId("wh_cascade").tenantId(tenantId).name("cascade-hook")
+            .url("https://example.com/hook").eventTypes(List.of())
+            .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.set("webhook:wh_cascade", objectMapper.writeValueAsString(webhook));
+            jedis.sadd("webhooks:" + tenantId, "wh_cascade");
+        }
+
+        TenantCloseWorkRepository.Intent intent = new TenantCloseWorkRepository.Intent(
+            tenantId, "req-integration", "trace-integration",
+            "tenant_close_cascade:" + tenantId + ":req-integration",
+            "127.0.0.1", "integration-test", Instant.now());
+        tenantCloseWorkRepository.prepare(intent);
+        tenantCloseWorkRepository.prepare(new TenantCloseWorkRepository.Intent(
+            tenantId, "replacement-must-not-win", null, "replacement", null, null, Instant.now()));
+        assertThat(tenantCloseWorkRepository.findIntent(tenantId))
+            .get().extracting(TenantCloseWorkRepository.Intent::requestId)
+            .isEqualTo("req-integration");
+
+        String lease = tenantCloseWorkRepository.tryAcquireLease(tenantId);
+        assertThat(lease).isNotBlank();
+        assertThat(tenantCloseWorkRepository.tryAcquireLease(tenantId)).isNull();
+
+        assertThat(budgetRepository.cascadeClose(tenantId).succeeded()).hasSize(1);
+        assertThat(webhookRepository.cascadeDisable(tenantId).succeeded()).hasSize(1);
+        assertThat(apiKeyRepository.cascadeRevoke(tenantId, "tenant_closed").succeeded())
+            .extracting(ApiKeyRepository.CascadeRevokeOutcome::keyId)
+            .containsExactly(key.getKeyId());
+
+        List<TenantCloseOutboxItem> outbox = tenantCloseWorkRepository.listOutbox(tenantId);
+        assertThat(outbox).hasSize(3);
+        assertThat(outbox).extracting(TenantCloseOutboxItem::resourceType)
+            .containsExactlyInAnyOrder("budget", "webhook_subscription", "api_key");
+        assertThat(tenantCloseWorkRepository.completeIfDrained(tenantId)).isFalse();
+
+        assertThat(budgetRepository.cascadeClose(tenantId).succeeded()).isEmpty();
+        assertThat(webhookRepository.cascadeDisable(tenantId).succeeded()).isEmpty();
+        assertThat(apiKeyRepository.cascadeRevoke(tenantId, "tenant_closed").succeeded()).isEmpty();
+        outbox.forEach(item -> tenantCloseWorkRepository.acknowledge(tenantId, item.itemId()));
+        assertThat(tenantCloseWorkRepository.completeIfDrained(tenantId)).isTrue();
+        assertThat(tenantCloseWorkRepository.findIntent(tenantId)).isEmpty();
+        tenantCloseWorkRepository.releaseLease(tenantId, lease);
+        String replacementLease = tenantCloseWorkRepository.tryAcquireLease(tenantId);
+        assertThat(replacementLease).isNotNull();
+        tenantCloseWorkRepository.releaseLease(tenantId, replacementLease);
     }
 }

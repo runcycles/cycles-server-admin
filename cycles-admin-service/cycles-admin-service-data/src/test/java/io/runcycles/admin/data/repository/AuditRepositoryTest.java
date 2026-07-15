@@ -3,9 +3,12 @@ package io.runcycles.admin.data.repository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.audit.AuditLogEntry;
+import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.shared.SortSpec;
+import io.runcycles.admin.data.repository.support.ScoredJedisTestAdapter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -45,6 +48,7 @@ class AuditRepositoryTest {
     @BeforeEach
     void setUp() {
         lenient().when(jedisPool.getResource()).thenReturn(jedis);
+        ScoredJedisTestAdapter.install(jedis);
     }
 
     @Test
@@ -198,10 +202,12 @@ class AuditRepositoryTest {
         // The cursor's score is looked up via zscore, then used as maxScore ceiling
         double cursorScore = 1000.0;
         when(jedis.zscore("audit:logs:tenant-1", "log_1")).thenReturn(cursorScore);
+        when(jedis.zrevrangeByScore("audit:logs:tenant-1", cursorScore, cursorScore))
+            .thenReturn(List.of("log_1"));
 
         List<String> logIds = List.of("log_2", "log_3");
-        // maxScore = cursorScore - 1 = 999.0
-        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), eq(999.0), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(logIds);
+        // maxScore is the immediately-lower representable double.
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), eq(Math.nextDown(1000.0)), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(logIds);
 
         AuditLogEntry e2 = AuditLogEntry.builder().logId("log_2").tenantId("tenant-1").operation("op").status(200).timestamp(Instant.now()).build();
         AuditLogEntry e3 = AuditLogEntry.builder().logId("log_3").tenantId("tenant-1").operation("op").status(200).timestamp(Instant.now()).build();
@@ -224,7 +230,7 @@ class AuditRepositoryTest {
         List<AuditLogEntry> result = repository.list("tenant-1", 10);
 
         assertThat(result).isEmpty();
-        verify(jedis).zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), eq(30));
+        verify(jedis).zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), eq(64));
     }
 
     @Test
@@ -255,20 +261,14 @@ class AuditRepositoryTest {
     }
 
     @Test
-    void list_cursorNotFoundInIndex_usesDefaultMaxScore() throws Exception {
+    void list_cursorNotFoundInIndex_rejectsInvalidCursor() {
         when(jedis.zscore("audit:logs:tenant-1", "nonexistent")).thenReturn(null);
 
-        List<String> logIds = List.of("log_1");
-        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), eq(Double.POSITIVE_INFINITY), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt()))
-                .thenReturn(logIds);
-
-        AuditLogEntry e1 = AuditLogEntry.builder().logId("log_1").tenantId("tenant-1").operation("op").status(200).timestamp(Instant.now()).build();
-        String e1Json = objectMapper.writeValueAsString(e1);
-        when(jedis.get("audit:log:log_1")).thenReturn(e1Json);
-
-        List<AuditLogEntry> result = repository.list("tenant-1", null, null, null, null, null, null, null, "nonexistent", 50);
-
-        assertThat(result).hasSize(1);
+        assertThatThrownBy(() -> repository.list("tenant-1", null, null, null, null,
+            null, null, null, "nonexistent", 50))
+            .isInstanceOf(GovernanceException.class)
+            .extracting("errorCode")
+            .isEqualTo(ErrorCode.INVALID_REQUEST);
     }
 
     @Test
@@ -509,10 +509,14 @@ class AuditRepositoryTest {
             jsons.add(objectMapper.writeValueAsString(e));
         }
         if (ascending) {
-            when(jedis.zrangeByScore(eq(indexKey), anyDouble(), anyDouble(), eq(0), anyInt()))
+            lenient().when(jedis.zrangeByScore(eq(indexKey), anyDouble(), anyDouble(), eq(0), anyInt()))
+                .thenReturn(ids);
+            lenient().when(jedis.zrangeByScore(eq(indexKey), anyDouble(), anyDouble()))
                 .thenReturn(ids);
         } else {
-            when(jedis.zrevrangeByScore(eq(indexKey), anyDouble(), anyDouble(), eq(0), anyInt()))
+            lenient().when(jedis.zrevrangeByScore(eq(indexKey), anyDouble(), anyDouble(), eq(0), anyInt()))
+                .thenReturn(ids);
+            lenient().when(jedis.zrevrangeByScore(eq(indexKey), anyDouble(), anyDouble()))
                 .thenReturn(ids);
         }
         for (int i = 0; i < entries.size(); i++) {
@@ -545,7 +549,8 @@ class AuditRepositoryTest {
             SortSpec.of("timestamp", SortDirection.ASC));
 
         assertThat(result).extracting(AuditLogEntry::getLogId).containsExactly("log_a", "log_b");
-        verify(jedis).zrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt());
+        verify(jedis).zrangeByScoreWithScores(
+            eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt());
     }
 
     @Test
@@ -671,7 +676,8 @@ class AuditRepositoryTest {
         repository.list("tenant-1", null, null, null, null, null, null, null, "log_cursor", 50,
             SortSpec.of("timestamp", SortDirection.ASC));
 
-        verify(jedis).zrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt());
+        verify(jedis).zrangeByScoreWithScores(
+            eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt());
     }
 
     @Test
@@ -680,7 +686,7 @@ class AuditRepositoryTest {
         AuditLogEntry good = log("log_good", "tenant-1", "key_1", "createTenant", "tenant", 200, t);
         String goodJson = objectMapper.writeValueAsString(good);
         List<String> ids = List.of("log_bad", "log_good");
-        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble()))
             .thenReturn(ids);
         when(jedis.get("audit:log:log_bad")).thenReturn("{invalid json}");
         when(jedis.get("audit:log:log_good")).thenReturn(goodJson);
@@ -698,7 +704,7 @@ class AuditRepositoryTest {
         Instant to = Instant.ofEpochMilli(2000);
         AuditLogEntry a = log("log_a", "tenant-1", "key_1", "createTenant", "tenant", 200, from);
         String aJson = objectMapper.writeValueAsString(a);
-        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), eq(2000.0), eq(1000.0), eq(0), anyInt()))
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), eq(2000.0), eq(1000.0)))
             .thenReturn(List.of("log_a"));
         when(jedis.get("audit:log:log_a")).thenReturn(aJson);
 
@@ -706,7 +712,7 @@ class AuditRepositoryTest {
             SortSpec.of("operation", SortDirection.ASC));
 
         assertThat(result).hasSize(1);
-        verify(jedis).zrevrangeByScore(eq("audit:logs:tenant-1"), eq(2000.0), eq(1000.0), eq(0), anyInt());
+        verify(jedis).zrevrangeByScore(eq("audit:logs:tenant-1"), eq(2000.0), eq(1000.0));
     }
 
     @Test
@@ -714,7 +720,7 @@ class AuditRepositoryTest {
         Instant t = Instant.parse("2026-04-15T12:00:00Z");
         AuditLogEntry b = log("log_b", "tenant-1", "key_1", "createTenant", "tenant", 200, t);
         String bJson = objectMapper.writeValueAsString(b);
-        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+        when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"), anyDouble(), anyDouble()))
             .thenReturn(List.of("log_gone", "log_b"));
         when(jedis.get("audit:log:log_gone")).thenReturn(null);
         when(jedis.get("audit:log:log_b")).thenReturn(bJson);
@@ -913,16 +919,18 @@ class AuditRepositoryTest {
             null, "match");
         assertThat(page1).extracting(AuditLogEntry::getLogId).containsExactly("log_1", "log_2");
 
-        // Page 2: cursor = log_2 (score 2000). Next page upper bound is
-        // score - 1 = 1999 so log_1 (3000) and log_2 (2000) are excluded
+        // Page 2: cursor = log_2 (score 2000). The next page uses the
+        // immediately-lower double score, excluding log_1 and log_2
         // regardless of search value.
         when(jedis.zscore("audit:logs:tenant-1", "log_2")).thenReturn(2000.0);
+        when(jedis.zrevrangeByScore("audit:logs:tenant-1", 2000.0, 2000.0))
+            .thenReturn(List.of("log_2"));
         AuditLogEntry c = AuditLogEntry.builder().logId("log_3").tenantId("tenant-1")
             .operation("op").status(200).resourceId("match_res_3")
             .timestamp(Instant.ofEpochMilli(1500)).build();
         String cJson = objectMapper.writeValueAsString(c);
         when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"),
-            eq(1999.0), eq(Double.NEGATIVE_INFINITY),
+            eq(Math.nextDown(2000.0)), eq(Double.NEGATIVE_INFINITY),
             eq(0), anyInt())).thenReturn(List.of("log_3"));
         when(jedis.get("audit:log:log_3")).thenReturn(cJson);
 
@@ -1295,14 +1303,16 @@ class AuditRepositoryTest {
             null, null, List.of("BUDGET_EXCEEDED"), null, 400, 499);
         assertThat(page1).extracting(AuditLogEntry::getLogId).containsExactly("log_1", "log_2");
 
-        // Page 2: cursor score = 2000 → upper bound = 1999, log_3 alone.
+        // Page 2: cursor score = 2000 → next lower double, log_3 alone.
         when(jedis.zscore("audit:logs:tenant-1", "log_2")).thenReturn(2000.0);
+        when(jedis.zrevrangeByScore("audit:logs:tenant-1", 2000.0, 2000.0))
+            .thenReturn(List.of("log_2"));
         AuditLogEntry c = AuditLogEntry.builder().logId("log_3").tenantId("tenant-1")
             .operation("createBudget").status(429).errorCode("BUDGET_EXCEEDED")
             .timestamp(Instant.ofEpochMilli(1500)).build();
         String cJson = objectMapper.writeValueAsString(c);
         when(jedis.zrevrangeByScore(eq("audit:logs:tenant-1"),
-            eq(1999.0), eq(Double.NEGATIVE_INFINITY),
+            eq(Math.nextDown(2000.0)), eq(Double.NEGATIVE_INFINITY),
             eq(0), anyInt())).thenReturn(List.of("log_3"));
         when(jedis.get("audit:log:log_3")).thenReturn(cJson);
 

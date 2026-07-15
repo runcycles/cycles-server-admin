@@ -12,6 +12,7 @@ import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.CommitOveragePolicy;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.tenant.*;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -47,6 +48,13 @@ class TenantControllerTest {
     @MockitoBean private TenantCloseCascadeService tenantCloseCascadeService;
 
     private static final String ADMIN_KEY = "test-admin-key";
+
+    @BeforeEach
+    void defaultBulkIdempotencyOwner() {
+        lenient().doAnswer(invocation -> new IdempotencyStore.Claim<>(
+                invocation.getArgument(0), invocation.getArgument(1), "test-owner", null))
+            .when(idempotencyStore).begin(anyString(), anyString(), any(), any());
+    }
 
     @Test
     void createTenant_returns201() throws Exception {
@@ -258,14 +266,14 @@ class TenantControllerTest {
 
     @Test
     void listTenants_limitClampedToMax100() throws Exception {
-        when(tenantRepository.list(any(), any(), any(), any(), eq(100), any())).thenReturn(List.of());
+        when(tenantRepository.list(any(), any(), any(), any(), eq(101), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/tenants")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .param("limit", "999"))
                 .andExpect(status().isOk());
 
-        verify(tenantRepository).list(any(), any(), any(), any(), eq(100), any());
+        verify(tenantRepository).list(any(), any(), any(), any(), eq(101), any());
     }
 
     @Test
@@ -283,14 +291,14 @@ class TenantControllerTest {
 
     @Test
     void listTenants_limitClampedToMin1() throws Exception {
-        when(tenantRepository.list(any(), any(), any(), any(), eq(1), any())).thenReturn(List.of());
+        when(tenantRepository.list(any(), any(), any(), any(), eq(2), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/tenants")
                         .header("X-Admin-API-Key", ADMIN_KEY)
                         .param("limit", "0"))
                 .andExpect(status().isOk());
 
-        verify(tenantRepository).list(any(), any(), any(), any(), eq(1), any());
+        verify(tenantRepository).list(any(), any(), any(), any(), eq(2), any());
     }
 
     @Test
@@ -401,12 +409,13 @@ class TenantControllerTest {
     }
 
     @Test
-    void listTenants_resultCountEqualsLimit_hasMoreTrueWithCursor() throws Exception {
-        // Return exactly 2 tenants with limit=2 to trigger has_more=true branch
+    void listTenants_resultCountExceedsLimit_hasMoreTrueWithCursor() throws Exception {
+        // The third row proves another page exists and is trimmed from the response.
         List<Tenant> tenants = List.of(
                 Tenant.builder().tenantId("tenant-1").name("A").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build(),
-                Tenant.builder().tenantId("tenant-2").name("B").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build());
-        when(tenantRepository.list(any(), any(), any(), any(), eq(2), any())).thenReturn(tenants);
+                Tenant.builder().tenantId("tenant-2").name("B").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build(),
+                Tenant.builder().tenantId("tenant-3").name("C").status(TenantStatus.ACTIVE).createdAt(Instant.now()).build());
+        when(tenantRepository.list(any(), any(), any(), any(), eq(3), any())).thenReturn(tenants);
 
         mockMvc.perform(get("/v1/admin/tenants")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -554,6 +563,39 @@ class TenantControllerTest {
 
         // Tenant flip already committed before the cascade blew up.
         verify(tenantRepository).update(eq("tenant-1"), any());
+        verify(eventService).emit(eq(EventType.TENANT_CLOSED), eq("tenant-1"),
+                any(), any(), any(), any(), any(), any());
+        verify(auditRepository).log(argThat(entry ->
+            "updateTenant".equals(entry.getOperation())
+                && Integer.valueOf(500).equals(entry.getStatus())));
+    }
+
+    @Test
+    void updateTenant_closedStatus_partialCascadeReturns500WithFailedResources() throws Exception {
+        Tenant prior = Tenant.builder()
+                .tenantId("tenant-1").name("Test").status(TenantStatus.ACTIVE).build();
+        Tenant updated = Tenant.builder()
+                .tenantId("tenant-1").name("Test").status(TenantStatus.CLOSED).build();
+        when(tenantRepository.get("tenant-1")).thenReturn(prior);
+        when(tenantRepository.update(eq("tenant-1"), any())).thenReturn(updated);
+        when(tenantCloseCascadeService.cascade(eq("tenant-1"), any()))
+                .thenReturn(new TenantCloseCascadeService.CascadeResult(
+                    1, 0, 0, 0L, List.of("webhook:sub_bad")));
+
+        mockMvc.perform(patch("/v1/admin/tenants/tenant-1")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"CLOSED\"}"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.error").value("INTERNAL_ERROR"))
+                .andExpect(jsonPath("$.details.failed_resources[0]").value("webhook:sub_bad"));
+
+        verify(eventService).emit(eq(EventType.TENANT_CLOSED), eq("tenant-1"),
+                any(), any(), any(), any(), any(), any());
+        verify(auditRepository).log(argThat(entry ->
+            "updateTenant".equals(entry.getOperation())
+                && Integer.valueOf(500).equals(entry.getStatus())
+                && entry.getMetadata() != null));
     }
 
     @Test
@@ -760,6 +802,10 @@ class TenantControllerTest {
     void bulkActionTenants_suspend_happyPath_returns200() throws Exception {
         when(idempotencyStore.lookup(eq("tenants-bulk"), anyString(), eq(TenantBulkActionResponse.class)))
                 .thenReturn(java.util.Optional.empty());
+        IdempotencyStore.Claim<TenantBulkActionResponse> claim =
+            new IdempotencyStore.Claim<>("tenants-bulk", "k1", "owner-1", null);
+        when(idempotencyStore.begin(eq("tenants-bulk"), eq("k1"), any(),
+                eq(TenantBulkActionResponse.class))).thenReturn(claim);
         when(tenantRepository.matchForBulk(eq(TenantStatus.ACTIVE), isNull(), isNull(), eq(500)))
                 .thenReturn(List.of(tenantRow("t1", TenantStatus.ACTIVE), tenantRow("t2", TenantStatus.ACTIVE)));
         when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.ACTIVE));
@@ -779,7 +825,8 @@ class TenantControllerTest {
                 .andExpect(jsonPath("$.idempotency_key").value("k1"));
 
         verify(tenantRepository, times(2)).update(anyString(), any());
-        verify(idempotencyStore).store(eq("tenants-bulk"), eq("k1"), any(TenantBulkActionResponse.class));
+        verify(idempotencyStore).complete(eq(claim), any(TenantBulkActionResponse.class));
+        verify(idempotencyStore, never()).store(anyString(), anyString(), any());
     }
 
     @Test
@@ -834,6 +881,7 @@ class TenantControllerTest {
         List<Tenant> oversized = new java.util.ArrayList<>();
         for (int i = 0; i < 501; i++) oversized.add(tenantRow("t" + i, TenantStatus.ACTIVE));
         when(tenantRepository.matchForBulk(any(), any(), any(), eq(500))).thenReturn(oversized);
+        when(tenantRepository.countForBulk(any(), any(), any())).thenReturn(742);
 
         mockMvc.perform(post("/v1/admin/tenants/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -841,9 +889,12 @@ class TenantControllerTest {
                         .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k1\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("LIMIT_EXCEEDED"))
-                .andExpect(jsonPath("$.details.total_matched").value(501));
+                .andExpect(jsonPath("$.details.total_matched").value(742));
 
         verify(tenantRepository, never()).update(anyString(), any());
+        verify(idempotencyStore).abandon(any());
+        verify(tenantRepository).countForBulk(any(), any(), any());
+        verify(idempotencyStore).abandon(any());
     }
 
     @Test
@@ -856,8 +907,9 @@ class TenantControllerTest {
                 .skipped(List.of())
                 .idempotencyKey("k1")
                 .build();
-        when(idempotencyStore.lookup(eq("tenants-bulk"), eq("k1"), eq(TenantBulkActionResponse.class)))
-                .thenReturn(java.util.Optional.of(cached));
+        when(idempotencyStore.begin(eq("tenants-bulk"), eq("k1"), any(),
+                eq(TenantBulkActionResponse.class)))
+            .thenReturn(new IdempotencyStore.Claim<>("tenants-bulk", "k1", null, cached));
 
         mockMvc.perform(post("/v1/admin/tenants/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -940,6 +992,8 @@ class TenantControllerTest {
                 .thenReturn(List.of(tenantRow("t1", TenantStatus.ACTIVE)));
         when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.ACTIVE));
         when(tenantRepository.update(eq("t1"), any())).thenReturn(tenantRow("t1", TenantStatus.CLOSED));
+        when(tenantCloseCascadeService.cascade(eq("t1"), any()))
+                .thenReturn(TenantCloseCascadeService.CascadeResult.empty());
 
         mockMvc.perform(post("/v1/admin/tenants/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -954,6 +1008,32 @@ class TenantControllerTest {
         org.mockito.InOrder order = org.mockito.Mockito.inOrder(tenantRepository, tenantCloseCascadeService);
         order.verify(tenantRepository).update(eq("t1"), any());
         order.verify(tenantCloseCascadeService).cascade(eq("t1"), any());
+    }
+
+    @Test
+    void bulkActionTenants_close_partialCascadeClassifiesRowAsFailed() throws Exception {
+        when(idempotencyStore.lookup(anyString(), anyString(), eq(TenantBulkActionResponse.class)))
+                .thenReturn(java.util.Optional.empty());
+        when(tenantRepository.matchForBulk(any(), any(), any(), eq(500)))
+                .thenReturn(List.of(tenantRow("t1", TenantStatus.ACTIVE)));
+        when(tenantRepository.get("t1")).thenReturn(tenantRow("t1", TenantStatus.ACTIVE));
+        when(tenantRepository.update(eq("t1"), any()))
+                .thenReturn(tenantRow("t1", TenantStatus.CLOSED));
+        when(tenantCloseCascadeService.cascade(eq("t1"), any()))
+                .thenReturn(new TenantCloseCascadeService.CascadeResult(
+                    0, 0, 0, 0L, List.of("api_key:key_bad")));
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                        .header("X-Admin-API-Key", ADMIN_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"CLOSE\",\"idempotency_key\":\"k1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.succeeded").isEmpty())
+                .andExpect(jsonPath("$.failed[0].id").value("t1"))
+                .andExpect(jsonPath("$.failed[0].error_code").value("INTERNAL_ERROR"));
+
+        verify(eventService, never()).emit(eq(EventType.TENANT_CLOSED), eq("t1"),
+                any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -1243,14 +1323,12 @@ class TenantControllerTest {
                 eq("t1"), isNull(), eq("cycles-admin"), any(), payload.capture(), corr.capture(), any());
         org.assertj.core.api.Assertions.assertThat(corr.getValue())
                 .startsWith("tenant_bulk_action:close:");
-        // CLOSE additionally carries a cascade sub-map with cascadeSummaryMap keys.
+        // Cascade details belong to audit metadata and child cascade events; the
+        // typed tenant lifecycle payload remains schema-clean.
         java.util.Map<String, Object> p = payload.getValue();
-        org.assertj.core.api.Assertions.assertThat(p).containsKeys("tenant_id", "new_status", "cascade");
+        org.assertj.core.api.Assertions.assertThat(p).containsKeys("tenant_id", "new_status")
+                .doesNotContainKey("cascade");
         assertEquals("CLOSED", p.get("new_status"));
-        @SuppressWarnings("unchecked")
-        java.util.Map<String, Object> cascade = (java.util.Map<String, Object>) p.get("cascade");
-        org.assertj.core.api.Assertions.assertThat(cascade)
-                .containsKeys("budgets_closed", "webhooks_disabled", "api_keys_revoked");
         verify(tenantCloseCascadeService).cascade(eq("t1"), any());
     }
 

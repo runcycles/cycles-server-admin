@@ -304,27 +304,27 @@ class BudgetControllerTest {
     @Test
     void listBudgets_limitClampedToMax100() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), any(BudgetListFilters.class), any(), eq(100), any())).thenReturn(List.of());
+        when(budgetRepository.list(eq("tenant-1"), any(BudgetListFilters.class), any(), eq(101), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/budgets")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .param("limit", "999"))
                 .andExpect(status().isOk());
 
-        verify(budgetRepository).list(eq("tenant-1"), any(BudgetListFilters.class), any(), eq(100), any());
+        verify(budgetRepository).list(eq("tenant-1"), any(BudgetListFilters.class), any(), eq(101), any());
     }
 
     @Test
     void listBudgets_limitClampedToMin1() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.list(eq("tenant-1"), any(BudgetListFilters.class), any(), eq(1), any())).thenReturn(List.of());
+        when(budgetRepository.list(eq("tenant-1"), any(BudgetListFilters.class), any(), eq(2), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/budgets")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .param("limit", "0"))
                 .andExpect(status().isOk());
 
-        verify(budgetRepository).list(eq("tenant-1"), any(BudgetListFilters.class), any(), eq(1), any());
+        verify(budgetRepository).list(eq("tenant-1"), any(BudgetListFilters.class), any(), eq(2), any());
     }
 
     @Test
@@ -690,7 +690,7 @@ class BudgetControllerTest {
     }
 
     @Test
-    void listBudgets_resultCountEqualsLimit_hasMoreTrueWithCursor() throws Exception {
+    void listBudgets_resultCountExceedsLimit_hasMoreTrueWithCursor() throws Exception {
         setupApiKeyAuth();
         BudgetLedger l1 = BudgetLedger.builder()
                 .ledgerId("led-1").scope("a").unit(UnitEnum.USD_MICROCENTS)
@@ -702,7 +702,13 @@ class BudgetControllerTest {
                 .allocated(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
                 .remaining(new Amount(UnitEnum.USD_MICROCENTS, 1500L))
                 .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(budgetRepository.list(eq("tenant-1"), any(BudgetListFilters.class), any(), eq(2), any())).thenReturn(List.of(l1, l2));
+        BudgetLedger l3 = BudgetLedger.builder()
+                .ledgerId("led-3").scope("c").unit(UnitEnum.USD_MICROCENTS)
+                .allocated(new Amount(UnitEnum.USD_MICROCENTS, 3000L))
+                .remaining(new Amount(UnitEnum.USD_MICROCENTS, 2500L))
+                .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(budgetRepository.list(eq("tenant-1"), any(BudgetListFilters.class), any(), eq(3), any()))
+                .thenReturn(List.of(l1, l2, l3));
 
         mockMvc.perform(get("/v1/admin/budgets")
                         .header("X-Cycles-API-Key", "valid-api-key")
@@ -1436,7 +1442,7 @@ class BudgetControllerTest {
     @Test
     void listBudgets_crossTenant_fullPage_nextCursorIsTenantLedgerComposite() throws Exception {
         List<BudgetLedger> fullPage = new java.util.ArrayList<>();
-        for (int i = 0; i < 50; i++) {
+        for (int i = 0; i < 51; i++) {
             fullPage.add(BudgetLedger.builder()
                     .ledgerId("led-" + i).tenantId("tenant-" + (i / 25))
                     .scope("tenant:tenant-" + (i / 25) + "/workspace:w" + i)
@@ -1459,7 +1465,7 @@ class BudgetControllerTest {
     void listBudgets_perTenant_fullPage_nextCursorIsBareLedgerId() throws Exception {
         setupApiKeyAuth();
         List<BudgetLedger> fullPage = new java.util.ArrayList<>();
-        for (int i = 0; i < 50; i++) {
+        for (int i = 0; i < 51; i++) {
             fullPage.add(BudgetLedger.builder()
                     .ledgerId("led-" + i).tenantId("tenant-1")
                     .scope("tenant:tenant-1/workspace:w" + i).unit(UnitEnum.USD_MICROCENTS)

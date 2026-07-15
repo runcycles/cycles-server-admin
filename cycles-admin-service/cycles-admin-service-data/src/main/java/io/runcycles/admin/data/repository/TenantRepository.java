@@ -1,6 +1,7 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.logging.LogSanitizer;
+import io.runcycles.admin.data.repository.support.SortedQueryGuard;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.model.shared.CommitOveragePolicy;
 import io.runcycles.admin.model.shared.SearchSpec;
@@ -11,6 +12,7 @@ import io.runcycles.admin.model.tenant.TenantStatus;
 import io.runcycles.admin.model.tenant.TenantUpdateRequest;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.*;
 import java.time.Instant;
@@ -19,7 +21,7 @@ import java.util.*;
 public class TenantRepository {
     private static final Logger LOG = LoggerFactory.getLogger(TenantRepository.class);
     @Autowired private JedisPool jedisPool;
-    @Autowired private ObjectMapper objectMapper;
+    @Autowired @Qualifier("redisObjectMapper") private ObjectMapper objectMapper;
     // Lua script for atomic tenant creation with conflict detection.
     // Returns {'CREATED'} if new, {'EXISTS', json} if idempotent replay (same name),
     // or {'CONFLICT', json} if tenant_id exists with a different name (spec: 409).
@@ -124,6 +126,7 @@ public class TenantRepository {
                 return listLegacy(jedis, status, parentTenantId, search, cursor, limit);
             }
             Set<String> ids = jedis.smembers("tenants");
+            SortedQueryGuard.requireBounded(ids.size(), "tenant");
             List<Tenant> hydrated = new ArrayList<>();
             for (String id : ids) {
                 try {
@@ -271,6 +274,25 @@ public class TenantRepository {
                 }
             }
             return matches;
+        }
+    }
+
+    /** Exact match count used only for an over-limit bulk rejection response. */
+    public int countForBulk(TenantStatus status, String parentTenantId, String search) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            int count = 0;
+            for (String id : jedis.smembers("tenants")) {
+                try {
+                    String data = jedis.get("tenant:" + id);
+                    if (data == null) continue;
+                    Tenant tenant = objectMapper.readValue(data, Tenant.class);
+                    if (matchesFilters(tenant, status, parentTenantId, search)) count++;
+                } catch (Exception e) {
+                    LOG.warn("Failed to parse tenant row during exact bulk count: tenant_id={}",
+                        LogSanitizer.safe(id), e);
+                }
+            }
+            return count;
         }
     }
 

@@ -16,6 +16,7 @@ import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.webhook.*;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -53,6 +54,13 @@ class WebhookAdminControllerTest {
     @MockitoBean private EventService eventService;
 
     private static final String ADMIN_KEY = "test-admin-key";
+
+    @BeforeEach
+    void defaultBulkIdempotencyOwner() {
+        lenient().doAnswer(invocation -> new IdempotencyStore.Claim<>(
+                invocation.getArgument(0), invocation.getArgument(1), "test-owner", null))
+            .when(idempotencyStore).begin(anyString(), anyString(), any(), any());
+    }
 
     @Test
     void createWebhook_returns201() throws Exception {
@@ -583,6 +591,10 @@ class WebhookAdminControllerTest {
     void bulkActionWebhooks_pause_happyPath_returns200() throws Exception {
         when(idempotencyStore.lookup(eq("webhooks-bulk"), anyString(), eq(WebhookBulkActionResponse.class)))
                 .thenReturn(java.util.Optional.empty());
+        IdempotencyStore.Claim<WebhookBulkActionResponse> claim =
+            new IdempotencyStore.Claim<>("webhooks-bulk", "k1", "owner-1", null);
+        when(idempotencyStore.begin(eq("webhooks-bulk"), eq("k1"), any(),
+                eq(WebhookBulkActionResponse.class))).thenReturn(claim);
         when(webhookRepository.matchForBulk(isNull(), eq(WebhookStatus.ACTIVE), isNull(), isNull(), eq(500)))
                 .thenReturn(List.of(webhookRow("w1", WebhookStatus.ACTIVE), webhookRow("w2", WebhookStatus.ACTIVE)));
         when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.ACTIVE));
@@ -602,7 +614,8 @@ class WebhookAdminControllerTest {
                 .andExpect(jsonPath("$.idempotency_key").value("k1"));
 
         verify(webhookService, times(2)).update(anyString(), any());
-        verify(idempotencyStore).store(eq("webhooks-bulk"), eq("k1"), any(WebhookBulkActionResponse.class));
+        verify(idempotencyStore).complete(eq(claim), any(WebhookBulkActionResponse.class));
+        verify(idempotencyStore, never()).store(anyString(), anyString(), any());
     }
 
     @Test
@@ -649,6 +662,7 @@ class WebhookAdminControllerTest {
 
         verify(webhookService, never()).update(anyString(), any());
         verify(webhookService, never()).delete(anyString());
+        verify(idempotencyStore).abandon(any());
     }
 
     @Test
@@ -658,6 +672,7 @@ class WebhookAdminControllerTest {
         List<WebhookSubscription> oversized = new java.util.ArrayList<>();
         for (int i = 0; i < 501; i++) oversized.add(webhookRow("w" + i, WebhookStatus.ACTIVE));
         when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500))).thenReturn(oversized);
+        when(webhookRepository.countForBulk(any(), any(), any(), any())).thenReturn(915);
 
         mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -665,10 +680,12 @@ class WebhookAdminControllerTest {
                         .content("{\"filter\":{\"status\":\"ACTIVE\"},\"action\":\"PAUSE\",\"idempotency_key\":\"k1\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("LIMIT_EXCEEDED"))
-                .andExpect(jsonPath("$.details.total_matched").value(501));
+                .andExpect(jsonPath("$.details.total_matched").value(915));
 
         verify(webhookService, never()).update(anyString(), any());
         verify(webhookService, never()).delete(anyString());
+        verify(webhookRepository).countForBulk(any(), any(), any(), any());
+        verify(idempotencyStore).abandon(any());
     }
 
     @Test
@@ -681,8 +698,9 @@ class WebhookAdminControllerTest {
                 .skipped(List.of())
                 .idempotencyKey("k1")
                 .build();
-        when(idempotencyStore.lookup(eq("webhooks-bulk"), eq("k1"), eq(WebhookBulkActionResponse.class)))
-                .thenReturn(java.util.Optional.of(cached));
+        when(idempotencyStore.begin(eq("webhooks-bulk"), eq("k1"), any(),
+                eq(WebhookBulkActionResponse.class)))
+            .thenReturn(new IdempotencyStore.Claim<>("webhooks-bulk", "k1", null, cached));
 
         mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)

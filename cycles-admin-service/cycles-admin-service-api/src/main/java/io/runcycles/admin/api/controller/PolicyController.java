@@ -15,6 +15,7 @@ import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
 import io.runcycles.admin.api.service.EventService;
 import io.runcycles.admin.api.service.TerminalOwnerMutationGuard;
+import io.runcycles.admin.api.support.PageSlice;
 import io.runcycles.admin.model.event.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -161,11 +162,14 @@ public class PolicyController {
             tenantId = tenant_id;
         }
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
-        var policies = repository.list(tenantId, scope_pattern, status, cursor, effectiveLimit);
+        var page = PageSlice.from(
+            repository.list(tenantId, scope_pattern, status, cursor, effectiveLimit + 1),
+            effectiveLimit);
+        var policies = page.items();
         PolicyListResponse response = PolicyListResponse.builder()
             .policies(policies)
-            .hasMore(policies.size() >= effectiveLimit)
-            .nextCursor(policies.size() >= effectiveLimit ? policies.get(policies.size() - 1).getPolicyId() : null)
+            .hasMore(page.hasMore())
+            .nextCursor(page.hasMore() ? policies.get(policies.size() - 1).getPolicyId() : null)
             .build();
         return ResponseEntity.ok(response);
     }

@@ -5,6 +5,7 @@ import io.runcycles.admin.model.policy.PolicyCreateRequest;
 import io.runcycles.admin.model.policy.PolicyStatus;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Repository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.logging.LogSanitizer;
@@ -16,7 +17,7 @@ import java.util.*;
 public class PolicyRepository {
     private static final Logger LOG = LoggerFactory.getLogger(PolicyRepository.class);
     @Autowired private JedisPool jedisPool;
-    @Autowired private ObjectMapper objectMapper;
+    @Autowired @Qualifier("redisObjectMapper") private ObjectMapper objectMapper;
 
     // Lua script for atomic policy creation: validates tenant exists and is ACTIVE,
     // then SET + SADD in one call.

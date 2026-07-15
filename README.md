@@ -35,7 +35,7 @@ cycles-admin-service/
 ```
 
 - **Language:** Java 21
-- **Framework:** Spring Boot 3.5.15
+- **Framework:** Spring Boot 3.5.16
 - **Data Store:** Redis (via Jedis 7.5.2)
 - **API Docs:** SpringDoc OpenAPI (disabled by default; enable behind `X-Admin-API-Key` protection)
 - **Testing:** JUnit 5 + TestContainers (Redis)
@@ -157,6 +157,10 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 | `DELIVERY_TTL_DAYS` | No | `14` | Webhook delivery retention in Redis (days) |
 | `AUTH_FAILURE_RATE_LIMIT_ENABLED` | No | `false` | Enable per-source, per-process throttling for repeated 401/403 responses. Production Compose enables it. |
 | `AUTH_FAILURE_RATE_LIMIT_MAX_PER_MINUTE` | No | `300` | Per-minute failed-auth threshold before responses become `429 LIMIT_EXCEEDED` without writing extra audit rows. The limiter is in-process and does not coordinate across replicas. |
+| `AUTH_FAILURE_RATE_LIMIT_MAX_TRACKED_SOURCES` | No | `10000` | Maximum in-memory source/path buckets retained by the per-process failed-auth limiter. Stale buckets are removed first; the oldest bucket is evicted at the cap. |
+| `TENANT_CLOSE_RECONCILER_ENABLED` | No | `true` | Retry incomplete Mode-B child cascades for tenants already marked `CLOSED`. |
+| `TENANT_CLOSE_RECONCILER_INTERVAL_MS` | No | `300000` | Delay in milliseconds between tenant-close reconciliation runs. |
+| `TENANT_CLOSE_RECONCILER_MAX_TENANTS_PER_RUN` | No | `100` | Maximum due tenant-close work items retried per run; Redis persists progress across restarts and replicas. |
 | `DASHBOARD_CORS_ORIGIN` | No | `http://localhost:5173` | Comma-separated list of origins allowed to call `/v1/**` from a browser. **Must be set in production** to your dashboard URL (e.g. `https://dash.example.com`). The default is the Vite dev server and will NOT work for prod dashboard deployments. |
 
 ### Webhook Secret Encryption
@@ -578,8 +582,8 @@ Browser clients (the dashboard) call `/v1/**` via CORS. The server allowlists:
 | | Values |
 |---|---|
 | Methods | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` |
-| Request headers | `X-Admin-API-Key`, `X-Cycles-API-Key`, `X-Request-Id`, `Content-Type` |
-| Exposed response headers | `X-Request-Id` (for correlation) |
+| Request headers | `X-Admin-API-Key`, `X-Cycles-API-Key`, `X-Request-Id`, `X-Cycles-Trace-Id`, `traceparent`, `tracestate`, `Content-Type` |
+| Exposed response headers | `X-Request-Id`, `X-Cycles-Trace-Id` (for correlation) |
 | Origins | `DASHBOARD_CORS_ORIGIN` env var (comma-separated), default `http://localhost:5173` |
 
 Multiple origins are supported for staging + prod deployments behind the same server: `DASHBOARD_CORS_ORIGIN=https://dash.example.com,https://staging.example.com`.
@@ -638,7 +642,7 @@ v0.1.25.33 is a **security patch**: Spring Boot 3.5.11 → 3.5.13 with a `<tomca
 
 v0.1.25.34 is a **security follow-up** to the v0.1.25.33 Spring Boot bump: Trivy flagged one remaining HIGH finding (CVE-2025-48924) that SB 3.5.13's BOM didn't cover, resolved by adding `<commons-lang3.version>3.18.0</commons-lang3.version>` alongside the existing Tomcat override. Removable when SB ships a release with 3.18.0+ managed. No API surface change.
 
-v0.1.25.35 is the **server impl of tenant-close cascade** (spec v0.1.25.29 Rule 1 + Rule 2). When a tenant transitions to `CLOSED`, owned objects now transition atomically to their terminal states in the same request: `BudgetLedger` → `CLOSED` (stamps `closed_at`, releases any outstanding `reserved` amount), `WebhookSubscription` → `DISABLED`, `ApiKey` → `REVOKED` (stamps `revoked_at`, reason `tenant_closed`). Any budget with `reserved > 0` at close time additionally emits an aggregate `reservation.released_via_tenant_cascade` event. All touched rows share the originating request's `request_id` + `trace_id` plus a dedicated `correlation_id = tenant_close_cascade:<tenant_id>:<request_id>` so operators can JOIN by any of the three. Cascade triggers from both `PATCH /admin/tenants/{id}` with `status=CLOSED` and the bulk-action `CLOSE` path; idempotent when the tenant is already closed. The companion **Rule 2 `TENANT_CLOSED` mutation guard** (409) short-circuits mutations on objects owned by closed tenants at the controller layer, initially covering budget create/update/fund/freeze/unfreeze and webhook create/update. Adds four cascade event kinds (`BUDGET_CLOSED_VIA_TENANT_CASCADE`, `RESERVATION_RELEASED_VIA_TENANT_CASCADE`, `WEBHOOK_DISABLED_VIA_TENANT_CASCADE`, `API_KEY_REVOKED_VIA_TENANT_CASCADE`) plus a new `WEBHOOK` event category. Tenant close audit + event payload now carries a `cascade_summary` map (`budgets_closed`, `webhooks_disabled`, `api_keys_revoked`, `reservations_released`). Additive wire surface only.
+v0.1.25.35 is the **server impl of tenant-close cascade** (spec v0.1.25.29 Rule 1 + Rule 2). When a tenant transitions to `CLOSED`, owned objects transition per child to their terminal states: `BudgetLedger` → `CLOSED` (stamps `closed_at`, releases any outstanding `reserved` amount), `WebhookSubscription` → `DISABLED`, `ApiKey` → `REVOKED` (stamps `revoked_at`, reason `tenant_closed`). Any budget with `reserved > 0` at close time additionally emits an aggregate `reservation.released_via_tenant_cascade` event. All touched rows share the originating request's `request_id` + `trace_id` plus a dedicated `correlation_id = tenant_close_cascade:<tenant_id>:<request_id>` so operators can JOIN by any of the three. Cascade triggers from both `PATCH /admin/tenants/{id}` with `status=CLOSED` and the bulk-action `CLOSE` path; idempotent when the tenant is already closed. The companion **Rule 2 `TENANT_CLOSED` mutation guard** (409) short-circuits mutations on objects owned by closed tenants at the controller layer. Adds four cascade event kinds (`BUDGET_CLOSED_VIA_TENANT_CASCADE`, `RESERVATION_RELEASED_VIA_TENANT_CASCADE`, `WEBHOOK_DISABLED_VIA_TENANT_CASCADE`, `API_KEY_REVOKED_VIA_TENANT_CASCADE`) plus a new `WEBHOOK` event category. Cascade counts remain in audit metadata; lifecycle event payloads retain their strict contract-defined shape.
 
 v0.1.25.36 closes the **Rule 2 mutation-guard coverage gap** flagged in v0.1.25.35's AUDIT entry. Any mutation on an object whose owning tenant is `CLOSED` now returns `409 TENANT_CLOSED` from every admin-mutating endpoint, per spec v0.1.25.29 MUST. New guard callsites: policy create/update; api-key create/update/delete; webhook create/update/delete/test/replay; tenant webhook delete/test; per-row guards in `POST /v1/admin/budgets/bulk-action` and `POST /v1/admin/webhooks/bulk-action` (closed-owner rows land in `failed[]` with `error_code: "TENANT_CLOSED"`; sibling rows still proceed). No wire contract change — `TENANT_CLOSED` already shipped in the shared `ErrorCode` enum in v0.1.25.35; .36 adds only callsites and the row-level classifier branch.
 

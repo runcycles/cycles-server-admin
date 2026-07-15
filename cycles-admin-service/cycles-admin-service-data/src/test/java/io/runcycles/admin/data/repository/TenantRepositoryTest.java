@@ -46,6 +46,25 @@ class TenantRepositoryTest {
     }
 
     @Test
+    void countForBulk_returnsExactFilteredCountAndSkipsBadRows() throws Exception {
+        Tenant active = Tenant.builder().tenantId("t-active").name("Acme")
+            .status(TenantStatus.ACTIVE).createdAt(Instant.now()).build();
+        Tenant suspended = Tenant.builder().tenantId("t-suspended").name("Acme")
+            .status(TenantStatus.SUSPENDED).createdAt(Instant.now()).build();
+        when(jedis.smembers("tenants")).thenReturn(
+            new LinkedHashSet<>(List.of("t-active", "t-suspended", "missing", "bad")));
+        String activeJson = objectMapper.writeValueAsString(active);
+        String suspendedJson = objectMapper.writeValueAsString(suspended);
+        when(jedis.get("tenant:t-active")).thenReturn(activeJson);
+        when(jedis.get("tenant:t-suspended")).thenReturn(suspendedJson);
+        when(jedis.get("tenant:missing")).thenReturn(null);
+        when(jedis.get("tenant:bad")).thenReturn("{bad-json");
+
+        assertThat(repository.countForBulk(TenantStatus.ACTIVE, null, "acme"))
+            .isEqualTo(1);
+    }
+
+    @Test
     void create_newTenant_returnsCreatedTrue() {
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of("CREATED"));
 

@@ -14,6 +14,47 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.52] — 2026-07-15
+
+### Fixed
+
+- List responses now use a `limit + 1` read, so `has_more` and `next_cursor`
+  are truthful on exact-size final pages.
+- Event, audit, and delivery timestamp cursors no longer skip records that
+  share the cursor's millisecond score, and sparse filters continue scanning
+  until the requested page is full or the range is exhausted.
+- Sorted admin queries no longer silently omit records after an internal
+  2,000-row hydration window.
+- API-key creation detects both key-id and lookup-prefix collisions atomically
+  and regenerates without overwriting an existing credential lookup.
+- Tenant-close cascades expose per-row failures, return a visible failure for
+  incomplete closes, and are retried from a durable Redis work queue. Child
+  mutations atomically create outbox items; required audit/event writes are
+  retried under stable IDs and multi-replica execution is lease-guarded.
+- Bulk-action idempotency now atomically claims `(endpoint, key, payload)` in
+  Redis, rejects payload reuse with `IDEMPOTENCY_MISMATCH`, waits for concurrent
+  equal requests, and publishes one immutable replay envelope.
+- Over-limit bulk errors report the exact match count instead of the 501-row
+  detection sentinel, and failed bulk CLOSE rows emit no parent event.
+- Equal-score ZSET continuation is chunked, so a pathological millisecond tie
+  cannot allocate an unbounded member list; deleted page boundaries still
+  advance lexicographically.
+- Broad exact non-primary sorts now fail explicitly above 20,000 candidates
+  with narrowing details instead of silently truncating or risking unbounded
+  request heap.
+- Failed-auth source tracking is memory-bounded, and browser CORS now permits
+  and exposes Cycles trace headers.
+- HTTP request bodies reject unknown fields while Redis readers remain
+  tolerant of additive fields written during rolling deployments.
+
+### Changed
+
+- Contract tests fetch a reviewed cycles-protocol commit instead of a moving
+  branch, while a nightly drift job detects upstream contract changes. Model-
+  module coverage is again subject to the 95% gate, jqwik uses
+  supported JUnit Platform configuration, and Mockito is attached explicitly
+  as a test JVM agent.
+
 ## [0.1.25.51] — 2026-07-11
 
 ### Security

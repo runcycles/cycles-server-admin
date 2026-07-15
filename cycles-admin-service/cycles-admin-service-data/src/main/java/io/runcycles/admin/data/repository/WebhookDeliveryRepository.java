@@ -1,11 +1,13 @@
 package io.runcycles.admin.data.repository;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.logging.LogSanitizer;
+import io.runcycles.admin.data.repository.support.ZSetAdaptivePager;
 import io.runcycles.admin.model.webhook.DeliveryStatus;
 import io.runcycles.admin.model.webhook.WebhookDelivery;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.*;
@@ -15,7 +17,7 @@ import java.util.*;
 public class WebhookDeliveryRepository {
     private static final Logger LOG = LoggerFactory.getLogger(WebhookDeliveryRepository.class);
     @Autowired private JedisPool jedisPool;
-    @Autowired private ObjectMapper objectMapper;
+    @Autowired @Qualifier("redisObjectMapper") private ObjectMapper objectMapper;
 
     @Value("${events.retention.delivery-ttl-days:14}")
     private int deliveryTtlDays;
@@ -86,34 +88,25 @@ public class WebhookDeliveryRepository {
             double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
             String indexKey = "deliveries:" + subscriptionId;
 
-            if (cursor != null && !cursor.isBlank()) {
-                Double cursorScore = jedis.zscore(indexKey, cursor);
-                if (cursorScore != null) {
-                    maxScore = Math.min(maxScore, cursorScore - 1);
-                }
-            }
-
-            List<String> ids = jedis.zrevrangeByScore(indexKey, maxScore, minScore, 0, limit * 3);
-            List<WebhookDelivery> deliveries = new ArrayList<>();
-            for (String id : ids) {
+            return ZSetAdaptivePager.collect(jedis, indexKey, minScore, maxScore,
+                cursor, limit, false, id -> {
                 try {
                     String data = jedis.get("delivery:" + id);
                     if (data == null) {
                         LOG.warn("Webhook delivery index points to missing row: delivery_id={} subscription_id={} index_key={} status_filter={}",
                             LogSanitizer.safe(id), LogSanitizer.safe(subscriptionId), LogSanitizer.safe(indexKey), status);
-                        continue;
+                        return null;
                     }
                     WebhookDelivery delivery = objectMapper.readValue(data, WebhookDelivery.class);
                     if (status != null && (delivery.getStatus() == null ||
-                            !status.equals(delivery.getStatus().name()))) continue;
-                    deliveries.add(delivery);
-                    if (deliveries.size() >= limit) break;
+                            !status.equals(delivery.getStatus().name()))) return null;
+                    return delivery;
                 } catch (Exception e) {
                     LOG.warn("Failed to parse webhook delivery row: delivery_id={} subscription_id={} index_key={} status_filter={}",
                         LogSanitizer.safe(id), LogSanitizer.safe(subscriptionId), LogSanitizer.safe(indexKey), status, e);
+                    return null;
                 }
-            }
-            return deliveries;
+            });
         }
     }
 

@@ -10,6 +10,7 @@ import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.shared.SortDirection;
 import io.runcycles.admin.model.shared.SortSpec;
+import io.runcycles.admin.data.repository.support.ScoredJedisTestAdapter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -46,6 +47,7 @@ class EventRepositoryTest {
     @BeforeEach
     void setUp() {
         lenient().when(jedisPool.getResource()).thenReturn(jedis);
+        ScoredJedisTestAdapter.install(jedis);
     }
 
     // ---- save() ----
@@ -255,9 +257,11 @@ class EventRepositoryTest {
     @Test
     void list_withCursorPagination_adjustsMaxScore() throws Exception {
         when(jedis.zscore("events:tenant-1", "evt_cursor")).thenReturn(5000.0);
+        when(jedis.zrevrangeByScore("events:tenant-1", 5000.0, 5000.0))
+            .thenReturn(List.of("evt_cursor"));
 
         List<String> ids = List.of("evt_2");
-        when(jedis.zrevrangeByScore(eq("events:tenant-1"), eq(4999.0), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), eq(Math.nextDown(5000.0)), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
 
         Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1").eventType(EventType.TENANT_UPDATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
         String e2Json = objectMapper.writeValueAsString(e2);
@@ -357,29 +361,26 @@ class EventRepositoryTest {
     }
 
     @Test
-    void list_withCursorNotInIndex_ignoresCursor() throws Exception {
+    void list_withCursorNotInIndex_rejectsInvalidCursor() {
         when(jedis.zscore("events:tenant-1", "evt_unknown")).thenReturn(null);
 
-        List<String> ids = List.of("evt_1");
-        when(jedis.zrevrangeByScore(eq("events:tenant-1"), eq(Double.POSITIVE_INFINITY), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
-
-        Event e1 = Event.builder().eventId("evt_1").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
-        String e1Json = objectMapper.writeValueAsString(e1);
-        when(jedis.get("event:evt_1")).thenReturn(e1Json);
-
-        List<Event> result = repository.list("tenant-1", null, null, null, null, null, null, "evt_unknown", 50);
-
-        assertThat(result).hasSize(1);
+        assertThatThrownBy(() -> repository.list("tenant-1", null, null, null, null,
+            null, null, "evt_unknown", 50))
+            .isInstanceOf(GovernanceException.class)
+            .extracting("errorCode")
+            .isEqualTo(ErrorCode.INVALID_REQUEST);
     }
 
     @Test
     void list_cursorWithTimeRange_usesMinOfCursorAndTo() throws Exception {
         Instant to = Instant.ofEpochMilli(8000);
         when(jedis.zscore("events:tenant-1", "evt_cursor")).thenReturn(5000.0);
+        when(jedis.zrevrangeByScore("events:tenant-1", 5000.0, 5000.0))
+            .thenReturn(List.of("evt_cursor"));
 
         List<String> ids = List.of("evt_2");
         // cursorScore - 1 = 4999, to = 8000, min(4999, 8000) = 4999
-        when(jedis.zrevrangeByScore(eq("events:tenant-1"), eq(4999.0), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), eq(Math.nextDown(5000.0)), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
 
         Event e2 = Event.builder().eventId("evt_2").tenantId("tenant-1").eventType(EventType.TENANT_CREATED).category(EventCategory.TENANT).source("s").timestamp(Instant.now()).build();
         String e2Json = objectMapper.writeValueAsString(e2);
@@ -617,10 +618,14 @@ class EventRepositoryTest {
             jsons.add(objectMapper.writeValueAsString(e));
         }
         if (ascending) {
-            when(jedis.zrangeByScore(eq(indexKey), anyDouble(), anyDouble(), eq(0), anyInt()))
+            lenient().when(jedis.zrangeByScore(eq(indexKey), anyDouble(), anyDouble(), eq(0), anyInt()))
+                .thenReturn(ids);
+            lenient().when(jedis.zrangeByScore(eq(indexKey), anyDouble(), anyDouble()))
                 .thenReturn(ids);
         } else {
-            when(jedis.zrevrangeByScore(eq(indexKey), anyDouble(), anyDouble(), eq(0), anyInt()))
+            lenient().when(jedis.zrevrangeByScore(eq(indexKey), anyDouble(), anyDouble(), eq(0), anyInt()))
+                .thenReturn(ids);
+            lenient().when(jedis.zrevrangeByScore(eq(indexKey), anyDouble(), anyDouble()))
                 .thenReturn(ids);
         }
         for (int i = 0; i < events.size(); i++) {
@@ -654,7 +659,8 @@ class EventRepositoryTest {
             SortSpec.of("timestamp", SortDirection.ASC));
 
         assertThat(result).extracting(Event::getEventId).containsExactly("evt_a", "evt_b");
-        verify(jedis).zrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt());
+        verify(jedis).zrangeByScoreWithScores(
+            eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt());
     }
 
     @Test
@@ -766,7 +772,8 @@ class EventRepositoryTest {
         repository.list("tenant-1", null, null, null, null, null, null, "evt_cursor", 50,
             SortSpec.of("timestamp", SortDirection.ASC));
 
-        verify(jedis).zrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt());
+        verify(jedis).zrangeByScoreWithScores(
+            eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt());
     }
 
     @Test
@@ -830,7 +837,7 @@ class EventRepositoryTest {
         Instant t = Instant.parse("2026-04-15T12:00:00Z");
         Event good = ev("evt_good", "tenant-1", EventType.BUDGET_CREATED, "org", t);
         String goodJson = objectMapper.writeValueAsString(good);
-        when(jedis.zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble(), eq(0), anyInt()))
+        when(jedis.zrevrangeByScore(eq("events:tenant-1"), anyDouble(), anyDouble()))
             .thenReturn(List.of("evt_bad", "evt_good"));
         when(jedis.get("event:evt_bad")).thenReturn("{invalid json");
         when(jedis.get("event:evt_good")).thenReturn(goodJson);
@@ -980,17 +987,19 @@ class EventRepositoryTest {
             null, "corr_match");
         assertThat(page1).extracting(Event::getEventId).containsExactly("evt_1", "evt_2");
 
-        // Page 2: cursor = evt_2 (score 2000). Next page upper bound is
-        // score - 1 = 1999 so evt_1 (3000) and evt_2 (2000) are both
-        // excluded regardless of the search value.
+        // Page 2: cursor = evt_2 (score 2000). The next page uses the
+        // immediately-lower double score, excluding evt_1 and evt_2
+        // regardless of the search value.
         when(jedis.zscore("events:tenant-1", "evt_2")).thenReturn(2000.0);
+        when(jedis.zrevrangeByScore("events:tenant-1", 2000.0, 2000.0))
+            .thenReturn(List.of("evt_2"));
         Event e3 = Event.builder().eventId("evt_3").tenantId("tenant-1")
             .eventType(EventType.BUDGET_CREATED).category(EventCategory.BUDGET)
             .source("s").correlationId("corr_match_3")
             .timestamp(Instant.ofEpochMilli(1500)).build();
         String e3Json = objectMapper.writeValueAsString(e3);
         when(jedis.zrevrangeByScore(eq("events:tenant-1"),
-            eq(1999.0), eq(Double.NEGATIVE_INFINITY),
+            eq(Math.nextDown(2000.0)), eq(Double.NEGATIVE_INFINITY),
             eq(0), anyInt())).thenReturn(List.of("evt_3"));
         when(jedis.get("event:evt_3")).thenReturn(e3Json);
 

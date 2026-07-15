@@ -54,10 +54,11 @@ public class WebConfig implements WebMvcConfigurer {
             .allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
             // Both auth headers must be allowlisted or browser preflight rejects them.
             // X-Request-Id lets clients propagate a correlation id through the filter chain.
-            .allowedHeaders("X-Admin-API-Key", "X-Cycles-API-Key", "X-Request-Id", "Content-Type")
+            .allowedHeaders("X-Admin-API-Key", "X-Cycles-API-Key", "X-Request-Id",
+                "X-Cycles-Trace-Id", "traceparent", "tracestate", "Content-Type")
             // X-Request-Id is also exposed so browser clients can read the server-assigned id
             // when they didn't send one.
-            .exposedHeaders("X-Request-Id")
+            .exposedHeaders("X-Request-Id", "X-Cycles-Trace-Id")
             .maxAge(3600);
     }
 }

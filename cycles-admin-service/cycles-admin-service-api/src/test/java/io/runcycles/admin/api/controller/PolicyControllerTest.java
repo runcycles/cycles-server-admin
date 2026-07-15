@@ -162,27 +162,27 @@ class PolicyControllerTest {
     @Test
     void listPolicies_limitClampedToMax100() throws Exception {
         setupApiKeyAuth();
-        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), eq(100))).thenReturn(List.of());
+        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), eq(101))).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .param("limit", "500"))
                 .andExpect(status().isOk());
 
-        verify(policyRepository).list(eq("tenant-1"), any(), any(), any(), eq(100));
+        verify(policyRepository).list(eq("tenant-1"), any(), any(), any(), eq(101));
     }
 
     @Test
     void listPolicies_limitClampedToMin1() throws Exception {
         setupApiKeyAuth();
-        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), eq(1))).thenReturn(List.of());
+        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), eq(2))).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .param("limit", "0"))
                 .andExpect(status().isOk());
 
-        verify(policyRepository).list(eq("tenant-1"), any(), any(), any(), eq(1));
+        verify(policyRepository).list(eq("tenant-1"), any(), any(), any(), eq(2));
     }
 
     @Test
@@ -244,7 +244,7 @@ class PolicyControllerTest {
     }
 
     @Test
-    void listPolicies_resultCountEqualsLimit_hasMoreTrueWithCursor() throws Exception {
+    void listPolicies_resultCountExceedsLimit_hasMoreTrueWithCursor() throws Exception {
         setupApiKeyAuth();
         Policy p1 = Policy.builder()
                 .policyId("pol_1").scopePattern("tenant:tenant-1/*").name("P1")
@@ -252,7 +252,11 @@ class PolicyControllerTest {
         Policy p2 = Policy.builder()
                 .policyId("pol_2").scopePattern("tenant:tenant-1/agent:*").name("P2")
                 .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), eq(2))).thenReturn(List.of(p1, p2));
+        Policy p3 = Policy.builder()
+                .policyId("pol_3").scopePattern("tenant:tenant-1/toolset:*").name("P3")
+                .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
+        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), eq(3)))
+                .thenReturn(List.of(p1, p2, p3));
 
         mockMvc.perform(get("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key")
@@ -273,6 +277,20 @@ class PolicyControllerTest {
                 .andExpect(status().isOk());
 
         verify(policyRepository).list(eq("tenant-1"), any(), any(), eq("pol_abc"), anyInt());
+    }
+
+    @Test
+    void updatePolicy_unknownFieldIsRejectedAtHttpBoundary() throws Exception {
+        setupApiKeyAuth();
+
+        mockMvc.perform(patch("/v1/admin/policies/pol_1")
+                .header("X-Cycles-API-Key", "valid-api-key")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"Renamed\",\"future_field\":true}"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(policyRepository, never()).update(anyString(), anyString(), any());
     }
 
     // ========== PATCH /v1/admin/policies/{policy_id} ==========

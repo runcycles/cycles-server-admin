@@ -184,7 +184,7 @@ class ApiKeyControllerTest {
 
     @Test
     void listApiKeys_limitClampedToMax100() throws Exception {
-        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(100), any(), any())).thenReturn(List.of());
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(101), any(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -192,12 +192,12 @@ class ApiKeyControllerTest {
                         .param("limit", "500"))
                 .andExpect(status().isOk());
 
-        verify(apiKeyRepository).list(eq("tenant-1"), any(), any(), eq(100), any(), any());
+        verify(apiKeyRepository).list(eq("tenant-1"), any(), any(), eq(101), any(), any());
     }
 
     @Test
     void listApiKeys_limitClampedToMin1() throws Exception {
-        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(1), any(), any())).thenReturn(List.of());
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(2), any(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -205,7 +205,7 @@ class ApiKeyControllerTest {
                         .param("limit", "0"))
                 .andExpect(status().isOk());
 
-        verify(apiKeyRepository).list(eq("tenant-1"), any(), any(), eq(1), any(), any());
+        verify(apiKeyRepository).list(eq("tenant-1"), any(), any(), eq(2), any(), any());
     }
 
     @Test
@@ -298,7 +298,7 @@ class ApiKeyControllerTest {
     }
 
     @Test
-    void listApiKeys_resultCountEqualsLimit_hasMoreTrueWithCursor() throws Exception {
+    void listApiKeys_resultCountExceedsLimit_hasMoreTrueWithCursor() throws Exception {
         ApiKey k1 = ApiKey.builder()
                 .keyId("key_1").tenantId("tenant-1").keyPrefix("gov_pre1")
                 .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
@@ -307,7 +307,12 @@ class ApiKeyControllerTest {
                 .keyId("key_2").tenantId("tenant-1").keyPrefix("gov_pre2")
                 .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(86400)).build();
-        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(2), any(), any())).thenReturn(List.of(k1, k2));
+        ApiKey k3 = ApiKey.builder()
+                .keyId("key_3").tenantId("tenant-1").keyPrefix("gov_pre3")
+                .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(86400)).build();
+        when(apiKeyRepository.list(eq("tenant-1"), any(), any(), eq(3), any(), any()))
+                .thenReturn(List.of(k1, k2, k3));
 
         mockMvc.perform(get("/v1/admin/api-keys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -477,15 +482,15 @@ class ApiKeyControllerTest {
                 .andExpect(jsonPath("$.keys[0].key_id").value("key_a"))
                 .andExpect(jsonPath("$.keys[1].key_id").value("key_b"));
 
-        verify(apiKeyRepository).listAllTenants(isNull(), isNull(), eq(50), any(), any());
+        verify(apiKeyRepository).listAllTenants(isNull(), isNull(), eq(51), any(), any());
         verify(apiKeyRepository, never()).list(anyString(), any(), any(), anyInt());
     }
 
     @Test
     void listApiKeys_crossTenant_nextCursorIsTenantKeyComposite() throws Exception {
-        // 50 results returned -> page is full -> next_cursor must be {tenantId}|{keyId}
+        // 51 results prove another page exists; the 51st look-ahead row is not returned.
         List<ApiKey> fullPage = new java.util.ArrayList<>();
-        for (int i = 0; i < 50; i++) {
+        for (int i = 0; i < 51; i++) {
             fullPage.add(ApiKey.builder()
                     .keyId("key_" + i).tenantId("tenant-" + (i / 10))
                     .keyPrefix("cyc_live_" + i)
@@ -504,7 +509,7 @@ class ApiKeyControllerTest {
     @Test
     void listApiKeys_perTenant_nextCursorIsBareKeyId() throws Exception {
         List<ApiKey> fullPage = new java.util.ArrayList<>();
-        for (int i = 0; i < 50; i++) {
+        for (int i = 0; i < 51; i++) {
             fullPage.add(ApiKey.builder()
                     .keyId("key_" + i).tenantId("tenant-1").keyPrefix("cyc_live_" + i)
                     .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
@@ -524,7 +529,7 @@ class ApiKeyControllerTest {
 
     @Test
     void listApiKeys_crossTenant_passesStatusAndCursor() throws Exception {
-        when(apiKeyRepository.listAllTenants(eq(ApiKeyStatus.REVOKED), eq("tenant-9|key_abc"), eq(25), any(), any()))
+        when(apiKeyRepository.listAllTenants(eq(ApiKeyStatus.REVOKED), eq("tenant-9|key_abc"), eq(26), any(), any()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/api-keys")
@@ -534,7 +539,7 @@ class ApiKeyControllerTest {
                         .param("limit", "25"))
                 .andExpect(status().isOk());
 
-        verify(apiKeyRepository).listAllTenants(eq(ApiKeyStatus.REVOKED), eq("tenant-9|key_abc"), eq(25), any(), any());
+        verify(apiKeyRepository).listAllTenants(eq(ApiKeyStatus.REVOKED), eq("tenant-9|key_abc"), eq(26), any(), any());
     }
 
     // --- v0.1.25.24 sort support ---

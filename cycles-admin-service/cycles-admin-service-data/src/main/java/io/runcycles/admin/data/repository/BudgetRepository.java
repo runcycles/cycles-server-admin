@@ -2,6 +2,8 @@ package io.runcycles.admin.data.repository;
 
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.logging.LogSanitizer;
+import io.runcycles.admin.data.repository.support.CascadeMutationResult;
+import io.runcycles.admin.data.repository.support.SortedQueryGuard;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.model.budget.*;
 import io.runcycles.admin.model.shared.Amount;
@@ -10,6 +12,7 @@ import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.shared.UnitEnum;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.*;
 
@@ -21,16 +24,6 @@ import java.util.*;
 public class BudgetRepository {
     private static final Logger LOG = LoggerFactory.getLogger(BudgetRepository.class);
 
-    // Cross-tenant sorted list must hydrate every tenant's budgets before the
-    // in-memory sort, which is unbounded in the naive case (10k tenants *
-    // 50 budgets = 500k hydrations). Cap at 2000 total ledgers across all
-    // tenants so the admin pane cannot exhaust heap on a cross-tenant sort +
-    // broad filter. Callers that need to see beyond the cap should narrow
-    // the filter (status, unit, tenant_id, utilization_min/max) to fit
-    // under it. Log at WARN when hit so operators can see that the sort
-    // window was truncated.
-    static final int SORTED_HYDRATE_CAP = 2000;
-
     /**
      * Normalize scope values to lowercase to match the runtime server's
      * ScopeDerivationService which lowercases all scope segments.
@@ -41,7 +34,7 @@ public class BudgetRepository {
         return scope.toLowerCase();
     }
     @Autowired private JedisPool jedisPool;
-    @Autowired private ObjectMapper objectMapper;
+    @Autowired @Qualifier("redisObjectMapper") private ObjectMapper objectMapper;
 
     // Lua script for atomic budget funding with idempotency — prevents race conditions on concurrent updates.
     // KEYS[1] = budget key
@@ -379,6 +372,16 @@ public class BudgetRepository {
         "  'remaining', i(new_remaining),\n" +
         "  'closed_at', ARGV[1],\n" +
         "  'updated_at', ARGV[1])\n" +
+        "local ledger_id = redis.call('HGET', key, 'ledger_id') or key\n" +
+        "local scope = redis.call('HGET', key, 'scope') or ''\n" +
+        "local unit = redis.call('HGET', key, 'unit') or ''\n" +
+        "local item_id = 'budget:' .. ledger_id\n" +
+        "local item_key = 'tenant-close:outbox:item:' .. ARGV[2] .. ':' .. item_id\n" +
+        "local item = {itemId=item_id, tenantId=ARGV[2], resourceType='budget',\n" +
+        "  resourceId=ledger_id, scope=scope, unit=unit, priorStatus=status,\n" +
+        "  releasedReservedAmount=reserved}\n" +
+        "redis.call('SET', item_key, cjson.encode(item))\n" +
+        "redis.call('SADD', KEYS[2], item_id)\n" +
         "return {'OK', status, i(reserved)}\n";
 
     /** Outcome of one budget row in a tenant-close cascade. */
@@ -399,19 +402,19 @@ public class BudgetRepository {
      * webhook → api-key cascades + the final tenant.status flip lives in
      * {@code TenantCloseCascadeService}.
      */
-    public List<CascadeCloseBudgetOutcome> cascadeClose(String tenantId) {
-        List<CascadeCloseBudgetOutcome> outcomes = new ArrayList<>();
+    public CascadeMutationResult<CascadeCloseBudgetOutcome> cascadeClose(String tenantId) {
+        var outcomes = CascadeMutationResult.<CascadeCloseBudgetOutcome>builder();
         try (Jedis jedis = jedisPool.getResource()) {
             Set<String> keys = jedis.smembers("budgets:" + tenantId);
-            if (keys == null || keys.isEmpty()) return outcomes;
+            if (keys == null || keys.isEmpty()) return outcomes.build();
             String now = String.valueOf(Instant.now().toEpochMilli());
             for (String key : keys) {
                 try {
                     @SuppressWarnings("unchecked")
                     List<String> result = (List<String>) jedis.eval(
                         CASCADE_CLOSE_BUDGET_LUA,
-                        List.of(key),
-                        List.of(now));
+                        List.of(key, TenantCloseWorkRepository.outboxKey(tenantId)),
+                        List.of(now, tenantId));
                     String status = result.get(0);
                     if (!"OK".equals(status)) continue;
                     Map<String, String> hash = jedis.hgetAll(key);
@@ -419,19 +422,20 @@ public class BudgetRepository {
                     long released = 0L;
                     try { released = Long.parseLong(result.get(2)); }
                     catch (NumberFormatException ignored) {}
-                    outcomes.add(new CascadeCloseBudgetOutcome(
+                    outcomes.succeeded(new CascadeCloseBudgetOutcome(
                         closed.getLedgerId(),
                         closed.getScope(),
                         closed.getUnit(),
                         BudgetStatus.valueOf(result.get(1)),
                         released));
                 } catch (Exception e) {
+                    outcomes.failed(key, e);
                     LOG.warn("Cascade-close skipped budget: budget_key={} tenant_id={} error={}",
                         LogSanitizer.safe(key), LogSanitizer.safe(tenantId), LogSanitizer.safe(e.getMessage()), e);
                 }
             }
         }
-        return outcomes;
+        return outcomes.build();
     }
 
     private BudgetLedger transitionStatus(String scope, UnitEnum unit, String targetStatus) {
@@ -500,6 +504,7 @@ public class BudgetRepository {
 
     private List<BudgetLedger> collectForTenantSorted(Jedis jedis, String tenantId, BudgetListFilters filters, String cursor, int limit, SortSpec sortSpec) {
         Set<String> keys = jedis.smembers("budgets:" + tenantId);
+        SortedQueryGuard.requireBounded(keys.size(), "budget");
         List<BudgetLedger> all = new ArrayList<>();
         BudgetListFilters effective = filters != null ? filters : BudgetListFilters.empty();
         for (String key : keys) {
@@ -672,14 +677,14 @@ public class BudgetRepository {
 
     private List<BudgetLedger> listAllTenantsSorted(Jedis jedis, BudgetListFilters filters, String cursor, int limit, SortSpec sortSpec) {
         Set<String> tenantIds = jedis.smembers("tenants");
+        long candidates = 0L;
+        for (String tenantId : tenantIds) candidates += jedis.scard("budgets:" + tenantId);
+        SortedQueryGuard.requireBounded(candidates, "cross-tenant budget");
         List<BudgetLedger> all = new ArrayList<>();
         BudgetListFilters effective = filters != null ? filters : BudgetListFilters.empty();
-        boolean capped = false;
-        outer:
         for (String tenantId : tenantIds) {
             Set<String> budgetKeys = jedis.smembers("budgets:" + tenantId);
             for (String key : budgetKeys) {
-                if (all.size() >= SORTED_HYDRATE_CAP) { capped = true; break outer; }
                 try {
                     Map<String, String> hash = jedis.hgetAll(key);
                     if (hash.isEmpty()) continue;
@@ -691,11 +696,6 @@ public class BudgetRepository {
                         LogSanitizer.safe(key), LogSanitizer.safe(tenantId), sortSpec != null ? sortSpec.field() : null, e);
                 }
             }
-        }
-        if (capped) {
-            LOG.warn("Budget cross-tenant sorted hydration capped: cap={} sort_field={} cursor_present={}",
-                SORTED_HYDRATE_CAP, sortSpec != null ? sortSpec.field() : null,
-                cursor != null && !cursor.isBlank());
         }
         all.sort(budgetComparator(sortSpec));
         List<BudgetLedger> result = new ArrayList<>();
@@ -796,6 +796,25 @@ public class BudgetRepository {
             }
         }
         return matched;
+    }
+
+    /** Exact match count used only for an over-limit bulk rejection response. */
+    public int countForBulk(String tenantId, BudgetListFilters filters) {
+        BudgetListFilters effective = filters != null ? filters : BudgetListFilters.empty();
+        int count = 0;
+        try (Jedis jedis = jedisPool.getResource()) {
+            for (String key : jedis.smembers("budgets:" + tenantId)) {
+                try {
+                    Map<String, String> hash = jedis.hgetAll(key);
+                    if (hash.isEmpty()) continue;
+                    if (effective.matches(hashToBudgetLedger(hash, key))) count++;
+                } catch (Exception e) {
+                    LOG.warn("Failed to parse budget row during exact bulk count: budget_key={} tenant_id={}",
+                        LogSanitizer.safe(key), LogSanitizer.safe(tenantId), e);
+                }
+            }
+        }
+        return count;
     }
 
     public BudgetLedger getByExactScope(String scope, UnitEnum unit) {

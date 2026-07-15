@@ -70,6 +70,28 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
+    void create_prefixCollision_regeneratesWithoutOverwritingExistingLookup() {
+        when(keyService.generateKeySecret("cyc_live"))
+            .thenReturn("cyc_live_collision000", "cyc_live_unique111");
+        when(keyService.extractPrefix("cyc_live_collision000")).thenReturn("cyc_live_colli");
+        when(keyService.extractPrefix("cyc_live_unique111")).thenReturn("cyc_live_uniqu");
+        when(keyService.hashKey("cyc_live_collision000")).thenReturn("hash-collision");
+        when(keyService.hashKey("cyc_live_unique111")).thenReturn("hash-unique");
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("PREFIX_COLLISION"), List.of("CREATED"));
+
+        ApiKeyCreateRequest request = new ApiKeyCreateRequest();
+        request.setTenantId("test-tenant");
+        request.setName("Test Key");
+
+        ApiKeyCreateResponse response = repository.create(request);
+
+        assertThat(response.getKeySecret()).isEqualTo("cyc_live_unique111");
+        assertThat(response.getKeyPrefix()).isEqualTo("cyc_live_uniqu");
+        verify(jedis, times(2)).eval(anyString(), anyList(), anyList());
+    }
+
+    @Test
     void create_tenantNotFound_throwsException() {
         when(keyService.generateKeySecret("cyc_live")).thenReturn("cyc_live_abc123def456ghi");
         when(keyService.extractPrefix(anyString())).thenReturn("cyc_live_abc12");
@@ -1222,12 +1244,9 @@ class ApiKeyRepositoryTest {
     }
 
     @Test
-    void listAllTenants_sorted_stopsAtHydrationCap() throws Exception {
-        // Hydrate SORTED_HYDRATE_CAP+10 keys under a single tenant; the sorted
-        // cross-tenant path must stop hydrating at the cap and still return a
-        // valid sorted page from the capped window. Page size 5 ensures the
-        // page fills from the capped slice regardless of global population.
-        int cap = ApiKeyRepository.SORTED_HYDRATE_CAP;
+    void listAllTenants_sorted_hydratesCompletePopulation() throws Exception {
+        // Regression: the former 2,000-row cap silently hid later keys.
+        int cap = 2000;
         int total = cap + 10;
         Instant now = Instant.parse("2026-01-01T00:00:00Z");
         LinkedHashSet<String> keyIds = new LinkedHashSet<>();
@@ -1248,10 +1267,8 @@ class ApiKeyRepositoryTest {
         List<ApiKey> result = repository.listAllTenants(null, null, 5,
                 SortSpec.of("key_id", SortDirection.ASC));
 
-        // We never observe more than `cap` hydrations, so `jedis.get` is called at most `cap` times.
-        // Page requested is 5 rows, delivered from the capped slice.
         assertThat(result).hasSize(5);
-        verify(jedis, atMost(cap)).get(anyString());
+        verify(jedis, times(total)).get(anyString());
     }
 
     // --- cascadeRevoke (spec v0.1.25.29 Rule 1) ---
@@ -1260,7 +1277,7 @@ class ApiKeyRepositoryTest {
     void cascadeRevoke_noOwnedKeys_returnsEmpty() {
         when(jedis.smembers("apikeys:tenant-1")).thenReturn(Collections.emptySet());
 
-        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "tenant_closed");
+        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "tenant_closed").succeeded();
 
         assertThat(outcomes).isEmpty();
         verify(jedis, never()).set(anyString(), anyString());
@@ -1285,8 +1302,9 @@ class ApiKeyRepositoryTest {
         when(jedis.get("apikey:key_1")).thenReturn(json1);
         when(jedis.get("apikey:key_2")).thenReturn(json2);
         when(jedis.get("apikey:key_3")).thenReturn(json3);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
 
-        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "tenant_closed");
+        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "tenant_closed").succeeded();
 
         assertThat(outcomes).hasSize(1);
         assertThat(outcomes.get(0).keyId()).isEqualTo("key_1");
@@ -1294,9 +1312,7 @@ class ApiKeyRepositoryTest {
         assertThat(outcomes.get(0).name()).isEqualTo("ci");
         assertThat(outcomes.get(0).toString()).contains("key_1");
 
-        verify(jedis).set(eq("apikey:key_1"), anyString());
-        verify(jedis, never()).set(eq("apikey:key_2"), anyString());
-        verify(jedis, never()).set(eq("apikey:key_3"), anyString());
+        verify(jedis).eval(anyString(), anyList(), anyList());
     }
 
     @Test
@@ -1307,8 +1323,9 @@ class ApiKeyRepositoryTest {
         when(jedis.smembers("apikeys:tenant-1"))
             .thenReturn(new LinkedHashSet<>(List.of("key_1")));
         when(jedis.get("apikey:key_1")).thenReturn(json);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
 
-        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", null);
+        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", null).succeeded();
 
         assertThat(outcomes).hasSize(1);
     }
@@ -1321,8 +1338,9 @@ class ApiKeyRepositoryTest {
         when(jedis.smembers("apikeys:tenant-1"))
             .thenReturn(new LinkedHashSet<>(List.of("key_1")));
         when(jedis.get("apikey:key_1")).thenReturn(json);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
 
-        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "");
+        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "").succeeded();
 
         assertThat(outcomes).hasSize(1);
     }
@@ -1339,13 +1357,22 @@ class ApiKeyRepositoryTest {
             .thenReturn(new LinkedHashSet<>(List.of("key_1", "key_2")));
         when(jedis.get("apikey:key_1")).thenReturn(json1);
         when(jedis.get("apikey:key_2")).thenReturn(json2);
-        when(jedis.set(eq("apikey:key_1"), anyString()))
+        when(jedis.eval(anyString(), eq(List.of(
+                "apikey:key_1",
+                TenantCloseWorkRepository.outboxItemKey("tenant-1", "api_key:key_1"),
+                TenantCloseWorkRepository.outboxKey("tenant-1"))), anyList()))
             .thenThrow(new RuntimeException("redis down"));
-        when(jedis.set(eq("apikey:key_2"), anyString())).thenReturn("OK");
+        when(jedis.eval(anyString(), eq(List.of(
+                "apikey:key_2",
+                TenantCloseWorkRepository.outboxItemKey("tenant-1", "api_key:key_2"),
+                TenantCloseWorkRepository.outboxKey("tenant-1"))), anyList()))
+            .thenReturn(1L);
 
-        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = repository.cascadeRevoke("tenant-1", "tenant_closed");
+        var report = repository.cascadeRevoke("tenant-1", "tenant_closed");
+        List<ApiKeyRepository.CascadeRevokeOutcome> outcomes = report.succeeded();
 
         assertThat(outcomes).hasSize(1);
         assertThat(outcomes.get(0).keyId()).isEqualTo("key_2");
+        assertThat(report.failed()).extracting(f -> f.resourceId()).containsExactly("key_1");
     }
 }

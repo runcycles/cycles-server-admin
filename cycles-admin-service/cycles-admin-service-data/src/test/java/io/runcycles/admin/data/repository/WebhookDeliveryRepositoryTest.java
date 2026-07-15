@@ -6,6 +6,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.model.event.EventType;
 import io.runcycles.admin.model.shared.ErrorCode;
+import io.runcycles.admin.data.repository.support.ScoredJedisTestAdapter;
 import io.runcycles.admin.model.webhook.DeliveryStatus;
 import io.runcycles.admin.model.webhook.WebhookDelivery;
 import org.junit.jupiter.api.BeforeEach;
@@ -44,6 +45,7 @@ class WebhookDeliveryRepositoryTest {
     @BeforeEach
     void setUp() {
         lenient().when(jedisPool.getResource()).thenReturn(jedis);
+        ScoredJedisTestAdapter.install(jedis);
     }
 
     // ---- save() ----
@@ -183,9 +185,11 @@ class WebhookDeliveryRepositoryTest {
     @Test
     void listBySubscription_withCursor() throws Exception {
         when(jedis.zscore("deliveries:whsub_1", "del_cursor")).thenReturn(5000.0);
+        when(jedis.zrevrangeByScore("deliveries:whsub_1", 5000.0, 5000.0))
+            .thenReturn(List.of("del_cursor"));
 
         List<String> ids = List.of("del_2");
-        when(jedis.zrevrangeByScore(eq("deliveries:whsub_1"), eq(4999.0), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
+        when(jedis.zrevrangeByScore(eq("deliveries:whsub_1"), eq(Math.nextDown(5000.0)), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
 
         WebhookDelivery d2 = WebhookDelivery.builder().deliveryId("del_2").subscriptionId("whsub_1").eventId("evt_2").status(DeliveryStatus.SUCCESS).attemptedAt(Instant.now()).build();
         String d2Json = objectMapper.writeValueAsString(d2);
@@ -294,19 +298,14 @@ class WebhookDeliveryRepositoryTest {
     }
 
     @Test
-    void listBySubscription_cursorNotInIndex_ignoresCursor() throws Exception {
+    void listBySubscription_cursorNotInIndex_rejectsInvalidCursor() {
         when(jedis.zscore("deliveries:whsub_1", "del_unknown")).thenReturn(null);
 
-        List<String> ids = List.of("del_1");
-        when(jedis.zrevrangeByScore(eq("deliveries:whsub_1"), eq(Double.POSITIVE_INFINITY), eq(Double.NEGATIVE_INFINITY), eq(0), anyInt())).thenReturn(ids);
-
-        WebhookDelivery d = WebhookDelivery.builder().deliveryId("del_1").subscriptionId("whsub_1").eventId("evt_1").status(DeliveryStatus.SUCCESS).attemptedAt(Instant.now()).build();
-        String dJson = objectMapper.writeValueAsString(d);
-        when(jedis.get("delivery:del_1")).thenReturn(dJson);
-
-        List<WebhookDelivery> result = repository.listBySubscription("whsub_1", null, null, null, "del_unknown", 50);
-
-        assertThat(result).hasSize(1);
+        assertThatThrownBy(() -> repository.listBySubscription(
+            "whsub_1", null, null, null, "del_unknown", 50))
+            .isInstanceOf(GovernanceException.class)
+            .extracting("errorCode")
+            .isEqualTo(ErrorCode.INVALID_REQUEST);
     }
 
     @Test

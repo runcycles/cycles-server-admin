@@ -330,32 +330,36 @@ public class WebhookAdminController {
         }
         String searchNorm = parseSearch(request.getFilter().getSearch());
 
-        var cached = idempotencyStore.lookup(
-            BULK_IDEMPOTENCY_ENDPOINT, request.getIdempotencyKey(),
-            WebhookBulkActionResponse.class);
-        if (cached.isPresent()) {
-            return ResponseEntity.ok(cached.get());
+        IdempotencyStore.Claim<WebhookBulkActionResponse> idempotencyClaim =
+            idempotencyStore.begin(BULK_IDEMPOTENCY_ENDPOINT,
+                request.getIdempotencyKey(), request, WebhookBulkActionResponse.class);
+        if (idempotencyClaim.isReplay()) {
+            return ResponseEntity.ok(idempotencyClaim.replayResponse());
         }
-
-        List<WebhookSubscription> matched = webhookRepository.matchForBulk(
-            request.getFilter().getTenantId(),
-            request.getFilter().getStatus(),
-            request.getFilter().getEventType(),
-            searchNorm,
-            BULK_ACTION_LIMIT);
-        if (matched.size() > BULK_ACTION_LIMIT) {
-            throw new GovernanceException(ErrorCode.LIMIT_EXCEEDED,
-                "filter matches more than " + BULK_ACTION_LIMIT
-                    + " subscriptions; narrow the filter and retry",
-                400,
-                Map.of("total_matched", matched.size()));
-        }
-        if (request.getExpectedCount() != null && request.getExpectedCount() != matched.size()) {
-            throw new GovernanceException(ErrorCode.COUNT_MISMATCH,
-                "expected_count " + request.getExpectedCount()
-                    + " differs from server-counted matches " + matched.size(),
-                409,
-                Map.of("total_matched", matched.size()));
+        List<WebhookSubscription> matched;
+        try {
+            matched = webhookRepository.matchForBulk(
+                request.getFilter().getTenantId(), request.getFilter().getStatus(),
+                request.getFilter().getEventType(), searchNorm, BULK_ACTION_LIMIT);
+            if (matched.size() > BULK_ACTION_LIMIT) {
+                int totalMatched = Math.max(matched.size(), webhookRepository.countForBulk(
+                    request.getFilter().getTenantId(), request.getFilter().getStatus(),
+                    request.getFilter().getEventType(), searchNorm));
+                throw new GovernanceException(ErrorCode.LIMIT_EXCEEDED,
+                    "filter matches more than " + BULK_ACTION_LIMIT
+                        + " subscriptions; narrow the filter and retry",
+                    400, Map.of("total_matched", totalMatched));
+            }
+            if (request.getExpectedCount() != null
+                    && request.getExpectedCount() != matched.size()) {
+                throw new GovernanceException(ErrorCode.COUNT_MISMATCH,
+                    "expected_count " + request.getExpectedCount()
+                        + " differs from server-counted matches " + matched.size(),
+                    409, Map.of("total_matched", matched.size()));
+            }
+        } catch (RuntimeException e) {
+            idempotencyStore.abandon(idempotencyClaim);
+            throw e;
         }
 
         List<BulkActionRowOutcome> succeeded = new ArrayList<>();
@@ -383,7 +387,7 @@ public class WebhookAdminController {
             .idempotencyKey(request.getIdempotencyKey())
             .build();
 
-        idempotencyStore.store(BULK_IDEMPOTENCY_ENDPOINT, request.getIdempotencyKey(), response);
+        idempotencyStore.complete(idempotencyClaim, response);
 
         Map<String, Object> auditMeta = BulkActionAuditMetadataBuilder.build(
             request.getAction().name(), matched.size(),
