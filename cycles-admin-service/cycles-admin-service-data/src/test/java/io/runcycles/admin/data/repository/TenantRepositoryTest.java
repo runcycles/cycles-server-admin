@@ -480,6 +480,50 @@ class TenantRepositoryTest {
     }
 
     @Test
+    void update_statusClosedToClosed_alreadyDurableReturnsStoredTenant() throws Exception {
+        String storedJson = storedTenantJson(TenantStatus.CLOSED);
+        when(jedis.get("tenant:tenant-1")).thenReturn(storedJson);
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("ALREADY_DURABLE"));
+
+        TenantUpdateRequest req = new TenantUpdateRequest();
+        req.setStatus(TenantStatus.CLOSED);
+
+        assertThat(repository.update("tenant-1", req).getStatus())
+            .isEqualTo(TenantStatus.CLOSED);
+    }
+
+    @Test
+    void update_statusClosedToClosed_missingIntentFailsClosed() throws Exception {
+        String storedJson = storedTenantJson(TenantStatus.CLOSED);
+        when(jedis.get("tenant:tenant-1")).thenReturn(storedJson);
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("MISSING_INTENT"));
+
+        TenantUpdateRequest req = new TenantUpdateRequest();
+        req.setStatus(TenantStatus.CLOSED);
+
+        assertThatThrownBy(() -> repository.update("tenant-1", req))
+            .hasRootCauseMessage(
+                "Tenant-close intent disappeared before durability backfill");
+    }
+
+    @Test
+    void update_statusClosedToClosed_retriesConcurrentChange() throws Exception {
+        String storedJson = storedTenantJson(TenantStatus.CLOSED);
+        when(jedis.get("tenant:tenant-1")).thenReturn(storedJson);
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("RETRY"), List.of("BACKFILLED"));
+
+        TenantUpdateRequest req = new TenantUpdateRequest();
+        req.setStatus(TenantStatus.CLOSED);
+
+        assertThat(repository.update("tenant-1", req).getStatus())
+            .isEqualTo(TenantStatus.CLOSED);
+        verify(jedis, times(2)).get("tenant:tenant-1");
+    }
+
+    @Test
     void update_metadata_updatesSuccessfully() throws Exception {
         String storedJson = storedTenantJson(TenantStatus.ACTIVE);
         when(jedis.get("tenant:tenant-1")).thenReturn(storedJson);

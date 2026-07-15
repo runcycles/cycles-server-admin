@@ -45,6 +45,18 @@ class RedisBatchReaderTest {
     }
 
     @Test
+    void getById_fallsBackWhenClientReturnsNullMgetResponse() {
+        Jedis jedis = mock(Jedis.class);
+        when(jedis.mget("row:a")).thenReturn(null);
+        when(jedis.get("row:a")).thenReturn("A");
+
+        Map<String, String> rows = RedisBatchReader.getById(
+            jedis, "row:", List.of("a"));
+
+        assertThat(rows).containsEntry("a", "A");
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void getHashesByKey_pipelinesHashReads() {
         Jedis jedis = mock(Jedis.class);
