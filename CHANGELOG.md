@@ -81,7 +81,9 @@ new optional request fields) are **not** considered breaking.
   95% JaCoCo branch-coverage gate in addition to the line gate. Jqwik uses
   supported JUnit Platform configuration, and Mockito is inherited as a test
   dependency and attached explicitly as a test JVM agent, including on cold CI
-  runners. GitHub's Java setup action is pinned to v5.5.0.
+  runners. GitHub's Java setup action is pinned to v5.5.0, the CodeQL SARIF
+  uploader is pinned to v4.37.0, and the release documentation declares
+  governance-spec v0.1.25.41 alignment.
 - The task scheduler defaults to two threads so a tenant-close reconciliation
   cannot starve its own distributed-lease heartbeat.
 - `X-Cycles-Cascade-Status: in_progress` and `Retry-After: 1` remain additive
