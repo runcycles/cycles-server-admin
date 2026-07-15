@@ -1518,6 +1518,29 @@ class WebhookAdminControllerTest {
     }
 
     @Test
+    void bulkActionWebhooks_normalizesSearchBeforeIdempotencyFingerprint() throws Exception {
+        IdempotencyStore.Claim<WebhookBulkActionResponse> claim =
+            new IdempotencyStore.Claim<>("webhooks-bulk", "k-normalized", "owner-1", null);
+        when(idempotencyStore.begin(eq("webhooks-bulk"), eq("k-normalized"),
+                any(WebhookBulkActionRequest.class), eq(WebhookBulkActionResponse.class)))
+            .thenReturn(claim);
+        when(webhookRepository.matchForBulk(isNull(), isNull(), isNull(), eq("Acme"), eq(500)))
+            .thenReturn(List.of());
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                .header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"filter\":{\"search\":\"  Acme  \"},\"action\":\"PAUSE\",\"idempotency_key\":\"k-normalized\"}"))
+            .andExpect(status().isOk());
+
+        ArgumentCaptor<WebhookBulkActionRequest> captured =
+            ArgumentCaptor.forClass(WebhookBulkActionRequest.class);
+        verify(idempotencyStore).begin(eq("webhooks-bulk"), eq("k-normalized"),
+            captured.capture(), eq(WebhookBulkActionResponse.class));
+        assertThat(captured.getValue().getFilter().getSearch()).isEqualTo("Acme");
+    }
+
+    @Test
     void updateWebhook_patchAllChangedFields_reportsCompleteDiff() throws Exception {
         WebhookThresholdConfig oldThresholds = WebhookThresholdConfig.builder().burnRateMultiplier(2.0).build();
         WebhookThresholdConfig newThresholds = WebhookThresholdConfig.builder().burnRateMultiplier(4.0).build();

@@ -59,7 +59,10 @@ public class TenantCloseReconciler {
                     continue;
                 }
                 var result = cascadeService.cascade(tenantId, null);
-                if (!result.complete()) {
+                if (result.inProgress()) {
+                    LOG.debug("Tenant-close reconciliation deferred to active lease owner: tenant_id={}",
+                        tenantId);
+                } else if (!result.complete()) {
                     incompleteCounter.increment();
                     LOG.warn("Tenant-close reconciliation remains incomplete: tenant_id={} failed_resources={}",
                         tenantId, result.failedResources());

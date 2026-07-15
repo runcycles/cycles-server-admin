@@ -312,6 +312,7 @@ public class TenantController {
                 "filter must contain at least one property", 400);
         }
         String searchNorm = parseSearch(request.getFilter().getSearch());
+        request.getFilter().setSearch(searchNorm);
 
         IdempotencyStore.Claim<TenantBulkActionResponse> idempotencyClaim =
             idempotencyStore.begin(BULK_IDEMPOTENCY_ENDPOINT,

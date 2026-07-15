@@ -14,6 +14,7 @@ import io.runcycles.admin.model.shared.ErrorCode;
 import io.runcycles.admin.model.tenant.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
@@ -1045,6 +1046,29 @@ class TenantControllerTest {
         org.mockito.InOrder order = org.mockito.Mockito.inOrder(tenantRepository, tenantCloseCascadeService);
         order.verify(tenantRepository).update(eq("t1"), any());
         order.verify(tenantCloseCascadeService).cascade(eq("t1"), any());
+    }
+
+    @Test
+    void bulkActionTenants_normalizesSearchBeforeIdempotencyFingerprint() throws Exception {
+        IdempotencyStore.Claim<TenantBulkActionResponse> claim =
+            new IdempotencyStore.Claim<>("tenants-bulk", "k-normalized", "owner-1", null);
+        when(idempotencyStore.begin(eq("tenants-bulk"), eq("k-normalized"),
+                any(TenantBulkActionRequest.class), eq(TenantBulkActionResponse.class)))
+            .thenReturn(claim);
+        when(tenantRepository.matchForBulk(isNull(), isNull(), eq("Acme"), eq(500)))
+            .thenReturn(List.of());
+
+        mockMvc.perform(post("/v1/admin/tenants/bulk-action")
+                .header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"filter\":{\"search\":\"  Acme  \"},\"action\":\"SUSPEND\",\"idempotency_key\":\"k-normalized\"}"))
+            .andExpect(status().isOk());
+
+        ArgumentCaptor<TenantBulkActionRequest> captured =
+            ArgumentCaptor.forClass(TenantBulkActionRequest.class);
+        verify(idempotencyStore).begin(eq("tenants-bulk"), eq("k-normalized"),
+            captured.capture(), eq(TenantBulkActionResponse.class));
+        assertEquals("Acme", captured.getValue().getFilter().getSearch());
     }
 
     @Test

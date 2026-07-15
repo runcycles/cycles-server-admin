@@ -23,7 +23,10 @@ new optional request fields) are **not** considered breaking.
 - Event, audit, and delivery timestamp cursors no longer skip records that
   share the cursor's millisecond score, and sparse filters continue scanning
   until the requested page is full, the range is exhausted, or the explicit
-  5,000-candidate safety budget returns `LIMIT_EXCEEDED`.
+  5,000-candidate safety budget returns `LIMIT_EXCEEDED`. Equal-score resumes
+  seek directly to the cursor's Redis rank, so even tie buckets larger than
+  the scan budget remain pageable. Once a full page is found, one bounded
+  lookahead candidate may cross the budget to report truthful `has_more`.
 - Correlation-filtered event lists now consume their cursor instead of
   returning the first page repeatedly. Vanished cursors consistently return
   `INVALID_REQUEST` with restart guidance on every list implementation.
@@ -35,23 +38,33 @@ new optional request fields) are **not** considered breaking.
   Redis work queue. The parent status flip atomically commits the intent and a
   durable `tenant.closed` outbox item; child mutations atomically create their
   own outbox items. Required audit/event writes use stable IDs, leases are
-  renewed while work is active, lease contention reports `in_progress`, and
-  poison items are parked in a visible dead-letter set after bounded retries.
+  renewed while work is active, lease contention or mid-run lease loss reports
+  `in_progress`, and poison items are parked in a visible dead-letter set after
+  bounded retries. Healthy contention no longer increments the incomplete-
+  reconciliation metric. The operator requeue command and application use one
+  packaged Lua script so their atomic semantics cannot drift.
   A permanent close-commit marker also backfills the durable parent event for
   tenants closed by an older replica during a rolling deployment, while aged
   intents for tenants that never committed are safely discarded.
 - Bulk-action idempotency now atomically claims `(endpoint, key, payload)` in
   Redis, rejects payload reuse with `IDEMPOTENCY_MISMATCH`, waits for concurrent
-  equal requests, replays legacy entries during rolling upgrades, and publishes
-  one immutable replay envelope. In-progress claims remain durable until their
+  equal requests, and publishes one immutable replay envelope. Because legacy
+  entries have no payload hash, retries that encounter one during its remaining
+  15-minute TTL fail closed with `409 IDEMPOTENCY_MISMATCH`; use a new key after
+  verifying the original result. In-progress claims remain durable until their
   owner completes or explicitly abandons them, preventing concurrent stale
-  takeover and double execution.
+  takeover and double execution. Bulk search text is normalized before hashing,
+  so whitespace-only representation differences replay consistently.
 - Over-limit bulk errors report the exact match count instead of the 501-row
   detection sentinel. A bulk CLOSE parent event is emitted from the durable
   cascade outbox only after its child outbox has drained.
 - Equal-score ZSET continuation is chunked, so a pathological millisecond tie
   cannot allocate an unbounded member list; deleted page boundaries still
   advance lexicographically.
+- Tenant compare-and-set retry exhaustion now returns the contract-declared
+  `500 INTERNAL_ERROR` pairing instead of combining that code with HTTP 409.
+- A corrupt completed idempotency envelope fails closed until its 15-minute TTL
+  expires; it is never treated as permission to execute the mutation again.
 - Broad exact non-primary sorts now fail explicitly above 20,000 candidates
   with narrowing details instead of silently truncating or risking unbounded
   request heap.
@@ -71,6 +84,10 @@ new optional request fields) are **not** considered breaking.
   runners. GitHub's Java setup action is pinned to v5.5.0.
 - The task scheduler defaults to two threads so a tenant-close reconciliation
   cannot starve its own distributed-lease heartbeat.
+- `X-Cycles-Cascade-Status: in_progress` and `Retry-After: 1` remain additive
+  metadata on the contract-declared successful close response; the response
+  status and body continue to validate against the pinned governance schema.
+- Production Compose manifests now pin the matching `0.1.25.52` image.
 
 ## [0.1.25.51] — 2026-07-11
 

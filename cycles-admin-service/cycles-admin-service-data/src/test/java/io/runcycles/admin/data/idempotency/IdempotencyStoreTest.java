@@ -271,17 +271,18 @@ class IdempotencyStoreTest {
     }
 
     @Test
-    void begin_replaysLegacyEnvelopeDuringRollingUpgrade() throws Exception {
-        Envelope expected = new Envelope("CLOSE", 3);
-        String storedEnvelope = objectMapper.writeValueAsString(expected);
+    void begin_legacyEnvelopeFailsClosedBecausePayloadCannotBeVerified() {
         when(jedis.eval(anyString(), anyList(), anyList()))
-            .thenReturn(List.of("LEGACY_COMPLETE", storedEnvelope));
+            .thenReturn(List.of("LEGACY_PRESENT"));
 
-        IdempotencyStore.Claim<Envelope> claim = store.begin(
-            "tenants-bulk", "legacy-key", new Envelope("CLOSE", 3), Envelope.class);
-
-        assertThat(claim.isReplay()).isTrue();
-        assertThat(claim.replayResponse()).isEqualTo(expected);
+        assertThatThrownBy(() -> store.begin("tenants-bulk", "legacy-key",
+            new Envelope("SUSPEND", 9), Envelope.class))
+            .isInstanceOf(GovernanceException.class)
+            .satisfies(error -> {
+                GovernanceException governance = (GovernanceException) error;
+                assertThat(governance.getErrorCode()).isEqualTo(ErrorCode.IDEMPOTENCY_MISMATCH);
+                assertThat(governance.getHttpStatus()).isEqualTo(409);
+            });
         verify(jedis).eval(anyString(), eq(List.of(
             "idem:v2:tenants-bulk:legacy-key", "idem:tenants-bulk:legacy-key")),
             anyList());
@@ -339,5 +340,32 @@ class IdempotencyStoreTest {
         } finally {
             Thread.interrupted();
         }
+    }
+
+    @Test
+    void begin_deadlineExceededReturnsRetryable503WithoutSleeping() {
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("IN_PROGRESS"));
+        IdempotencyStore noWaitStore = new IdempotencyStore(jedisPool, objectMapper, 0L);
+
+        assertThatThrownBy(() -> noWaitStore.begin(
+            "tenants-bulk", "k-timeout", new Envelope("CLOSE", 1), Envelope.class))
+            .isInstanceOf(GovernanceException.class)
+            .satisfies(error -> {
+                GovernanceException governance = (GovernanceException) error;
+                assertThat(governance.getHttpStatus()).isEqualTo(503);
+                assertThat(governance.getMessage()).contains("still in progress");
+            });
+    }
+
+    @Test
+    void begin_corruptCompletedEnvelopeFailsClosed() {
+        when(jedis.eval(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("COMPLETE", "{not-json"));
+
+        assertThatThrownBy(() -> store.begin(
+            "tenants-bulk", "k-corrupt", new Envelope("CLOSE", 1), Envelope.class))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("Failed to claim idempotency key");
     }
 }

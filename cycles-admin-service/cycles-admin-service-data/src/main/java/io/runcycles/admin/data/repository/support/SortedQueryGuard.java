@@ -23,10 +23,16 @@ public final class SortedQueryGuard {
 
     /** Bound work before hydration while still allowing filters to narrow the sort set. */
     public static void requireScannable(long candidates, String surface) {
+        requireScannable(candidates, surface,
+            "reduce the stored data set; post-hydration filters cannot reduce source scan cost");
+    }
+
+    public static void requireScannable(long candidates, String surface,
+                                        String narrowingGuidance) {
         if (candidates > MAX_SCANNED_CANDIDATES) {
             throw new GovernanceException(ErrorCode.LIMIT_EXCEEDED,
                 "Exact " + surface + " sort would scan " + candidates
-                    + " source candidates; use indexed owner/time filters or reduce the data set to "
+                    + " source candidates; " + narrowingGuidance + " to reach "
                     + MAX_SCANNED_CANDIDATES + " candidates or fewer",
                 400, java.util.Map.of("total_candidates", candidates,
                     "max_scan_candidates", MAX_SCANNED_CANDIDATES));

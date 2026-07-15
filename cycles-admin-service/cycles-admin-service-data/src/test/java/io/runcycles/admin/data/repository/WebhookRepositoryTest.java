@@ -49,6 +49,7 @@ class WebhookRepositoryTest {
     @BeforeEach
     void setUp() {
         lenient().when(jedisPool.getResource()).thenReturn(jedis);
+        RedisBatchTestStubs.installStringReads(jedis);
     }
 
     @Test

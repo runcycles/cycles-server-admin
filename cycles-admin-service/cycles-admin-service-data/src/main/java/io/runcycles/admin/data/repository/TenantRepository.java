@@ -392,7 +392,7 @@ public class TenantRepository {
             }
             throw new GovernanceException(
                 io.runcycles.admin.model.shared.ErrorCode.INTERNAL_ERROR,
-                "Tenant was modified concurrently; retry the request", 409);
+                "Tenant was modified concurrently; retry the request", 500);
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {

@@ -255,7 +255,8 @@ public class EventRepository {
         double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
         double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
         String indexKey = (tenantId != null) ? "events:" + tenantId : "events:_all";
-        SortedQueryGuard.requireScannable(jedis.zcount(indexKey, minScore, maxScore), "event");
+        SortedQueryGuard.requireScannable(jedis.zcount(indexKey, minScore, maxScore),
+            "event", "narrow the indexed tenant/time window");
         // A correct non-primary sort must see the complete filtered window.
         List<String> ids = jedis.zrevrangeByScore(indexKey, maxScore, minScore);
         List<Event> all = new ArrayList<>();

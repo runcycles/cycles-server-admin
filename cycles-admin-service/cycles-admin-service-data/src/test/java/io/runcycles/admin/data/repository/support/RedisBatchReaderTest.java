@@ -32,31 +32,6 @@ class RedisBatchReaderTest {
     }
 
     @Test
-    void getById_fallsBackToGetsForNonConformingMgetResponse() {
-        Jedis jedis = mock(Jedis.class);
-        when(jedis.mget("row:a", "row:b")).thenReturn(List.of("A"));
-        when(jedis.get("row:a")).thenReturn("A");
-        when(jedis.get("row:b")).thenReturn("B");
-
-        Map<String, String> rows = RedisBatchReader.getById(
-            jedis, "row:", List.of("a", "b"));
-
-        assertThat(rows).containsEntry("a", "A").containsEntry("b", "B");
-    }
-
-    @Test
-    void getById_fallsBackWhenClientReturnsNullMgetResponse() {
-        Jedis jedis = mock(Jedis.class);
-        when(jedis.mget("row:a")).thenReturn(null);
-        when(jedis.get("row:a")).thenReturn("A");
-
-        Map<String, String> rows = RedisBatchReader.getById(
-            jedis, "row:", List.of("a"));
-
-        assertThat(rows).containsEntry("a", "A");
-    }
-
-    @Test
     @SuppressWarnings("unchecked")
     void getHashesByKey_pipelinesHashReads() {
         Jedis jedis = mock(Jedis.class);
@@ -79,15 +54,4 @@ class RedisBatchReaderTest {
         verify(jedis, never()).hgetAll("budget:b");
     }
 
-    @Test
-    void getHashesByKey_fallsBackWhenPipelineIsUnavailable() {
-        Jedis jedis = mock(Jedis.class);
-        when(jedis.pipelined()).thenReturn(null);
-        when(jedis.hgetAll("budget:a")).thenReturn(Map.of("id", "a"));
-
-        Map<String, Map<String, String>> rows = RedisBatchReader.getHashesByKey(
-            jedis, List.of("budget:a"));
-
-        assertThat(rows).containsEntry("budget:a", Map.of("id", "a"));
-    }
 }

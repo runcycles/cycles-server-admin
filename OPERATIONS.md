@@ -249,12 +249,15 @@ For this server:
   work; token-checked renewal/release prevents an expired owner from
   modifying a successor's lease. Child CAS scripts remain the final
   duplicate-mutation guard if ownership is lost between heartbeats.
-- **Contention:** a request that finds a healthy lease owner remains a
+- **Contention:** a request that finds a healthy lease owner, or loses its lease
+  to a successor while work is active, remains a
   spec-compatible 200 and returns `X-Cycles-Cascade-Status: in_progress` plus
   `Retry-After: 1`, rather than a 500. An already-CLOSED bulk row is also
   classified `CASCADE_IN_PROGRESS`; a freshly committed row remains succeeded
   because its parent transition did occur. The work remains scheduled and no
-  second worker mutates children.
+  stale worker continues mutating children. These headers are additive response
+  metadata: the status and body remain the pinned contract's declared 200
+  tenant/bulk response.
 - **Bound:** with defaults and a queue depth `Q`, a due item is selected
   within approximately
   `ceil(Q / 100) × 300 seconds + cascade execution time`. Failed items
@@ -351,20 +354,14 @@ requeueing; do not delete the intent or committed marker.
 redis-cli SMEMBERS tenant-close:outbox:dead-letter:<tenant_id>
 redis-cli GET tenant-close:outbox:item:<tenant_id>:<item_id>
 
-# Atomically move one repaired item back to the live outbox and make it due.
-redis-cli --eval /dev/stdin \
+# From a checkout of this exact server release, atomically move one repaired
+# item back to the live outbox and make it due. The application loads this same
+# packaged script; do not copy its Lua into an independent runbook snippet.
+redis-cli --eval cycles-admin-service/cycles-admin-service-data/src/main/resources/redis/tenant-close-requeue-dead-letter.lua \
   tenant-close:outbox:dead-letter:<tenant_id> \
   tenant-close:outbox:<tenant_id> \
   tenant-close:outbox:attempts:<tenant_id> \
-  tenant-close:pending , <item_id> <tenant_id> <epoch-ms-now-plus-one> <<'LUA'
-if redis.call('SREM', KEYS[1], ARGV[1]) == 1 then
-  redis.call('SADD', KEYS[2], ARGV[1])
-  redis.call('HDEL', KEYS[3], ARGV[1])
-  redis.call('ZADD', KEYS[4], ARGV[3], ARGV[2])
-  return 1
-end
-return 0
-LUA
+  tenant-close:pending , <item_id> <tenant_id> <epoch-ms-now-plus-one>
 ```
 
 **Post-close operator mutations 409 with `TENANT_CLOSED` (Rule 2).**
@@ -398,7 +395,7 @@ auto-metrics (`http_server_requests_seconds`, `jvm_*`, `process_*`,
 
 | Metric | Tags | What it tells you |
 |---|---|---|
-| `cycles_admin_tenant_close_reconcile_incomplete_total` | — | A scheduled reconciliation attempt completed without throwing but still had unfinished cascade work. Alert on sustained growth and inspect `tenant-close:pending`. |
+| `cycles_admin_tenant_close_reconcile_incomplete_total` | — | A scheduled reconciliation attempt completed without throwing but still had unfinished cascade work. Healthy lease contention is excluded. Alert on sustained growth and inspect `tenant-close:pending`. |
 | `cycles_admin_tenant_close_reconcile_errors_total` | — | A scheduled reconciliation attempt failed before it could report a normal incomplete result. Any sustained increase indicates Redis, serialization, lease, or cascade-path failure. |
 | `cycles_admin_tenant_close_outbox_dead_letter_total` | `resource_type` | A required cascade audit/event outbox item exhausted eight attempts and was parked for operator repair. Any increment requires dead-letter inspection and explicit requeue. |
 
@@ -704,7 +701,10 @@ event and audit lists, then retry with the same sort. Primary/indexed order
 (for example the default timestamp order on events and audit logs) uses a
 separate 5,000-candidate sparse-filter budget. If that budget is exhausted,
 narrow the time range or filters; the server will not perform an unbounded
-Redis hydration scan.
+Redis hydration scan. Equal-score cursors seek directly to their rank within a
+tie bucket instead of recharging earlier equal-score members, so a bucket larger
+than 5,000 remains pageable. After the response page is full, the pager permits
+one additional candidate solely to determine truthful `has_more`.
 
 Set-backed exact sorts also enforce a 50,000-source-candidate scan ceiling
 before the 20,000 filtered-result sort ceiling. Surfaces without a useful
@@ -724,8 +724,13 @@ In-progress v2 claims deliberately have no TTL and cannot be taken over after
 an arbitrary timeout: a slow original request must never overlap a retry and
 double-execute mutations. Normal pre-mutation failures owner-safely abandon the
 claim; successful requests replace it with a completed replay envelope that
-expires normally. During rolling upgrades, v2 lookup also honors a completed
-legacy entry.
+expires normally. During the at-most-15-minute rolling-upgrade overlap, a
+completed legacy entry cannot be payload-verified because it has no request
+hash. The server therefore fails closed with `409 IDEMPOTENCY_MISMATCH` instead
+of replaying a potentially unrelated envelope. Verify the original result, then
+wait for the legacy TTL or use a new idempotency key. A corrupt completed v2
+envelope similarly returns 500 until its TTL expires and never authorizes a
+second mutation.
 
 If a process dies after entering mutation and leaves a claim, first determine
 whether its effects and bulk audit envelope committed. Inspect
@@ -764,7 +769,7 @@ cannot catch:
 
 | Workflow | Schedule | Purpose | Failure-signal runbook |
 |---|---|---|---|
-| [`.github/workflows/nightly-property-tests.yml`](.github/workflows/nightly-property-tests.yml) | 06:00 UTC daily | jqwik property-based invariants (6 tests, 100 tries nightly). Asserts `logFailure` correctness across arbitrary inputs — exactly-one-outcome per call, authenticated-tier never sampled, TTL tier matches tenant_id, sanitizeMessage bulletproof, non-throwing contract. | **A failure here means a real contract regression.** Download the surefire report from the failed run — jqwik embeds the minimal shrunk input (e.g. `tenantId=""`, `rate=Integer.MAX_VALUE`, `status=500`). Paste it into a unit test for fast-feedback iteration. Priority: **high** — these invariants are NORMATIVE; failing means v0.1.25.20's compliance guarantees no longer hold. |
+| [`.github/workflows/nightly-property-tests.yml`](.github/workflows/nightly-property-tests.yml) | 06:00 UTC daily | jqwik property-based invariants (7 tests, 100 tries nightly). Asserts `logFailure` correctness across arbitrary inputs — exactly-one-outcome per call, authenticated-tier never sampled, TTL tier matches tenant_id, sanitizeMessage bulletproof, non-throwing contract. | **A failure here means a real contract regression.** Download the surefire report from the failed run — jqwik embeds the minimal shrunk input (e.g. `tenantId=""`, `rate=Integer.MAX_VALUE`, `status=500`). Paste it into a unit test for fast-feedback iteration. Priority: **high** — these invariants are NORMATIVE; failing means v0.1.25.20's compliance guarantees no longer hold. |
 | [`.github/workflows/nightly-audit-soak.yml`](.github/workflows/nightly-audit-soak.yml) | 06:30 UTC daily | 10-min × 500 ops/s failure flood against real Testcontainers Redis. 5 invariants: heap stable (AS1), latency stable (AS2), counter-sum complete (AS3), index-cardinality bounded (AS4), network-error rate < 1% (AS5). | Which invariant failed determines the triage path: **AS1** — memory leak in the audit-write path; check `AuditFailureService` or `AuditRepository` for recent additions. **AS2** — p99 latency regression on the hot path; profile `logFailure` with a flame graph. **AS3** — lost counter increments under contention; examine `ThreadLocalRandom` usage and meter-registry atomics. **AS4** — orphan ZADD bug; check Lua script for divergence between SET + ZADD atomicity. **AS5** — Redis-pool exhaustion; increase pool size or investigate connection leak. Priority: **medium** — soak catches slow regressions; single-day failure is often transient (CI load variance). Two consecutive failures = genuine problem. |
 | [`.github/workflows/nightly-contract-drift.yml`](.github/workflows/nightly-contract-drift.yml) | 05:30 UTC daily | Downloads both the reviewed contract revision and `cycles-protocol/main` with bounded retries, then compares them byte-for-byte. | Review the upstream diff and advance `ContractSpecLoader.SPEC_REVISION` only with the corresponding implementation/tests. A transient download is retried five times before the job fails. |
 

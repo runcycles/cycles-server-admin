@@ -8,6 +8,7 @@ import io.runcycles.admin.data.exception.GovernanceException;
 import io.runcycles.admin.data.idempotency.IdempotencyStore;
 import io.runcycles.admin.data.repository.*;
 import io.runcycles.admin.data.repository.support.TenantCloseOutboxItem;
+import io.runcycles.admin.data.repository.support.ZSetAdaptivePager;
 import io.runcycles.admin.data.service.CryptoService;
 import io.runcycles.admin.data.service.KeyService;
 import io.runcycles.admin.model.audit.AuditLogEntry;
@@ -32,6 +33,7 @@ import redis.clients.jedis.Jedis;
 import java.lang.reflect.Field;
 import java.time.Instant;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -668,6 +670,79 @@ class RedisIntegrationTest {
 
         List<AuditLogEntry> logs = auditRepository.list("integ-tenant", null, List.of("createTenant"), null, null, null, null, null, null, 50);
         assertThat(logs).allSatisfy(l -> assertThat(l.getOperation()).isEqualTo("createTenant"));
+    }
+
+    @Test
+    @Order(77)
+    void equalScoreCursorBeyondScanBudgetResumesInBothDirections() {
+        String index = "integration:equal-score";
+        Map<String, Double> members = new LinkedHashMap<>();
+        for (int i = 0; i < 6_002; i++) {
+            members.put("id-" + String.format("%05d", i), 100.0);
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.del(index);
+            jedis.zadd(index, members);
+
+            assertThat(ZSetAdaptivePager.collect(jedis, index, 0, 200,
+                "id-05500", 2, true, id -> id))
+                .containsExactly("id-05501", "id-05502");
+            assertThat(ZSetAdaptivePager.collect(jedis, index, 0, 200,
+                "id-00501", 2, false, id -> id))
+                .containsExactly("id-00500", "id-00499");
+        }
+    }
+
+    @Test
+    @Order(78)
+    void tenantCloseDeadLetterRequeue_executesPackagedLuaAtomically() {
+        String tenantId = "integration-requeue";
+        String itemId = "budget:ledger-1";
+        String deadLetter = "tenant-close:outbox:dead-letter:" + tenantId;
+        String outbox = "tenant-close:outbox:" + tenantId;
+        String attempts = "tenant-close:outbox:attempts:" + tenantId;
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.sadd(deadLetter, itemId);
+            jedis.hset(attempts, itemId, "8");
+            jedis.srem(outbox, itemId);
+            jedis.zrem(TenantCloseWorkRepository.PENDING_KEY, tenantId);
+        }
+
+        assertThat(tenantCloseWorkRepository.requeueDeadLetter(tenantId, itemId)).isTrue();
+        assertThat(tenantCloseWorkRepository.requeueDeadLetter(tenantId, itemId)).isFalse();
+        try (Jedis jedis = jedisPool.getResource()) {
+            assertThat(jedis.sismember(deadLetter, itemId)).isFalse();
+            assertThat(jedis.sismember(outbox, itemId)).isTrue();
+            assertThat(jedis.hexists(attempts, itemId)).isFalse();
+            assertThat(jedis.zscore(TenantCloseWorkRepository.PENDING_KEY, tenantId))
+                .isNotNull();
+        }
+    }
+
+    @Test
+    @Order(79)
+    void bulkIdempotency_legacyEntryFailsClosedWithoutCreatingV2Claim()
+            throws Exception {
+        String legacyKey = "idem:integration-legacy:legacy-key";
+        String v2Key = "idem:v2:integration-legacy:legacy-key";
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.setex(legacyKey, 900,
+                objectMapper.writeValueAsString(Map.of("action", "CLOSE")));
+            jedis.del(v2Key);
+        }
+
+        assertThatThrownBy(() -> idempotencyStore.begin(
+            "integration-legacy", "legacy-key", Map.of("action", "SUSPEND"), Map.class))
+            .isInstanceOf(GovernanceException.class)
+            .satisfies(error -> {
+                GovernanceException governance = (GovernanceException) error;
+                assertThat(governance.getErrorCode()).isEqualTo(
+                    io.runcycles.admin.model.shared.ErrorCode.IDEMPOTENCY_MISMATCH);
+                assertThat(governance.getHttpStatus()).isEqualTo(409);
+            });
+        try (Jedis jedis = jedisPool.getResource()) {
+            assertThat(jedis.exists(v2Key)).isFalse();
+        }
     }
 
     @Test

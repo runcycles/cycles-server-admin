@@ -49,6 +49,7 @@ class AuditRepositoryTest {
     void setUp() {
         lenient().when(jedisPool.getResource()).thenReturn(jedis);
         ScoredJedisTestAdapter.install(jedis);
+        RedisBatchTestStubs.installStringReads(jedis);
     }
 
     @Test

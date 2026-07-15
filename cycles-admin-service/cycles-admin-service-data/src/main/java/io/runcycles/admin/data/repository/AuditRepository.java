@@ -370,7 +370,8 @@ public class AuditRepository {
         double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
         double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
         String indexKey = (tenantId != null) ? "audit:logs:" + tenantId : "audit:logs:_all";
-        SortedQueryGuard.requireScannable(jedis.zcount(indexKey, minScore, maxScore), "audit-log");
+        SortedQueryGuard.requireScannable(jedis.zcount(indexKey, minScore, maxScore),
+            "audit-log", "narrow the indexed tenant/time window");
         // A correct non-primary sort must see the complete filtered window.
         List<String> ids = jedis.zrevrangeByScore(indexKey, maxScore, minScore);
         List<AuditLogEntry> all = new ArrayList<>();

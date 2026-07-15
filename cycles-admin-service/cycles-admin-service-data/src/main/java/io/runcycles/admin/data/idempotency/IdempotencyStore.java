@@ -55,7 +55,7 @@ public class IdempotencyStore {
         "local state = redis.call('HGET', KEYS[1], 'state')\n" +
         "if not state then\n" +
         " local legacy = redis.call('GET', KEYS[2])\n" +
-        " if legacy then return {'LEGACY_COMPLETE',legacy} end\n" +
+        " if legacy then return {'LEGACY_PRESENT'} end\n" +
         " redis.call('HSET', KEYS[1], 'state','IN_PROGRESS','payload_hash',ARGV[1],'owner',ARGV[2],'started_at',ARGV[3])\n" +
         " redis.call('PERSIST', KEYS[1]); return {'ACQUIRED'}\n" +
         "end\n" +
@@ -74,12 +74,19 @@ public class IdempotencyStore {
 
     private final JedisPool jedisPool;
     private final ObjectMapper objectMapper;
+    private final long waitNanos;
 
     @Autowired
     public IdempotencyStore(JedisPool jedisPool,
                             @Qualifier("redisObjectMapper") ObjectMapper objectMapper) {
+        this(jedisPool, objectMapper, WAIT_NANOS);
+    }
+
+    IdempotencyStore(JedisPool jedisPool, ObjectMapper objectMapper,
+                     long waitNanos) {
         this.jedisPool = jedisPool;
         this.objectMapper = objectMapper;
+        this.waitNanos = Math.max(0L, waitNanos);
     }
 
     /**
@@ -91,7 +98,7 @@ public class IdempotencyStore {
      *
      * <p>Legacy only: entries do not carry a payload hash and therefore cannot
      * safely satisfy current bulk requests. Retained for rolling-upgrade
-     * diagnostics; production controllers use {@link #begin}.
+     * diagnostics; {@link #begin} fails closed while one is present.
      */
     public <T> Optional<T> lookup(String endpoint, String key, Class<T> type) {
         String redisKey = redisKey(endpoint, key);
@@ -129,7 +136,7 @@ public class IdempotencyStore {
             throw new IllegalStateException("Failed to fingerprint idempotent request", e);
         }
         String owner = UUID.randomUUID().toString();
-        long deadline = System.nanoTime() + WAIT_NANOS;
+        long deadline = System.nanoTime() + waitNanos;
         while (true) {
             try (Jedis jedis = jedisPool.getResource()) {
                 @SuppressWarnings("unchecked")
@@ -140,12 +147,11 @@ public class IdempotencyStore {
                     case "ACQUIRED": return new Claim<>(endpoint, key, owner, null);
                     case "COMPLETE": return new Claim<>(endpoint, key, null,
                         objectMapper.readValue(result.get(1), type));
-                    case "LEGACY_COMPLETE": {
-                        LOG.info("Replaying legacy idempotency envelope during v2 rolling upgrade: endpoint={} key_sha256={}",
-                            endpoint, fingerprint(key));
-                        return new Claim<>(endpoint, key, null,
-                            objectMapper.readValue(result.get(1), type));
-                    }
+                    case "LEGACY_PRESENT": throw new GovernanceException(
+                        ErrorCode.IDEMPOTENCY_MISMATCH,
+                        "A legacy idempotency entry exists but cannot be payload-verified; "
+                            + "retry with a new key or after the 15-minute replay window",
+                        409);
                     case "MISMATCH": throw new GovernanceException(ErrorCode.IDEMPOTENCY_MISMATCH,
                         "Idempotency key was already used with a different request", 409);
                     case "IN_PROGRESS": {

@@ -1,5 +1,8 @@
 package io.runcycles.admin.api.config;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.api.service.AuditFailureService;
 import io.runcycles.admin.data.repository.ApiKeyRepository;
@@ -11,6 +14,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -1067,6 +1071,35 @@ class AuthInterceptorTest {
         }
 
         assertThat(interceptor.trackedAuthFailureSourceCount()).isLessThanOrEqualTo(2);
+    }
+
+    @Test
+    void preHandle_uniqueSourceFlood_warnsOnlyOncePerWindow() throws Exception {
+        ReflectionTestUtils.setField(interceptor, "authFailureRateLimitEnabled", true);
+        ReflectionTestUtils.setField(interceptor, "authFailureRateLimitMaxPerMinute", 10);
+        ReflectionTestUtils.setField(interceptor, "authFailureRateLimitMaxTrackedSources", 1);
+        Logger logger = (Logger) LoggerFactory.getLogger(AuthInterceptor.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            for (int i = 1; i <= 3; i++) {
+                MockHttpServletRequest failedRequest = new MockHttpServletRequest();
+                failedRequest.setMethod("POST");
+                failedRequest.setRequestURI("/v1/admin/tenants");
+                failedRequest.setRemoteAddr("198.51.100." + i);
+                interceptor.preHandle(
+                    failedRequest, new MockHttpServletResponse(), new Object());
+            }
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        assertThat(appender.list.stream()
+            .filter(event -> event.getFormattedMessage().contains(
+                "tracked-source cap exceeded")))
+            .hasSize(1);
     }
 
     @Test

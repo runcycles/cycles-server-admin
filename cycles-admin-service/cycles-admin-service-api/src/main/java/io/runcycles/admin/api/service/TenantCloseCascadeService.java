@@ -191,7 +191,7 @@ public class TenantCloseCascadeService {
                 reservationsReleased, failures);
         } catch (LeaseLostException e) {
             workRepository.reschedule(tenantId, 1_000L);
-            return new CascadeResult(0, 0, 0, 0L, List.of("cascade:lease:lost"));
+            return CascadeResult.leaseInProgress();
         } finally {
             if (heartbeat != null) heartbeat.cancel(false);
             workRepository.releaseLease(tenantId, leaseToken);

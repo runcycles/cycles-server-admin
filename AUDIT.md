@@ -121,6 +121,27 @@ two threads so reconciliation cannot starve its own lease heartbeat.
 Documentation was then cross-checked against actual single-vs-bulk event
 correlation and reconciler behavior.
 
+**Approval follow-up corrections.** The final re-review's non-blocking findings
+were resolved in this PR rather than deferred. Equal-score cursor continuation
+now computes the cursor's rank inside its score bucket and starts there, avoiding
+permanent scan-budget failures for tie buckets above 5,000; a full page may
+inspect exactly one additional candidate to determine truthful `has_more`.
+Tenant CAS exhaustion now pairs `INTERNAL_ERROR` with the pinned contract's 500
+response. Legacy idempotency entries fail closed because their payload cannot be
+verified, and Tenant/Webhook bulk requests normalize search before hashing.
+Mid-run cascade lease loss is reported as `in_progress`, while healthy lease
+contention no longer increments the incomplete metric. Redis batch readers now
+use their production MGET/pipeline contracts without Mockito-only fallbacks,
+and the affected tests provide realistic batch stubs. Dead-letter requeue has a
+single packaged Lua source shared by application and runbook. Surface-specific
+sort-limit guidance, the property-test count, timeout/corrupt-envelope behavior,
+auth-cap warning deduplication, and stale API-key controller mocks were also
+corrected or locked down by regression tests. The cascade progress headers are
+documented as additive metadata on the schema-valid 200 response; no response
+body or status extension to the pinned YAML is required. The packaging pass
+also advanced both production Compose image pins to `0.1.25.52`, preventing the
+release manifest from silently deploying the prior build.
+
 **Assessment.** The reviewed correctness, durability, specification,
 concurrency, bounded-resource, operations, and build/test gaps are addressed.
 Future performance work may add secondary indexes for broad arbitrary sorts;

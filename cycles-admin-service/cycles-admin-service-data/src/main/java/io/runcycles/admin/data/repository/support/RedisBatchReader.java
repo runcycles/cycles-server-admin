@@ -25,12 +25,6 @@ public final class RedisBatchReader {
                 offset, Math.min(orderedIds.size(), offset + BATCH_SIZE));
             String[] keys = batchIds.stream().map(keyPrefix::concat).toArray(String[]::new);
             List<String> values = jedis.mget(keys);
-            // Mockito-backed repository tests written before batch hydration
-            // return an empty/default value. Fall back there and for defensive
-            // compatibility with non-standard Redis clients.
-            if (values == null || values.size() != batchIds.size()) {
-                values = batchIds.stream().map(id -> jedis.get(keyPrefix + id)).toList();
-            }
             for (int i = 0; i < batchIds.size(); i++) {
                 valuesById.put(batchIds.get(i), values.get(i));
             }
@@ -46,20 +40,15 @@ public final class RedisBatchReader {
         for (int offset = 0; offset < orderedKeys.size(); offset += BATCH_SIZE) {
             List<String> batchKeys = orderedKeys.subList(
                 offset, Math.min(orderedKeys.size(), offset + BATCH_SIZE));
-            if (!readHashPipeline(jedis, batchKeys, valuesByKey)) {
-                for (String key : batchKeys) {
-                    valuesByKey.put(key, jedis.hgetAll(key));
-                }
-            }
+            readHashPipeline(jedis, batchKeys, valuesByKey);
         }
         return valuesByKey;
     }
 
-    private static boolean readHashPipeline(
+    private static void readHashPipeline(
             Jedis jedis, List<String> keys,
             Map<String, Map<String, String>> valuesByKey) {
         Pipeline pipeline = jedis.pipelined();
-        if (pipeline == null) return false; // Mockito/default-client compatibility.
         try (pipeline) {
             List<Response<Map<String, String>>> responses = new ArrayList<>(keys.size());
             for (String key : keys) responses.add(pipeline.hgetAll(key));
@@ -67,7 +56,6 @@ public final class RedisBatchReader {
             for (int i = 0; i < keys.size(); i++) {
                 valuesByKey.put(keys.get(i), responses.get(i).get());
             }
-            return true;
         }
     }
 }

@@ -9,9 +9,14 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.params.SetParams;
 
+import java.io.InputStream;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -48,10 +53,8 @@ public class TenantCloseWorkRepository {
             + "local tenant_json = redis.call('GET', KEYS[1])\n"
             + "if tenant_json then local tenant = cjson.decode(tenant_json); if tenant['status'] == 'CLOSED' then return 0 end end\n"
             + "redis.call('ZREM', KEYS[2], ARGV[1]); redis.call('DEL', KEYS[3]); return 1";
-    private static final String REQUEUE_DEAD_LETTER_LUA =
-        "if redis.call('SREM', KEYS[1], ARGV[1]) == 1 then "
-            + "redis.call('SADD', KEYS[2], ARGV[1]); redis.call('HDEL', KEYS[3], ARGV[1]); "
-            + "redis.call('ZADD', KEYS[4], ARGV[3], ARGV[2]); return 1 end return 0";
+    private static final String REQUEUE_DEAD_LETTER_LUA = loadLuaResource(
+        "redis/tenant-close-requeue-dead-letter.lua");
 
     private final JedisPool jedisPool;
     private final ObjectMapper objectMapper;
@@ -60,6 +63,16 @@ public class TenantCloseWorkRepository {
                                      @Qualifier("redisObjectMapper") ObjectMapper objectMapper) {
         this.jedisPool = jedisPool;
         this.objectMapper = objectMapper;
+    }
+
+    private static String loadLuaResource(String path) {
+        try (InputStream input = Objects.requireNonNull(
+                TenantCloseWorkRepository.class.getClassLoader().getResourceAsStream(path),
+                "Missing Redis script resource: " + path)) {
+            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to load Redis script resource: " + path, e);
+        }
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

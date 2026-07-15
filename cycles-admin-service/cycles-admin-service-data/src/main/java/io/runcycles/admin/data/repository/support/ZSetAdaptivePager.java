@@ -128,7 +128,7 @@ public final class ZSetAdaptivePager {
                                            ScanBudget budget,
                                            Function<String, T> loader) {
         for (int i = start; i < ids.size(); i++) {
-            budget.consume();
+            budget.consume(limit > 1 && results.size() == limit - 1);
             T row = loader.apply(ids.get(i));
             if (row != null) {
                 results.add(row);
@@ -165,17 +165,33 @@ public final class ZSetAdaptivePager {
             int limit,
             ScanBudget budget,
             Function<String, T> loader) {
-        int offset = 0;
+        Long globalRank = ascending
+            ? jedis.zrank(indexKey, boundary)
+            : jedis.zrevrank(indexKey, boundary);
+        if (globalRank == null) throw invalidCursor();
+        long earlierScoreMembers = ascending
+            ? jedis.zcount(indexKey, Double.NEGATIVE_INFINITY, Math.nextDown(score))
+            : jedis.zcount(indexKey, Math.nextUp(score), Double.POSITIVE_INFINITY);
+        long equalScoreRank = Math.max(0L, globalRank - earlierScoreMembers);
+        if (equalScoreRank > Integer.MAX_VALUE) {
+            throw new GovernanceException(ErrorCode.LIMIT_EXCEEDED,
+                "The " + budget.surface + " equal-timestamp bucket is too large to page safely",
+                400, java.util.Map.of("equal_score_cursor_offset", equalScoreRank));
+        }
+        // Start at the boundary's rank and compare lexically. If the boundary
+        // is deleted after the rank lookup, the member that shifts into its
+        // position is still considered instead of being skipped.
+        int offset = (int) equalScoreRank;
         while (results.size() < limit) {
             List<String> tied = ascending
                 ? jedis.zrangeByScore(indexKey, score, score, offset, MAX_BATCH_SIZE)
                 : jedis.zrevrangeByScore(indexKey, score, score, offset, MAX_BATCH_SIZE);
             if (tied.isEmpty()) return false;
             for (String id : tied) {
-                budget.consume();
                 int comparison = id.compareTo(boundary);
                 boolean after = ascending ? comparison > 0 : comparison < 0;
                 if (!after) continue;
+                budget.consume(limit > 1 && results.size() == limit - 1);
                 T row = loader.apply(id);
                 if (row != null) {
                     results.add(row);
@@ -202,9 +218,14 @@ public final class ZSetAdaptivePager {
             this.maximum = Math.max(1, maximum);
         }
 
-        private void consume() {
+        private void consume(boolean truthfulnessLookahead) {
             scanned++;
-            if (scanned > maximum) {
+            // Once the wire page is full, permit exactly one candidate beyond
+            // the base safety budget to prove has_more without rejecting the
+            // common all-matching boundary case. A filtered-out lookahead does
+            // not make later unbounded scanning permissible.
+            boolean allowedLookahead = truthfulnessLookahead && scanned == maximum + 1;
+            if (scanned > maximum && !allowedLookahead) {
                 throw new GovernanceException(ErrorCode.LIMIT_EXCEEDED,
                     "The " + surface + " query scanned more than " + maximum
                         + " candidates without filling the page; narrow the tenant, time window, or filters",

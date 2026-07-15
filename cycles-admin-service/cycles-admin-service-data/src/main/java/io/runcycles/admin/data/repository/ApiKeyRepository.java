@@ -358,7 +358,8 @@ public class ApiKeyRepository {
         Set<String> tenantIds = jedis.smembers("tenants");
         long candidates = 0L;
         for (String tenantId : tenantIds) candidates += jedis.scard("apikeys:" + tenantId);
-        SortedQueryGuard.requireScannable(candidates, "cross-tenant API-key");
+        SortedQueryGuard.requireScannable(candidates, "cross-tenant API-key",
+            "supply tenant_id to use a tenant-scoped index or reduce the stored data set");
         List<ApiKey> all = new ArrayList<>();
         for (String tenantId : tenantIds) {
             Set<String> keyIds = jedis.smembers("apikeys:" + tenantId);

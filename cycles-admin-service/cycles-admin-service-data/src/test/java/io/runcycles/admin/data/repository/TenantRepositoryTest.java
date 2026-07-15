@@ -47,6 +47,7 @@ class TenantRepositoryTest {
         // Non-close updates use a compare-and-set Lua script. Individual
         // create/close tests override this with their structured Lua result.
         lenient().when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        RedisBatchTestStubs.installStringReads(jedis);
     }
 
     @Test
@@ -521,6 +522,24 @@ class TenantRepositoryTest {
         assertThat(repository.update("tenant-1", req).getStatus())
             .isEqualTo(TenantStatus.CLOSED);
         verify(jedis, times(2)).get("tenant:tenant-1");
+    }
+
+    @Test
+    void update_casRetryExhaustionUsesSpecDeclaredInternalErrorStatus() throws Exception {
+        String storedJson = storedTenantJson(TenantStatus.ACTIVE);
+        when(jedis.get("tenant:tenant-1")).thenReturn(storedJson);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(0L);
+        TenantUpdateRequest req = new TenantUpdateRequest();
+        req.setName("concurrent-update");
+
+        assertThatThrownBy(() -> repository.update("tenant-1", req))
+            .isInstanceOf(GovernanceException.class)
+            .satisfies(error -> {
+                GovernanceException governance = (GovernanceException) error;
+                assertThat(governance.getErrorCode()).isEqualTo(ErrorCode.INTERNAL_ERROR);
+                assertThat(governance.getHttpStatus()).isEqualTo(500);
+            });
+        verify(jedis, times(5)).eval(anyString(), anyList(), anyList());
     }
 
     @Test

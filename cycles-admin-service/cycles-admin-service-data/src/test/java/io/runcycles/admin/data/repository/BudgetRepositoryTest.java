@@ -46,6 +46,7 @@ class BudgetRepositoryTest {
     @BeforeEach
     void setUp() {
         lenient().when(jedisPool.getResource()).thenReturn(jedis);
+        RedisBatchTestStubs.installHashReads(jedis);
     }
 
     @Test

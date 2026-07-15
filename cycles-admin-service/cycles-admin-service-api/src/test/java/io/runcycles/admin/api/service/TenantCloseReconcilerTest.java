@@ -77,6 +77,22 @@ class TenantCloseReconcilerTest {
     }
 
     @Test
+    void reconcileClosedTenants_healthyLeaseContentionDoesNotPolluteIncompleteMetric() {
+        Tenant closed = Tenant.builder().tenantId("tenant-1").status(TenantStatus.CLOSED).build();
+        when(workRepository.dueTenantIds(100)).thenReturn(List.of("tenant-1"));
+        when(tenantRepository.get("tenant-1")).thenReturn(closed);
+        when(cascadeService.cascade("tenant-1", null))
+            .thenReturn(TenantCloseCascadeService.CascadeResult.leaseInProgress());
+
+        reconciler.reconcileClosedTenants();
+
+        assertThat(meterRegistry.get("cycles_admin_tenant_close_reconcile_incomplete_total")
+            .counter().count()).isZero();
+        assertThat(meterRegistry.get("cycles_admin_tenant_close_reconcile_errors_total")
+            .counter().count()).isZero();
+    }
+
+    @Test
     void reconcileClosedTenants_discardsPrepareWhenParentFlipDidNotCommit() {
         Tenant active = Tenant.builder().tenantId("tenant-active")
             .status(TenantStatus.ACTIVE).build();

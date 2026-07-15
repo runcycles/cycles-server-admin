@@ -43,10 +43,23 @@ class SortedQueryGuardTest {
             .satisfies(error -> {
                 GovernanceException governance = (GovernanceException) error;
                 assertThat(governance.getErrorCode()).isEqualTo(ErrorCode.LIMIT_EXCEEDED);
+                assertThat(governance.getMessage())
+                    .contains("post-hydration filters cannot reduce source scan cost")
+                    .doesNotContain("indexed owner/time filters");
                 assertThat(governance.getDetails())
                     .containsEntry("total_candidates", candidates)
                     .containsEntry("max_scan_candidates",
                         SortedQueryGuard.MAX_SCANNED_CANDIDATES);
             });
+    }
+
+    @Test
+    void indexedSurfaceUsesCallerSpecificNarrowingGuidance() {
+        long candidates = SortedQueryGuard.MAX_SCANNED_CANDIDATES + 1L;
+
+        assertThatThrownBy(() -> SortedQueryGuard.requireScannable(
+                candidates, "event", "narrow the indexed tenant/time window"))
+            .isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("narrow the indexed tenant/time window");
     }
 }

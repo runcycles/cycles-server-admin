@@ -329,6 +329,7 @@ public class WebhookAdminController {
                 "filter must contain at least one property", 400);
         }
         String searchNorm = parseSearch(request.getFilter().getSearch());
+        request.getFilter().setSearch(searchNorm);
 
         IdempotencyStore.Claim<WebhookBulkActionResponse> idempotencyClaim =
             idempotencyStore.begin(BULK_IDEMPOTENCY_ENDPOINT,

@@ -678,7 +678,8 @@ public class BudgetRepository {
         Set<String> tenantIds = jedis.smembers("tenants");
         long candidates = 0L;
         for (String tenantId : tenantIds) candidates += jedis.scard("budgets:" + tenantId);
-        SortedQueryGuard.requireScannable(candidates, "cross-tenant budget");
+        SortedQueryGuard.requireScannable(candidates, "cross-tenant budget",
+            "supply tenant_id to use a tenant-scoped index or reduce the stored data set");
         List<BudgetLedger> all = new ArrayList<>();
         BudgetListFilters effective = filters != null ? filters : BudgetListFilters.empty();
         for (String tenantId : tenantIds) {

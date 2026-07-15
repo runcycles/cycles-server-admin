@@ -15,7 +15,6 @@ import io.runcycles.admin.api.contract.ContractValidationConfig;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
-import redis.clients.jedis.JedisPool;
 
 import java.time.Instant;
 import java.util.List;
@@ -34,7 +33,6 @@ class ApiKeyControllerTest {
     @MockitoBean private ApiKeyRepository apiKeyRepository;
     @MockitoBean private AuditRepository auditRepository;
     @MockitoBean private io.runcycles.admin.api.service.EventService eventService;
-    @MockitoBean private JedisPool jedisPool;
     @MockitoBean private io.runcycles.admin.api.service.TerminalOwnerMutationGuard mutationGuard;
 
     private static final String ADMIN_KEY = "test-admin-key";
@@ -421,9 +419,7 @@ class ApiKeyControllerTest {
                 .permissions(List.of("balances:read"))
                 .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(86400)).build();
-        redis.clients.jedis.Jedis jedisMock = mock(redis.clients.jedis.Jedis.class);
-        when(jedisPool.getResource()).thenReturn(jedisMock);
-        when(jedisMock.get("apikey:key_1")).thenReturn(objectMapper.writeValueAsString(oldKey));
+        when(apiKeyRepository.findByIdOrNull("key_1")).thenReturn(oldKey);
 
         ApiKey updated = ApiKey.builder()
                 .keyId("key_1").tenantId("tenant-1").keyPrefix("cyc_live_abc12")
@@ -654,9 +650,7 @@ class ApiKeyControllerTest {
 
     @Test
     void updateApiKeyMissingSnapshotTreatsPermissionAndScopePresenceAsChange() throws Exception {
-        redis.clients.jedis.Jedis jedis = mock(redis.clients.jedis.Jedis.class);
-        when(jedisPool.getResource()).thenReturn(jedis);
-        when(jedis.get("apikey:key-nosnapshot")).thenReturn(null);
+        when(apiKeyRepository.findByIdOrNull("key-nosnapshot")).thenReturn(null);
         ApiKey updated = ApiKey.builder().keyId("key-nosnapshot").tenantId("tenant-1")
             .permissions(List.of("budgets:read")).scopeFilter(List.of("tenant:tenant-1"))
             .status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
@@ -701,9 +695,7 @@ class ApiKeyControllerTest {
             .scopeFilter(List.of("tenant:old")).status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
         ApiKey updated = ApiKey.builder().keyId("key-scope").tenantId("tenant-1")
             .scopeFilter(List.of("tenant:new")).status(ApiKeyStatus.ACTIVE).createdAt(Instant.now()).build();
-        redis.clients.jedis.Jedis jedis = mock(redis.clients.jedis.Jedis.class);
-        when(jedisPool.getResource()).thenReturn(jedis);
-        when(jedis.get("apikey:key-scope")).thenReturn(objectMapper.writeValueAsString(oldKey));
+        when(apiKeyRepository.findByIdOrNull("key-scope")).thenReturn(oldKey);
         when(apiKeyRepository.update(eq("key-scope"), any())).thenReturn(updated);
 
         mockMvc.perform(patch("/v1/admin/api-keys/key-scope").header("X-Admin-API-Key", ADMIN_KEY)

@@ -399,7 +399,8 @@ class TenantCloseCascadeServiceTest {
 
         TenantCloseCascadeService.CascadeResult result = service.cascade("t1", request);
 
-        assertThat(result.failedResources()).containsExactly("cascade:lease:lost");
+        assertThat(result.inProgress()).isTrue();
+        assertThat(result.failedResources()).isEmpty();
         verify(webhookRepository, never()).cascadeDisable(any());
         verify(apiKeyRepository, never()).cascadeRevoke(any(), any());
         verify(heartbeatFuture).cancel(false);
