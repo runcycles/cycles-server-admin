@@ -109,8 +109,11 @@ advancement now uses `Math.nextUp` / `Math.nextDown`; equal-score traversal is
 chunked; partial single-close audit status is the truthful 500; missing outbox
 bodies fail visibly instead of leaving silently stuck work; and the first atomic
 idempotency draft was reordered so replay happens before mutable match/count
-reads. Documentation was then cross-checked against actual single-vs-bulk event
-correlation and reconciler behavior.
+reads. The final PR run also exposed a cold-cache build-order defect: Surefire
+referenced the Mockito agent before the model module had resolved its JAR, so
+Mockito is now an inherited parent test dependency. Documentation was then
+cross-checked against actual single-vs-bulk event correlation and reconciler
+behavior.
 
 **Rating.** Post-remediation: **9.5/10**. The correctness, durability,
 specification, concurrency, bounded-resource, operations, and build/test gaps

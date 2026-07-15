@@ -72,6 +72,16 @@
             </dependency>
         </dependencies>
     </dependencyManagement>
+    <dependencies>
+        <!-- Surefire installs Mockito as a test-JVM agent in every child
+             module. Declaring it here guarantees a cold Maven repository has
+             resolved the agent before the first (model) module starts. -->
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
     <build>
         <plugins>
             <plugin>

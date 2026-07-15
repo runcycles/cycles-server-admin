@@ -55,7 +55,8 @@ new optional request fields) are **not** considered breaking.
   95% JaCoCo branch-coverage gate in addition to the line gate. The clean
   integration-profile build covers 98.44% of model branches, 96.07% of data
   branches, and 95.48% of API branches. Jqwik uses supported JUnit Platform
-  configuration, and Mockito is attached explicitly as a test JVM agent.
+  configuration, and Mockito is inherited as a test dependency and attached
+  explicitly as a test JVM agent, including on cold CI runners.
 
 ## [0.1.25.51] — 2026-07-11
 
