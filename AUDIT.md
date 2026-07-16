@@ -1,4 +1,4 @@
-# Complete Budget Governance v0.1.25.53 — Admin Server Audit
+# Complete Budget Governance v0.1.25.54 — Admin Server Audit
 
 **Spec:**
 [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/469840bb2f41ce35650c89405ea12fc56e847c76/cycles-governance-admin-v0.1.25.yaml)
@@ -43,6 +43,20 @@ the `/test` synthetic-ping exception — .40 and .41 both implemented here in
 pin · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
+
+### 2026-07-16 — v0.1.25.53 published; production pins advanced; v0.1.25.54 opened
+
+GitHub release `v0.1.25.53` was published from merge commit `1afabd8`. The
+release workflow's vulnerability gate and published-image smoke test completed
+successfully, including readiness, version, and authenticated error-envelope
+probes. The immutable `0.1.25.53` and moving `latest` GHCR tags both resolve to
+digest
+`sha256:55ce3d6aa80ca60c75b92369042455a7e7b54f5a340a137c170642e2662650b9`.
+With the image available, both production Compose manifests now advance their
+admin self-pin from `0.1.25.52` to `0.1.25.53`; sibling full-stack image pins
+are unchanged. The Maven development revision advances from `0.1.25.53` to
+`0.1.25.54` immediately after release as required by the pre-release drift
+runbook; no `0.1.25.54` application or wire behavior is claimed yet.
 
 ### 2026-07-16 — v0.1.25.53: unsupported HTTP methods return 405
 
