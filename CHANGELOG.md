@@ -14,6 +14,17 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.53] — 2026-07-16
+
+### Fixed
+
+- Requests using an unsupported HTTP method now return `405 Method Not
+  Allowed` with the standard JSON `ErrorResponse`, `error=INVALID_REQUEST`,
+  and an RFC-compliant `Allow` header. Previously Spring's
+  `HttpRequestMethodNotSupportedException` fell through the generic exception
+  handler and was misreported as `500 INTERNAL_ERROR`. The rejection is also
+  recorded in the failure audit with status 405.
+
 ## [0.1.25.52] — 2026-07-15
 
 ### Fixed

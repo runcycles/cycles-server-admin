@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -19,8 +20,13 @@ import org.springframework.validation.FieldError;
 import org.springframework.core.MethodParameter;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.servlet.HandlerMapping;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolation;
@@ -28,6 +34,7 @@ import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.Path;
 
 import java.util.Map;
+import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -41,6 +48,11 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.hamcrest.Matchers.containsString;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @ExtendWith(OutputCaptureExtension.class)
 class GlobalExceptionHandlerTest {
@@ -175,6 +187,50 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getBody().getError()).isEqualTo(ErrorCode.INVALID_REQUEST);
         assertThat(response.getBody().getMessage()).contains("limit");
         assertThat(response.getBody().getMessage()).contains("abc");
+    }
+
+    @Test
+    void handleMethodNotSupported_returns405WithAllowHeaderAndAuditEntry() {
+        when(mockRequest.getMethod()).thenReturn("POST");
+        when(mockRequest.getRequestURI()).thenReturn("/v1/auth/introspect");
+        HttpRequestMethodNotSupportedException ex =
+                new HttpRequestMethodNotSupportedException("POST", List.of("GET", "HEAD"));
+
+        ResponseEntity<ErrorResponse> response = handler.handleMethodNotSupported(ex, mockRequest);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
+        assertThat(response.getHeaders().getAllow()).containsExactlyInAnyOrder(
+                org.springframework.http.HttpMethod.GET, org.springframework.http.HttpMethod.HEAD);
+        assertThat(response.getBody().getError()).isEqualTo(ErrorCode.INVALID_REQUEST);
+        assertThat(response.getBody().getMessage())
+                .contains("POST")
+                .contains("GET")
+                .contains("HEAD");
+        verify(auditFailure).logFailure(eq(mockRequest), eq(405),
+                eq(ErrorCode.INVALID_REQUEST), anyString(), isNull());
+    }
+
+    @Test
+    void springDispatch_routesWrongMethodToDedicated405Handler() throws Exception {
+        @RestController
+        class MethodFixtureController {
+            @GetMapping("/method-fixture")
+            Map<String, String> getOnly() {
+                return Map.of("status", "ok");
+            }
+        }
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(new MethodFixtureController())
+                .setControllerAdvice(handler)
+                .build();
+
+        mvc.perform(post("/method-fixture"))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(header().string(HttpHeaders.ALLOW, containsString("GET")))
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.message").value(containsString("POST")));
+
+        verify(auditFailure).logFailure(any(HttpServletRequest.class), eq(405),
+                eq(ErrorCode.INVALID_REQUEST), anyString(), isNull());
     }
 
     @Test

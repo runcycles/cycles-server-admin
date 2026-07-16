@@ -44,6 +44,31 @@ pin · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-07-16 — v0.1.25.53: unsupported HTTP methods return 405
+
+Live dashboard-stack testing sent a wrong-method request to an admin endpoint
+and received `500 INTERNAL_ERROR`. The controller was never invoked: Spring
+raised `HttpRequestMethodNotSupportedException`, which had no dedicated advice
+method and therefore fell into `GlobalExceptionHandler`'s generic 500 branch.
+That misclassified a deterministic client/protocol error as an operator-paging
+server fault and omitted the HTTP `Allow` response header.
+
+`GlobalExceptionHandler` now maps this exception to `405 Method Not Allowed`,
+uses the existing `INVALID_REQUEST` error code (the pinned governance error
+enum has no method-specific value), includes Spring's supported methods in the
+wire message and `Allow` header, and records the same 405 classification via
+`AuditFailureService`. The generic 500 path remains unchanged for genuinely
+unexpected exceptions. A focused handler test covers status, envelope, header,
+and audit-write behavior. No governance-spec surface or success response
+changes. Full Maven verification against the authoritative local spec at the
+repository's pinned commit (`cycles-protocol@469840b`) passes 1,923 tests across
+79 report files with zero failures/errors. Focused coverage includes both
+direct advice assertions and the real `/v1/auth/introspect` WebMvc slice, which
+proves Spring dispatch returns the envelope and `Allow` header before controller
+invocation. The 95% JaCoCo gates pass in every
+module: API 97.53% line / 95.34% branch, data 97.60% / 95.65%, and model 97.85%
+/ 98.44%.
+
 ### 2026-07-15 — v0.1.25.52 published; production pins advanced; v0.1.25.53 opened
 
 GitHub release `v0.1.25.52` was published from merge commit `6ca8293`. The

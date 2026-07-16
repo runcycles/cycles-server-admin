@@ -16,6 +16,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.servlet.HandlerMapping;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -135,6 +136,29 @@ public class GlobalExceptionHandler {
         auditFailure.logFailure(request, HttpStatus.BAD_REQUEST.value(), ErrorCode.INVALID_REQUEST, "Malformed request body", null);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
             .body(errorBuilder(request).error(ErrorCode.INVALID_REQUEST).message("Malformed request body").build());
+    }
+
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ErrorResponse> handleMethodNotSupported(
+            HttpRequestMethodNotSupportedException ex, HttpServletRequest request) {
+        Set<HttpMethod> supported = ex.getSupportedHttpMethods();
+        String allowed = supported == null || supported.isEmpty()
+                ? ""
+                : supported.stream().map(HttpMethod::name).sorted().collect(Collectors.joining(", "));
+        String message = "Request method '" + ex.getMethod() + "' is not supported"
+                + (allowed.isEmpty() ? " for this endpoint" : "; supported methods: " + allowed);
+        logRequestError(request, HttpStatus.METHOD_NOT_ALLOWED.value(), ErrorCode.INVALID_REQUEST, message);
+        auditFailure.logFailure(request, HttpStatus.METHOD_NOT_ALLOWED.value(),
+                ErrorCode.INVALID_REQUEST, message, null);
+
+        ResponseEntity.BodyBuilder response = ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED);
+        if (supported != null && !supported.isEmpty()) {
+            response.allow(supported.toArray(HttpMethod[]::new));
+        }
+        return response.body(errorBuilder(request)
+                .error(ErrorCode.INVALID_REQUEST)
+                .message(message)
+                .build());
     }
 
     @ExceptionHandler(Exception.class)
