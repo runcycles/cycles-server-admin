@@ -158,6 +158,17 @@ class AuthControllerTest {
     }
 
     @Test
+    void introspect_withWrongMethod_returns405ErrorEnvelopeAndAllowHeader() throws Exception {
+        mockMvc.perform(post("/v1/auth/introspect")
+                        .header("X-Admin-API-Key", ADMIN_KEY))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(header().string("Allow", org.hamcrest.Matchers.containsString("GET")))
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("POST")));
+    }
+
+    @Test
     void introspect_withoutAnyKey_returns401() throws Exception {
         // v0.1.25.19: the endpoint is dual-auth but still rejects missing
         // credentials. Without either header, the interceptor routes through
