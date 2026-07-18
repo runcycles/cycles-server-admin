@@ -99,7 +99,7 @@ class RedisIntegrationTest {
         webhookRepository = new WebhookRepository();
         injectField(webhookRepository, "jedisPool", jedisPool);
         injectField(webhookRepository, "objectMapper", objectMapper);
-        injectField(webhookRepository, "cryptoService", new CryptoService(""));
+        injectField(webhookRepository, "cryptoService", new CryptoService("", true));
 
         tenantCloseWorkRepository = new TenantCloseWorkRepository(jedisPool, objectMapper);
         idempotencyStore = new IdempotencyStore(jedisPool, objectMapper);

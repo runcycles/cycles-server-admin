@@ -2,7 +2,6 @@ package io.runcycles.admin.data.service;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -10,12 +9,17 @@ import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Base64;
 
 /**
- * AES-256-GCM encryption for webhook signing secrets at rest.
- * If no encryption key is configured, operates in pass-through mode (no encryption).
+ * AES-256-GCM encryption and decryption for webhook signing secrets at rest.
+ * Missing key material fails startup unless an explicit development/backward-
+ * compatibility opt-out enables plaintext pass-through. Existing plaintext
+ * values remain readable after a key is configured, while all subsequent writes
+ * use the {@code enc:} format. Encrypted values fail closed because returning
+ * ciphertext as if it were a signing secret would produce invalid signatures.
  */
 @Component
 public class CryptoService {
@@ -29,16 +33,18 @@ public class CryptoService {
 
     private final SecretKeySpec key;
 
-    @Autowired
-    public CryptoService(@Value("${webhook.secret.encryption-key:}") String base64Key,
-                         @Value("${webhook.secret.encryption-required:false}") boolean encryptionRequired) {
+    public CryptoService(
+            @Value("${webhook.secret.encryption-key:}") String base64Key,
+            @Value("${webhook.secret.allow-plaintext:false}") boolean allowPlaintext) {
         if (base64Key == null || base64Key.isBlank()) {
-            if (encryptionRequired) {
+            if (!allowPlaintext) {
                 throw new IllegalStateException(
-                    "Webhook secret encryption key is required when webhook.secret.encryption-required=true");
+                        "WEBHOOK_SECRET_ENCRYPTION_KEY must be configured; "
+                        + "set WEBHOOK_SECRET_ALLOW_PLAINTEXT=true only for local/development compatibility");
             }
             this.key = null;
-            LOG.info("Webhook secret encryption disabled (no key configured)");
+            LOG.warn("SECURITY WARNING: webhook signing secrets stored UNENCRYPTED "
+                    + "because webhook.secret.allow-plaintext=true");
         } else {
             byte[] keyBytes = Base64.getDecoder().decode(base64Key);
             if (keyBytes.length != 32) {
@@ -49,14 +55,6 @@ public class CryptoService {
         }
     }
 
-    public CryptoService(String base64Key) {
-        this(base64Key, false);
-    }
-
-    /**
-     * Encrypt a plaintext string. Returns "enc:" prefixed base64 ciphertext.
-     * In pass-through mode (no key), returns plaintext unchanged.
-     */
     public String encrypt(String plaintext) {
         if (key == null || plaintext == null) return plaintext;
         try {
@@ -64,7 +62,7 @@ public class CryptoService {
             RANDOM.nextBytes(iv);
             Cipher cipher = Cipher.getInstance(ALGORITHM);
             cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(TAG_LENGTH_BITS, iv));
-            byte[] ciphertext = cipher.doFinal(plaintext.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            byte[] ciphertext = cipher.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
             byte[] combined = ByteBuffer.allocate(IV_LENGTH + ciphertext.length)
                     .put(iv).put(ciphertext).array();
             return ENCRYPTED_PREFIX + Base64.getEncoder().encodeToString(combined);
@@ -73,18 +71,14 @@ public class CryptoService {
         }
     }
 
-    /**
-     * Decrypt a ciphertext string. Handles both encrypted ("enc:" prefixed) and
-     * plaintext strings for backward compatibility with existing unencrypted secrets.
-     */
     public String decrypt(String value) {
         if (value == null) return null;
         if (!value.startsWith(ENCRYPTED_PREFIX)) {
             return value; // Plaintext (backward compatible)
         }
         if (key == null) {
-            LOG.warn("Webhook secret decrypt fallback because encryption key is not configured: encrypted_value_present=true returning_original_value=true");
-            return value;
+            throw new IllegalStateException(
+                    "Webhook secret is encrypted but WEBHOOK_SECRET_ENCRYPTION_KEY is not configured");
         }
         try {
             byte[] combined = Base64.getDecoder().decode(value.substring(ENCRYPTED_PREFIX.length()));
@@ -96,13 +90,12 @@ public class CryptoService {
             Cipher cipher = Cipher.getInstance(ALGORITHM);
             cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(TAG_LENGTH_BITS, iv));
             byte[] plaintext = cipher.doFinal(ciphertext);
-            return new String(plaintext, java.nio.charset.StandardCharsets.UTF_8);
+            return new String(plaintext, StandardCharsets.UTF_8);
         } catch (Exception e) {
             throw new RuntimeException("Failed to decrypt secret", e);
         }
     }
 
-    /** Returns true if encryption is enabled (key is configured). */
     public boolean isEnabled() {
         return key != null;
     }

@@ -86,7 +86,7 @@ class WebhookReplayPaginationIntegrationTest {
         webhookRepository = new WebhookRepository();
         ReflectionTestUtils.setField(webhookRepository, "jedisPool", jedisPool);
         ReflectionTestUtils.setField(webhookRepository, "objectMapper", objectMapper);
-        ReflectionTestUtils.setField(webhookRepository, "cryptoService", new CryptoService(""));
+        ReflectionTestUtils.setField(webhookRepository, "cryptoService", new CryptoService("", true));
     }
 
     @AfterAll

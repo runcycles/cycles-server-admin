@@ -36,7 +36,7 @@ class WebhookRepositoryTest {
     @Mock private JedisPool jedisPool;
     @Mock private Jedis jedis;
     @Spy private ObjectMapper objectMapper = createObjectMapper();
-    @Spy private CryptoService cryptoService = new CryptoService(""); // pass-through
+    @Spy private CryptoService cryptoService = new CryptoService("", true); // explicit test-only pass-through
     @InjectMocks private WebhookRepository repository;
 
     private static ObjectMapper createObjectMapper() {

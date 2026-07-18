@@ -14,6 +14,25 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.54] — 2026-07-18
+
+### Security
+
+- Webhook signing-secret encryption now fails closed at startup when
+  `WEBHOOK_SECRET_ENCRYPTION_KEY` is missing. Plaintext storage requires the
+  explicit local/development opt-out `WEBHOOK_SECRET_ALLOW_PLAINTEXT=true` and
+  emits a prominent warning.
+- Encrypted `enc:` values now fail closed when no decrypt key is available
+  instead of being returned as if they were a signing secret. Existing
+  plaintext values remain readable after a key is configured, while all new
+  or rotated writes remain encrypted for gradual migration.
+
+### Changed
+
+- Local Compose manifests explicitly enable plaintext compatibility when the
+  shared key is omitted. Production manifests require the key and explicitly
+  disable the opt-out, matching `cycles-server-events` security defaults.
+
 ## [0.1.25.53] — 2026-07-16
 
 ### Fixed
