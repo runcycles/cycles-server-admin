@@ -1,4 +1,4 @@
-# Complete Budget Governance v0.1.25.54 — Admin Server Audit
+# Complete Budget Governance v0.1.25.55 — Admin Server Audit
 
 **Spec:**
 [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/469840bb2f41ce35650c89405ea12fc56e847c76/cycles-governance-admin-v0.1.25.yaml)
@@ -43,6 +43,20 @@ the `/test` synthetic-ping exception — .40 and .41 both implemented here in
 pin · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
+
+### 2026-07-18 — v0.1.25.54 published; production pins advanced; v0.1.25.55 opened
+
+GitHub release `v0.1.25.54` was published from merge commit `b88953b`. The
+release workflow's HIGH/CRITICAL vulnerability gate and published-image smoke
+test completed successfully, including encrypted startup, readiness, version,
+and authenticated error-envelope probes. The immutable `0.1.25.54` and moving
+`latest` GHCR tags both resolve to digest
+`sha256:36ae9d76a0b7c8a688d847d8b112d2726f696e3e4b9acd5e58f20100a1a0c2d5`.
+With the image available, both production Compose manifests now advance their
+admin self-pin from `0.1.25.53` to `0.1.25.54`; sibling full-stack image pins
+are unchanged. The Maven development revision advances from `0.1.25.54` to
+`0.1.25.55` immediately after release as required by the pre-release drift
+runbook; no `0.1.25.55` application or wire behavior is claimed yet.
 
 ### 2026-07-18 — v0.1.25.54: webhook secret encryption fails closed by default
 
