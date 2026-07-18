@@ -147,8 +147,8 @@ API keys use the format `cyc_live_{random}` (production) or `cyc_test_{random}` 
 | `REDIS_PORT` | Yes | — | Redis port |
 | `REDIS_PASSWORD` | Yes in prod | — | Redis password. Production Compose requires it and starts Redis with `requirepass`; local Compose may run without auth. |
 | `ADMIN_API_KEY` | Yes | — | Master admin API key for `X-Admin-API-Key` header |
-| `WEBHOOK_SECRET_ENCRYPTION_KEY` | Yes in prod | (empty) | AES-256-GCM encryption key for webhook signing secrets at rest. Base64-encoded 32 bytes. If empty and encryption is not required, secrets are stored in plaintext for dev mode. |
-| `WEBHOOK_SECRET_ENCRYPTION_REQUIRED` | No | `false` | Set `true` in production to fail startup when `WEBHOOK_SECRET_ENCRYPTION_KEY` is missing. |
+| `WEBHOOK_SECRET_ENCRYPTION_KEY` | Yes by default | (empty; startup fails) | AES-256-GCM encryption key for webhook signing secrets at rest. Base64-encoded 32 bytes and shared with `cycles-server-events`. |
+| `WEBHOOK_SECRET_ALLOW_PLAINTEXT` | No | `false` | Explicit local/development compatibility opt-out. When `true` with an empty key, startup emits a prominent warning and signing secrets are stored unencrypted. Never enable in production. |
 | `LOG_LEVEL` | No | `INFO` | Application logging level (`DEBUG`, `INFO`, `WARN`, `ERROR`) |
 | `JAVA_OPTS` | No | (empty) | JVM options consumed by the Docker image entrypoint. Production Compose sets conservative G1/heap-percentage defaults. |
 | `API_DOCS_ENABLED` | No | `false` | Enable generated OpenAPI JSON at `/api-docs`; protected by `X-Admin-API-Key` when enabled. |
@@ -181,7 +181,14 @@ export WEBHOOK_SECRET_ENCRYPTION_KEY=$(openssl rand -base64 32)
 1. Admin encrypts the signing secret before storing in Redis: `webhook:secret:{id}` = `enc:<base64(IV + ciphertext + auth_tag)>`
 2. Events service decrypts on read before computing HMAC-SHA256 signatures
 3. Backward compatible: existing plaintext secrets (no `enc:` prefix) are returned as-is
-4. If key is not set, both services operate in pass-through mode (no encryption)
+4. A missing key fails startup by default in both services. Local/development
+   deployments may explicitly set `WEBHOOK_SECRET_ALLOW_PLAINTEXT=true`; this
+   stores new secrets unencrypted and emits a prominent startup warning.
+
+After a key is added, existing non-`enc:` secrets remain readable and all new
+or rotated writes use the encrypted `enc:` format. This provides a gradual
+plaintext-to-encrypted migration without accepting ciphertext as a signing
+secret when the decrypt key is unavailable.
 
 **Key management:**
 - Store the key in a secrets manager (Vault, AWS Secrets Manager, etc.) — not in git

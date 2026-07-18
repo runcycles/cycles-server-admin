@@ -47,7 +47,8 @@ import java.util.Map;
         // @TestPropertySource (not @DynamicPropertySource) to ensure it's present
         // when AuthInterceptor is instantiated.
         "admin.api-key=test-admin-integration-key",
-        "webhook.secret.encryption-key="
+        "webhook.secret.encryption-key=",
+        "webhook.secret.allow-plaintext=true"
 })
 public abstract class BaseIntegrationTest {
 

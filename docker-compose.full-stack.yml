@@ -32,6 +32,7 @@ services:
       REDIS_PASSWORD: ""
       ADMIN_API_KEY: ${ADMIN_API_KEY:-admin-bootstrap-key}
       WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
+      WEBHOOK_SECRET_ALLOW_PLAINTEXT: ${WEBHOOK_SECRET_ALLOW_PLAINTEXT:-true}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:7979/actuator/health"]
       interval: 10s
@@ -76,6 +77,7 @@ services:
       REDIS_PORT: 6379
       REDIS_PASSWORD: ""
       WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
+      WEBHOOK_SECRET_ALLOW_PLAINTEXT: ${WEBHOOK_SECRET_ALLOW_PLAINTEXT:-true}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:9980/actuator/health"]
       interval: 10s

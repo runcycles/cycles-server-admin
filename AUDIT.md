@@ -44,6 +44,37 @@ pin · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-07-18 — v0.1.25.54: webhook secret encryption fails closed by default
+
+The admin-side `CryptoService` previously treated a missing encryption key as
+permission to store every tenant's webhook signing secret in plaintext. It
+also returned an `enc:` value unchanged when the decrypt key was absent,
+allowing ciphertext to flow into signing logic. Both behaviors depended on a
+legacy default-open `webhook.secret.encryption-required=false` switch and had
+drifted from the hardened dispatcher copy in `cycles-server-events` #114.
+
+The duplicated services are now back in lockstep: a missing key fails bean
+creation and therefore application startup unless the explicit local/development
+escape hatch `WEBHOOK_SECRET_ALLOW_PLAINTEXT=true` is set. The opt-out logs a
+prominent WARN that secrets are stored unencrypted. Existing plaintext values
+without the `enc:` prefix remain readable after a key is added, while new and
+rotated values are encrypted; encrypted values fail closed without the key.
+This is an implementation and deployment-default hardening only and does not
+change the governance API or Redis value format.
+
+Local Compose manifests declare the plaintext opt-out alongside an empty key;
+production manifests continue to require the shared 32-byte key and explicitly
+keep the opt-out false. Unit and integration test configurations opt out only
+where plaintext fixtures are intentional.
+
+Verification used the protocol checkout's spec file after confirming its Git
+blob exactly matches the repository pin at `cycles-protocol@469840b`. Full
+non-integration Maven verification passes 1,849 tests with zero failures or
+errors. The 95% JaCoCo line and branch gates pass in every module: model 97.85%
+line / 98.44% branch, data 97.48% / 95.35%, and API 97.47% / 95.05%.
+`CryptoService` covers all 20 branches. A focused Docker run of the three
+affected integration classes passes another 65 tests.
+
 ### 2026-07-16 — v0.1.25.53 published; production pins advanced; v0.1.25.54 opened
 
 GitHub release `v0.1.25.53` was published from merge commit `1afabd8`. The

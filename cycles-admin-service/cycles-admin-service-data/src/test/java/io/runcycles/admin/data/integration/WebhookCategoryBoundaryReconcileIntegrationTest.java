@@ -63,7 +63,7 @@ class WebhookCategoryBoundaryReconcileIntegrationTest {
         webhookRepository = new WebhookRepository();
         inject(webhookRepository, "jedisPool", jedisPool);
         inject(webhookRepository, "objectMapper", objectMapper);
-        inject(webhookRepository, "cryptoService", new CryptoService(""));
+        inject(webhookRepository, "cryptoService", new CryptoService("", true));
     }
 
     @AfterAll
