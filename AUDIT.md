@@ -65,7 +65,9 @@ change the governance API or Redis value format.
 Local Compose manifests declare the plaintext opt-out alongside an empty key;
 production manifests continue to require the shared 32-byte key and explicitly
 keep the opt-out false. Unit and integration test configurations opt out only
-where plaintext fixtures are intentional.
+where plaintext fixtures are intentional. The published-image release smoke test
+supplies a fixed, non-production 32-byte key so it validates encrypted startup
+under the new fail-closed default.
 
 Verification used the protocol checkout's spec file after confirming its Git
 blob exactly matches the repository pin at `cycles-protocol@469840b`. Full

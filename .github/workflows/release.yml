@@ -131,6 +131,7 @@ jobs:
           -e REDIS_PORT=6379
           -e REDIS_PASSWORD=
           -e ADMIN_API_KEY=smoke-test-admin-key
+          -e WEBHOOK_SECRET_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
           ghcr.io/runcycles/cycles-server-admin:${VERSION}
 
       - name: Wait for /actuator/health/readiness
