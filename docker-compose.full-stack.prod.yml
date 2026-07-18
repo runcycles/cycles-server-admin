@@ -22,7 +22,7 @@ services:
 
   cycles-admin:
     logging: *default-logging
-    image: ghcr.io/runcycles/cycles-server-admin:0.1.25.53
+    image: ghcr.io/runcycles/cycles-server-admin:0.1.25.54
     restart: unless-stopped
     ports:
       - "7979:7979"
