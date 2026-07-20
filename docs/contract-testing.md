@@ -44,7 +44,7 @@ That's it. No per-test-method changes — the validator auto-applies to every `m
 
 ## Where the spec comes from
 
-`ContractSpecLoader.loadSpec()` fetches the spec at cycles-protocol commit `469840bb2f41ce35650c89405ea12fc56e847c76` on first use and caches it under `target/contract/spec-<revision>.yaml` with a 1-hour TTL. Pinning makes PR results reproducible; use `-Dcontract.spec.url=...` while coordinating a spec upgrade, then advance the reviewed commit deliberately.
+`ContractSpecLoader.loadSpec()` fetches the spec at cycles-protocol commit `402307a88906e9fd090159e5ccf2d0036e6aec83` on first use and caches it under `target/contract/spec-<revision>.yaml` with a 1-hour TTL. Pinning makes PR results reproducible; use `-Dcontract.spec.url=...` while coordinating a spec upgrade, then advance the reviewed commit deliberately.
 
 The nightly `contract-drift` job compares that reviewed revision's admin YAML
 with `cycles-protocol/main`. It fails on upstream drift, forcing a deliberate

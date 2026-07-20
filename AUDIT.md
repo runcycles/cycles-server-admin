@@ -1,8 +1,8 @@
 # Complete Budget Governance v0.1.25.55 — Admin Server Audit
 
 **Spec:**
-[`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/469840bb2f41ce35650c89405ea12fc56e847c76/cycles-governance-admin-v0.1.25.yaml)
-(OpenAPI 3.1.0, info.version `0.1.25.41`; adds CASCADE SEMANTICS — Rule 1 `POST
+[`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/402307a88906e9fd090159e5ccf2d0036e6aec83/cycles-governance-admin-v0.1.25.yaml)
+(OpenAPI 3.1.0, info.version `0.1.25.42`; adds CASCADE SEMANTICS — Rule 1 `POST
 /admin/tenants/{id}` PATCH→CLOSED cascades owned budgets (→CLOSED), webhook
 subscriptions (→DISABLED), and API keys (→REVOKED) under a shared correlation_id
 — Rule 1 permits **Mode A (atomic)** or **Mode B
@@ -36,13 +36,36 @@ not carry admin-only event types/categories); v0.1.25.41 (merged,
 cycles-protocol#130) narrows `replayEvents` success to
 selection-completeness + best-effort enqueue (all-or-narrow) and documents
 the `/test` synthetic-ping exception — .40 and .41 both implemented here in
-0.1.25.51) in
+0.1.25.51; v0.1.25.42 aligns policy write requests with the existing
+non-negative `Policy.priority` response invariant — implemented here in
+0.1.25.55) in
 [cycles-protocol](https://github.com/runcycles/cycles-protocol)
 
 **Server:** Spring Boot 3.5.16 / Java 21 / Jedis 7.5.2 · commons-lang3 3.18.0
 pin · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
+
+### 2026-07-20 — v0.1.25.55: enforce the policy priority contract
+
+Governance spec revision 0.1.25.42 resolves a request/response contradiction:
+`Policy.priority` already had `minimum: 0`, while the create and update request
+schemas admitted negative integers. The server mirrored that gap and could
+persist a policy that its own successful response schema could not represent.
+
+- `PolicyCreateRequest.priority` and `PolicyUpdateRequest.priority` now enforce
+  `@Min(0)`. Negative writes fail at the HTTP boundary with `400
+  INVALID_REQUEST` before the repository is called.
+- Omitted, zero, and positive priorities are unchanged. Existing legacy rows
+  are not rewritten, and a PATCH that omits priority can still update another
+  field on a legacy row.
+- Contract tests now pin cycles-protocol commit `402307a` so CI validates the
+  exact 0.1.25.42 schema rather than a moving branch.
+
+Focused model and controller verification passes 43 tests. A clean full
+non-integration Maven verification passes 1,855 tests with zero failures or
+errors. The 95% JaCoCo line and branch gates pass in every module: model 97.85%
+line / 98.44% branch, data 97.48% / 95.35%, and API 97.47% / 95.05%.
 
 ### 2026-07-18 — v0.1.25.54 published; production pins advanced; v0.1.25.55 opened
 

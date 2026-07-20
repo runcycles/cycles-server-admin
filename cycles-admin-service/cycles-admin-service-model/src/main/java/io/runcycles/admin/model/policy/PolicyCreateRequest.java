@@ -16,7 +16,7 @@ public class PolicyCreateRequest {
     @NotBlank @Size(max = 256) @JsonProperty("name") private String name;
     @Size(max = 1024) @JsonProperty("description") private String description;
     @NotBlank @JsonProperty("scope_pattern") private String scopePattern;
-    @JsonProperty("priority") private Integer priority;
+    @Min(0) @JsonProperty("priority") private Integer priority;
     @Valid @JsonProperty("caps") private Caps caps;
     @JsonProperty("commit_overage_policy") private CommitOveragePolicy commitOveragePolicy;
     @Valid @JsonProperty("reservation_ttl_override") private ReservationTtlOverride reservationTtlOverride;
