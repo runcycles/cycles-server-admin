@@ -14,7 +14,7 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
-## [0.1.25.55] — 2026-07-20
+## [0.1.25.55] — 2026-07-21
 
 ### Fixed
 
@@ -26,6 +26,12 @@ new optional request fields) are **not** considered breaking.
 
 - Contract validation advances to governance spec revision 0.1.25.42 at the
   reviewed cycles-protocol commit that defines the request-side minimum.
+
+### Internal
+
+- Refresh the SHA-pinned `actions/setup-java` and
+  `github/codeql-action/upload-sarif` workflow dependencies. These changes do
+  not affect the published server image or API behavior.
 
 ## [0.1.25.54] — 2026-07-18
 

@@ -46,7 +46,7 @@ pin · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
-### 2026-07-20 — v0.1.25.55: enforce the policy priority contract
+### 2026-07-21 — v0.1.25.55: enforce the policy priority contract
 
 Governance spec revision 0.1.25.42 resolves a request/response contradiction:
 `Policy.priority` already had `minimum: 0`, while the create and update request
@@ -61,6 +61,10 @@ persist a policy that its own successful response schema could not represent.
   field on a legacy row.
 - Contract tests now pin cycles-protocol commit `402307a` so CI validates the
   exact 0.1.25.42 schema rather than a moving branch.
+- The pre-release provenance sweep records the two workflow-only commits since
+  v0.1.25.54: `actions/setup-java` 5.6.0 and
+  `github/codeql-action/upload-sarif` 4.37.1. Both remain SHA-pinned and neither
+  changes the application artifact or wire contract.
 
 Focused model and controller verification passes 43 tests. A clean full
 non-integration Maven verification passes 1,855 tests with zero failures or
