@@ -2,13 +2,14 @@ package io.runcycles.admin.model.policy;
 import io.runcycles.admin.model.shared.*;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 import lombok.*;
 import java.time.Instant;
 @Data @NoArgsConstructor @AllArgsConstructor
 public class PolicyUpdateRequest {
     @JsonProperty("name") private String name;
     @JsonProperty("description") private String description;
-    @JsonProperty("priority") private Integer priority;
+    @Min(0) @JsonProperty("priority") private Integer priority;
     @Valid @JsonProperty("caps") private Caps caps;
     @JsonProperty("commit_overage_policy") private CommitOveragePolicy commitOveragePolicy;
     @Valid @JsonProperty("reservation_ttl_override") private ReservationTtlOverride reservationTtlOverride;

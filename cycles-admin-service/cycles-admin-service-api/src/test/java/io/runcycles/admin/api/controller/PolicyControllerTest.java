@@ -77,6 +77,20 @@ class PolicyControllerTest {
     }
 
     @Test
+    void createPolicy_negativePriority_returns400WithoutPersistence() throws Exception {
+        setupApiKeyAuth();
+
+        mockMvc.perform(post("/v1/admin/policies")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"P\",\"scope_pattern\":\"*\",\"priority\":-1}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(policyRepository, never()).create(any(), any());
+    }
+
+    @Test
     void createPolicy_noApiKey_returns401() throws Exception {
         mockMvc.perform(post("/v1/admin/policies")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -289,6 +303,20 @@ class PolicyControllerTest {
                 .content("{\"name\":\"Renamed\",\"future_field\":true}"))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+
+        verify(policyRepository, never()).update(anyString(), anyString(), any());
+    }
+
+    @Test
+    void updatePolicy_negativePriority_returns400WithoutPersistence() throws Exception {
+        setupApiKeyAuth();
+
+        mockMvc.perform(patch("/v1/admin/policies/pol_1")
+                        .header("X-Cycles-API-Key", "valid-api-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"priority\":-1}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
 
         verify(policyRepository, never()).update(anyString(), anyString(), any());
     }

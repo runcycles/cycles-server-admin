@@ -14,6 +14,19 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.55] — 2026-07-20
+
+### Fixed
+
+- Policy create and update requests now reject negative `priority` values with
+  `400 INVALID_REQUEST`, matching the existing non-negative `Policy.priority`
+  response contract. Omitted, zero, and positive values are unchanged.
+
+### Changed
+
+- Contract validation advances to governance spec revision 0.1.25.42 at the
+  reviewed cycles-protocol commit that defines the request-side minimum.
+
 ## [0.1.25.54] — 2026-07-18
 
 ### Security
