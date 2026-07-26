@@ -46,6 +46,24 @@ pin · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-07-26 — Dependabot maintenance: workflow security pins and Maven build tooling
+
+Five dependency-only PRs were reviewed and merged without changing the admin
+API, runtime dependencies, application source, or production image pins.
+
+| PR | Update | Review outcome |
+|---|---|---|
+| #226 | `docker/login-action` 4.4.0 → 4.5.1 | GHCR inputs are unchanged; the new action adds Docker Hub OIDC support and dependency fixes. |
+| #227 | `actions/checkout` 7.0.0 → 7.0.1 | All seven uses remain full-SHA pinned; the patch hardens argument handling and branch normalization. |
+| #228 | `flatten-maven-plugin` 1.7.3 → 1.8.0 | Existing `resolveCiFriendliesOnly` configuration is unchanged; the release adds Maven 3.10 compatibility and flattening fixes. |
+| #229 | `github/codeql-action/upload-sarif` 4.37.1 → 4.37.3 | All three upload steps remain full-SHA pinned; the patch includes proxy handling and bundle updates. |
+| #230 | `ossf/scorecard-action` 2.4.3 → 2.4.4 | The full-SHA pin now carries Scorecard 5.5.0 and makes result-upload failures non-fatal to the analysis action. |
+
+Every PR passed the unit/contract and integration suites. Applicable container
+build, Trivy, and Dependabot auto-merge checks also passed. The action-only
+updates do not enter the application artifact; the Maven build-plugin update
+was exercised by both Java verification gates.
+
 ### 2026-07-21 — v0.1.25.55: enforce the policy priority contract
 
 Governance spec revision 0.1.25.42 resolves a request/response contradiction:
