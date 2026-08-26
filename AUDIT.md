@@ -46,6 +46,14 @@ pin · tomcat-embed-core 10.1.55 pin
 (re-introduced 2026-05-25 for Apache Tomcat CVE-2026-43512 / -43513 / -43514 /
 -43515 / -42498 / -41284 / -41293)
 
+### 2026-08-26 — Buildx workflow maintenance (no version bump)
+
+Dependabot PR #240 updated `docker/setup-buildx-action` from 4.2.0 to 4.3.0
+in the pull-request container scan and release workflows. CI, CodeQL, the
+container scan, and the supply-chain scorecard passed on the merged commit.
+Production Java code, runtime dependencies, container contents, authoritative
+API YAML, public APIs, and release behavior are unchanged.
+
 ### 2026-07-26 — Dependabot maintenance: workflow security pins and Maven build tooling
 
 Five dependency-only PRs were reviewed and merged without changing the admin
