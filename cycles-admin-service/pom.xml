@@ -27,18 +27,11 @@
              the image transitively via swagger-core-jakarta (OpenAPI UI).
              Remove once Spring Boot ships with 3.18.0+ as its managed version. -->
         <commons-lang3.version>3.18.0</commons-lang3.version>
-        <!-- Override Spring Boot 3.5.14's managed tomcat-embed-core 10.1.54 to
-             pick up the fix in 10.1.55 for 3 CRITICAL + 3 HIGH + 1 LOW Apache
-             Tomcat CVEs (all in the 10.1.0-M1..10.1.54 range; fixed in 10.1.55):
-               CVE-2026-43515 CRITICAL — Improper Authorization (method constraints)
-               CVE-2026-43512 CRITICAL — Authentication Bypass (digest auth)
-               CVE-2026-41293 CRITICAL — Improper Input Validation
-               CVE-2026-43513 HIGH     — Case-sensitivity in LockOutRealm
-               CVE-2026-42498 HIGH     — HTTP Auth header leak in WebSocket
-               CVE-2026-41284 HIGH     — Resource allocation DoS
-               CVE-2026-43514 LOW      — Observable timing in AJP secret compare
-             Remove once Spring Boot ships with 10.1.55+ as its managed version. -->
-        <tomcat.version>10.1.55</tomcat.version>
+        <!-- Override the Spring Boot BOM to include the Tomcat security fixes
+             through 10.1.60, including CVE-2026-68525, CVE-2026-65905,
+             CVE-2026-65182 and the September 23 advisories. Remove once the
+             managed Tomcat version is at least 10.1.60. -->
+        <tomcat.version>10.1.60</tomcat.version>
         <!-- NOTE: jackson-databind 2.21.4 carries CVE-2026-54515 (MEDIUM,
              CVE fix lands in jackson 2.21.5, not yet published to Central as
              of this release). No override is possible until 2.21.5 ships;
