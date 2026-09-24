@@ -1,5 +1,19 @@
 # Complete Budget Governance v0.1.25.55 — Admin Server Audit
 
+## 2026-09-24 — Dependency and container security maintenance
+
+Consolidates Dependabot PRs #249, #248, #246. Docker Buildx,
+Docker build/push, and CodeQL upload actions remain pinned to commit SHAs.
+
+Pins all embedded Tomcat modules to 10.1.60. The previous 10.1.55
+container failed Trivy on CVE-2026-68525, CVE-2026-65905, and
+CVE-2026-65182; 10.1.60 also includes the September 23 security fixes.
+Reference: https://tomcat.apache.org/security-10.html
+
+The protocol YAML, application logic, and public interfaces are unchanged.
+The existing unit, integration, 95% coverage, and container scan gates remain
+enabled; the consolidated PR must pass them before merging.
+
 **Spec:**
 [`cycles-governance-admin-v0.1.25.yaml`](https://github.com/runcycles/cycles-protocol/blob/402307a88906e9fd090159e5ccf2d0036e6aec83/cycles-governance-admin-v0.1.25.yaml)
 (OpenAPI 3.1.0, info.version `0.1.25.42`; adds CASCADE SEMANTICS — Rule 1 `POST
