@@ -1,5 +1,9 @@
 # Complete Budget Governance v0.1.25.55 — Admin Server Audit
 
+## 2026-10-14 — Dependency maintenance
+
+Dependabot PR #253 updates the SHA-pinned upload-artifact action to 7.0.2 in release, Scorecard, and nightly test workflows. The branch includes current main. Service code and YAML protocol contracts are unchanged. Unit, contract, integration, coverage, and applicable container-security checks must pass before merge.
+
 ## 2026-09-24 — Dependency and container security maintenance
 
 Consolidates Dependabot PRs #249, #248, #246. Docker Buildx,
