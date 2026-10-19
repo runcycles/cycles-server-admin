@@ -9,6 +9,8 @@ Consolidates the following reviewed updates on current main:
 
 Workflow actions remain pinned to verified upstream commit SHAs. Existing supported runtime versions, application code, and YAML protocol contracts are preserved. Existing lint, build, test, coverage, conformance, and applicable security checks must pass on the combined commit before merge; coverage requirements are not lowered.
 
+PR #255 remains blocked by its container scan: Spring MVC 6.2.19 has critical CVE-2026-47884 / CVE-2026-47890 findings, and Jackson 2.21.4 has five high-severity findings (CVE-2026-89407, CVE-2026-89425, CVE-2026-68497, CVE-2026-91776, CVE-2026-91777). The action update does not remediate these dependencies. A separately validated Spring Boot 4 / Jackson upgrade is needed; the scan gate is preserved.
+
 
 ## 2026-10-14 — Dependency maintenance
 
