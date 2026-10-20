@@ -1,6 +1,8 @@
 package io.runcycles.admin.api.contract;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
+import io.runcycles.admin.model.tenant.Tenant;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
@@ -10,13 +12,17 @@ import org.openapitools.openapidiff.core.model.ChangedOperation;
 import org.openapitools.openapidiff.core.model.DiffResult;
 import org.openapitools.openapidiff.core.model.Endpoint;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.http.MediaType;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
+import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter;
 import redis.clients.jedis.JedisPool;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -24,6 +30,8 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -79,6 +87,26 @@ class OpenApiContractDiffTest {
 
     @Autowired private MockMvc mockMvc;
     @MockitoBean private JedisPool jedisPool;
+    @Autowired private RequestMappingHandlerAdapter handlerAdapter;
+    @Autowired private ObjectMapper objectMapper;
+
+    @Test
+    void httpJson_preservesStrictJackson2MapperAndDateRepresentation() throws Exception {
+        var converter = handlerAdapter.getMessageConverters().stream()
+                .filter(candidate -> candidate.canWrite(Tenant.class,
+                        MediaType.APPLICATION_JSON))
+                .findFirst().orElseThrow();
+        var jackson = assertInstanceOf(
+                MappingJackson2HttpMessageConverter.class, converter);
+        assertSame(objectMapper, jackson.getObjectMapper());
+        assertTrue(objectMapper.isEnabled(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES));
+        var tenant = Tenant.builder()
+                .tenantId("compatibility-test")
+                .createdAt(Instant.parse("2026-10-20T00:00:00Z")).build();
+        var json = objectMapper.readTree(objectMapper.writeValueAsString(tenant));
+        assertEquals("compatibility-test", json.get("tenant_id").asText());
+        assertEquals("2026-10-20T00:00:00Z", json.get("created_at").asText());
+    }
 
     @Test
     @EnabledIf(value = "io.runcycles.admin.api.contract.ContractValidationConfig#validationEnabled",
