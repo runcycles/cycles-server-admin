@@ -35,7 +35,7 @@ cycles-admin-service/
 ```
 
 - **Language:** Java 21
-- **Framework:** Spring Boot 3.5.16
+- **Framework:** Spring Boot 4.0.8
 - **Data Store:** Redis (via Jedis 7.5.2)
 - **API Docs:** SpringDoc OpenAPI (disabled by default; enable behind `X-Admin-API-Key` protection)
 - **Testing:** JUnit 5 + TestContainers (Redis)

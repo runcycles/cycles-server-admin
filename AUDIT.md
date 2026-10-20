@@ -1,5 +1,34 @@
 # Complete Budget Governance v0.1.25.55 — Admin Server Audit
 
+## 2026-10-20 — PR #255 container vulnerability remediation
+
+Moves admin to Spring Boot 4.0.8 / Spring Framework 7.0.9, with Jackson 2.21.7
+and 3.1.7 BOM overrides and Tomcat 11.0.27, matching the patched dependency
+lines already adopted by the protocol and events services. This addresses the
+Spring CVE-2026-47884 / CVE-2026-47890 and Jackson CVE-2026-89407,
+CVE-2026-89425, CVE-2026-68497, CVE-2026-91776, CVE-2026-91777 findings
+that blocked the CodeQL upload action update. SpringDoc moves to 3.1.1 and
+Testcontainers to 2.0.5 for Boot 4 compatibility. Boot's managed commons-lang3
+supersedes the old 3.18.0 security override.
+
+The Jackson 2 compatibility module and explicit HTTP mapper preference retain
+the existing strict request parsing, snake_case fields, ISO dates, Redis reader
+compatibility, and webhook serialization. A full-context regression test checks
+that MVC actually selects the primary Jackson 2 mapper. Boot health, MVC test,
+and TestRestTemplate imports follow the new module layout. The deprecated
+Jackson 2 bridge requires a separate, contract-validated Jackson 3 migration
+before a future Boot version removes it.
+
+The authoritative protocol YAML and application rules are unchanged. Unit,
+contract, real Redis integration, 95% line and branch coverage, and container
+security gates remain enabled and must pass on this PR before merge.
+
+Local validation: 1,856 unit/contract tests passed (208 model, 656 data,
+992 API). JaCoCo line/branch coverage: model 97.85%/98.44%, data
+97.48%/95.35%, API 97.47%/95.05%. Real Redis integration and the fresh
+container scan run in GitHub Actions before merge.
+
+
 ## 2026-10-19 — Dependabot dependency review
 
 Consolidates the following reviewed updates on current main:

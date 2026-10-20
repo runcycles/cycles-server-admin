@@ -6,7 +6,7 @@ import io.runcycles.admin.model.shared.AdminOverviewResponse;
 import io.runcycles.admin.model.shared.AdminOverviewResponse.*;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import io.runcycles.admin.api.support.MetricsTestConfiguration;
 import io.runcycles.admin.api.contract.ContractValidationConfig;
