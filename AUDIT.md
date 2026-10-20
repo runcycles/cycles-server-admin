@@ -1,5 +1,17 @@
 # Complete Budget Governance v0.1.25.55 — Admin Server Audit
 
+## 2026-10-19 — Dependabot dependency review
+
+Consolidates the following reviewed updates on current main:
+
+- PR #256: fix(deps): bump actions/setup-java from 6.0.1 to 6.1.0
+- PR #257: fix(deps): bump ossf/scorecard-action from 2.4.4 to 2.5.0
+
+Workflow actions remain pinned to verified upstream commit SHAs. Existing supported runtime versions, application code, and YAML protocol contracts are preserved. Existing lint, build, test, coverage, conformance, and applicable security checks must pass on the combined commit before merge; coverage requirements are not lowered.
+
+PR #255 remains blocked by its container scan: Spring MVC 6.2.19 has critical CVE-2026-47884 / CVE-2026-47890 findings, and Jackson 2.21.4 has five high-severity findings (CVE-2026-89407, CVE-2026-89425, CVE-2026-68497, CVE-2026-91776, CVE-2026-91777). The action update does not remediate these dependencies. A separately validated Spring Boot 4 / Jackson upgrade is needed; the scan gate is preserved.
+
+
 ## 2026-10-14 — Dependency maintenance
 
 Dependabot PR #253 updates the SHA-pinned upload-artifact action to 7.0.2 in release, Scorecard, and nightly test workflows. The branch includes current main. Service code and YAML protocol contracts are unchanged. Unit, contract, integration, coverage, and applicable container-security checks must pass before merge.
