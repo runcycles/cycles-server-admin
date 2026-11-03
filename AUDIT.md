@@ -1,5 +1,16 @@
 # Complete Budget Governance v0.1.25.55 — Admin Server Audit
 
+## 2026-11-03 — PR #260 Docker login action review
+
+Updates both release-workflow GHCR login steps from docker/login-action
+4.6.0 to 4.7.0, pinned to the verified upstream release commit
+`81c6f93d4bc991e510b342a00b419b3bb4efc5c6`. Registry, actor, token inputs,
+workflow permissions, and the action's Node 24 runtime are unchanged.
+Reviewed upstream scoped registry path and ECR input normalization fixes;
+these calls use `ghcr.io` without a scope override. No application code or
+authoritative YAML contract changes. Unit, contract, Redis integration,
+and existing 95% coverage gates must pass on the audited head before merge.
+
 ## 2026-10-20 — PR #255 container vulnerability remediation
 
 Moves admin to Spring Boot 4.0.8 / Spring Framework 7.0.9, with Jackson 2.21.7
