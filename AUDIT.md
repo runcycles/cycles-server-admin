@@ -1,5 +1,11 @@
 # Complete Budget Governance v0.1.25.55 — Admin Server Audit
 
+## 2026-11-11 - Dependabot dependency review
+
+Combines PRs #263 (setup-java 6.2.0) and #262 (docker/login-action 4.8.0). Both pins match upstream release commits. Temurin Java 21, GHCR inputs, workflow permissions, and nightly test selections are preserved.
+
+Includes current main. Application source and authoritative YAML contracts are unchanged. Existing test, coverage (at least 95% lines), conformance, and security gates remain enabled and must pass before merge.
+
 ## 2026-11-03 — PR #260 Docker login action review
 
 Updates both release-workflow GHCR login steps from docker/login-action
