@@ -1,5 +1,14 @@
 # Complete Budget Governance v0.1.25.55 — Admin Server Audit
 
+## 2026-11-16 — Flatten plugin maintenance (PR #264)
+
+Updates flatten-maven-plugin from 1.8.0 to 1.9.0, retaining
+`resolveCiFriendliesOnly` and the existing lifecycle bindings. The plugin's
+Maven 3.9+ prerequisite matches the documented local build requirement.
+Runtime code and authoritative YAML contracts are unchanged. Unit/contract
+tests, real Redis integration, the existing 95% coverage gates, and container
+security checks must pass before merge.
+
 ## 2026-11-11 - Dependabot dependency review
 
 Combines PRs #263 (setup-java 6.2.0) and #262 (docker/login-action 4.8.0). Both pins match upstream release commits. Temurin Java 21, GHCR inputs, workflow permissions, and nightly test selections are preserved.
