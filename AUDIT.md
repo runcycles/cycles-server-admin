@@ -1,5 +1,9 @@
 # Complete Budget Governance v0.1.25.55 — Admin Server Audit
 
+## 2026-11-23 — Dependency review
+
+PR #265 updates the Java setup action used by CI, the nightly audit soak, and property tests to v6.3.0 (`d1374f8`). PR #266 updates the Scorecard action to v2.6.0 (`23f22cd`). Both pins match their upstream release tags.
+
 ## 2026-11-16 — Flatten plugin maintenance (PR #264)
 
 Updates flatten-maven-plugin from 1.8.0 to 1.9.0, retaining
