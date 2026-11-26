@@ -22,7 +22,7 @@ services:
 
   cycles-admin:
     logging: *default-logging
-    image: ghcr.io/runcycles/cycles-server-admin:0.1.25.54
+    image: ghcr.io/runcycles/cycles-server-admin:0.1.25.56
     restart: unless-stopped
     ports:
       - "7979:7979"
@@ -81,7 +81,7 @@ services:
 
   cycles-events:
     logging: *default-logging
-    image: ghcr.io/runcycles/cycles-server-events:0.1.25.23
+    image: ghcr.io/runcycles/cycles-server-events:0.1.25.26
     restart: unless-stopped
     # Management port 9980 (health + Prometheus) is deliberately NOT published
     # to the host: the events worker's actuator is unauthenticated by design

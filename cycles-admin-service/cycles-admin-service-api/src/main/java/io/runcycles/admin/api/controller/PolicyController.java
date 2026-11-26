@@ -163,7 +163,7 @@ public class PolicyController {
         }
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         var page = PageSlice.from(
-            repository.list(tenantId, scope_pattern, status, cursor, effectiveLimit + 1),
+            repository.list(tenantId, scope_pattern, status, cursor, effectiveLimit + 1, ScopeFilterUtil.allowedScopes(httpRequest)),
             effectiveLimit);
         var policies = page.items();
         PolicyListResponse response = PolicyListResponse.builder()

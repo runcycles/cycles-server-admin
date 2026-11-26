@@ -38,115 +38,7 @@ public class BudgetRepository {
     @Autowired private JedisPool jedisPool;
     @Autowired @Qualifier("redisObjectMapper") private ObjectMapper objectMapper;
 
-    // Lua script for atomic budget funding with idempotency — prevents race conditions on concurrent updates.
-    // KEYS[1] = budget key
-    // ARGV[1] = operation, ARGV[2] = amount, ARGV[3] = now, ARGV[4] = tenant_id,
-    // ARGV[5] = idempotency_key (empty = skip), ARGV[6] = payload_hash (empty = skip),
-    // ARGV[7] = spent_override (empty = use default 0 for RESET_SPENT; ignored for
-    //          other operations). Added in v0.1.25.17 with the RESET_SPENT operation.
-    //
-    // Idempotency cache key format is versioned: 'idempotency:fund:v2:<key>'. The v2
-    // bump coincides with the expansion of the cached result from 7 to 9
-    // pipe-delimited fields (adds prev_spent|new_spent). Pre-v2 cache entries expire
-    // naturally within 24h, so old and new coexist without parse-failure risk during
-    // deploy. Readers of the v1 key space are unaffected because we never read from
-    // the old prefix here.
-    private static final String FUND_LUA =
-        "local key = KEYS[1]\n" +
-        // Atomic idempotency check: same (idem_key) seen before → replay or mismatch
-        "local idem_key_arg = ARGV[5]\n" +
-        "local payload_hash = ARGV[6]\n" +
-        "if idem_key_arg ~= '' then\n" +
-        "  local idem_redis = 'idempotency:fund:v2:' .. idem_key_arg\n" +
-        "  local cached = redis.call('GET', idem_redis)\n" +
-        "  if cached then\n" +
-        "    if payload_hash ~= '' then\n" +
-        "      local stored_hash = redis.call('GET', idem_redis .. ':hash')\n" +
-        "      if stored_hash and stored_hash ~= payload_hash then\n" +
-        "        return {'IDEMPOTENCY_MISMATCH'}\n" +
-        "      end\n" +
-        "    end\n" +
-        "    return {'IDEMPOTENT_HIT', cached}\n" +
-        "  end\n" +
-        "end\n" +
-        "if redis.call('EXISTS', key) == 0 then return {'NOT_FOUND'} end\n" +
-        "local tid = redis.call('HGET', key, 'tenant_id') or ''\n" +
-        "if ARGV[4] ~= '' and tid ~= ARGV[4] then return {'FORBIDDEN'} end\n" +
-        "local status = redis.call('HGET', key, 'status') or 'ACTIVE'\n" +
-        "if status == 'FROZEN' then return {'BUDGET_FROZEN'} end\n" +
-        "if status == 'CLOSED' then return {'BUDGET_CLOSED'} end\n" +
-        "local op = ARGV[1]\n" +
-        "local amount = tonumber(ARGV[2])\n" +
-        "local now = ARGV[3]\n" +
-        "local spent_override_arg = ARGV[7]\n" +
-        "local allocated = tonumber(redis.call('HGET', key, 'allocated') or '0')\n" +
-        "local remaining = tonumber(redis.call('HGET', key, 'remaining') or '0')\n" +
-        "local reserved = tonumber(redis.call('HGET', key, 'reserved') or '0')\n" +
-        "local spent = tonumber(redis.call('HGET', key, 'spent') or '0')\n" +
-        "local debt = tonumber(redis.call('HGET', key, 'debt') or '0')\n" +
-        "local overdraft = tonumber(redis.call('HGET', key, 'overdraft_limit') or '0')\n" +
-        "local prev_allocated = allocated\n" +
-        "local prev_remaining = remaining\n" +
-        "local prev_debt = debt\n" +
-        "local prev_spent = spent\n" +
-        "if op == 'CREDIT' then\n" +
-        "  allocated = allocated + amount\n" +
-        "  remaining = remaining + amount\n" +
-        "elseif op == 'DEBIT' then\n" +
-        "  if remaining < amount then return {'INSUFFICIENT_FUNDS'} end\n" +
-        "  allocated = allocated - amount\n" +
-        "  remaining = remaining - amount\n" +
-        "elseif op == 'RESET' then\n" +
-        "  allocated = amount\n" +
-        "  remaining = amount - reserved - spent - debt\n" +
-        "elseif op == 'RESET_SPENT' then\n" +
-        // New billing-period operation added in v0.1.25.17. Sets allocated to the given
-        // amount AND sets spent to the optional ARGV[7] override (defaulting to 0).
-        // Preserves reserved (active reservations straddle the period boundary) and
-        // debt (periods don't forgive debt — REPAY_DEBT is the explicit channel).
-        // Remaining recomputed from the ledger invariant; allowed to go negative when
-        // (allocated - spent - reserved - debt) < 0, matching overdraft semantics.
-        "  allocated = amount\n" +
-        "  if spent_override_arg ~= '' then\n" +
-        "    spent = tonumber(spent_override_arg)\n" +
-        "    if spent == nil or spent < 0 then\n" +
-        "      return {'INVALID_REQUEST', 'spent must be >= 0'}\n" +
-        "    end\n" +
-        "  else\n" +
-        "    spent = 0\n" +
-        "  end\n" +
-        "  remaining = allocated - spent - reserved - debt\n" +
-        "elseif op == 'REPAY_DEBT' then\n" +
-        "  local repayment = math.min(debt, amount)\n" +
-        "  debt = debt - repayment\n" +
-        "  remaining = remaining + repayment\n" +
-        "  if repayment < amount then\n" +
-        "    allocated = allocated + (amount - repayment)\n" +
-        "    remaining = remaining + (amount - repayment)\n" +
-        "  end\n" +
-        "end\n" +
-        "local is_over = 'false'\n" +
-        "if debt > overdraft then is_over = 'true' end\n" +
-        "local function i(n) return string.format('%.0f', n) end\n" +
-        "redis.call('HMSET', key, 'allocated', i(allocated), 'remaining', i(remaining),\n" +
-        "  'debt', i(debt), 'reserved', i(reserved), 'spent', i(spent),\n" +
-        "  'is_over_limit', is_over, 'updated_at', now)\n" +
-        // Store idempotency result atomically (24h TTL). Cache value is 9
-        // pipe-delimited fields (v2 format): prev_allocated|allocated|prev_remaining|
-        // remaining|prev_debt|debt|is_over|prev_spent|spent. v2 cache key prefix
-        // (above) prevents v1 consumers from parsing this expanded format.
-        "if idem_key_arg ~= '' then\n" +
-        "  local idem_redis = 'idempotency:fund:v2:' .. idem_key_arg\n" +
-        "  local result_json = i(prev_allocated) .. '|' .. i(allocated) .. '|' .. i(prev_remaining) .. '|' .. i(remaining) .. '|' .. i(prev_debt) .. '|' .. i(debt) .. '|' .. is_over .. '|' .. i(prev_spent) .. '|' .. i(spent)\n" +
-        "  redis.call('SET', idem_redis, result_json)\n" +
-        "  redis.call('EXPIRE', idem_redis, 86400)\n" +
-        "  if payload_hash ~= '' then\n" +
-        "    redis.call('SET', idem_redis .. ':hash', payload_hash)\n" +
-        "    redis.call('EXPIRE', idem_redis .. ':hash', 86400)\n" +
-        "  end\n" +
-        "end\n" +
-        "return {'OK', i(prev_allocated), i(allocated), i(prev_remaining),\n" +
-        "  i(remaining), i(prev_debt), i(debt), is_over, i(prev_spent), i(spent)}\n";
+    private static final String FUND_LUA = TenantCloseWorkRepository.loadLuaResource("redis/budget-fund.lua");
 
     // Lua script for atomic budget creation — validates tenant exists and is ACTIVE,
     // prevents TOCTOU race on duplicate check.
@@ -836,14 +728,14 @@ public class BudgetRepository {
         scope = normalizeScope(scope);
         LOG.info("Funding budget: tenant_id={} scope={} unit={} operation={} idempotency_key_present={}",
             LogSanitizer.safe(tenantId), LogSanitizer.safe(scope), unit, request.getOperation(),
-            request.getIdempotencyKey() != null && !request.getIdempotencyKey().isBlank());
+            request.getIdempotencyKey() != null && !request.getIdempotencyKey().isEmpty());
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "budget:" + scope + ":" + unit;
             long changeAmount = request.getAmount().getAmount();
             String now = String.valueOf(Instant.now().toEpochMilli());
 
             // Compute payload hash for idempotency mismatch detection (spec MUST)
-            String idempotencyKey = (request.getIdempotencyKey() != null && !request.getIdempotencyKey().isBlank())
+            String idempotencyKey = (request.getIdempotencyKey() != null && !request.getIdempotencyKey().isEmpty())
                 ? request.getIdempotencyKey() : "";
             String payloadHash = "";
             if (!idempotencyKey.isEmpty()) {
@@ -870,13 +762,16 @@ public class BudgetRepository {
                          spentOverride));
 
             String status = result.get(0);
+            if ("TENANT_CLOSED".equals(status)) {
+                throw new GovernanceException(io.runcycles.admin.model.shared.ErrorCode.TENANT_CLOSED,
+                    "Budget owner is closed", 409);
+            }
             if ("IDEMPOTENCY_MISMATCH".equals(status)) {
                 throw new GovernanceException(
                     io.runcycles.admin.model.shared.ErrorCode.IDEMPOTENCY_MISMATCH,
                     "Idempotency key reused with different payload", 409);
             }
             if ("IDEMPOTENT_HIT".equals(status)) {
-                // Reconstruct response from cached pipe-delimited values (v2 format)
                 String cached = result.get(1);
                 return parseCachedFundResponse(cached, unit, request.getOperation());
             }
@@ -898,7 +793,6 @@ public class BudgetRepository {
                 throw GovernanceException.budgetClosed(scope);
             }
             if ("INVALID_REQUEST".equals(status)) {
-                // Raised today only by RESET_SPENT with negative spent override.
                 String detail = result.size() > 1 ? result.get(1) : "Invalid request";
                 throw new GovernanceException(
                     io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
@@ -925,7 +819,7 @@ public class BudgetRepository {
                 .newDebt(new Amount(unit, newDebtVal))
                 .previousSpent(new Amount(unit, prevSpentVal))
                 .newSpent(new Amount(unit, newSpentVal))
-                .timestamp(Instant.now())
+                .timestamp(Instant.ofEpochMilli(Long.parseLong(now)))
                 .build();
 
             LOG.info("Funded budget atomically: tenant_id={} scope={} unit={} operation={} idempotency_key_present={}",
@@ -939,13 +833,9 @@ public class BudgetRepository {
     }
 
     private BudgetFundingResponse parseCachedFundResponse(String cached, UnitEnum unit, FundingOperation operation) {
-        // v2 cache format (spec v0.1.25.17+): 9 pipe-delimited fields
-        //   prev_allocated|allocated|prev_remaining|remaining|prev_debt|debt|is_over|prev_spent|spent
-        // We read by position and tolerate older cache format if somehow a 7-field
-        // entry survived — the v2 prefix on the cache key should make this
-        // impossible in practice, but the defensive null-fill is cheap.
+        // The v3 entry stores the original ledger amounts and commit time.
         String[] parts = cached.split("\\|");
-        BudgetFundingResponse.BudgetFundingResponseBuilder b = BudgetFundingResponse.builder()
+        return BudgetFundingResponse.builder()
             .operation(operation)
             .previousAllocated(new Amount(unit, Long.parseLong(parts[0])))
             .newAllocated(new Amount(unit, Long.parseLong(parts[1])))
@@ -953,24 +843,22 @@ public class BudgetRepository {
             .newRemaining(new Amount(unit, Long.parseLong(parts[3])))
             .previousDebt(new Amount(unit, Long.parseLong(parts[4])))
             .newDebt(new Amount(unit, Long.parseLong(parts[5])))
-            .timestamp(Instant.now());
-        if (parts.length >= 9) {
-            b.previousSpent(new Amount(unit, Long.parseLong(parts[7])));
-            b.newSpent(new Amount(unit, Long.parseLong(parts[8])));
-        }
-        return b.build();
+            .replayed(true)
+            .previousSpent(new Amount(unit, Long.parseLong(parts[7])))
+            .newSpent(new Amount(unit, Long.parseLong(parts[8])))
+            .timestamp(Instant.ofEpochMilli(Long.parseLong(parts[9])))
+            .build();
     }
 
     private String computePayloadHash(Object request) {
         try {
-            String json = objectMapper.writeValueAsString(request);
+            String json = objectMapper.writer(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
+                .writeValueAsString(request);
             java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
             byte[] hash = digest.digest(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(hash);
         } catch (Exception e) {
-            LOG.warn("Failed to compute budget funding payload hash; idempotency mismatch detection skipped: request_type={}",
-                request.getClass().getSimpleName(), e);
-            return "";
+            throw new IllegalStateException("Failed to fingerprint funding request", e);
         }
     }
 

@@ -1,5 +1,24 @@
 # Operations guide
 
+## Upgrading to admin 0.1.25.56
+
+Deploy events worker 0.1.25.26 or later to every delivery consumer first. Configure the same
+`WEBHOOK_SECRET_ENCRYPTION_KEY` on admin and events. Then deploy the admin release.
+The worker can deliver subscriptions stored in either format. New admin writes encrypt
+the custom header map in the Redis subscription's `encrypted_headers` field. The startup
+reconciler migrates existing subscriptions with a conditional write, including paused
+and disabled rows. Enable `webhook.category-boundary.reconcile-on-startup` and disable
+its dry-run setting for the migration. Repeat the sweep after retiring old writers.
+The explicit local plaintext setting continues to support development without a key.
+
+Funding replays use the tenant-owned ledger and the idempotency key. An existing
+pre-upgrade replay entry has no verifiable ledger identity. During its remaining
+24-hour TTL, a retry returns HTTP 409. Reconcile the original funding outcome
+before initiating another credit or debit. Existing API keys keep their stored
+permissions. Newly created keys with omitted permissions receive the ten defaults
+listed by the governance contract.
+
+
 Operator-facing runbook for running `cycles-server-admin` in production.
 Covers metrics, alerting recipes, configuration, and an incident playbook.
 

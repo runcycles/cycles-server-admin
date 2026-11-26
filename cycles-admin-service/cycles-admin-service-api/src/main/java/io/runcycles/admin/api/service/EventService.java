@@ -195,6 +195,18 @@ public class EventService {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         List<Event> events = eventRepository.list(tenantId, eventType, category, scope,
             correlationId, from, to, cursor, effectiveLimit + 1, sortSpec, search, traceId, requestId);
+        return eventPage(events, effectiveLimit);
+    }
+
+    public EventListResponse listTenantVisible(String tenantId, String eventType, String category,
+                                               String scope, String correlationId, Instant from, Instant to,
+                                               String cursor, int limit) {
+        int effectiveLimit = Math.max(1, Math.min(limit, 100));
+        return eventPage(eventRepository.listTenantVisible(tenantId, eventType, category, scope,
+            correlationId, from, to, cursor, effectiveLimit + 1), effectiveLimit);
+    }
+
+    private EventListResponse eventPage(List<Event> events, int effectiveLimit) {
         var page = PageSlice.from(events, effectiveLimit);
         events = page.items();
         return EventListResponse.builder()

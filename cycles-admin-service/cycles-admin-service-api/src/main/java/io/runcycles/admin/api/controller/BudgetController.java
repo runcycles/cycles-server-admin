@@ -177,7 +177,8 @@ public class BudgetController {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         String searchNorm = parseSearch(search);
         BudgetListFilters filters = new BudgetListFilters(
-            scope_prefix, unit, status, over_limit, has_debt, utilization_min, utilization_max, searchNorm);
+            scope_prefix, unit, status, over_limit, has_debt, utilization_min, utilization_max, searchNorm,
+            ScopeFilterUtil.allowedScopes(httpRequest));
         List<BudgetLedger> ledgers;
         boolean crossTenant;
         if (authTenantId != null) {
@@ -242,6 +243,8 @@ public class BudgetController {
             HttpServletRequest httpRequest) {
         ScopeFilterUtil.enforceScopeFilter(httpRequest, scope);
         BudgetLedger ledger = repository.getByExactScope(scope, unit);
+        String tenant = (String) httpRequest.getAttribute("authenticated_tenant_id");
+        if (tenant != null && !tenant.equals(ledger.getTenantId())) throw GovernanceException.budgetNotFound(scope);
         return ResponseEntity.ok(ledger);
     }
     @PatchMapping @Operation(operationId = "updateBudget")
@@ -322,6 +325,7 @@ public class BudgetController {
         }
         mutationGuard.assertTenantOpen(tenantId);
         BudgetFundingResponse response = repository.fund(tenantId, scope, unit, request);
+        if (response != null && response.isReplayed()) return ResponseEntity.ok(response);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
@@ -639,6 +643,10 @@ public class BudgetController {
         try {
             BudgetFundingResponse fundResponse = repository.fund(
                 ledger.getTenantId(), ledger.getScope(), ledger.getUnit(), fundingRequest);
+            if (fundResponse != null && fundResponse.isReplayed()) {
+                skipped.add(BulkActionRowOutcome.builder().id(id).reason("ALREADY_IN_TARGET_STATE").build());
+                return;
+            }
             succeeded.add(BulkActionRowOutcome.builder().id(id).build());
             emitBulkFundEvent(ledger, bulk, fundResponse, httpRequest,
                 correlationId, requestId);

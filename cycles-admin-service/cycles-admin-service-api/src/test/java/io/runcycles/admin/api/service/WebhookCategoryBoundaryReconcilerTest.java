@@ -94,11 +94,12 @@ class WebhookCategoryBoundaryReconcilerTest {
             new CategoryBoundaryRepairOutcome("wh2", "t2", CategoryBoundaryAction.STRIPPED_AND_DISABLED, List.of()),
             new CategoryBoundaryRepairOutcome("wh3", "t3", CategoryBoundaryAction.DISABLED_EMPTY_BOTH, List.of()),
             new CategoryBoundaryRepairOutcome("wh4", null, CategoryBoundaryAction.NORMALIZED_NULL_OWNER, List.of()),
-            new CategoryBoundaryRepairOutcome("wh5", null, CategoryBoundaryAction.INDEXED_SYSTEM_MEMBER, List.of())));
+            new CategoryBoundaryRepairOutcome("wh5", null, CategoryBoundaryAction.INDEXED_SYSTEM_MEMBER, List.of()),
+            new CategoryBoundaryRepairOutcome("wh6", "t6", CategoryBoundaryAction.ENCRYPTED_LEGACY_HEADERS, List.of())));
 
         ReconcileResult result = reconciler.reconcile();
 
-        assertThat(result.repaired()).hasSize(5);
+        assertThat(result.repaired()).hasSize(6);
         assertThat(result.isComplete()).isTrue();
     }
 

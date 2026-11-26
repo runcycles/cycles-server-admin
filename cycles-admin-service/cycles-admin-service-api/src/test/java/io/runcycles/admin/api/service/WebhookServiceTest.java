@@ -133,10 +133,10 @@ class WebhookServiceTest {
             .name("Updated Name")
             .build();
 
-        webhookService.update("whsub_1", request);
+        WebhookSubscription updated = webhookService.update("whsub_1", request);
 
-        assertThat(existing.getName()).isEqualTo("Updated Name");
-        assertThat(existing.getUrl()).isEqualTo("https://example.com/webhook");
+        assertThat(updated.getName()).isEqualTo("Updated Name");
+        assertThat(updated.getUrl()).isEqualTo("https://example.com/webhook");
         verify(webhookRepository).update(eq("whsub_1"), any());
     }
 
@@ -151,9 +151,9 @@ class WebhookServiceTest {
             .status(WebhookStatus.ACTIVE)
             .build();
 
-        webhookService.update("whsub_1", request);
+        WebhookSubscription updated = webhookService.update("whsub_1", request);
 
-        assertThat(existing.getConsecutiveFailures()).isEqualTo(0);
+        assertThat(updated.getConsecutiveFailures()).isEqualTo(0);
     }
 
     @Test
@@ -221,10 +221,10 @@ class WebhookServiceTest {
             .eventCategories(List.of())
             .build();
 
-        webhookService.update("whsub_1", request);
+        WebhookSubscription updated = webhookService.update("whsub_1", request);
 
-        assertThat(existing.getEventCategories()).isEmpty();
-        assertThat(existing.getEventTypes()).isNotEmpty();
+        assertThat(updated.getEventCategories()).isEmpty();
+        assertThat(updated.getEventTypes()).isNotEmpty();
         verify(webhookRepository).update(eq("whsub_1"), any());
     }
 
@@ -1133,11 +1133,11 @@ class WebhookServiceTest {
             .retryPolicy(retry).disableAfterFailures(12).metadata(Map.of("owner", "ops"))
             .status(WebhookStatus.PAUSED).build();
 
-        webhookService.update("whsub-all", request);
+        WebhookSubscription updated = webhookService.update("whsub-all", request);
 
-        assertThat(existing.getDescription()).isEqualTo("Description");
-        assertThat(existing.getThresholds()).isSameAs(thresholds);
-        assertThat(existing.getConsecutiveFailures()).isEqualTo(4);
+        assertThat(updated.getDescription()).isEqualTo("Description");
+        assertThat(updated.getThresholds()).isSameAs(thresholds);
+        assertThat(updated.getConsecutiveFailures()).isEqualTo(4);
         verify(urlValidator).validate("https://example.org/new");
     }
 
@@ -1238,6 +1238,6 @@ class WebhookServiceTest {
 
         webhookService.update("whsub-category", WebhookUpdateRequest.builder().name("category-only").build());
 
-        verify(webhookRepository).update("whsub-category", existing);
+        verify(webhookRepository).update(eq("whsub-category"), argThat(sub -> sub.getName().equals("category-only")));
     }
 }

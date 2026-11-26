@@ -13,7 +13,6 @@ set -euo pipefail
 COMPOSE_FILE="docker-compose.full-stack.yml"
 ADMIN="http://localhost:7979"
 RUNTIME="http://localhost:7878"
-EVENTS="http://localhost:7980"
 CT="Content-Type: application/json"
 KEEP_STACK="${1:-}"
 PASS=0
@@ -68,19 +67,6 @@ json_int() {
   echo "$1" | grep -o "\"$2\":[0-9]*" | head -1 | cut -d: -f2
 }
 
-wait_healthy() {
-  local url="$1" name="$2" max="${3:-60}"
-  for i in $(seq 1 "$max"); do
-    if curl -sf "$url/actuator/health" > /dev/null 2>&1; then
-      green "  $name healthy (${i}s)"
-      return 0
-    fi
-    sleep 1
-  done
-  red "  $name not healthy after ${max}s"
-  return 1
-}
-
 cleanup() {
   if [ "$KEEP_STACK" != "--keep" ]; then
     bold "Cleaning up..."
@@ -102,16 +88,11 @@ bold "============================================="
 echo ""
 
 # --- 1. Start Docker stack ---
-bold "[1/10] Starting Docker stack..."
+bold "[1/10] Starting Docker stack and [2/10] waiting for readiness..."
 docker rm -f "$WH_CONTAINER" > /dev/null 2>&1 || true
 docker compose -f "$COMPOSE_FILE" down -v > /dev/null 2>&1 || true
-docker compose -f "$COMPOSE_FILE" up -d --build 2>&1 | tail -5
-echo ""
-
-bold "[2/10] Waiting for services..."
-wait_healthy "$ADMIN"   "Admin"   90
-wait_healthy "$RUNTIME" "Runtime" 90
-wait_healthy "$EVENTS"  "Events"  90
+docker compose -f "$COMPOSE_FILE" up -d --build --wait --wait-timeout 120
+green "  Admin, runtime, events and Redis passed their container health checks."
 echo ""
 
 # --- 3. Start webhook receiver on the Docker network ---

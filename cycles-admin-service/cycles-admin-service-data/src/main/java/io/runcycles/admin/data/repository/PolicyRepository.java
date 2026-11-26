@@ -141,6 +141,11 @@ public class PolicyRepository {
     }
 
     public List<Policy> list(String tenantId, String scopePattern, PolicyStatus status, String cursor, int limit) {
+        return list(tenantId, scopePattern, status, cursor, limit, scope -> true);
+    }
+
+    public List<Policy> list(String tenantId, String scopePattern, PolicyStatus status, String cursor, int limit,
+                             java.util.function.Predicate<String> allowedScopes) {
         try (Jedis jedis = jedisPool.getResource()) {
             Set<String> ids = jedis.smembers("policies:" + tenantId);
             List<String> sortedIds = new ArrayList<>(ids);
@@ -159,7 +164,7 @@ public class PolicyRepository {
                     Policy p = objectMapper.readValue(data, Policy.class);
                     if (status != null && p.getStatus() != status) continue;
                     if (scopePattern != null && !scopePattern.equals(p.getScopePattern())) continue;
-                    policies.add(p);
+                    if (allowedScopes.test(p.getScopePattern())) policies.add(p);
                     if (policies.size() >= limit) break;
                 } catch (Exception e) {
                     LOG.warn("Failed to parse policy row: policy_id={} tenant_id={} index_key={} status_filter={} scope_pattern_filter={}",

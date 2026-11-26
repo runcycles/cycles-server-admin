@@ -172,6 +172,20 @@ class BudgetRepositoryTest {
     }
 
     @Test
+    void fund_closedOwner_throwsException() {
+        List<String> luaResult = List.of("TENANT_CLOSED");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(luaResult);
+
+        BudgetFundingRequest request = new BudgetFundingRequest();
+        request.setOperation(FundingOperation.CREDIT);
+        request.setAmount(new Amount(UnitEnum.USD_MICROCENTS, 1000L));
+
+        assertThatThrownBy(() -> repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request))
+                .isInstanceOf(GovernanceException.class)
+                .satisfies(e -> assertThat(((GovernanceException) e).getErrorCode()).isEqualTo(ErrorCode.TENANT_CLOSED));
+    }
+
+    @Test
     void fund_frozenBudget_throwsException() {
         List<String> luaResult = List.of("BUDGET_FROZEN");
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(luaResult);
@@ -233,7 +247,7 @@ class BudgetRepositoryTest {
     @Test
     void fund_withIdempotencyKey_cacheHit_returnsCached() throws Exception {
         // Idempotency cache hit is now returned by Lua as IDEMPOTENT_HIT with pipe-delimited values
-        List<String> luaResult = List.of("IDEMPOTENT_HIT", "0|1000|0|1000|0|0|false");
+        List<String> luaResult = List.of("IDEMPOTENT_HIT", "0|1000|0|1000|0|0|false|0|0|12345");
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(luaResult);
 
         BudgetFundingRequest request = new BudgetFundingRequest();
@@ -523,16 +537,9 @@ class BudgetRepositoryTest {
         assertThat(argsCap.getValue().get(6)).isEqualTo("");
     }
 
-    /**
-     * Idempotent cache replay against the v2 cache format. The cached string
-     * now carries 9 pipe-delimited fields: ...|is_over|prev_spent|new_spent.
-     * Ensure the parser reads prev_spent and new_spent into the response.
-     */
     @Test
-    void fund_idempotentHit_parsesV2CacheFormatWithSpent() {
-        // v2 cache format: prev_allocated|allocated|prev_remaining|remaining|
-        //                  prev_debt|debt|is_over|prev_spent|new_spent
-        String cached = "1000|1000|0|1000|0|0|false|1000|0";
+    void fundingReplayPreservesSpentAndCommitTime() {
+        String cached = "1000|1000|0|1000|0|0|false|1000|0|12345";
         List<String> luaResult = List.of("IDEMPOTENT_HIT", cached);
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(luaResult);
 
@@ -543,6 +550,8 @@ class BudgetRepositoryTest {
 
         BudgetFundingResponse response = repository.fund("tenant-1", "scope", UnitEnum.USD_MICROCENTS, request);
 
+        assertThat(response.getTimestamp()).isEqualTo(java.time.Instant.ofEpochMilli(12345));
+        assertThat(response.isReplayed()).isTrue();
         assertThat(response.getPreviousSpent().getAmount()).isEqualTo(1000L);
         assertThat(response.getNewSpent().getAmount()).isEqualTo(0L);
     }
@@ -786,7 +795,7 @@ class BudgetRepositoryTest {
     }
 
     @Test
-    void fund_withBlankIdempotencyKey_treatedAsNoIdempotency() {
+    void fund_withWhitespaceIdempotencyKeyAcceptsTheSchemaValidString() {
         List<String> luaResult = List.of("OK", "0", "1000", "0", "1000", "0", "0", "false");
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(luaResult);
 

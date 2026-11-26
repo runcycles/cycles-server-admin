@@ -65,7 +65,7 @@ public class TenantCloseWorkRepository {
         this.objectMapper = objectMapper;
     }
 
-    private static String loadLuaResource(String path) {
+    static String loadLuaResource(String path) {
         try (InputStream input = Objects.requireNonNull(
                 TenantCloseWorkRepository.class.getClassLoader().getResourceAsStream(path),
                 "Missing Redis script resource: " + path)) {

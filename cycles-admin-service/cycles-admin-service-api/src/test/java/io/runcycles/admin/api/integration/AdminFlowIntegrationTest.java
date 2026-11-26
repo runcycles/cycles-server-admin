@@ -386,4 +386,32 @@ class AdminFlowIntegrationTest extends BaseIntegrationTest {
         assertThat(badRange.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(badRange.getBody().get("error")).isEqualTo("INVALID_REQUEST");
     }
+    @Test
+    void scopedKeyListsOnlyVisibleRowsAndDefaultsIncludePolicyAndBudgetAccess() {
+        adminPost("/v1/admin/tenants", Map.of("tenant_id", "review", "name", "Review"));
+        var key = adminPost("/v1/admin/api-keys", Map.of("tenant_id", "review", "name", "Scoped",
+            "scope_filter", List.of("workspace:east"))).getBody();
+        assertThat((List<String>) key.get("permissions")).contains("budgets:read", "budgets:write",
+            "policies:read", "policies:write");
+        var headers = tenantHeaders((String) key.get("key_secret"));
+        String east = "tenant:review/workspace:east";
+        for (String scope : List.of("tenant:review/workspace:west", east)) {
+            assertThat(adminPost("/v1/admin/budgets", Map.of("tenant_id", "review", "scope", scope,
+                "unit", "CREDITS", "allocated", Map.of("unit", "CREDITS", "amount", 100))).getStatusCode())
+                .isEqualTo(HttpStatus.CREATED);
+            assertThat(adminPost("/v1/admin/policies", Map.of("tenant_id", "review", "scope_pattern", scope,
+                "name", scope)).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        }
+        Map<String, String> lists = Map.of("/v1/admin/budgets", "ledgers", "/v1/balances", "balances",
+            "/v1/admin/policies", "policies");
+        for (var endpoint : lists.entrySet()) {
+            var page = restTemplate.exchange(baseUrl() + endpoint.getKey() + "?limit=1", HttpMethod.GET,
+                new HttpEntity<>(headers), Map.class).getBody();
+            assertThat((List<?>) page.get(endpoint.getValue())).hasSize(1);
+            Map<?, ?> row = (Map<?, ?>) ((List<?>) page.get(endpoint.getValue())).getFirst();
+            assertThat(row.get(endpoint.getValue().equals("policies") ? "scope_pattern" : "scope")).isEqualTo(east);
+            assertThat(page.get("has_more")).isEqualTo(false);
+        }
+    }
+
 }

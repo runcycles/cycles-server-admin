@@ -37,7 +37,7 @@ public class OperationalEndpointAuthFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
-        if (!requiresProtection(request.getRequestURI())) {
+        if (!requiresProtection(AuthInterceptor.applicationPath(request))) {
             filterChain.doFilter(request, response);
             return;
         }

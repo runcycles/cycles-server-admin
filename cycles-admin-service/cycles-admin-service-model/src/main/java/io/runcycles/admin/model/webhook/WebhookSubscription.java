@@ -6,7 +6,7 @@ import lombok.*;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-@Data @Builder @NoArgsConstructor @AllArgsConstructor
+@Data @Builder(toBuilder = true) @NoArgsConstructor @AllArgsConstructor
 @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = false)
 public class WebhookSubscription {
 
@@ -36,6 +36,8 @@ public class WebhookSubscription {
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("scope_filter") private String scopeFilter;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("thresholds") private WebhookThresholdConfig thresholds;
     @JsonIgnore private String signingSecret;
+    /** Original persisted bytes used as the optimistic concurrency token. */
+    @JsonIgnore @ToString.Exclude @EqualsAndHashCode.Exclude private String storedJson;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("headers") private Map<String, String> headers;
     @JsonProperty("status") private WebhookStatus status;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("retry_policy") private WebhookRetryPolicy retryPolicy;

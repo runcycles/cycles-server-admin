@@ -27,7 +27,8 @@ public class ApiKeyRepository {
     @Autowired private KeyService keyService;
     private static final List<String> DEFAULT_PERMISSIONS = List.of(
         "reservations:create", "reservations:commit", "reservations:release",
-        "reservations:extend", "reservations:list", "balances:read");
+        "reservations:extend", "reservations:list", "balances:read",
+        "budgets:read", "budgets:write", "policies:read", "policies:write");
     private static final int CREATE_COLLISION_RETRIES = 10;
     private static final String CASCADE_SET_OUTBOX_LUA =
         "if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end\n" +
@@ -452,12 +453,7 @@ public class ApiKeyRepository {
      * where [] becomes {} and breaks deserialization.
      */
     public ApiKey update(String keyId, ApiKeyUpdateRequest request) {
-        try (Jedis jedis = jedisPool.getResource()) {
-            String json = jedis.get("apikey:" + keyId);
-            if (json == null) {
-                throw GovernanceException.apiKeyNotFound(keyId);
-            }
-            ApiKey key = objectMapper.readValue(json, ApiKey.class);
+        return mutateKey(keyId, key -> {
             if (key.getStatus() == ApiKeyStatus.REVOKED) {
                 throw new GovernanceException(
                     io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
@@ -482,14 +478,7 @@ public class ApiKeyRepository {
             if (request.getPermissions() != null) key.setPermissions(request.getPermissions());
             if (request.getScopeFilter() != null) key.setScopeFilter(request.getScopeFilter());
             if (request.getMetadata() != null) key.setMetadata(request.getMetadata());
-            // Write back with Jackson (clean serialization, no cjson issues)
-            jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
-            return key;
-        } catch (GovernanceException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
+        });
     }
 
     /**
@@ -563,12 +552,7 @@ public class ApiKeyRepository {
     }
 
     public ApiKey revoke(String keyId, String reason) {
-        try (Jedis jedis = jedisPool.getResource()) {
-            String json = jedis.get("apikey:" + keyId);
-            if (json == null) {
-                throw GovernanceException.apiKeyNotFound(keyId);
-            }
-            ApiKey key = objectMapper.readValue(json, ApiKey.class);
+        return mutateKey(keyId, key -> {
             if (key.getStatus() == ApiKeyStatus.REVOKED) {
                 throw GovernanceException.apiKeyAlreadyRevoked(keyId);
             }
@@ -577,14 +561,39 @@ public class ApiKeyRepository {
             if (reason != null && !reason.isEmpty()) {
                 key.setRevokedReason(reason);
             }
-            jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
-            return key;
+        });
+    }
+    private static final String UPDATE_KEY_LUA = """
+        local owner = redis.call('GET', KEYS[2])
+        if owner and cjson.decode(owner).status == 'CLOSED' then return -1 end
+        if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+        redis.call('SET', KEYS[1], ARGV[2])
+        return 1
+        """;
+
+    private ApiKey mutateKey(String keyId, java.util.function.Consumer<ApiKey> update) {
+        String redisKey = "apikey:" + keyId;
+        try (Jedis jedis = jedisPool.getResource()) {
+            for (int attempt = 0; attempt < 8; attempt++) {
+                String original = jedis.get(redisKey);
+                if (original == null) throw GovernanceException.apiKeyNotFound(keyId);
+                ApiKey key = objectMapper.readValue(original, ApiKey.class);
+                update.accept(key);
+                long result = (Long) jedis.eval(UPDATE_KEY_LUA, List.of(redisKey, "tenant:" + key.getTenantId()),
+                    List.of(original, objectMapper.writeValueAsString(key)));
+                if (result == 1) return key;
+                if (result == -1) throw new GovernanceException(
+                    io.runcycles.admin.model.shared.ErrorCode.TENANT_CLOSED, "Key owner is closed", 409);
+            }
+            throw new GovernanceException(io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+                "Key changed concurrently. Retry the request.", 409);
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
-            throw new RuntimeException(e);
+            throw new IllegalStateException("Failed to update API key", e);
         }
     }
+
     public ApiKeyValidationResponse validate(String keySecret) {
         try (Jedis jedis = jedisPool.getResource()) {
             String prefix = keyService.extractPrefix(keySecret);
@@ -637,7 +646,7 @@ public class ApiKeyRepository {
                 .expiresAt(key.getExpiresAt())
                 .build();
         } catch (Exception e) {
-            return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("INTERNAL_ERROR").build();
+            throw new IllegalStateException("Failed to validate API key", e);
         }
     }
 }

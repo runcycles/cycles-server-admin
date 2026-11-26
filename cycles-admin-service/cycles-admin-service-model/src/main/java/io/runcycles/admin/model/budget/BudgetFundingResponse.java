@@ -6,6 +6,7 @@ import lombok.*;
 import java.time.Instant;
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 public class BudgetFundingResponse {
+    @JsonIgnore private boolean replayed;
     @NotNull @JsonProperty("operation") private FundingOperation operation;
     @NotNull @JsonProperty("previous_allocated") private Amount previousAllocated;
     @NotNull @JsonProperty("new_allocated") private Amount newAllocated;

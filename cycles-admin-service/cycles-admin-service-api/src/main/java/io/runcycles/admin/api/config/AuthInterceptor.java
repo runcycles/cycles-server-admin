@@ -16,6 +16,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
+import org.springframework.web.servlet.HandlerMapping;
 
 import io.runcycles.admin.api.filter.RequestIdFilter;
 import io.runcycles.admin.api.filter.TraceContextFilter;
@@ -100,15 +101,22 @@ public class AuthInterceptor implements HandlerInterceptor {
         Map.entry("POST:/v1/admin/budgets/fund", "budgets:write"),
         Map.entry("POST:/v1/admin/budgets", "budgets:write"),
         Map.entry("GET:/v1/admin/budgets", "budgets:read"),
+        Map.entry("GET:/v1/admin/budgets/lookup", "budgets:read"),
         // PATCH /v1/admin/budgets uses AdminKeyAuth per spec v0.1.25 — no permission map entry needed
         Map.entry("POST:/v1/admin/policies", "policies:write"),
         Map.entry("PATCH:/v1/admin/policies", "policies:write"),
+        Map.entry("PATCH:/v1/admin/policies/{policy_id}", "policies:write"),
         Map.entry("GET:/v1/admin/policies", "policies:read"),
         Map.entry("GET:/v1/balances", "balances:read"),
         Map.entry("POST:/v1/webhooks", "webhooks:write"),
         Map.entry("GET:/v1/webhooks", "webhooks:read"),
         Map.entry("PATCH:/v1/webhooks", "webhooks:write"),
         Map.entry("DELETE:/v1/webhooks", "webhooks:write"),
+        Map.entry("GET:/v1/webhooks/{subscription_id}", "webhooks:read"),
+        Map.entry("GET:/v1/webhooks/{subscription_id}/deliveries", "webhooks:read"),
+        Map.entry("PATCH:/v1/webhooks/{subscription_id}", "webhooks:write"),
+        Map.entry("DELETE:/v1/webhooks/{subscription_id}", "webhooks:write"),
+        Map.entry("POST:/v1/webhooks/{subscription_id}/test", "webhooks:write"),
         Map.entry("GET:/v1/events", "events:read")
     );
 
@@ -153,8 +161,9 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
-        String path = request.getRequestURI();
-        String method = request.getMethod();
+        Object pattern = request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE);
+        String path = pattern instanceof String route ? route : applicationPath(request);
+        String method = "HEAD".equals(request.getMethod()) ? "GET" : request.getMethod();
 
         // Skip auth for health, docs, and OPTIONS
         if ("OPTIONS".equals(method) || path.startsWith("/api-docs") || path.startsWith("/swagger") ||
@@ -166,6 +175,13 @@ public class AuthInterceptor implements HandlerInterceptor {
         if (requiresAdminKey(method, path)) {
             return validateAdminKey(request, response);
         } else if (requiresApiKey(path)) {
+            // A newly mapped tenant handler must declare its permission explicitly.
+            String routeKey = method + ":" + path;
+            if (pattern instanceof String && !"GET:/v1/auth/introspect".equals(routeKey)
+                    && !PERMISSION_MAP.containsKey(routeKey)) {
+                writeError(request, response, 403, ErrorCode.FORBIDDEN, "No access rule for endpoint");
+                return false;
+            }
             // Check dual-auth allowlist: some ApiKeyAuth endpoints also accept AdminKeyAuth.
             // Two layers — exact match for fixed paths (e.g. POST /v1/admin/budgets/fund),
             // and prefix match for paths with a resource id (e.g. PATCH /v1/admin/policies/{id}).
@@ -198,10 +214,22 @@ public class AuthInterceptor implements HandlerInterceptor {
                     matchesAdminPrefix(method, normalizedPath))) {
                 return validateAdminKey(request, response);
             }
-            return validateApiKey(request, response);
+            return validateApiKey(request, response, method, path);
         }
 
+        if (path.startsWith("/v1/")) {
+            writeError(request, response, 403, ErrorCode.FORBIDDEN, "No access rule for endpoint");
+            return false;
+        }
         return true;
+    }
+
+    static String applicationPath(HttpServletRequest request) {
+        String servletPath = request.getServletPath();
+        if (servletPath != null && !servletPath.isEmpty()) return servletPath;
+        String uri = request.getRequestURI();
+        String context = request.getContextPath();
+        return context == null ? uri : uri.substring(context.length());
     }
 
     private boolean requiresAdminKey(String path) {
@@ -298,19 +326,26 @@ public class AuthInterceptor implements HandlerInterceptor {
         return true;
     }
 
-    private boolean validateApiKey(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    private boolean validateApiKey(HttpServletRequest request, HttpServletResponse response, String method, String path) throws Exception {
         String key = request.getHeader(API_KEY_HEADER);
         if (key == null || key.isBlank()) {
             writeError(request, response, 401, ErrorCode.UNAUTHORIZED, "Missing " + API_KEY_HEADER + " header");
             return false;
         }
-        ApiKeyValidationResponse validation = apiKeyRepository.validate(key);
+        ApiKeyValidationResponse validation;
+        try {
+            validation = apiKeyRepository.validate(key);
+        } catch (RuntimeException failure) {
+            LOG.error("API key validation unavailable", failure);
+            writeError(request, response, 500, ErrorCode.INTERNAL_ERROR, "Credential validation unavailable");
+            return false;
+        }
         if (!Boolean.TRUE.equals(validation.getValid())) {
-            writeError(request, response, 403, ErrorCode.FORBIDDEN, "Invalid API key: " + (validation.getReason() != null ? validation.getReason() : "UNKNOWN"));
+            writeError(request, response, 401, ErrorCode.UNAUTHORIZED, "Invalid API key: " + (validation.getReason() != null ? validation.getReason() : "UNKNOWN"));
             return false;
         }
         // Check permissions before allowing the request
-        String requiredPermission = resolveRequiredPermission(request.getMethod(), request.getRequestURI());
+        String requiredPermission = resolveRequiredPermission(method, path);
         if (requiredPermission != null) {
             List<String> permissions = validation.getPermissions();
             if (permissions == null || !hasPermission(permissions, requiredPermission)) {

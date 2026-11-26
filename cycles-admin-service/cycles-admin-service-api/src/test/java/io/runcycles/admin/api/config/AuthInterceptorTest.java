@@ -192,7 +192,7 @@ class AuthInterceptorTest {
     }
 
     @Test
-    void preHandle_budgetEndpoint_invalidApiKey_returns403() throws Exception {
+    void preHandle_budgetEndpoint_invalidApiKey_returns401() throws Exception {
         request.setMethod("POST");
         request.setRequestURI("/v1/admin/budgets");
         request.addHeader("X-Cycles-API-Key", "invalid-key");
@@ -201,7 +201,7 @@ class AuthInterceptorTest {
                 ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_FOUND").build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
-        assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getStatus()).isEqualTo(401);
     }
 
     @Test
@@ -439,7 +439,7 @@ class AuthInterceptorTest {
     }
 
     @Test
-    void preHandle_apiKeyValidation_nullReason_returns403() throws Exception {
+    void preHandle_apiKeyValidation_nullReason_returns401() throws Exception {
         request.setMethod("POST");
         request.setRequestURI("/v1/admin/budgets");
         request.addHeader("X-Cycles-API-Key", "bad-key");
@@ -448,18 +448,41 @@ class AuthInterceptorTest {
                 ApiKeyValidationResponse.builder().valid(false).tenantId("").reason(null).build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
-        assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getStatus()).isEqualTo(401);
         assertThat(response.getContentAsString()).contains("UNKNOWN");
     }
 
     // --- Non-matching paths pass through ---
 
     @Test
-    void preHandle_unknownV1Path_passesThrough() throws Exception {
+    void unknownTenantHandlerDoesNotInheritItsParentPermission() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/events/summary");
+        request.setAttribute(org.springframework.web.servlet.HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE,
+            "/v1/events/summary");
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    void headUsesThePermissionOfItsMappedGetHandler() throws Exception {
+        request.setMethod("HEAD");
+        request.setRequestURI("/v1/events");
+        request.setAttribute(org.springframework.web.servlet.HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE,
+            "/v1/events");
+        request.addHeader("X-Cycles-API-Key", "minimal-key");
+        when(apiKeyRepository.validate("minimal-key")).thenReturn(ApiKeyValidationResponse.builder()
+            .valid(true).tenantId("t").permissions(List.of()).build());
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    void preHandle_unknownV1Path_isDenied() throws Exception {
         request.setMethod("GET");
         request.setRequestURI("/v1/unknown");
 
-        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
     }
 
     @Test
@@ -603,7 +626,7 @@ class AuthInterceptorTest {
     }
 
     @Test
-    void preHandle_introspectEndpoint_withInvalidTenantKey_returns403() throws Exception {
+    void preHandle_introspectEndpoint_withInvalidTenantKey_returns401() throws Exception {
         request.setMethod("GET");
         request.setRequestURI("/v1/auth/introspect");
         request.setServletPath("/v1/auth/introspect");
@@ -614,7 +637,7 @@ class AuthInterceptorTest {
                         .valid(false).tenantId("").reason("KEY_NOT_FOUND").build());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
-        assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getStatus()).isEqualTo(401);
     }
 
     @Test
@@ -1004,7 +1027,7 @@ class AuthInterceptorTest {
     }
 
     @Test
-    void preHandle_apiKeyInvalid_writesFailureAudit_403Forbidden() throws Exception {
+    void preHandle_apiKeyInvalid_writesFailureAudit_401Unauthorized() throws Exception {
         request.setMethod("POST");
         request.setRequestURI("/v1/admin/budgets");
         request.addHeader("X-Cycles-API-Key", "bad-key");
@@ -1013,7 +1036,7 @@ class AuthInterceptorTest {
 
         interceptor.preHandle(request, response, new Object());
 
-        verify(auditFailure).logFailure(eq(request), eq(403), eq(ErrorCode.FORBIDDEN), anyString(), isNull());
+        verify(auditFailure).logFailure(eq(request), eq(401), eq(ErrorCode.UNAUTHORIZED), anyString(), isNull());
     }
 
     @Test
@@ -1160,4 +1183,23 @@ class AuthInterceptorTest {
         assertThat((Boolean) ReflectionTestUtils.invokeMethod(interceptor,
             "matchesAdminPrefix", "PATCH", "/v1/admin/policies/")).isFalse();
     }
+    @Test
+    void requiresAdminCredentialsWithServletContextPrefix() throws Exception {
+        request.setMethod("GET");
+        request.setContextPath("/console");
+        request.setRequestURI("/console/v1/admin/tenants");
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    void credentialStoreFailureReturnsServerError() throws Exception {
+        request.setMethod("GET");
+        request.setRequestURI("/v1/events");
+        request.addHeader("X-Cycles-API-Key", "test-key");
+        when(apiKeyRepository.validate("test-key")).thenThrow(new IllegalStateException("unavailable"));
+        assertThat(interceptor.preHandle(request, response, new Object())).isFalse();
+        assertThat(response.getStatus()).isEqualTo(500);
+    }
+
 }

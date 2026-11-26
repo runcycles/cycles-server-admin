@@ -227,11 +227,11 @@ class WebhookTenantControllerTest {
         WebhookSubscription sub = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(sub);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(sub);
         WebhookSubscription updated = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh2")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+        when(webhookService.update(eq(sub), any())).thenReturn(updated);
 
         mockMvc.perform(patch("/v1/webhooks/whsub_1")
                         .header("X-Cycles-API-Key", "valid-api-key")
@@ -253,7 +253,7 @@ class WebhookTenantControllerTest {
         WebhookSubscription sub = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(sub);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(sub);
 
         mockMvc.perform(patch("/v1/webhooks/whsub_1")
                         .header("X-Cycles-API-Key", "valid-api-key")
@@ -274,7 +274,7 @@ class WebhookTenantControllerTest {
             .eventTypes(List.of(EventType.BUDGET_CREATED))
             .eventCategories(List.of(EventCategory.API_KEY)) // stored admin-only category
             .status(WebhookStatus.DISABLED).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(sub);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(sub);
 
         mockMvc.perform(patch("/v1/webhooks/whsub_1")
                         .header("X-Cycles-API-Key", "valid-api-key")
@@ -283,7 +283,7 @@ class WebhookTenantControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
 
-        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).update(any(WebhookSubscription.class), any());
     }
 
     @Test
@@ -292,7 +292,7 @@ class WebhookTenantControllerTest {
         WebhookSubscription sub = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(sub);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(sub);
 
         mockMvc.perform(patch("/v1/webhooks/whsub_1")
                         .header("X-Cycles-API-Key", "valid-api-key")
@@ -301,7 +301,7 @@ class WebhookTenantControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
 
-        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).update(any(WebhookSubscription.class), any());
     }
 
     @Test
@@ -310,8 +310,8 @@ class WebhookTenantControllerTest {
         WebhookSubscription sub = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(sub);
-        when(webhookService.update(eq("whsub_1"), any())).thenReturn(sub);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(sub);
+        when(webhookService.update(eq(sub), any())).thenReturn(sub);
 
         mockMvc.perform(patch("/v1/webhooks/whsub_1")
                         .header("X-Cycles-API-Key", "valid-api-key")
@@ -329,7 +329,7 @@ class WebhookTenantControllerTest {
         WebhookSubscription sub = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(sub);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(sub);
 
         mockMvc.perform(patch("/v1/webhooks/whsub_1")
                         .header("X-Admin-API-Key", "test-admin-key")
@@ -338,7 +338,7 @@ class WebhookTenantControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
 
-        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).update(any(WebhookSubscription.class), any());
     }
 
     @Test
@@ -347,7 +347,7 @@ class WebhookTenantControllerTest {
         WebhookSubscription sub = WebhookSubscription.builder()
             .subscriptionId("whsub_other").tenantId("tenant-2").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_other")).thenReturn(sub);
+        when(webhookService.getForUpdate("whsub_other")).thenReturn(sub);
 
         mockMvc.perform(patch("/v1/webhooks/whsub_other")
                         .header("X-Cycles-API-Key", "valid-api-key")
@@ -530,11 +530,11 @@ class WebhookTenantControllerTest {
         WebhookSubscription existing = WebhookSubscription.builder()
             .subscriptionId("whsub_x").tenantId("tenant-x").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_x")).thenReturn(existing);
+        when(webhookService.getForUpdate("whsub_x")).thenReturn(existing);
         WebhookSubscription updated = WebhookSubscription.builder()
             .subscriptionId("whsub_x").tenantId("tenant-x").url("https://example.com/wh")
             .status(WebhookStatus.PAUSED).createdAt(Instant.now()).build();
-        when(webhookService.update(eq("whsub_x"), any())).thenReturn(updated);
+        when(webhookService.update(eq(existing), any())).thenReturn(updated);
 
         mockMvc.perform(patch("/v1/webhooks/whsub_x")
                         .header("X-Admin-API-Key", "test-admin-key")

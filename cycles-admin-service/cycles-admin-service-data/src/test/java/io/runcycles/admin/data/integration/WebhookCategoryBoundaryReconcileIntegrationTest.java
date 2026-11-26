@@ -32,6 +32,7 @@ import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * #209 (d2) one-time cleanup: {@link WebhookRepository#reconcileTenantCategoryBoundary()}
@@ -340,4 +341,33 @@ class WebhookCategoryBoundaryReconcileIntegrationTest {
         assertThat(result.repaired()).isEmpty();
         assertThat(result.isComplete()).isTrue();
     }
+    @Test
+    void migratesLegacyHeadersAndGuardsWritesAgainstStaleStateAndClosedOwners() throws Exception {
+        WebhookRepository encrypted = new WebhookRepository();
+        inject(encrypted, "jedisPool", jedisPool);
+        inject(encrypted, "objectMapper", objectMapper);
+        inject(encrypted, "cryptoService", new CryptoService(java.util.Base64.getEncoder().encodeToString(new byte[32]), false));
+        var legacy = WebhookSubscription.builder().subscriptionId("wh-migrate").tenantId("tenant-a")
+            .eventTypes(List.of(EventType.BUDGET_CREATED)).headers(java.util.Map.of("Authorization", "secret-value")).build();
+        webhookRepository.save(legacy);
+        assertThat(encrypted.reconcileTenantCategoryBoundary(false).isComplete()).isTrue();
+        try (Jedis jedis = jedisPool.getResource()) {
+            String stored = jedis.get("webhook:wh-migrate");
+            assertThat(stored).contains("encrypted_headers").doesNotContain("secret-value");
+            var original = encrypted.findById("wh-migrate");
+            assertThat(original.getHeaders()).containsEntry("Authorization", "secret-value");
+            var update = original.toBuilder().name("current").build();
+            encrypted.update("wh-migrate", update);
+            assertThatThrownBy(() -> encrypted.update("wh-migrate", original))
+                .isInstanceOf(io.runcycles.admin.data.exception.GovernanceException.class);
+            var current = encrypted.findById("wh-migrate");
+            jedis.set("tenant:tenant-a", "{\"status\":\"CLOSED\"}");
+            assertThatThrownBy(() -> encrypted.update("wh-migrate", current))
+                .hasMessageContaining("owner is closed");
+            assertThatThrownBy(() -> encrypted.save(legacy.toBuilder().subscriptionId("wh-after-close").build()))
+                .hasMessageContaining("owner is closed");
+            assertThat(jedis.exists("webhook:wh-after-close")).isFalse();
+        }
+    }
+
 }

@@ -47,6 +47,8 @@ class ApiKeyRepositoryTest {
     @BeforeEach
     void setUp() {
         lenient().when(jedisPool.getResource()).thenReturn(jedis);
+        lenient().when(jedis.eval(contains("if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end"),
+            anyList(), anyList())).thenReturn(1L);
         RedisBatchTestStubs.installStringReads(jedis);
     }
 
@@ -368,7 +370,7 @@ class ApiKeyRepositoryTest {
         assertThat(result.getStatus()).isEqualTo(ApiKeyStatus.REVOKED);
         assertThat(result.getRevokedReason()).isEqualTo("No longer needed");
         assertThat(result.getRevokedAt()).isNotNull();
-        verify(jedis).set(eq("apikey:key_1"), anyString());
+        verify(jedis).eval(anyString(), eq(List.of("apikey:key_1", "tenant:tenant-1")), anyList());
     }
 
     @Test
@@ -603,10 +605,8 @@ class ApiKeyRepositoryTest {
     void validate_internalException_returnsInternalError() {
         when(keyService.extractPrefix(anyString())).thenThrow(new RuntimeException("Redis down"));
 
-        ApiKeyValidationResponse response = repository.validate("cyc_live_test");
-
-        assertThat(response.getValid()).isFalse();
-        assertThat(response.getReason()).isEqualTo("INTERNAL_ERROR");
+        assertThatThrownBy(() -> repository.validate("cyc_live_test"))
+            .isInstanceOf(IllegalStateException.class).hasMessageContaining("validate API key");
     }
 
     @Test
@@ -842,7 +842,7 @@ class ApiKeyRepositoryTest {
 
         assertThat(result.getName()).isEqualTo("Updated");
         assertThat(result.getPermissions()).containsExactly("budgets:read", "budgets:write");
-        verify(jedis).set(eq("apikey:key_1"), anyString());
+        verify(jedis).eval(anyString(), eq(List.of("apikey:key_1", "tenant:tenant-1")), anyList());
     }
 
     @Test
@@ -906,6 +906,35 @@ class ApiKeyRepositoryTest {
                     assertThat(ge.getErrorCode()).isEqualTo(ErrorCode.NOT_FOUND);
                     assertThat(ge.getHttpStatus()).isEqualTo(404);
                 });
+    }
+
+    @Test
+    void updateRechecksTerminalStatusAfterConcurrentRevocation() throws Exception {
+        ApiKey key = ApiKey.builder().keyId("key_race").tenantId("tenant-1").status(ApiKeyStatus.ACTIVE).build();
+        String active = objectMapper.writeValueAsString(key);
+        key.setStatus(ApiKeyStatus.REVOKED);
+        String revoked = objectMapper.writeValueAsString(key);
+        when(jedis.get("apikey:key_race")).thenReturn(active, revoked);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(0L);
+
+        ApiKeyUpdateRequest update = new ApiKeyUpdateRequest();
+        update.setName("renamed");
+        assertThatThrownBy(() -> repository.update("key_race", update))
+            .isInstanceOf(GovernanceException.class).hasMessageContaining("REVOKED");
+        verify(jedis, times(1)).eval(anyString(), anyList(), anyList());
+    }
+
+    @Test
+    void keyUpdateStopsIfOwnerClosesOrContentionPersists() throws Exception {
+        ApiKey key = ApiKey.builder().keyId("key_race").tenantId("tenant-1").status(ApiKeyStatus.ACTIVE).build();
+        String active = objectMapper.writeValueAsString(key);
+        when(jedis.get("apikey:key_race")).thenReturn(active);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(-1L, 0L);
+
+        assertThatThrownBy(() -> repository.revoke("key_race", null))
+            .isInstanceOf(GovernanceException.class).hasMessageContaining("closed");
+        assertThatThrownBy(() -> repository.update("key_race", new ApiKeyUpdateRequest()))
+            .isInstanceOf(GovernanceException.class).hasMessageContaining("concurrently");
     }
 
     @Test

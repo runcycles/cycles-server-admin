@@ -14,6 +14,13 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. Additive fields (new optional response fields, new enum values,
 new optional request fields) are **not** considered breaking.
 
+## [0.1.25.56] — 2026-11-26
+
+- Enforced tenant and scope restrictions on reads, corrected credential error responses and aligned new API keys with the default permission set.
+- Made key revocation and webhook updates safe during concurrent writes and tenant closure. Webhook responses mask custom headers. Deploy events worker 0.1.25.26 before enabling the encrypted header writer and migration. See [the upgrade instructions](OPERATIONS.md).
+- Preserved exact int64 ledger balances and original funding responses on retry. Funding retries no longer emit duplicate mutation events.
+- Corrected event time filtering, denial counts, webhook request validation, and development readiness probes. Updated production image versions.
+
 ## [0.1.25.55] — 2026-07-21
 
 ### Fixed

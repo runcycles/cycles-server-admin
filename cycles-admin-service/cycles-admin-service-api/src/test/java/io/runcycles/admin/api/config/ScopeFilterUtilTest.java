@@ -13,6 +13,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @DisplayName("ScopeFilterUtil")
 class ScopeFilterUtilTest {
 
+    @Test
+    void restrictedListPredicateRejectsAbsentScopesAndIgnoresEmptyFilterEntries() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setAttribute("authenticated_scope_filter", java.util.Arrays.asList(null, " ", "workspace:eng"));
+        var allowed = ScopeFilterUtil.allowedScopes(request);
+        assertThat(allowed.test(null)).isFalse();
+        assertThat(allowed.test("tenant:t/workspace:eng")).isTrue();
+        assertThat(allowed.test("tenant:t/workspace:sales")).isFalse();
+    }
+
     // --- matchesScope ---
 
     @Test

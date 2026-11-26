@@ -102,7 +102,7 @@ class BudgetControllerTest {
     void lookupBudget_returns200() throws Exception {
         setupApiKeyAuth();
         BudgetLedger ledger = BudgetLedger.builder()
-                .ledgerId("led-1").scope("tenant:tenant-1/workspace:team1").unit(UnitEnum.USD_MICROCENTS)
+                .tenantId("tenant-1").ledgerId("led-1").scope("tenant:tenant-1/workspace:team1").unit(UnitEnum.USD_MICROCENTS)
                 .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .remaining(new Amount(UnitEnum.USD_MICROCENTS, 800L))
                 .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
@@ -115,6 +115,22 @@ class BudgetControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.ledger_id").value("led-1"))
                 .andExpect(jsonPath("$.scope").value("tenant:tenant-1/workspace:team1"));
+    }
+
+    @Test
+    void exactLookupUsesThePersistedOwnerAndAllowsAnAdminLookup() throws Exception {
+        setupApiKeyAuth();
+        String scope = "tenant:owner/workspace:team";
+        BudgetLedger ledger = BudgetLedger.builder().tenantId("owner").scope(scope)
+            .unit(UnitEnum.USD_MICROCENTS).ledgerId("other-ledger").status(BudgetStatus.ACTIVE)
+            .allocated(new Amount(UnitEnum.USD_MICROCENTS, 10L)).remaining(new Amount(UnitEnum.USD_MICROCENTS, 10L))
+            .createdAt(Instant.now()).build();
+        when(budgetRepository.getByExactScope(scope, UnitEnum.USD_MICROCENTS)).thenReturn(ledger);
+        mockMvc.perform(get("/v1/admin/budgets/lookup").param("scope", scope).param("unit", "USD_MICROCENTS")
+                .header("X-Cycles-API-Key", "valid-api-key")).andExpect(status().isNotFound());
+        mockMvc.perform(get("/v1/admin/budgets/lookup").param("scope", scope).param("unit", "USD_MICROCENTS")
+                .header("X-Admin-API-Key", "test-admin-key")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.ledger_id").value("other-ledger"));
     }
 
     @Test
@@ -951,6 +967,24 @@ class BudgetControllerTest {
                 .andExpect(status().isOk());
 
         verify(eventService).emit(eq(EventType.BUDGET_UPDATED), any(), eq("tenant:tenant-1/workspace:tscope"), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void fundingReplayReturnsTheOriginalResponseWithoutNewMutationEvents() throws Exception {
+        setupApiKeyAuth();
+        Instant original = Instant.parse("2026-01-01T00:00:00Z");
+        BudgetFundingResponse replay = BudgetFundingResponse.builder().operation(FundingOperation.CREDIT)
+            .previousAllocated(new Amount(UnitEnum.CREDITS, 0L)).newAllocated(new Amount(UnitEnum.CREDITS, 1L))
+            .previousRemaining(new Amount(UnitEnum.CREDITS, 0L)).newRemaining(new Amount(UnitEnum.CREDITS, 1L))
+            .timestamp(original).replayed(true).build();
+        when(budgetRepository.fund(eq("tenant-1"), anyString(), eq(UnitEnum.CREDITS), any())).thenReturn(replay);
+        mockMvc.perform(post("/v1/admin/budgets/fund")
+                .param("scope", "tenant:tenant-1/workspace:one").param("unit", "CREDITS")
+                .header("X-Cycles-API-Key", "valid-api-key").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"CREDITS\",\"amount\":1},\"idempotency_key\":\"retry\"}"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.replayed").doesNotExist());
+        verifyNoInteractions(eventService);
+        verify(auditRepository, never()).log(any());
     }
 
     @Test

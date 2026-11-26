@@ -45,7 +45,7 @@ class EventTenantControllerTest {
         setupApiKeyAuth();
         EventListResponse response = EventListResponse.builder()
             .events(List.of()).hasMore(false).build();
-        when(eventService.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+        when(eventService.listTenantVisible(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt()))
             .thenReturn(response);
 
         mockMvc.perform(get("/v1/events")
@@ -53,7 +53,7 @@ class EventTenantControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.events").isArray());
 
-        verify(eventService).list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt());
+        verify(eventService).listTenantVisible(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), anyInt());
     }
 
     @Test
@@ -67,7 +67,7 @@ class EventTenantControllerTest {
         setupApiKeyAuth();
         EventListResponse response = EventListResponse.builder()
             .events(List.of()).hasMore(false).build();
-        when(eventService.list(eq("tenant-1"), eq("budget.created"), eq("budget"), any(), any(), any(), any(), any(), anyInt()))
+        when(eventService.listTenantVisible(eq("tenant-1"), eq("budget.created"), eq("budget"), any(), any(), any(), any(), any(), anyInt()))
             .thenReturn(response);
 
         mockMvc.perform(get("/v1/events")
@@ -76,7 +76,7 @@ class EventTenantControllerTest {
                         .param("category", "budget"))
                 .andExpect(status().isOk());
 
-        verify(eventService).list(eq("tenant-1"), eq("budget.created"), eq("budget"), any(), any(), any(), any(), any(), anyInt());
+        verify(eventService).listTenantVisible(eq("tenant-1"), eq("budget.created"), eq("budget"), any(), any(), any(), any(), any(), anyInt());
     }
 
     @Test
@@ -84,7 +84,7 @@ class EventTenantControllerTest {
         setupApiKeyAuth();
         EventListResponse response = EventListResponse.builder()
             .events(List.of()).hasMore(false).build();
-        when(eventService.list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), eq(100)))
+        when(eventService.listTenantVisible(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), eq(100)))
             .thenReturn(response);
 
         mockMvc.perform(get("/v1/events")
@@ -92,7 +92,7 @@ class EventTenantControllerTest {
                         .param("limit", "999"))
                 .andExpect(status().isOk());
 
-        verify(eventService).list(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), eq(100));
+        verify(eventService).listTenantVisible(eq("tenant-1"), any(), any(), any(), any(), any(), any(), any(), eq(100));
     }
 
     @Test

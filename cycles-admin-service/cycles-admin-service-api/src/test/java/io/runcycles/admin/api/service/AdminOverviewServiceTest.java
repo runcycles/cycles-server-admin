@@ -160,7 +160,7 @@ class AdminOverviewServiceTest {
     void buildOverview_aggregatesRecentDenialsByReason() {
         when(tenantRepository.list(isNull(), isNull(), isNull(), eq(100))).thenReturn(List.of());
         when(webhookRepository.listAll(isNull(), isNull(), isNull(), eq(100))).thenReturn(List.of());
-        when(eventRepository.list(isNull(), isNull(), isNull(), isNull(), isNull(), any(Instant.class), any(Instant.class), isNull(), eq(100))).thenReturn(List.of());
+
 
         // Three denials: two BUDGET_EXCEEDED, one ACTION_QUOTA_EXCEEDED (v0.1.26 extension value)
         Event denial1 = Event.builder().eventId("e1").eventType(EventType.RESERVATION_DENIED).category(EventCategory.RESERVATION).timestamp(Instant.now())
@@ -169,6 +169,7 @@ class AdminOverviewServiceTest {
                 .data(java.util.Map.of("reason_code", "BUDGET_EXCEEDED", "scope", "tenant:acme")).build();
         Event denial3 = Event.builder().eventId("e3").eventType(EventType.RESERVATION_DENIED).category(EventCategory.RESERVATION).timestamp(Instant.now())
                 .data(java.util.Map.of("reason_code", "ACTION_QUOTA_EXCEEDED", "scope", "tenant:acme")).build();
+        when(eventRepository.list(isNull(), isNull(), isNull(), isNull(), isNull(), any(Instant.class), any(Instant.class), isNull(), eq(100))).thenReturn(List.of(denial1, denial2, denial3));
         when(eventRepository.list(isNull(), eq("reservation.denied"), isNull(), isNull(), isNull(), any(Instant.class), any(Instant.class), isNull(), eq(10)))
                 .thenReturn(List.of(denial1, denial2, denial3));
         when(eventRepository.list(isNull(), eq("reservation.expired"), isNull(), isNull(), isNull(), any(Instant.class), any(Instant.class), isNull(), eq(10))).thenReturn(List.of());
@@ -236,10 +237,14 @@ class AdminOverviewServiceTest {
         when(eventRepository.list(isNull(), isNull(), isNull(), isNull(), isNull(),
             any(Instant.class), any(Instant.class), eq("evt-99"), eq(100))).thenReturn(List.of());
         List<Event> denials = List.of(
-            Event.builder().data(null).build(),
-            Event.builder().data(Map.of("reason_code", 42)).build(),
-            Event.builder().data(Map.of("reason_code", " ")).build(),
-            Event.builder().data(Map.of("reason_code", "QUOTA_EXCEEDED")).build());
+            Event.builder().eventType(EventType.RESERVATION_DENIED).data(null).build(),
+            Event.builder().eventType(EventType.RESERVATION_DENIED).data(Map.of("reason_code", 42)).build(),
+            Event.builder().eventType(EventType.RESERVATION_DENIED).data(Map.of("reason_code", " ")).build(),
+            Event.builder().eventType(EventType.RESERVATION_DENIED).data(Map.of("reason_code", "QUOTA_EXCEEDED")).build());
+        for (int i = 0; i < denials.size(); i++) {
+            denials.get(i).setEventId("evt-" + i);
+            events.set(i, denials.get(i));
+        }
         when(eventRepository.list(isNull(), eq("reservation.denied"), isNull(), isNull(), isNull(),
             any(Instant.class), any(Instant.class), isNull(), eq(10))).thenReturn(denials);
 

@@ -1132,4 +1132,48 @@ class EventRepositoryTest {
             .containsExactly("evt_3")
             .doesNotContainAnyElementsOf(page1.stream().map(Event::getEventId).toList());
     }
+
+    @Test
+    void tenantTimelineChecksStoredOwnerTypeAndCategoryBeforeFillingPage() throws Exception {
+        List<String> ids = List.of("other", "no-type", "no-category", "private-category", "visible");
+        when(jedis.zrevrangeByScore(eq("events:t"), anyDouble(), anyDouble(), eq(0), anyInt())).thenReturn(ids);
+        for (String id : ids) {
+            Event event = Event.builder().eventId(id).tenantId(id.equals("other") ? "other" : "t")
+                .eventType(id.equals("no-type") ? null : EventType.BUDGET_CREATED)
+                .category(switch (id) {
+                    case "no-category" -> null;
+                    case "private-category" -> EventCategory.POLICY;
+                    default -> EventCategory.BUDGET;
+                }).build();
+            String json = objectMapper.writeValueAsString(event);
+            when(jedis.get("event:" + id)).thenReturn(json);
+        }
+        assertThat(repository.listTenantVisible("t", null, null, null, " ", null, null, null, 1))
+            .extracting(Event::getEventId).containsExactly("visible");
+    }
+    @Test
+    void tenantCorrelationQueryFiltersVisibilityAndTimeBeforeLimit() throws Exception {
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        when(jedis.smembers("events:correlation:batch")).thenReturn(Set.of("old", "new", "private", "visible", "undated"));
+        for (String id : List.of("old", "new", "private", "visible", "undated")) {
+            EventType type = "private".equals(id) ? EventType.API_KEY_CREATED : EventType.BUDGET_CREATED;
+            Instant time = switch (id) {
+                case "undated" -> null;
+                case "old" -> now.minusSeconds(1);
+                case "new" -> now.plusSeconds(1);
+                default -> now;
+            };
+            Event event = Event.builder().eventId(id).tenantId("t").eventType(type)
+                .category(type.getCategory()).timestamp(time).build();
+            String json = objectMapper.writeValueAsString(event);
+            when(jedis.get("event:" + id)).thenReturn(json);
+        }
+        assertThat(repository.listTenantVisible("t", null, null, null, "batch", now, now, null, 1))
+            .extracting(Event::getEventId).containsExactly("visible");
+        assertThat(repository.list("t", null, null, null, "batch", now, now, null, 4))
+            .extracting(Event::getEventId).containsExactlyInAnyOrder("visible", "private");
+        assertThat(repository.listTenantVisible("t", null, null, null, "batch", null, now, null, 4))
+            .extracting(Event::getEventId).containsExactlyInAnyOrder("visible", "old");
+    }
+
 }
