@@ -13,6 +13,7 @@ import io.runcycles.admin.model.shared.SortSpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.context.request.RequestAttributes;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
@@ -40,6 +41,27 @@ public class EventService {
         this.eventRepository = eventRepository;
         this.webhookDispatchService = webhookDispatchService;
         this.meterRegistry = meterRegistry;
+    }
+
+    @Scheduled(fixedDelayString = "${funding.dispatch.retry-ms:5000}")
+    public void recoverFundingDispatch() {
+        for (String id : eventRepository.dueFundingEvents()) {
+            dispatchFundingEvent(id);
+        }
+    }
+
+    /** Funding already published the event. Retry only the idempotent delivery enqueue. */
+    public void dispatchFundingEvent(String id) {
+        try {
+            Event event = eventRepository.claimFundingDispatch(id);
+            if (event == null) return;
+            validatePayloadShape(event);
+            var dispatch = webhookDispatchService.dispatchWithSummary(event);
+            if (!dispatch.hasFailures()) eventRepository.completeFundingDispatch(id);
+            recordEmitted(event.getEventType(), dispatch.hasFailures() ? "failure" : "success");
+        } catch (RuntimeException failure) {
+            LOG.warn("Funding webhook dispatch will retry: event_id={}", safe(id), failure);
+        }
     }
 
     /**

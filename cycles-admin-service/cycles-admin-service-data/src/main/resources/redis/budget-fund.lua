@@ -92,6 +92,30 @@ if less('9223372036854775807', allocated) or less(remaining, '-92233720368547758
 end
 local over = tostring(less(field('overdraft_limit'), debt))
 local result = {oldAllocated, allocated, oldRemaining, remaining, oldDebt, debt, over, oldSpent, spent, now}
+-- Publish the event and its lookup indexes in the ledger transaction. Each JSON
+-- object below is serialized by Jackson. Preserve exact int64s as number tokens.
+local function state(a, r, d, s)
+    return '{"allocated":' .. a .. ',"remaining":' .. r .. ',"debt":' .. d .. ',"spent":' .. s .. '}'
+end
+local id, envelope, data, correlation, ttl = ARGV[8], ARGV[9], ARGV[10], ARGV[11], ARGV[12]
+local payload = data:sub(1, -2) .. ',"previous_state":' .. state(oldAllocated, oldRemaining, oldDebt, oldSpent)
+    .. ',"new_state":' .. state(allocated, remaining, debt, spent) .. '}'
+local event = envelope:sub(1, -2) .. ',"tenant_id":' .. cjson.encode(owner) .. ',"data":' .. payload .. '}'
+-- Redis does not roll back writes if a subsequent command errors. Check index
+-- types first so a damaged index cannot leave a partially published mutation.
+redis.call('ZSCORE', 'events:' .. owner, id)
+redis.call('ZSCORE', 'events:_all', id)
+redis.call('ZSCORE', 'funding:dispatch:due', id)
+if correlation ~= '' then redis.call('SISMEMBER', 'events:correlation:' .. correlation, id) end
+redis.call('SET', 'event:' .. id, event, 'EX', ttl)
+redis.call('ZADD', 'events:' .. owner, now, id)
+redis.call('ZADD', 'events:_all', now, id)
+if correlation ~= '' then
+    redis.call('SADD', 'events:correlation:' .. correlation, id)
+    redis.call('EXPIRE', 'events:correlation:' .. correlation, ttl)
+end
+-- Foreground dispatch and crash recovery use the same stable delivery IDs.
+redis.call('ZADD', 'funding:dispatch:due', now, id)
 redis.call('HSET', ledger, 'allocated', allocated, 'remaining', remaining, 'debt', debt,
            'spent', spent, 'is_over_limit', over, 'updated_at', now)
 if cache then

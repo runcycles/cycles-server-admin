@@ -17,9 +17,9 @@ new optional request fields) are **not** considered breaking.
 ## [0.1.25.56] — 2026-11-26
 
 - Enforced tenant and scope restrictions on reads, corrected credential error responses and aligned new API keys with the default permission set.
-- Made key revocation and webhook updates safe during concurrent writes and tenant closure. Webhook responses mask custom headers. Deploy events worker 0.1.25.26 before enabling the encrypted header writer and migration. See [the upgrade instructions](OPERATIONS.md).
-- Preserved exact int64 ledger balances and original funding responses on retry. Funding retries no longer emit duplicate mutation events.
-- Corrected event time filtering, denial counts, webhook request validation, and development readiness probes. Updated production image versions.
+- Made key revocation and webhook updates safe during concurrent writes and tenant closure. Webhook responses mask custom headers. Upgrade delivery workers to 0.1.25.26 and runtime event producers to 0.1.25.61, then stop old admin writers before enabling encrypted headers. See [the upgrade instructions](OPERATIONS.md).
+- Preserved exact int64 ledger balances and original funding responses on retry. The funding transaction also publishes the event and persists pending webhook dispatch. Recovery uses the original event and delivery IDs.
+- Corrected event time filtering, denial counts, webhook request validation, and development readiness probes. Updated production image versions. Retryable webhook and key write conflicts return HTTP 409 with `CONCURRENT_MODIFICATION` (governance 0.1.25.44).
 
 ## [0.1.25.55] — 2026-07-21
 

@@ -2,16 +2,28 @@
 
 ## Upgrading to admin 0.1.25.56
 
-Deploy events worker 0.1.25.26 or later to every delivery consumer first. Configure the same
-`WEBHOOK_SECRET_ENCRYPTION_KEY` on admin and events. Then deploy the admin release.
-The worker can deliver subscriptions stored in either format. New admin writes encrypt
-the custom header map in the Redis subscription's `encrypted_headers` field. The startup
-reconciler migrates existing subscriptions with a conditional write, including paused
-and disabled rows. Enable `webhook.category-boundary.reconcile-on-startup` and disable
-its dry-run setting for the migration. Repeat the sweep after retiring old writers.
+Upgrade every runtime event producer to 0.1.25.61 or later and every delivery
+worker to 0.1.25.26 or later. Configure the same `WEBHOOK_SECRET_ENCRYPTION_KEY`
+on admin and events. These readers support both storage formats.
+
+Drain traffic to **all** older admin instances and stop them, including scheduled
+jobs, before starting the first 0.1.25.56 admin instance. Use a stop/start
+deployment for this transition. An older writer can erase encrypted headers on
+an unrelated edit, and a later migration cannot restore them. Take a Redis backup
+before cutover. After encrypted writes start, rollback requires a compatible writer
+or coordinated restoration of the pre-upgrade snapshot.
+
+Start the new admin with `webhook.category-boundary.reconcile-on-startup=true`
+and `webhook.category-boundary.reconcile-dry-run=false`. The sweep encrypts
+legacy headers on active, paused and disabled subscriptions.
 The explicit local plaintext setting continues to support development without a key.
 
-Funding replays use the tenant-owned ledger and the idempotency key. An existing
+Funding replays use the tenant-owned ledger and the idempotency key for 24 hours
+from the original mutation. After that deadline, reconcile the outcome before
+retrying. Funding writes the event and its indexes with the ledger in one Redis
+script. Pending webhook notifications survive process restarts and retry with
+the same event and delivery IDs. A 409 `CONCURRENT_MODIFICATION` on a webhook
+or API-key edit means refresh the record and retry the intended change. An existing
 pre-upgrade replay entry has no verifiable ledger identity. During its remaining
 24-hour TTL, a retry returns HTTP 409. Reconcile the original funding outcome
 before initiating another credit or debit. Existing API keys keep their stored
@@ -582,7 +594,7 @@ with env overrides.
 | `tenant-close.reconciler.enabled` | `TENANT_CLOSE_RECONCILER_ENABLED` | `true` | Retry incomplete Mode-B cascades for tenants already marked `CLOSED`. |
 | `tenant-close.reconciler.interval-ms` | `TENANT_CLOSE_RECONCILER_INTERVAL_MS` | `300000` | Fixed delay in milliseconds between reconciliation runs. |
 | `tenant-close.reconciler.max-tenants-per-run` | `TENANT_CLOSE_RECONCILER_MAX_TENANTS_PER_RUN` | `100` | Maximum due work items processed per run. Redis score ordering and rescheduling provide durable progress across restarts and replicas. |
-| `spring.task.scheduling.pool.size` | `TASK_SCHEDULER_POOL_SIZE` | `2` | Scheduler threads. Values below `2` are raised to the enforced safety floor: one thread may run the reconciler while another renews its distributed lease. |
+| `spring.task.scheduling.pool.size` | `TASK_SCHEDULER_POOL_SIZE` | `3` | Minimum of three threads so funding dispatch can run alongside tenant-close reconciliation and lease renewal. |
 | JVM options | `JAVA_OPTS` | (unset) | Extra JVM flags consumed by the Docker image entrypoint. Production Compose sets G1, `MaxRAMPercentage=75`, and string deduplication defaults. |
 | `audit.sweep.cron` | `AUDIT_SWEEP_CRON` | `0 0 3 * * *` | Cron schedule for the daily audit index sweep (`ZREMRANGEBYSCORE` on expired pointers). Default 03:00 server time. Sweep is best-effort; skipped entirely when `audit.retention.authenticated.days=0` (indefinite — nothing to sweep). |
 | `dashboard.cors.origin` | `DASHBOARD_CORS_ORIGIN` | `http://localhost:5173` | CORS allowed origin(s). Comma-separated. **In production, set to your dashboard URL** — the default only works against the local Vite dev server. |

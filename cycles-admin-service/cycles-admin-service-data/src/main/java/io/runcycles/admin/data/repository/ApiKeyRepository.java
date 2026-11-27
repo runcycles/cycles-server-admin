@@ -585,7 +585,7 @@ public class ApiKeyRepository {
                 if (result == -1) throw new GovernanceException(
                     io.runcycles.admin.model.shared.ErrorCode.TENANT_CLOSED, "Key owner is closed", 409);
             }
-            throw new GovernanceException(io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+            throw new GovernanceException(io.runcycles.admin.model.shared.ErrorCode.CONCURRENT_MODIFICATION,
                 "Key changed concurrently. Retry the request.", 409);
         } catch (GovernanceException e) {
             throw e;

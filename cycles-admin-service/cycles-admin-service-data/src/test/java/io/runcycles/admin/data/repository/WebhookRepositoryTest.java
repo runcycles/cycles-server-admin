@@ -97,7 +97,8 @@ class WebhookRepositoryTest {
         assertThatThrownBy(() -> repository.save(sub)).isInstanceOf(GovernanceException.class)
             .hasMessageContaining("closed");
         assertThatThrownBy(() -> repository.save(sub)).isInstanceOf(GovernanceException.class)
-            .hasMessageContaining("concurrently");
+            .satisfies(e -> assertThat(((GovernanceException) e).getErrorCode())
+                .isEqualTo(io.runcycles.admin.model.shared.ErrorCode.CONCURRENT_MODIFICATION));
     }
 
     @Test

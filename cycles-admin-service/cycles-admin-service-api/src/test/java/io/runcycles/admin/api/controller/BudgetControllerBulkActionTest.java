@@ -143,7 +143,7 @@ class BudgetControllerBulkActionTest {
 
         ArgumentCaptor<BudgetFundingRequest> fundArg = ArgumentCaptor.forClass(BudgetFundingRequest.class);
         verify(budgetRepository).fund(eq(TENANT), eq("tenant:acme/workspace:eng"),
-                eq(UnitEnum.USD_MICROCENTS), fundArg.capture());
+                eq(UnitEnum.USD_MICROCENTS), fundArg.capture(), any());
         // derived per-row idempotency key = bulkKey:scope:unit
         assertEquals("k1:tenant:acme/workspace:eng:USD_MICROCENTS",
                 fundArg.getValue().getIdempotencyKey());
@@ -217,7 +217,7 @@ class BudgetControllerBulkActionTest {
                 .andExpect(jsonPath("$.succeeded.length()").value(1));
 
         ArgumentCaptor<BudgetFundingRequest> fundArg = ArgumentCaptor.forClass(BudgetFundingRequest.class);
-        verify(budgetRepository).fund(eq(TENANT), anyString(), eq(UnitEnum.USD_MICROCENTS), fundArg.capture());
+        verify(budgetRepository).fund(eq(TENANT), anyString(), eq(UnitEnum.USD_MICROCENTS), fundArg.capture(), any());
         assertEquals(0L, fundArg.getValue().getSpent().getAmount());
     }
 
@@ -246,7 +246,7 @@ class BudgetControllerBulkActionTest {
                 .andExpect(jsonPath("$.failed[0].message",
                         org.hamcrest.Matchers.containsString("unit mismatch")));
 
-        verify(budgetRepository, never()).fund(anyString(), anyString(), any(), any());
+        verify(budgetRepository, never()).fund(anyString(), anyString(), any(), any(), any());
     }
 
     @Test
@@ -266,7 +266,7 @@ class BudgetControllerBulkActionTest {
                 .andExpect(jsonPath("$.skipped[0].reason").value("ALREADY_IN_TARGET_STATE"))
                 .andExpect(jsonPath("$.succeeded.length()").value(0));
 
-        verify(budgetRepository, never()).fund(anyString(), anyString(), any(), any());
+        verify(budgetRepository, never()).fund(anyString(), anyString(), any(), any(), any());
     }
 
     @Test
@@ -274,7 +274,7 @@ class BudgetControllerBulkActionTest {
         noReplay();
         when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
                 .thenReturn(List.of(ledger("tenant:acme/workspace:eng", 100L, 50L, 0L)));
-        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any(), any()))
                 .thenThrow(GovernanceException.insufficientFunds("tenant:acme/workspace:eng"));
 
         mockMvc.perform(post("/v1/admin/budgets/bulk-action")
@@ -292,7 +292,7 @@ class BudgetControllerBulkActionTest {
         noReplay();
         when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
                 .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
-        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any(), any()))
                 .thenThrow(new GovernanceException(ErrorCode.BUDGET_FROZEN,
                         "Budget is frozen: tenant:acme/workspace:eng", 409));
 
@@ -310,7 +310,7 @@ class BudgetControllerBulkActionTest {
         noReplay();
         when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
                 .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
-        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any(), any()))
                 .thenThrow(new GovernanceException(ErrorCode.BUDGET_CLOSED,
                         "Budget is closed", 409));
 
@@ -328,7 +328,7 @@ class BudgetControllerBulkActionTest {
         noReplay();
         when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
                 .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
-        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any(), any()))
                 .thenThrow(new GovernanceException(ErrorCode.BUDGET_NOT_FOUND, "gone", 404));
 
         mockMvc.perform(post("/v1/admin/budgets/bulk-action")
@@ -345,7 +345,7 @@ class BudgetControllerBulkActionTest {
         noReplay();
         when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
                 .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
-        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any(), any()))
                 .thenThrow(new GovernanceException(ErrorCode.INSUFFICIENT_PERMISSIONS, "denied", 403));
 
         mockMvc.perform(post("/v1/admin/budgets/bulk-action")
@@ -362,7 +362,7 @@ class BudgetControllerBulkActionTest {
         noReplay();
         when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
                 .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
-        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any(), any()))
                 .thenThrow(new RuntimeException("redis-down"));
 
         mockMvc.perform(post("/v1/admin/budgets/bulk-action")
@@ -380,7 +380,7 @@ class BudgetControllerBulkActionTest {
         when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
                 .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
         // ErrorCode not in the classifier switch → default branch
-        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any(), any()))
                 .thenThrow(new GovernanceException(ErrorCode.INTERNAL_ERROR, "boom", 500));
 
         mockMvc.perform(post("/v1/admin/budgets/bulk-action")
@@ -413,7 +413,7 @@ class BudgetControllerBulkActionTest {
                 .andExpect(jsonPath("$.error").value("LIMIT_EXCEEDED"))
                 .andExpect(jsonPath("$.details.total_matched").value(1234));
 
-        verify(budgetRepository, never()).fund(anyString(), anyString(), any(), any());
+        verify(budgetRepository, never()).fund(anyString(), anyString(), any(), any(), any());
         verify(idempotencyStore, never()).store(anyString(), anyString(), any());
         verify(budgetRepository).countForBulk(eq(TENANT), any(BudgetListFilters.class));
         verify(idempotencyStore).abandon(any());
@@ -435,7 +435,7 @@ class BudgetControllerBulkActionTest {
                 .andExpect(jsonPath("$.error").value("COUNT_MISMATCH"))
                 .andExpect(jsonPath("$.details.total_matched").value(2));
 
-        verify(budgetRepository, never()).fund(anyString(), anyString(), any(), any());
+        verify(budgetRepository, never()).fund(anyString(), anyString(), any(), any(), any());
         verify(idempotencyStore, never()).store(anyString(), anyString(), any());
         verify(idempotencyStore).abandon(any());
     }
@@ -556,7 +556,7 @@ class BudgetControllerBulkActionTest {
                 .andExpect(jsonPath("$.succeeded[0].id").value("s1"));
 
         verify(budgetRepository, never()).matchForBulk(anyString(), any(), anyInt());
-        verify(budgetRepository, never()).fund(anyString(), anyString(), any(), any());
+        verify(budgetRepository, never()).fund(anyString(), anyString(), any(), any(), any());
         verify(idempotencyStore, never()).store(anyString(), anyString(), any());
         verify(auditRepository, never()).log(any());
     }
@@ -649,12 +649,29 @@ class BudgetControllerBulkActionTest {
     }
 
     @Test
+    void aPreviouslyCommittedRowIsSkippedWithoutCreatingAnotherEvent() throws Exception {
+        noReplay();
+        when(budgetRepository.matchForBulk(eq(TENANT), any(), eq(500)))
+            .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any(), any()))
+            .thenReturn(BudgetFundingResponse.builder().replayed(true).build());
+
+        mockMvc.perform(post("/v1/admin/budgets/bulk-action").header("X-Admin-API-Key", ADMIN_KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body(filter(""), "CREDIT", "row-retry",
+                    "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1}")))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.skipped[0].reason").value("ALREADY_IN_TARGET_STATE"))
+            .andExpect(jsonPath("$.succeeded.length()").value(0));
+        verify(eventService, never()).dispatchFundingEvent(anyString());
+    }
+
+    @Test
     void bulkAction_credit_emitsBudgetFundedEventPerRow() throws Exception {
         noReplay();
         when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
                 .thenReturn(List.of(ledger("tenant:acme/workspace:a"),
                                     ledger("tenant:acme/workspace:b")));
-        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any(), any()))
                 .thenReturn(fundResponse());
 
         mockMvc.perform(post("/v1/admin/budgets/bulk-action")
@@ -665,19 +682,12 @@ class BudgetControllerBulkActionTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.succeeded.length()").value(2));
 
-        ArgumentCaptor<String> corr = ArgumentCaptor.forClass(String.class);
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<java.util.Map<String, Object>> payload =
-                ArgumentCaptor.forClass(java.util.Map.class);
-        verify(eventService, times(2)).emit(eq(EventType.BUDGET_FUNDED),
-                eq(TENANT), anyString(), eq("cycles-admin"),
-                any(), payload.capture(), corr.capture(), any());
-        assertEquals(1, new java.util.HashSet<>(corr.getAllValues()).size());
-        assertThat(corr.getValue()).startsWith("budget_bulk_action:credit:");
-        // Payload-map shape: core EventDataBudgetLifecycle fields must be present.
-        java.util.Map<String, Object> p = payload.getValue();
-        assertThat(p).containsKeys("scope", "unit", "operation", "previous_state", "new_state");
-        assertEquals("CREDIT", p.get("operation"));
+        var event = ArgumentCaptor.forClass(io.runcycles.admin.model.event.Event.class);
+        verify(budgetRepository, times(2)).fund(eq(TENANT), anyString(), any(), any(), event.capture());
+        assertThat(event.getValue().getEventType()).isEqualTo(EventType.BUDGET_FUNDED);
+        assertThat(event.getValue().getCorrelationId()).startsWith("budget_bulk_action:credit:");
+        assertThat(event.getValue().getData()).containsEntry("operation", "CREDIT");
+        verify(eventService, times(2)).dispatchFundingEvent(anyString());
     }
 
     @Test
@@ -685,7 +695,7 @@ class BudgetControllerBulkActionTest {
         noReplay();
         when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
                 .thenReturn(List.of(ledger("tenant:acme/workspace:eng", 1_000L, 100L, 0L)));
-        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any(), any()))
                 .thenReturn(fundResponse());
 
         mockMvc.perform(post("/v1/admin/budgets/bulk-action")
@@ -695,16 +705,12 @@ class BudgetControllerBulkActionTest {
                                 "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":100}")))
                 .andExpect(status().isOk());
 
-        ArgumentCaptor<String> corr = ArgumentCaptor.forClass(String.class);
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<java.util.Map<String, Object>> payload =
-                ArgumentCaptor.forClass(java.util.Map.class);
-        verify(eventService).emit(eq(EventType.BUDGET_DEBITED),
-                eq(TENANT), anyString(), eq("cycles-admin"),
-                any(), payload.capture(), corr.capture(), any());
-        assertThat(corr.getValue()).startsWith("budget_bulk_action:debit:");
-        assertThat(payload.getValue()).containsKeys("scope", "unit", "operation", "previous_state", "new_state");
-        assertEquals("DEBIT", payload.getValue().get("operation"));
+        var event = ArgumentCaptor.forClass(io.runcycles.admin.model.event.Event.class);
+        verify(budgetRepository, times(1)).fund(eq(TENANT), anyString(), any(), any(), event.capture());
+        assertThat(event.getValue().getEventType()).isEqualTo(EventType.BUDGET_DEBITED);
+        assertThat(event.getValue().getCorrelationId()).startsWith("budget_bulk_action:debit:");
+        assertThat(event.getValue().getData()).containsEntry("operation", "DEBIT");
+        verify(eventService, times(1)).dispatchFundingEvent(anyString());
     }
 
     @Test
@@ -712,7 +718,7 @@ class BudgetControllerBulkActionTest {
         noReplay();
         when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
                 .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
-        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any(), any()))
                 .thenReturn(fundResponse());
 
         mockMvc.perform(post("/v1/admin/budgets/bulk-action")
@@ -722,14 +728,12 @@ class BudgetControllerBulkActionTest {
                                 "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000}")))
                 .andExpect(status().isOk());
 
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<java.util.Map<String, Object>> payload =
-                ArgumentCaptor.forClass(java.util.Map.class);
-        verify(eventService).emit(eq(EventType.BUDGET_RESET),
-                eq(TENANT), anyString(), eq("cycles-admin"),
-                any(), payload.capture(), startsWith("budget_bulk_action:reset:"), any());
-        assertThat(payload.getValue()).containsKeys("scope", "unit", "operation", "previous_state", "new_state");
-        assertEquals("RESET", payload.getValue().get("operation"));
+        var event = ArgumentCaptor.forClass(io.runcycles.admin.model.event.Event.class);
+        verify(budgetRepository, times(1)).fund(eq(TENANT), anyString(), any(), any(), event.capture());
+        assertThat(event.getValue().getEventType()).isEqualTo(EventType.BUDGET_RESET);
+        assertThat(event.getValue().getCorrelationId()).startsWith("budget_bulk_action:reset:");
+        assertThat(event.getValue().getData()).containsEntry("operation", "RESET");
+        verify(eventService, times(1)).dispatchFundingEvent(anyString());
     }
 
     @Test
@@ -737,7 +741,7 @@ class BudgetControllerBulkActionTest {
         noReplay();
         when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
                 .thenReturn(List.of(ledger("tenant:acme/workspace:eng", 1_000L, 500L, 0L)));
-        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any(), any()))
                 .thenReturn(fundResponse());
 
         mockMvc.perform(post("/v1/admin/budgets/bulk-action")
@@ -748,16 +752,12 @@ class BudgetControllerBulkActionTest {
                                         + "\"spent\":{\"unit\":\"USD_MICROCENTS\",\"amount\":0}")))
                 .andExpect(status().isOk());
 
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<java.util.Map<String, Object>> payload =
-                ArgumentCaptor.forClass(java.util.Map.class);
-        verify(eventService).emit(eq(EventType.BUDGET_RESET_SPENT),
-                eq(TENANT), anyString(), eq("cycles-admin"),
-                any(), payload.capture(), startsWith("budget_bulk_action:reset_spent:"), any());
-        // RESET_SPENT uniquely carries spent_override_provided.
-        assertThat(payload.getValue()).containsKeys(
-                "scope", "unit", "operation", "previous_state", "new_state", "spent_override_provided");
-        assertEquals("RESET_SPENT", payload.getValue().get("operation"));
+        var event = ArgumentCaptor.forClass(io.runcycles.admin.model.event.Event.class);
+        verify(budgetRepository, times(1)).fund(eq(TENANT), anyString(), any(), any(), event.capture());
+        assertThat(event.getValue().getEventType()).isEqualTo(EventType.BUDGET_RESET_SPENT);
+        assertThat(event.getValue().getCorrelationId()).startsWith("budget_bulk_action:reset_spent:");
+        assertThat(event.getValue().getData()).containsEntry("operation", "RESET_SPENT");
+        verify(eventService, times(1)).dispatchFundingEvent(anyString());
     }
 
     @Test
@@ -765,7 +765,7 @@ class BudgetControllerBulkActionTest {
         noReplay();
         when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
                 .thenReturn(List.of(ledger("tenant:acme/workspace:eng", 1_000L, 0L, 250L)));
-        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any(), any()))
                 .thenReturn(fundResponse());
 
         mockMvc.perform(post("/v1/admin/budgets/bulk-action")
@@ -775,14 +775,12 @@ class BudgetControllerBulkActionTest {
                                 "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":250}")))
                 .andExpect(status().isOk());
 
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<java.util.Map<String, Object>> payload =
-                ArgumentCaptor.forClass(java.util.Map.class);
-        verify(eventService).emit(eq(EventType.BUDGET_DEBT_REPAID),
-                eq(TENANT), anyString(), eq("cycles-admin"),
-                any(), payload.capture(), startsWith("budget_bulk_action:repay_debt:"), any());
-        assertThat(payload.getValue()).containsKeys("scope", "unit", "operation", "previous_state", "new_state");
-        assertEquals("REPAY_DEBT", payload.getValue().get("operation"));
+        var event = ArgumentCaptor.forClass(io.runcycles.admin.model.event.Event.class);
+        verify(budgetRepository, times(1)).fund(eq(TENANT), anyString(), any(), any(), event.capture());
+        assertThat(event.getValue().getEventType()).isEqualTo(EventType.BUDGET_DEBT_REPAID);
+        assertThat(event.getValue().getCorrelationId()).startsWith("budget_bulk_action:repay_debt:");
+        assertThat(event.getValue().getData()).containsEntry("operation", "REPAY_DEBT");
+        verify(eventService, times(1)).dispatchFundingEvent(anyString());
     }
 
     @Test
@@ -801,8 +799,7 @@ class BudgetControllerBulkActionTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.skipped.length()").value(1));
 
-        verify(eventService, never()).emit(any(EventType.class), anyString(), anyString(),
-                anyString(), any(), any(), anyString(), any());
+        verify(eventService, never()).dispatchFundingEvent(anyString());
     }
 
     @Test
@@ -811,7 +808,7 @@ class BudgetControllerBulkActionTest {
         noReplay();
         when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
                 .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
-        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any(), any()))
                 .thenThrow(new GovernanceException(ErrorCode.BUDGET_FROZEN, "frozen", 409));
 
         mockMvc.perform(post("/v1/admin/budgets/bulk-action")
@@ -822,35 +819,9 @@ class BudgetControllerBulkActionTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.failed.length()").value(1));
 
-        verify(eventService, never()).emit(any(EventType.class), anyString(), anyString(),
-                anyString(), any(), any(), anyString(), any());
+        verify(eventService, never()).dispatchFundingEvent(anyString());
     }
 
-    @Test
-    void bulkAction_emitFailure_doesNotAbortBulkOp() throws Exception {
-        // Spec v0.1.25.32: event emission failure is logged + swallowed; the
-        // row still succeeds (event log is observability, not correctness).
-        noReplay();
-        when(budgetRepository.matchForBulk(eq(TENANT), any(BudgetListFilters.class), eq(500)))
-                .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
-        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
-                .thenReturn(fundResponse());
-        doThrow(new RuntimeException("event-store-down"))
-                .when(eventService).emit(any(EventType.class), anyString(), anyString(),
-                        anyString(), any(), any(), anyString(), any());
-
-        mockMvc.perform(post("/v1/admin/budgets/bulk-action")
-                        .header("X-Admin-API-Key", ADMIN_KEY)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body(filter(""), "CREDIT", "k_ef",
-                                "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":500}")))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.succeeded.length()").value(1));
-    }
-
-    // -------- Cascade Rule 2: closed-owner per-row rejection -----------
-    // v0.1.25.36 (spec v0.1.25.29 Rule 2): any ledger whose owning tenant
-    // is CLOSED lands in failed[] with TENANT_CLOSED; other rows proceed.
     @Test
     void bulkAction_closedTenantRow_landsInFailed_tenantClosed() throws Exception {
         noReplay();
@@ -870,7 +841,7 @@ class BudgetControllerBulkActionTest {
                 .andExpect(jsonPath("$.failed[0].error_code").value("TENANT_CLOSED"))
                 .andExpect(jsonPath("$.succeeded.length()").value(0));
 
-        verify(budgetRepository, never()).fund(anyString(), anyString(), any(), any());
+        verify(budgetRepository, never()).fund(anyString(), anyString(), any(), any(), any());
     }
 
     @Test
@@ -894,7 +865,7 @@ class BudgetControllerBulkActionTest {
         noReplay();
         when(budgetRepository.matchForBulk(eq(TENANT), any(), eq(500)))
             .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
-        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any()))
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any(), any()))
             .thenReturn(BudgetFundingResponse.builder().operation(FundingOperation.CREDIT).build());
 
         mockMvc.perform(post("/v1/admin/budgets/bulk-action").header("X-Admin-API-Key", ADMIN_KEY)
@@ -904,8 +875,7 @@ class BudgetControllerBulkActionTest {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.succeeded.length()").value(1));
 
-        verify(eventService).emit(eq(EventType.BUDGET_FUNDED), eq(TENANT), anyString(),
-            eq("cycles-admin"), any(), any(), anyString(), any());
+        verify(eventService).dispatchFundingEvent(anyString());
     }
 
     @Test
@@ -913,7 +883,7 @@ class BudgetControllerBulkActionTest {
         noReplay();
         when(budgetRepository.matchForBulk(eq(TENANT), any(), eq(500)))
             .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
-        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any())).thenReturn(fundResponse());
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any(), any())).thenReturn(fundResponse());
         String request = body(filter(""), "CREDIT", "k_expected_equal",
             "\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1}");
         request = request.substring(0, request.length() - 1) + ",\"expected_count\":1}";
@@ -928,7 +898,7 @@ class BudgetControllerBulkActionTest {
         noReplay();
         when(budgetRepository.matchForBulk(eq(TENANT), any(), eq(500)))
             .thenReturn(List.of(ledger("tenant:acme/workspace:eng")));
-        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any())).thenReturn(fundResponse());
+        when(budgetRepository.fund(eq(TENANT), anyString(), any(), any(), any())).thenReturn(fundResponse());
 
         mockMvc.perform(post("/v1/admin/budgets/bulk-action").header("X-Admin-API-Key", ADMIN_KEY)
                 .contentType(MediaType.APPLICATION_JSON)

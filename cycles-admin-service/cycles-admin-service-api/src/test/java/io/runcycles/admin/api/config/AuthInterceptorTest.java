@@ -1184,6 +1184,17 @@ class AuthInterceptorTest {
             "matchesAdminPrefix", "PATCH", "/v1/admin/policies/")).isFalse();
     }
     @Test
+    void dualAuthUsesThePathInsideAPrefixMappedServlet() throws Exception {
+        request.setMethod("GET");
+        request.setServletPath("/gateway");
+        request.setPathInfo("/v1/admin/budgets");
+        request.setRequestURI("/gateway/v1/admin/budgets");
+        request.addHeader("X-Admin-API-Key", "admin-secret-key");
+        assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+        assertThat(request.getAttribute("authenticated_actor_type")).isEqualTo("admin");
+    }
+
+    @Test
     void requiresAdminCredentialsWithServletContextPrefix() throws Exception {
         request.setMethod("GET");
         request.setContextPath("/console");

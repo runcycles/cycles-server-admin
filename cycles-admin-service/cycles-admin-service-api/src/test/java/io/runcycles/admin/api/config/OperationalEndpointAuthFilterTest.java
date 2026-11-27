@@ -25,6 +25,16 @@ class OperationalEndpointAuthFilterTest {
     }
 
     @Test
+    void checksThePathWithinAPrefixMappedServlet() throws Exception {
+        request.setContextPath("/console");
+        request.setServletPath("/gateway");
+        request.setPathInfo("/actuator/prometheus");
+        request.setRequestURI("/console/gateway/actuator/prometheus");
+        filter.doFilter(request, response, new MockFilterChain());
+        assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    @Test
     void livenessProbe_withoutAdminKey_passesThrough() throws Exception {
         request.setRequestURI("/actuator/health/liveness");
         MockFilterChain chain = new MockFilterChain();

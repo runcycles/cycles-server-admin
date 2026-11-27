@@ -934,7 +934,8 @@ class ApiKeyRepositoryTest {
         assertThatThrownBy(() -> repository.revoke("key_race", null))
             .isInstanceOf(GovernanceException.class).hasMessageContaining("closed");
         assertThatThrownBy(() -> repository.update("key_race", new ApiKeyUpdateRequest()))
-            .isInstanceOf(GovernanceException.class).hasMessageContaining("concurrently");
+            .isInstanceOf(GovernanceException.class).satisfies(e -> assertThat(((GovernanceException) e).getErrorCode())
+                .isEqualTo(io.runcycles.admin.model.shared.ErrorCode.CONCURRENT_MODIFICATION));
     }
 
     @Test

@@ -196,7 +196,7 @@ public class AuthInterceptor implements HandlerInterceptor {
             // different endpoint (auth-context confusion). Spring uses the
             // servlet path for dispatch; we now match against that same value
             // and additionally short-circuit on any traversal segment.
-            String dispatchPath = request.getServletPath();
+            String dispatchPath = applicationPath(request);
             if (dispatchPath != null && (dispatchPath.contains("/../") ||
                     dispatchPath.contains("/./") || dispatchPath.endsWith("/.."))) {
                 writeError(request, response, 400,
@@ -204,10 +204,8 @@ public class AuthInterceptor implements HandlerInterceptor {
                     "Path traversal segments not allowed");
                 return false;
             }
-            // Use the dispatch path (Spring-normalized) for matching so the
-            // interceptor and the dispatcher always see the same URL.
-            String matchPath = (dispatchPath != null && !dispatchPath.isEmpty()) ? dispatchPath : path;
-            String normalizedPath = matchPath.endsWith("/") ? matchPath.substring(0, matchPath.length() - 1) : matchPath;
+            // Use the same MVC route for dual-auth and permission lookup.
+            String normalizedPath = path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
             String lookupKey = method + ":" + normalizedPath;
             if (hasAdminKeyHeader(request) && (
                     ADMIN_ALLOWED_ENDPOINTS.contains(lookupKey) ||
@@ -225,6 +223,8 @@ public class AuthInterceptor implements HandlerInterceptor {
     }
 
     static String applicationPath(HttpServletRequest request) {
+        String pathInfo = request.getPathInfo();
+        if (pathInfo != null) return pathInfo;
         String servletPath = request.getServletPath();
         if (servletPath != null && !servletPath.isEmpty()) return servletPath;
         String uri = request.getRequestURI();

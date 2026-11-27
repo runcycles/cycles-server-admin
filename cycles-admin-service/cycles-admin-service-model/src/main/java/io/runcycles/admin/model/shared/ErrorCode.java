@@ -10,5 +10,5 @@ public enum ErrorCode {
     WEBHOOK_NOT_FOUND, WEBHOOK_URL_INVALID, EVENT_NOT_FOUND, REPLAY_IN_PROGRESS,
     // Bulk-action (spec v0.1.25.21): server-count vs client-expected_count
     // mismatch → 409; filter matches exceed 500-row cap → 400.
-    COUNT_MISMATCH, LIMIT_EXCEEDED
+    COUNT_MISMATCH, LIMIT_EXCEEDED, CONCURRENT_MODIFICATION
 }

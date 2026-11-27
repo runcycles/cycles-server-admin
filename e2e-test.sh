@@ -59,7 +59,7 @@ assert_contains() {
 
 json_field() {
   # Extract a simple string field from JSON: json_field '{"a":"b"}' a -> b
-  echo "$1" | sed "s/.*\"$2\":\"\([^\"]*\)\".*/\1/"
+  echo "$1" | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p"
 }
 
 json_int() {
@@ -148,7 +148,7 @@ echo ""
 
 bold "[4/10] Creating tenant..."
 
-T_RESP=$(curl -s -X POST "$ADMIN/v1/admin/tenants" -H "$AK" -H "$CT" \
+T_RESP=$(curl -fsS -X POST "$ADMIN/v1/admin/tenants" -H "$AK" -H "$CT" \
   -d "{\"tenant_id\":\"e2e-$TS\",\"name\":\"E2E Test Tenant\"}")
 TID=$(json_field "$T_RESP" "tenant_id")
 T_STATUS=$(json_field "$T_RESP" "status")
@@ -158,7 +158,7 @@ echo ""
 
 bold "[5/10] Creating API key..."
 
-K_RESP=$(curl -s -X POST "$ADMIN/v1/admin/api-keys" -H "$AK" -H "$CT" \
+K_RESP=$(curl -fsS -X POST "$ADMIN/v1/admin/api-keys" -H "$AK" -H "$CT" \
   -d "{\"tenant_id\":\"$TID\",\"name\":\"E2E Key\",\"permissions\":[\"admin:read\",\"admin:write\",\"reservations:create\",\"reservations:commit\",\"reservations:release\",\"balances:read\",\"webhooks:read\",\"webhooks:write\",\"events:read\"]}")
 KID=$(json_field "$K_RESP" "key_id")
 KSEC=$(json_field "$K_RESP" "key_secret")
@@ -168,13 +168,14 @@ echo ""
 
 bold "[6/10] Creating and funding budget..."
 
-B_RESP=$(curl -s -X POST "$ADMIN/v1/admin/budgets" \
+BUDGET_SCOPE="tenant:$TID/agent:e2e-agent"
+B_RESP=$(curl -fsS -X POST "$ADMIN/v1/admin/budgets" \
   -H "X-Cycles-API-Key: $KSEC" -H "$CT" \
-  -d '{"scope":"agent:e2e-agent","unit":"TOKENS","allocated":{"unit":"TOKENS","amount":10000}}')
+  -d "{\"scope\":\"$BUDGET_SCOPE\",\"unit\":\"TOKENS\",\"allocated\":{\"unit\":\"TOKENS\",\"amount\":10000}}")
 LID=$(json_field "$B_RESP" "ledger_id")
 assert_not_empty "Budget created" "$LID"
 
-F_RESP=$(curl -s -X POST "$ADMIN/v1/admin/budgets/fund?scope=agent:e2e-agent&unit=TOKENS" \
+F_RESP=$(curl -fsS -X POST "$ADMIN/v1/admin/budgets/fund?scope=$BUDGET_SCOPE&unit=TOKENS" \
   -H "X-Cycles-API-Key: $KSEC" -H "$CT" \
   -d "{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"TOKENS\",\"amount\":5000},\"idempotency_key\":\"fund-$TS\"}")
 NEW_ALLOC=$(echo "$F_RESP" | grep -o '"new_allocated":{[^}]*}' | grep -o '"amount":[0-9]*' | cut -d: -f2)
@@ -202,7 +203,7 @@ assert_not_empty "Signing secret set" "$SSEC"
 # Fund again to trigger a new budget.funded event (the webhook subscription now exists)
 bold "[8/10] Triggering budget.funded event..."
 
-F2_RESP=$(curl -s -X POST "$ADMIN/v1/admin/budgets/fund?scope=agent:e2e-agent&unit=TOKENS" \
+F2_RESP=$(curl -fsS -X POST "$ADMIN/v1/admin/budgets/fund?scope=$BUDGET_SCOPE&unit=TOKENS" \
   -H "X-Cycles-API-Key: $KSEC" -H "$CT" \
   -d "{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"TOKENS\",\"amount\":1000},\"idempotency_key\":\"fund2-$TS\"}")
 F2_ALLOC=$(echo "$F2_RESP" | grep -o '"new_allocated":{[^}]*}' | grep -o '"amount":[0-9]*' | cut -d: -f2)
@@ -259,14 +260,14 @@ echo ""
 bold "[10/10] Runtime server: reservation + balance..."
 
 # Reservation: subject uses named fields (tenant/agent/etc), action uses kind/name
-R_RESP=$(curl -s -X POST "$RUNTIME/v1/reservations" \
+R_RESP=$(curl -fsS -X POST "$RUNTIME/v1/reservations" \
   -H "X-Cycles-API-Key: $KSEC" -H "$CT" \
-  -d "{\"idempotency_key\":\"res-$TS\",\"subject\":{\"agent\":\"e2e-agent\"},\"action\":{\"kind\":\"api_call\",\"name\":\"gpt-4\"},\"estimate\":{\"unit\":\"TOKENS\",\"amount\":500}}")
+  -d "{\"idempotency_key\":\"res-$TS\",\"subject\":{\"tenant\":\"$TID\",\"agent\":\"e2e-agent\"},\"action\":{\"kind\":\"api_call\",\"name\":\"gpt-4\"},\"estimate\":{\"unit\":\"TOKENS\",\"amount\":500}}")
 RID=$(json_field "$R_RESP" "reservation_id")
 assert_not_empty "Reservation created" "$RID"
 
 # Commit: requires idempotency_key. Response has charged/released/balances.
-C_RESP=$(curl -s -X POST "$RUNTIME/v1/reservations/$RID/commit" \
+C_RESP=$(curl -fsS -X POST "$RUNTIME/v1/reservations/$RID/commit" \
   -H "X-Cycles-API-Key: $KSEC" -H "$CT" \
   -d "{\"idempotency_key\":\"commit-$TS\",\"actual\":{\"unit\":\"TOKENS\",\"amount\":200}}")
 C_STATUS=$(json_field "$C_RESP" "status")

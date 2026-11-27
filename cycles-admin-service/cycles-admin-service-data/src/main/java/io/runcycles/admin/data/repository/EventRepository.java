@@ -40,6 +40,42 @@ public class EventRepository {
         "end\n" +
         "return 1\n";
 
+    private static final String FUNDING_DISPATCH = "funding:dispatch:due";
+    private static final String CLAIM_FUNDING_DISPATCH = """
+        local due = redis.call('ZSCORE', KEYS[1], ARGV[1])
+        if not due or tonumber(due) > tonumber(ARGV[2]) then return nil end
+        local row = redis.call('GET', KEYS[2])
+        if row then
+            redis.call('ZADD', KEYS[1], ARGV[3], ARGV[1])
+        else
+            redis.call('ZREM', KEYS[1], ARGV[1])
+        end
+        return row
+        """;
+
+    public List<String> dueFundingEvents() {
+        try (Jedis jedis = jedisPool.getResource()) {
+            return jedis.zrangeByScore(FUNDING_DISPATCH, 0, System.currentTimeMillis(), 0, 100);
+        }
+    }
+
+    public Event claimFundingDispatch(String eventId) {
+        long now = System.currentTimeMillis();
+        try (Jedis jedis = jedisPool.getResource()) {
+            String json = (String) jedis.eval(CLAIM_FUNDING_DISPATCH, List.of(FUNDING_DISPATCH, "event:" + eventId),
+                List.of(eventId, Long.toString(now), Long.toString(now + 30_000L)));
+            return json == null ? null : objectMapper.readValue(json, Event.class);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new IllegalStateException("Invalid stored funding event", e);
+        }
+    }
+
+    public void completeFundingDispatch(String eventId) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.zrem(FUNDING_DISPATCH, eventId);
+        }
+    }
+
     public void save(Event event) {
         try (Jedis jedis = jedisPool.getResource()) {
             if (event.getEventId() == null) {

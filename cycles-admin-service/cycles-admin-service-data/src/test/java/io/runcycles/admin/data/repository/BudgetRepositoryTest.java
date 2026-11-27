@@ -457,7 +457,7 @@ class BudgetRepositoryTest {
         org.mockito.ArgumentCaptor<List<String>> argsCap = org.mockito.ArgumentCaptor.forClass(List.class);
         verify(jedis).eval(anyString(), anyList(), argsCap.capture());
         List<String> argv = argsCap.getValue();
-        assertThat(argv).hasSize(7);
+        assertThat(argv).hasSize(12);
         assertThat(argv.get(6)).isEqualTo("400");
     }
 

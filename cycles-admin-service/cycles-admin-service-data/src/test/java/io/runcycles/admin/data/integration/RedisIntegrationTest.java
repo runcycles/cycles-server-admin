@@ -921,6 +921,56 @@ class RedisIntegrationTest {
         assertThat(tenantCloseWorkRepository.completeIfDrained(tenantId)).isTrue();
     }
     @Test
+    void committedFundingEventIsVisibleAndRecoverableWithoutControllerCompletion() throws Exception {
+        String scope = "tenant:recovery/agent:a";
+        String ledger = "budget:" + scope + ":CREDITS";
+        String tenant = "recovery";
+        EventRepository restarted = new EventRepository();
+        injectField(restarted, "jedisPool", jedisPool);
+        injectField(restarted, "objectMapper", objectMapper);
+        BudgetFundingRequest credit = new BudgetFundingRequest();
+        credit.setOperation(FundingOperation.CREDIT);
+        credit.setAmount(new Amount(UnitEnum.CREDITS, 1L));
+        credit.setIdempotencyKey("recovery");
+        credit.setReason("quoted \"reason\"");
+        var event = BudgetRepository.fundingEvent(tenant, scope, UnitEnum.CREDITS, credit, null, "batch", "req", "trace");
+        try (Jedis jedis = jedisPool.getResource()) {
+            long start = 1L << 53;
+            jedis.hset(ledger, Map.of("tenant_id", tenant, "allocated", Long.toString(start),
+                "remaining", Long.toString(start), "status", "ACTIVE"));
+            // A damaged correlation index fails before either the ledger or the event is written.
+            jedis.set("events:correlation:broken-index", "invalid");
+            var rejected = BudgetRepository.fundingEvent(tenant, scope, UnitEnum.CREDITS, credit,
+                null, "broken-index", "req", "trace");
+            assertThatThrownBy(() -> budgetRepository.fund(tenant, scope, UnitEnum.CREDITS, credit, rejected))
+                .isInstanceOf(RuntimeException.class);
+            assertThat(jedis.hget(ledger, "remaining")).isEqualTo(Long.toString(start));
+            assertThat(jedis.exists("event:" + rejected.getEventId())).isFalse();
+            budgetRepository.fund(tenant, scope, UnitEnum.CREDITS, credit, event);
+            // Simulate loss of the request thread immediately after EVAL.
+            var replay = budgetRepository.fund(tenant, scope, UnitEnum.CREDITS, credit);
+            assertThat(replay.isReplayed()).isTrue();
+            String id = event.getEventId();
+            assertThat(jedis.zrange("events:" + tenant, 0, -1)).containsExactly(id);
+            assertThat(jedis.smembers("events:correlation:batch")).contains(id);
+            assertThat(jedis.ttl("event:" + id)).isPositive();
+            assertThat(restarted.dueFundingEvents()).contains(id);
+            var stored = restarted.claimFundingDispatch(id);
+            assertThat(stored.getTraceId()).isEqualTo("trace");
+            assertThat(stored.getRequestId()).isEqualTo("req");
+            assertThat(stored.getData()).containsEntry("reason", credit.getReason());
+            assertThat(((Map<?, ?>) stored.getData().get("new_state")).get("allocated")).isEqualTo(start + 1);
+            assertThat(restarted.claimFundingDispatch(id)).isNull();
+            // A lost dispatcher lease makes the same event eligible again.
+            jedis.zadd("funding:dispatch:due", 0, id);
+            assertThat(restarted.claimFundingDispatch(id).getEventId()).isEqualTo(id);
+            restarted.completeFundingDispatch(id);
+            assertThat(restarted.dueFundingEvents()).doesNotContain(id);
+            assertThat(restarted.findById(id).getEventId()).isEqualTo(id);
+        }
+    }
+
+    @Test
     void fundingPreservesInt64AndReplaysOnlyTheAuthorizedLedger() {
         String a = "budget:tenant:precision/app:a:CREDITS";
         String b = "budget:tenant:precision/app:b:CREDITS";

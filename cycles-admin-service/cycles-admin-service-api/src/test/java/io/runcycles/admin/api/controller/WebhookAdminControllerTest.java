@@ -1617,6 +1617,25 @@ class WebhookAdminControllerTest {
     }
 
     @Test
+    void bulkPauseReturnsTheConflictForTheAffectedSubscription() throws Exception {
+        WebhookSubscription live = webhookRow("w1", WebhookStatus.ACTIVE);
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500))).thenReturn(List.of(live));
+        when(webhookRepository.findById("w1")).thenReturn(live);
+        when(webhookService.update(eq(live), any())).thenThrow(
+            new GovernanceException(ErrorCode.CONCURRENT_MODIFICATION, "Subscription changed", 409));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                .header("X-Admin-API-Key", ADMIN_KEY).contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"filter":{"status":"ACTIVE"},"action":"PAUSE","idempotency_key":"stale"}
+                    """))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.failed[0].id").value("w1"))
+            .andExpect(jsonPath("$.failed[0].error_code").value("CONCURRENT_MODIFICATION"))
+            .andExpect(jsonPath("$.succeeded.length()").value(0));
+    }
+
+    @Test
     void bulkPauseNullStatusDefaultsActiveAndEqualCountProceeds() throws Exception {
         WebhookSubscription snapshot = webhookRow("wh-null", WebhookStatus.ACTIVE);
         when(webhookRepository.matchForBulk(isNull(), eq(WebhookStatus.ACTIVE), isNull(), isNull(), eq(500)))

@@ -106,7 +106,7 @@ public class WebhookRepository {
             List.of(encodeSubscription(sub), id, expected, secret == null ? "" : cryptoService.encrypt(secret)));
         if (result == -1) throw new GovernanceException(io.runcycles.admin.model.shared.ErrorCode.TENANT_CLOSED,
             "Webhook owner is closed", 409);
-        if (result == 0) throw new GovernanceException(io.runcycles.admin.model.shared.ErrorCode.INVALID_REQUEST,
+        if (result == 0) throw new GovernanceException(io.runcycles.admin.model.shared.ErrorCode.CONCURRENT_MODIFICATION,
             "Subscription changed concurrently. Retry the request.", 409);
     }
 

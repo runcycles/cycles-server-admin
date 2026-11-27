@@ -624,8 +624,9 @@ public class WebhookAdminController {
                 return "PERMISSION_DENIED";
             case INVALID_REQUEST:
                 return "INVALID_TRANSITION";
+            case CONCURRENT_MODIFICATION:
             case TENANT_CLOSED:
-                return "TENANT_CLOSED";
+                return e.getErrorCode().name();
             default:
                 return "INTERNAL_ERROR";
         }

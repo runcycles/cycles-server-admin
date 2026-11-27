@@ -8,6 +8,11 @@ import io.runcycles.admin.data.repository.support.CursorSupport;
 import io.runcycles.admin.data.repository.support.RedisBatchReader;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.admin.model.budget.*;
+import io.runcycles.admin.model.event.Actor;
+import io.runcycles.admin.model.event.Event;
+import io.runcycles.admin.model.event.EventType;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.springframework.beans.factory.annotation.Value;
 import io.runcycles.admin.model.shared.Amount;
 import io.runcycles.admin.model.shared.CommitOveragePolicy;
 import io.runcycles.admin.model.shared.SortSpec;
@@ -37,6 +42,9 @@ public class BudgetRepository {
     }
     @Autowired private JedisPool jedisPool;
     @Autowired @Qualifier("redisObjectMapper") private ObjectMapper objectMapper;
+
+    @Value("${events.retention.event-ttl-days:90}")
+    private int eventTtlDays = 90;
 
     private static final String FUND_LUA = TenantCloseWorkRepository.loadLuaResource("redis/budget-fund.lua");
 
@@ -725,6 +733,34 @@ public class BudgetRepository {
     }
 
     public BudgetFundingResponse fund(String tenantId, String scope, UnitEnum unit, BudgetFundingRequest request) {
+        return fund(tenantId, scope, unit, request, fundingEvent(tenantId, scope, unit, request, null, null, null, null));
+    }
+
+    public static Event fundingEvent(String tenantId, String scope, UnitEnum unit, BudgetFundingRequest request,
+                                     Actor actor, String correlationId, String requestId, String traceId) {
+        EventType type = switch (request.getOperation()) {
+            case CREDIT -> EventType.BUDGET_FUNDED;
+            case DEBIT -> EventType.BUDGET_DEBITED;
+            case RESET -> EventType.BUDGET_RESET;
+            case RESET_SPENT -> EventType.BUDGET_RESET_SPENT;
+            case REPAY_DEBT -> EventType.BUDGET_DEBT_REPAID;
+        };
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("scope", scope);
+        data.put("unit", unit.name());
+        data.put("operation", request.getOperation().name());
+        if (request.getReason() != null) data.put("reason", request.getReason());
+        if (request.getOperation() == FundingOperation.RESET_SPENT) {
+            data.put("spent_override_provided", request.getSpent() != null);
+        }
+        return Event.builder().eventId("evt_" + UUID.randomUUID().toString().replace("-", ""))
+            .timestamp(Instant.ofEpochMilli(System.currentTimeMillis())).category(type.getCategory()).eventType(type)
+            .source("cycles-admin").tenantId(tenantId).scope(scope).actor(actor).correlationId(correlationId)
+            .requestId(requestId).traceId(traceId).data(data).build();
+    }
+
+    public BudgetFundingResponse fund(String tenantId, String scope, UnitEnum unit, BudgetFundingRequest request,
+                                      Event event) {
         scope = normalizeScope(scope);
         LOG.info("Funding budget: tenant_id={} scope={} unit={} operation={} idempotency_key_present={}",
             LogSanitizer.safe(tenantId), LogSanitizer.safe(scope), unit, request.getOperation(),
@@ -732,7 +768,7 @@ public class BudgetRepository {
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "budget:" + scope + ":" + unit;
             long changeAmount = request.getAmount().getAmount();
-            String now = String.valueOf(Instant.now().toEpochMilli());
+            String now = String.valueOf(event.getTimestamp().toEpochMilli());
 
             // Compute payload hash for idempotency mismatch detection (spec MUST)
             String idempotencyKey = (request.getIdempotencyKey() != null && !request.getIdempotencyKey().isEmpty())
@@ -753,13 +789,20 @@ public class BudgetRepository {
                 spentOverride = String.valueOf(request.getSpent().getAmount());
             }
 
+            // Encode the envelope and static payload separately. Lua appends the exact
+            // before/after integers without passing ledger amounts through cjson doubles.
+            ObjectNode envelope = objectMapper.valueToTree(event);
+            envelope.remove("tenant_id");
+            var data = envelope.remove("data");
             // Atomic fund via Lua — idempotency check + read + compute + write + cache in one step
             @SuppressWarnings("unchecked")
             List<String> result = (List<String>) jedis.eval(FUND_LUA,
                 List.of(key),
                 List.of(request.getOperation().name(), String.valueOf(changeAmount), now,
                          tenantId != null ? tenantId : "", idempotencyKey, payloadHash,
-                         spentOverride));
+                         spentOverride, event.getEventId(), envelope.toString(), data.toString(),
+                         event.getCorrelationId() == null ? "" : event.getCorrelationId(),
+                         String.valueOf(eventTtlDays * 86400L)));
 
             String status = result.get(0);
             if ("TENANT_CLOSED".equals(status)) {

@@ -51,6 +51,22 @@ class EventRepositoryTest {
         RedisBatchTestStubs.installStringReads(jedis);
     }
 
+    @Test
+    void fundingDispatchReadsOnlyClaimedEventsAndAcknowledgesById() throws Exception {
+        Event event = Event.builder().eventId("fund").eventType(EventType.BUDGET_FUNDED).build();
+        String json = objectMapper.writeValueAsString(event);
+        when(jedis.eval(contains("ZSCORE"), anyList(), anyList())).thenReturn(json, null, "invalid");
+        assertThat(repository.claimFundingDispatch("fund").getEventId()).isEqualTo("fund");
+        assertThat(repository.claimFundingDispatch("fund")).isNull();
+        assertThatThrownBy(() -> repository.claimFundingDispatch("fund"))
+            .isInstanceOf(IllegalStateException.class).hasMessageContaining("Invalid stored funding event");
+        when(jedis.zrangeByScore(eq("funding:dispatch:due"), eq(0d), anyDouble(), eq(0), eq(100)))
+            .thenReturn(List.of("fund"));
+        assertThat(repository.dueFundingEvents()).containsExactly("fund");
+        repository.completeFundingDispatch("fund");
+        verify(jedis).zrem("funding:dispatch:due", "fund");
+    }
+
     // ---- save() ----
 
     @Test

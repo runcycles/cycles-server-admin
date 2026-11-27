@@ -1,5 +1,17 @@
 # Complete Budget Governance v0.1.25.56 — Admin Server Audit
 
+## 2026-11-27 — Follow-up review against main
+
+Funding commits the ledger balance, replay response, immutable event, lookup indexes and pending webhook dispatch in one Redis script. The recovery job can finish delivery after a process restart using the original event ID. Funding accepts requests without an idempotency key. The governance contract at revision 0.1.25.44 documents the 24-hour replay window and the effect of reusing an expired key.
+
+Runtime 0.1.25.61 routes events for subscriptions with encrypted headers. Events worker 0.1.25.26 reads the headers for delivery. The admin upgrade procedure requires draining and stopping every older admin writer before enabling encryption or migrating stored subscriptions. [Upgrade instructions](OPERATIONS.md)
+
+Operational endpoints and dual-auth routes classify requests relative to the servlet mapping. Concurrent subscription and API-key writes return the documented 409 error code. Bulk webhook results identify the affected row. The full-stack fixture creates and funds the tenant-owned scope used by its runtime reservation.
+
+The packaged admin and runtime smoke test credited the ledger to 15,000, reserved 500, committed 200 and released 300. The final ledger recorded 200 spent and zero reserved. An admin instance mounted at `/console/gateway` returned 200 on public readiness, 401 for anonymous aggregate health and tenant listing, and 200 for both with the admin credential. The scheduler reserves three threads for funding dispatch, tenant-close reconciliation and lease renewal. Shutdown cancels future work while allowing active tasks to finish.
+
+The admin unit and contract profile passed 1,881 tests. The integration profile passed 1,957 tests and exercised all 46 contract operations. Module integration coverage was 95.38%–98.44% for branches and 97.31%–97.85% for lines. The runtime integration profile passed 1,413 tests and the events worker passed 560. Both met their coverage gates. All four Compose manifests passed configuration validation. The updated contract passed lint with the same warnings as main. Admin tests used the local copy of the pinned protocol commit `27d2739`.
+
 ## 2026-11-26 — Resolution of the 19 admin contract findings
 
 Reviewed against admin main at `c672ab2`. Release 0.1.25.56 addresses all nine high-priority and ten medium-priority findings recorded below.
