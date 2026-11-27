@@ -22,28 +22,21 @@ public final class ScopeFilterUtil {
      *
      * @throws GovernanceException with FORBIDDEN if scope does not match any filter entry
      */
-    @SuppressWarnings("unchecked")
     public static void enforceScopeFilter(HttpServletRequest request, String scope) {
         if (scope == null || scope.isBlank()) {
             return;
         }
+        if (!allowedScopes(request).test(scope)) throw GovernanceException.scopeFilterDenied(scope);
+    }
+
+    @SuppressWarnings("unchecked")
+    public static java.util.function.Predicate<String> allowedScopes(HttpServletRequest request) {
         Object attr = request.getAttribute("authenticated_scope_filter");
-        if (attr == null) {
-            return;
-        }
-        List<String> scopeFilter = (List<String>) attr;
-        if (scopeFilter.isEmpty()) {
-            return;
-        }
-        for (String filter : scopeFilter) {
-            if (filter == null || filter.isBlank()) {
-                continue;
-            }
-            if (matchesScope(scope, filter)) {
-                return;
-            }
-        }
-        throw GovernanceException.scopeFilterDenied(scope);
+        if (attr == null) return scope -> true;
+        List<String> filters = (List<String>) attr;
+        return scope -> filters.isEmpty() || (scope != null && filters.stream()
+            .filter(filter -> filter != null && !filter.isBlank())
+            .anyMatch(filter -> matchesScope(scope, filter)));
     }
 
     /**

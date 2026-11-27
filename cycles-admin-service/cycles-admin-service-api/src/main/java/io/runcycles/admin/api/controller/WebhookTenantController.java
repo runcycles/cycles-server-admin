@@ -98,7 +98,7 @@ public class WebhookTenantController {
     public ResponseEntity<WebhookSubscription> update(
             @PathVariable("subscription_id") String subscriptionId,
             @Valid @RequestBody WebhookUpdateRequest request, HttpServletRequest httpRequest) {
-        WebhookSubscription existing = webhookService.get(subscriptionId);
+        WebhookSubscription existing = webhookService.getForUpdate(subscriptionId);
         boolean isAdminAuth = isAdminAuth(httpRequest);
         enforceTenantOwnership(httpRequest, existing);
         // #209 finding 2: validate the EFFECTIVE resulting selectors (stored ∪
@@ -116,7 +116,7 @@ public class WebhookTenantController {
         // widening the WebhookStatus enum — a DISABLED webhook cascaded at
         // tenant close can still be read, but cannot be re-enabled via PATCH.
         mutationGuard.assertTenantOpen(existing.getTenantId());
-        WebhookSubscription updated = webhookService.update(subscriptionId, request);
+        WebhookSubscription updated = webhookService.update(existing, request);
         java.util.Map<String, Object> updateMeta = new java.util.LinkedHashMap<>();
         updateMeta.put("url", updated.getUrl());
         if (request.getName() != null) updateMeta.put("name", request.getName());

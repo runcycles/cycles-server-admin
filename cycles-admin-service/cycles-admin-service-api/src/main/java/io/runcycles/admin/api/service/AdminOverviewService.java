@@ -71,8 +71,8 @@ public class AdminOverviewService {
         List<Event> recentDenials = eventRepository.list(null, "reservation.denied", null, null, null, windowStart, now, null, TOP_OFFENDER_CAP);
         List<Event> recentExpiries = eventRepository.list(null, "reservation.expired", null, null, null, windowStart, now, null, TOP_OFFENDER_CAP);
 
-        // v0.1.25.8: denial count breakdown by reason_code (over the displayed sample)
-        Map<String, Integer> denialsByReason = countDenialsByReason(recentDenials);
+        // v0.1.25.8: denial count breakdown by reason_code (over the full event window)
+        Map<String, Integer> denialsByReason = countDenialsByReason(windowEvents);
 
         return AdminOverviewResponse.builder()
                 .asOf(now)
@@ -93,12 +93,13 @@ public class AdminOverviewService {
     }
 
     /**
-     * Count denials by reason_code from the recent denials sample.
+     * Count denials by reason_code from all events in the window.
      * Returns an empty map if no denials have reason_code populated.
      */
-    private Map<String, Integer> countDenialsByReason(List<Event> denials) {
+    private Map<String, Integer> countDenialsByReason(List<Event> windowEvents) {
         Map<String, Integer> byReason = new LinkedHashMap<>();
-        for (Event e : denials) {
+        for (Event e : windowEvents) {
+            if (e.getEventType() != io.runcycles.admin.model.event.EventType.RESERVATION_DENIED) continue;
             Map<String, Object> data = e.getData();
             if (data == null) continue;
             Object reasonObj = data.get("reason_code");

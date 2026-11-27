@@ -27,7 +27,7 @@ import java.time.Instant;
  */
 public final class ContractSpecLoader {
 
-    public static final String SPEC_REVISION = "402307a88906e9fd090159e5ccf2d0036e6aec83";
+    public static final String SPEC_REVISION = "27d27394a602e2d8c61b997e81e40dae5e2f1418";
     public static final String DEFAULT_SPEC_URL =
             "https://raw.githubusercontent.com/runcycles/cycles-protocol/" + SPEC_REVISION
                 + "/cycles-governance-admin-v0.1.25.yaml";

@@ -151,7 +151,7 @@ public class WebhookAdminController {
         mutationGuard.assertOpenForWebhook(subscriptionId);
         // Capture prior status BEFORE mutating so we can classify the emit
         // type (WEBHOOK_PAUSED / WEBHOOK_RESUMED vs plain WEBHOOK_UPDATED).
-        WebhookSubscription prior = webhookService.get(subscriptionId);
+        WebhookSubscription prior = webhookService.getForUpdate(subscriptionId);
         // #209 / governance v0.1.25.40: validate the EFFECTIVE
         // resulting selectors (stored ∪ request) against the STORED
         // subscription's owning tenant (WebhookUpdateRequest has no tenant_id —
@@ -163,7 +163,7 @@ public class WebhookAdminController {
             request.getEventTypes() != null ? request.getEventTypes() : prior.getEventTypes(),
             request.getEventCategories() != null ? request.getEventCategories() : prior.getEventCategories());
         WebhookStatus previousStatus = prior.getStatus();
-        WebhookSubscription updated = webhookService.update(subscriptionId, request);
+        WebhookSubscription updated = webhookService.update(prior, request);
         java.util.Map<String, Object> updateMeta = new java.util.LinkedHashMap<>();
         updateMeta.put("url", updated.getUrl());
         if (request.getName() != null) updateMeta.put("name", request.getName());
@@ -469,7 +469,7 @@ public class WebhookAdminController {
                 }
                 WebhookUpdateRequest update = WebhookUpdateRequest.builder()
                     .status(WebhookStatus.PAUSED).build();
-                webhookService.update(id, update);
+                webhookService.update(live, update);
                 succeeded.add(BulkActionRowOutcome.builder().id(id).build());
                 emitBulkWebhookEvent(id, live.getTenantId(), action, current,
                     httpRequest, correlationId, requestId);
@@ -497,7 +497,7 @@ public class WebhookAdminController {
                 live.getEventTypes(), live.getEventCategories());
             WebhookUpdateRequest update = WebhookUpdateRequest.builder()
                 .status(WebhookStatus.ACTIVE).build();
-            webhookService.update(id, update);
+            webhookService.update(live, update);
             succeeded.add(BulkActionRowOutcome.builder().id(id).build());
             emitBulkWebhookEvent(id, live.getTenantId(), action, current,
                 httpRequest, correlationId, requestId);
@@ -624,8 +624,9 @@ public class WebhookAdminController {
                 return "PERMISSION_DENIED";
             case INVALID_REQUEST:
                 return "INVALID_TRANSITION";
+            case CONCURRENT_MODIFICATION:
             case TENANT_CLOSED:
-                return "TENANT_CLOSED";
+                return e.getErrorCode().name();
             default:
                 return "INTERNAL_ERROR";
         }

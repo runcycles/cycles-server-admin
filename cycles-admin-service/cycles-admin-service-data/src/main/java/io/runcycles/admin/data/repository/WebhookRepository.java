@@ -13,6 +13,8 @@ import io.runcycles.admin.model.shared.SearchSpec;
 import io.runcycles.admin.model.shared.SortSpec;
 import io.runcycles.admin.model.webhook.WebhookStatus;
 import io.runcycles.admin.model.webhook.WebhookSubscription;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,12 +39,22 @@ public class WebhookRepository {
         "redis.call('SADD', KEYS[3], ARGV[4])\n" +
         "return 1\n";
 
-    // Lua script for atomic webhook creation: SET JSON + SADD tenant index + SADD global index
-    private static final String SAVE_WEBHOOK_LUA =
-        "redis.call('SET', KEYS[1], ARGV[1])\n" +
-        "redis.call('SADD', KEYS[2], ARGV[2])\n" +
-        "redis.call('SADD', KEYS[3], ARGV[2])\n" +
-        "return 1\n";
+    // Commit membership, subscription and optional secret together with the owner check.
+    private static final String WRITE_WEBHOOK_LUA = """
+        local owner = redis.call('GET', KEYS[4])
+        if owner and cjson.decode(owner).status == 'CLOSED' then return -1 end
+        local current = redis.call('GET', KEYS[1])
+        if ARGV[3] == '' then
+            if current then return 0 end
+        else
+            if not current or current ~= ARGV[3] then return 0 end
+        end
+        redis.call('SET', KEYS[1], ARGV[1])
+        redis.call('SADD', KEYS[2], ARGV[2])
+        redis.call('SADD', KEYS[3], ARGV[2])
+        if ARGV[4] ~= '' then redis.call('SET', KEYS[5], ARGV[4]) end
+        return 1
+        """;
 
     // Lua script for atomic webhook deletion: GET to find tenantId, then DEL + SREM tenant + SREM global
     private static final String DELETE_WEBHOOK_LUA =
@@ -69,17 +81,9 @@ public class WebhookRepository {
             if (sub.getConsecutiveFailures() == null) {
                 sub.setConsecutiveFailures(0);
             }
-            String signingSecret = sub.getSigningSecret();
-            String json = objectMapper.writeValueAsString(sub);
-            jedis.eval(SAVE_WEBHOOK_LUA,
-                List.of("webhook:" + subscriptionId,
-                        "webhooks:" + sub.getTenantId(),
-                        "webhooks:_all"),
-                List.of(json, subscriptionId));
-            // Store signing secret separately, encrypted at rest
-            if (signingSecret != null) {
-                jedis.set("webhook:secret:" + subscriptionId, cryptoService.encrypt(signingSecret));
-            }
+            writeSubscription(jedis, subscriptionId, sub, "");
+        } catch (GovernanceException e) {
+            throw e;
         } catch (Exception e) {
             LOG.error("Failed to save webhook subscription: subscription_id={} tenant_id={} status={} event_types={} event_categories={} secret_present={}",
                 sub != null ? LogSanitizer.safe(sub.getSubscriptionId()) : null,
@@ -91,6 +95,38 @@ public class WebhookRepository {
                 e);
             throw new RuntimeException("Failed to save webhook subscription", e);
         }
+    }
+
+    private void writeSubscription(Jedis jedis, String id, WebhookSubscription sub, String expected)
+            throws JsonProcessingException {
+        String secret = sub.getSigningSecret();
+        long result = (Long) jedis.eval(WRITE_WEBHOOK_LUA,
+            List.of("webhook:" + id, "webhooks:" + sub.getTenantId(), "webhooks:_all",
+                "tenant:" + sub.getTenantId(), "webhook:secret:" + id),
+            List.of(encodeSubscription(sub), id, expected, secret == null ? "" : cryptoService.encrypt(secret)));
+        if (result == -1) throw new GovernanceException(io.runcycles.admin.model.shared.ErrorCode.TENANT_CLOSED,
+            "Webhook owner is closed", 409);
+        if (result == 0) throw new GovernanceException(io.runcycles.admin.model.shared.ErrorCode.CONCURRENT_MODIFICATION,
+            "Subscription changed concurrently. Retry the request.", 409);
+    }
+
+    private String encodeSubscription(WebhookSubscription sub) throws JsonProcessingException {
+        if (sub.getHeaders() == null || sub.getHeaders().isEmpty() || !cryptoService.isEnabled()) {
+            return objectMapper.writeValueAsString(sub);
+        }
+        ObjectNode row = objectMapper.valueToTree(sub);
+        row.remove("headers");
+        row.put("encrypted_headers", cryptoService.encrypt(objectMapper.writeValueAsString(sub.getHeaders())));
+        return objectMapper.writeValueAsString(row);
+    }
+
+    private WebhookSubscription decodeSubscription(String data) throws JsonProcessingException {
+        ObjectNode row = (ObjectNode) objectMapper.readTree(data);
+        var encrypted = row.remove("encrypted_headers");
+        if (encrypted != null) row.set("headers", objectMapper.readTree(cryptoService.decrypt(encrypted.asText())));
+        WebhookSubscription sub = objectMapper.treeToValue(row, WebhookSubscription.class);
+        sub.setStoredJson(data);
+        return sub;
     }
 
     public String getSigningSecret(String subscriptionId) {
@@ -106,7 +142,7 @@ public class WebhookRepository {
             if (data == null) {
                 throw GovernanceException.webhookNotFound(subscriptionId);
             }
-            return objectMapper.readValue(data, WebhookSubscription.class);
+            return decodeSubscription(data);
         } catch (GovernanceException e) {
             throw e;
         } catch (Exception e) {
@@ -141,7 +177,7 @@ public class WebhookRepository {
                     try {
                         String data = jedis.get("webhook:" + id);
                         if (data == null) { resolved = true; continue; }
-                        WebhookSubscription sub = objectMapper.readValue(data, WebhookSubscription.class);
+                        WebhookSubscription sub = decodeSubscription(data);
                         if (sub.getStatus() == WebhookStatus.DISABLED) { resolved = true; continue; }
                         WebhookStatus prior = sub.getStatus();
                         sub.setStatus(WebhookStatus.DISABLED);
@@ -154,7 +190,7 @@ public class WebhookRepository {
                             List.of("webhook:" + id,
                                 TenantCloseWorkRepository.outboxItemKey(tenantId, itemId),
                                 TenantCloseWorkRepository.outboxKey(tenantId)),
-                            List.of(data, objectMapper.writeValueAsString(sub),
+                            List.of(data, encodeSubscription(sub),
                                 objectMapper.writeValueAsString(item), itemId));
                         if (Long.valueOf(1L).equals(cas)) {
                             outcomes.succeeded(new CascadeDisableOutcome(id, sub.getName(), prior));
@@ -221,7 +257,8 @@ public class WebhookRepository {
          * but crashed before the SADD) — membership repaired. Independent of
          * status (a DISABLED system row still must be indexed).
          */
-        INDEXED_SYSTEM_MEMBER
+        INDEXED_SYSTEM_MEMBER,
+        ENCRYPTED_LEGACY_HEADERS
     }
 
     /** {@code strippedSelectors} = the admin-only type/category wire values removed (empty for pure disable/normalize). */
@@ -300,7 +337,7 @@ public class WebhookRepository {
                     try {
                         String data = jedis.get("webhook:" + id);
                         if (data == null) continue;
-                        WebhookSubscription sub = objectMapper.readValue(data, WebhookSubscription.class);
+                        WebhookSubscription sub = decodeSubscription(data);
 
                         boolean nullOwner = sub.getTenantId() == null;
                         // Normalize null owner → __system__ (corruption fix); the row is then
@@ -348,7 +385,9 @@ public class WebhookRepository {
 
                         // A JSON write is needed for owner rewrite / strip / disable; a pure
                         // index-membership repair needs only an (idempotent) SADD.
-                        boolean jsonChange = nullOwner || didStrip || disable;
+                        boolean legacyHeaders = sub.getHeaders() != null && !sub.getHeaders().isEmpty()
+                            && cryptoService.isEnabled() && !objectMapper.readTree(data).has("encrypted_headers");
+                        boolean jsonChange = nullOwner || didStrip || disable || legacyHeaders;
                         if (!jsonChange && !needsIndex) continue; // clean row
 
                         CategoryBoundaryAction action;
@@ -356,14 +395,15 @@ public class WebhookRepository {
                         else if (didStrip)       action = CategoryBoundaryAction.STRIPPED_ADMIN_SELECTORS;
                         else if (disable)        action = CategoryBoundaryAction.DISABLED_EMPTY_BOTH;
                         else if (nullOwner)      action = CategoryBoundaryAction.NORMALIZED_NULL_OWNER;
-                        else                     action = CategoryBoundaryAction.INDEXED_SYSTEM_MEMBER;
+                        else if (needsIndex)     action = CategoryBoundaryAction.INDEXED_SYSTEM_MEMBER;
+                        else                     action = CategoryBoundaryAction.ENCRYPTED_LEGACY_HEADERS;
 
                         if (!dryRun) {
                             if (jsonChange) {
                                 if (nullOwner) sub.setTenantId(WebhookSubscription.SYSTEM_TENANT);
                                 if (disable) sub.setStatus(WebhookStatus.DISABLED);
                                 sub.setUpdatedAt(Instant.now());
-                                String newJson = objectMapper.writeValueAsString(sub);
+                                String newJson = encodeSubscription(sub);
                                 // SADD folded into the SAME atomic op when the row must be indexed.
                                 boolean doIndex = nullOwner || needsIndex;
                                 Object casRes = jedis.eval(CAS_SET_AND_INDEX_LUA,
@@ -404,13 +444,10 @@ public class WebhookRepository {
     public void update(String subscriptionId, WebhookSubscription updated) {
         try (Jedis jedis = jedisPool.getResource()) {
             updated.setUpdatedAt(Instant.now());
-            // Persist rotated signing secret if present
-            String newSecret = updated.getSigningSecret();
-            if (newSecret != null) {
-                jedis.set("webhook:secret:" + subscriptionId, cryptoService.encrypt(newSecret));
-            }
-            String json = objectMapper.writeValueAsString(updated);
-            jedis.set("webhook:" + subscriptionId, json);
+            writeSubscription(jedis, subscriptionId, updated,
+                Objects.requireNonNull(updated.getStoredJson(), "Missing subscription version"));
+        } catch (GovernanceException e) {
+            throw e;
         } catch (Exception e) {
             LOG.error("Failed to update webhook subscription: subscription_id={} tenant_id={} status={} event_types={} event_categories={} secret_present={}",
                 LogSanitizer.safe(subscriptionId),
@@ -431,7 +468,7 @@ public class WebhookRepository {
             if (data == null) {
                 throw GovernanceException.webhookNotFound(subscriptionId);
             }
-            WebhookSubscription sub = objectMapper.readValue(data, WebhookSubscription.class);
+            WebhookSubscription sub = decodeSubscription(data);
             jedis.eval(DELETE_WEBHOOK_LUA,
                 List.of("webhook:" + subscriptionId,
                         "webhooks:" + sub.getTenantId(),
@@ -577,7 +614,7 @@ public class WebhookRepository {
                 try {
                     String data = jedis.get("webhook:" + id);
                     if (data == null) continue;
-                    WebhookSubscription sub = objectMapper.readValue(data, WebhookSubscription.class);
+                    WebhookSubscription sub = decodeSubscription(data);
                     if (sub.getStatus() != WebhookStatus.ACTIVE) continue;
                     // Check event type match: subscription must include this event type or its category
                     if (!matchesEventType(sub, eventType)) continue;
@@ -750,7 +787,7 @@ public class WebhookRepository {
     private WebhookSubscription tryHydrate(String id, String data) {
         if (data == null) return null;
         try {
-            return objectMapper.readValue(data, WebhookSubscription.class);
+            return decodeSubscription(data);
         } catch (Exception e) {
             LOG.warn("Failed to parse webhook subscription row: subscription_id={}",
                 LogSanitizer.safe(id), e);

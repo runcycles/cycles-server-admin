@@ -11,6 +11,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BudgetListFiltersBranchTest {
 
     @Test
+    void credentialScopeAppliesEvenWithNoRequestedPrefix() {
+        BudgetListFilters restricted = new BudgetListFilters(null, null, null, null, null, null,
+            null, null, scope -> scope.endsWith("/workspace:east"));
+        assertThat(restricted.matches(BudgetLedger.builder().scope("tenant:t/workspace:east").build())).isTrue();
+        assertThat(restricted.matches(BudgetLedger.builder().scope("tenant:t/workspace:west").build())).isFalse();
+    }
+
+    @Test
     void nullableAmountsAndEachUtilizationBoundHaveDefinedSemantics() {
         BudgetLedger noAmounts = ledger("tenant-acme", "tenant:acme/workspace:eng", null, null, null);
         assertThat(new BudgetListFilters(null, null, null, null, false, null, null)

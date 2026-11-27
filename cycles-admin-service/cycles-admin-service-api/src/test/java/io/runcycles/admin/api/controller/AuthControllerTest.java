@@ -279,14 +279,14 @@ class AuthControllerTest {
     }
 
     @Test
-    void introspect_invalidTenantKey_returns403() throws Exception {
+    void introspect_invalidTenantKey_returns401() throws Exception {
         when(apiKeyRepository.validate("bad_key")).thenReturn(
                 ApiKeyValidationResponse.builder()
                         .valid(false).tenantId("").reason("KEY_NOT_FOUND").build());
 
         mockMvc.perform(get("/v1/auth/introspect")
                         .header("X-Cycles-API-Key", "bad_key"))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isUnauthorized());
     }
 
     // --- KEY_EXPIRED / KEY_REVOKED validation ---

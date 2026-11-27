@@ -49,6 +49,7 @@ class WebhookRepositoryTest {
     @BeforeEach
     void setUp() {
         lenient().when(jedisPool.getResource()).thenReturn(jedis);
+        lenient().when(jedis.eval(contains("local current = redis.call"), anyList(), anyList())).thenReturn(1L);
         RedisBatchTestStubs.installStringReads(jedis);
     }
 
@@ -70,6 +71,35 @@ class WebhookRepositoryTest {
     }
 
     // ---- save() ----
+
+    @Test
+    void saveEncryptsHeadersAndFindRestoresThemForInternalUse() {
+        CryptoService encryption = new CryptoService(Base64.getEncoder().encodeToString(new byte[32]), false);
+        org.springframework.test.util.ReflectionTestUtils.setField(repository, "cryptoService", encryption);
+        WebhookSubscription sub = WebhookSubscription.builder().tenantId("t")
+            .headers(Map.of("Authorization", "example-credential")).build();
+        java.util.concurrent.atomic.AtomicReference<String> stored = new java.util.concurrent.atomic.AtomicReference<>();
+        when(jedis.eval(contains("local current = redis.call"), anyList(), anyList())).thenAnswer(call -> {
+            List<String> args = call.getArgument(2);
+            stored.set(args.getFirst());
+            return 1L;
+        });
+        repository.save(sub);
+        assertThat(stored.get()).contains("encrypted_headers").doesNotContain("example-credential", "Authorization");
+        when(jedis.get("webhook:" + sub.getSubscriptionId())).thenReturn(stored.get());
+        assertThat(repository.findById(sub.getSubscriptionId()).getHeaders()).isEqualTo(sub.getHeaders());
+    }
+
+    @Test
+    void webhookWriteReportsClosureAndConcurrentChanges() {
+        when(jedis.eval(contains("local current = redis.call"), anyList(), anyList())).thenReturn(-1L, 0L);
+        WebhookSubscription sub = WebhookSubscription.builder().tenantId("t").headers(Map.of()).build();
+        assertThatThrownBy(() -> repository.save(sub)).isInstanceOf(GovernanceException.class)
+            .hasMessageContaining("closed");
+        assertThatThrownBy(() -> repository.save(sub)).isInstanceOf(GovernanceException.class)
+            .satisfies(e -> assertThat(((GovernanceException) e).getErrorCode())
+                .isEqualTo(io.runcycles.admin.model.shared.ErrorCode.CONCURRENT_MODIFICATION));
+    }
 
     @Test
     void save_setsSubscriptionIdAndDefaults() {
@@ -99,7 +129,7 @@ class WebhookRepositoryTest {
         repository.save(sub);
 
         verify(jedis).eval(anyString(), argThat((List<String> keys) -> {
-            return keys.size() == 3
+            return keys.size() == 5
                 && keys.get(0).startsWith("webhook:whsub_")
                 && keys.get(1).equals("webhooks:tenant-1")
                 && keys.get(2).equals("webhooks:_all");
@@ -165,10 +195,11 @@ class WebhookRepositoryTest {
                 .consecutiveFailures(0)
                 .build();
 
+        updated.setStoredJson("original");
         repository.update("whsub_abc123", updated);
 
         assertThat(updated.getUpdatedAt()).isNotNull();
-        verify(jedis).set(eq("webhook:whsub_abc123"), argThat(json -> json.contains("updated.example.com")));
+        verify(jedis).eval(anyString(), anyList(), argThat((List<String> args) -> args.get(0).contains("updated.example.com") && args.get(2).equals("original")));
     }
 
     // ---- delete() ----
@@ -728,12 +759,13 @@ class WebhookRepositoryTest {
 
     @Test
     void update_redisException_throwsRuntimeException() {
-        when(jedis.set(anyString(), anyString())).thenThrow(new RuntimeException("Redis down"));
+        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("Redis down"));
 
         WebhookSubscription sub = WebhookSubscription.builder()
                 .subscriptionId("whsub_1").tenantId("tenant-1").url("https://a.com")
                 .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).consecutiveFailures(0).build();
 
+        sub.setStoredJson("original");
         assertThatThrownBy(() -> repository.update("whsub_1", sub))
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("Failed to update webhook");
@@ -1023,9 +1055,10 @@ class WebhookRepositoryTest {
             .status(WebhookStatus.ACTIVE).signingSecret("rotated-secret-value")
             .createdAt(Instant.now()).consecutiveFailures(0).build();
 
+        updated.setStoredJson("original");
         repository.update("whsub_rotate", updated);
 
-        verify(jedis).set(eq("webhook:secret:whsub_rotate"), anyString());
+        verify(jedis).eval(anyString(), anyList(), argThat((List<String> args) -> args.get(3).equals("rotated-secret-value")));
     }
 
     // ---- replay lock ----
@@ -1354,7 +1387,7 @@ class WebhookRepositoryTest {
         assertThat(existing.getCreatedAt()).isEqualTo(created);
         assertThat(existing.getStatus()).isEqualTo(WebhookStatus.PAUSED);
         assertThat(existing.getConsecutiveFailures()).isEqualTo(4);
-        verify(jedis).set("webhook:secret:whsub-existing", "secret");
+        verify(jedis).eval(anyString(), anyList(), argThat((List<String> args) -> args.get(3).equals("secret")));
     }
 
     @Test
@@ -1382,7 +1415,8 @@ class WebhookRepositoryTest {
             .eventTypes(List.of(EventType.TENANT_CREATED))
             .eventCategories(List.of(EventCategory.TENANT)).status(WebhookStatus.ACTIVE)
             .consecutiveFailures(0).createdAt(Instant.now()).signingSecret("secret").build();
-        when(jedis.set(eq("webhook:whsub-full"), anyString()))
+        populated.setStoredJson("original");
+        when(jedis.eval(anyString(), anyList(), anyList()))
             .thenThrow(new RuntimeException("Redis down"));
         assertThatThrownBy(() -> repository.update("whsub-full", populated))
             .isInstanceOf(RuntimeException.class).hasMessageContaining("Failed to update webhook");
@@ -1507,6 +1541,40 @@ class WebhookRepositoryTest {
         assertThat(WebhookRepository.reconcileCasSetAndIndexScript())
                 .contains("SADD").contains("SET").contains("GET");
         assertThat(WebhookRepository.reconcileScanBatch()).isEqualTo(200);
+    }
+
+    @Test
+    void reconcileEncryptsOnlyLegacyHeaderRowsAndIsIdempotent() throws Exception {
+        CryptoService encryption = new CryptoService(Base64.getEncoder().encodeToString(new byte[32]), false);
+        org.springframework.test.util.ReflectionTestUtils.setField(repository, "cryptoService", encryption);
+        WebhookSubscription sub = WebhookSubscription.builder().subscriptionId("headers").tenantId("t")
+            .status(WebhookStatus.DISABLED).headers(Map.of("Authorization", "example-credential")).build();
+        String original = objectMapper.writeValueAsString(sub);
+        stubScan("headers");
+        stubGet("headers", original);
+        var first = repository.reconcileTenantCategoryBoundary(false);
+        assertThat(first.repaired()).extracting(WebhookRepository.CategoryBoundaryRepairOutcome::action)
+            .containsExactly(WebhookRepository.CategoryBoundaryAction.ENCRYPTED_LEGACY_HEADERS);
+        org.mockito.ArgumentCaptor<List> args = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(jedis).eval(anyString(), anyList(), args.capture());
+        String encrypted = (String) args.getValue().get(1);
+        assertThat(encrypted).contains("encrypted_headers").doesNotContain("example-credential");
+        stubGet("headers", encrypted);
+        assertThat(repository.reconcileTenantCategoryBoundary(false).repaired()).isEmpty();
+        verify(jedis, times(1)).eval(anyString(), anyList(), anyList());
+    }
+
+    @Test
+    void countForBulkHonorsTenantAndSearchWithoutStatusOrType() throws Exception {
+        WebhookSubscription sub = webhookRow("wh-one", "tenant", "https://acme.example/hook",
+            WebhookStatus.ACTIVE, EventType.BUDGET_CREATED);
+        String json = objectMapper.writeValueAsString(sub);
+        when(jedis.smembers("webhooks:tenant")).thenReturn(Set.of("wh-one"));
+        stubGet("wh-one", json);
+        assertThat(repository.countForBulk("tenant", null, null, "acme")).isEqualTo(1);
+        assertThat(repository.countForBulk("tenant", null, null, "absent")).isZero();
+        when(jedis.smembers("webhooks:_all")).thenReturn(Set.of());
+        assertThat(repository.countForBulk(" ", null, null, null)).isZero();
     }
 
     @Test

@@ -81,25 +81,35 @@ public class WebhookService {
             .build();
         webhookRepository.save(sub);
         return WebhookCreateResponse.builder()
-            .subscription(sub)
+            .subscription(masked(sub))
             .signingSecret(signingSecret)
             .build();
     }
 
     public WebhookSubscription get(String subscriptionId) {
-        WebhookSubscription sub = webhookRepository.findById(subscriptionId);
-        // Mask sensitive fields for GET responses
-        sub.setSigningSecret(null);
+        return masked(getForUpdate(subscriptionId));
+    }
+
+    public WebhookSubscription getForUpdate(String subscriptionId) {
+        return webhookRepository.findById(subscriptionId);
+    }
+
+    private static WebhookSubscription masked(WebhookSubscription sub) {
+        Map<String, String> headers = null;
         if (sub.getHeaders() != null) {
-            Map<String, String> masked = new LinkedHashMap<>();
-            sub.getHeaders().forEach((k, v) -> masked.put(k, "********"));
-            sub.setHeaders(masked);
+            headers = new LinkedHashMap<>();
+            for (String name : sub.getHeaders().keySet()) headers.put(name, "********");
         }
-        return sub;
+        return sub.toBuilder().storedJson(null).signingSecret(null).headers(headers).build();
     }
 
     public WebhookSubscription update(String subscriptionId, WebhookUpdateRequest request) {
-        WebhookSubscription existing = webhookRepository.findById(subscriptionId);
+        return update(getForUpdate(subscriptionId), request);
+    }
+
+    public WebhookSubscription update(WebhookSubscription prior, WebhookUpdateRequest request) {
+        String subscriptionId = prior.getSubscriptionId();
+        WebhookSubscription existing = prior.toBuilder().build();
         if (request.getUrl() != null) {
             urlValidator.validate(request.getUrl());
             existing.setUrl(request.getUrl());
@@ -145,7 +155,7 @@ public class WebhookService {
         }
         existing.setUpdatedAt(Instant.now());
         webhookRepository.update(subscriptionId, existing);
-        return get(subscriptionId); // Return masked version
+        return masked(existing);
     }
 
     public void delete(String subscriptionId) {
@@ -266,8 +276,7 @@ public class WebhookService {
         List<WebhookSubscription> subs = webhookRepository.listByTenant(
             tenantId, status, eventType, cursor, effectiveLimit + 1, sortSpec, search);
         var page = PageSlice.from(subs, effectiveLimit);
-        subs = page.items();
-        subs.forEach(s -> { s.setSigningSecret(null); }); // Mask secrets
+        subs = page.items().stream().map(WebhookService::masked).toList();
         return WebhookListResponse.builder()
             .subscriptions(subs)
             .hasMore(page.hasMore())
@@ -294,8 +303,7 @@ public class WebhookService {
         List<WebhookSubscription> subs = webhookRepository.listAll(
             status, eventType, cursor, effectiveLimit + 1, sortSpec, search);
         var page = PageSlice.from(subs, effectiveLimit);
-        subs = page.items();
-        subs.forEach(s -> { s.setSigningSecret(null); });
+        subs = page.items().stream().map(WebhookService::masked).toList();
         return WebhookListResponse.builder()
             .subscriptions(subs)
             .hasMore(page.hasMore())

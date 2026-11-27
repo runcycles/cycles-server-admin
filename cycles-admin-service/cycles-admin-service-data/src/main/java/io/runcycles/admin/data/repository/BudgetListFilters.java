@@ -32,7 +32,13 @@ public record BudgetListFilters(
         Boolean hasDebt,
         Double utilizationMin,
         Double utilizationMax,
-        String search) {
+        String search,
+        java.util.function.Predicate<String> allowedScopes) {
+
+    public BudgetListFilters(String scopePrefix, UnitEnum unit, BudgetStatus status, Boolean overLimit,
+                             Boolean hasDebt, Double utilizationMin, Double utilizationMax, String search) {
+        this(scopePrefix, unit, status, overLimit, hasDebt, utilizationMin, utilizationMax, search, null);
+    }
 
     public static BudgetListFilters empty() {
         return new BudgetListFilters(null, null, null, null, null, null, null, null);
@@ -66,6 +72,7 @@ public record BudgetListFilters(
     }
 
     public boolean matches(BudgetLedger ledger) {
+        if (allowedScopes != null && !allowedScopes.test(ledger.getScope())) return false;
         if (scopePrefix != null && !ledger.getScope().startsWith(scopePrefix)) return false;
         if (unit != null && ledger.getUnit() != unit) return false;
         if (status != null && ledger.getStatus() != status) return false;

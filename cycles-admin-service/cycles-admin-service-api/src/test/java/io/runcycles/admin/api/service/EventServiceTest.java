@@ -31,6 +31,30 @@ class EventServiceTest {
     @InjectMocks private EventService eventService;
 
     @Test
+    void fundingDispatchRetriesOnlyPendingDeliveries() {
+        Event event = Event.builder().eventId("fund").eventType(EventType.BUDGET_FUNDED).build();
+        when(eventRepository.dueFundingEvents()).thenReturn(List.of("fund"));
+        when(eventRepository.claimFundingDispatch("fund")).thenReturn(event, event, null);
+        when(webhookDispatchService.dispatchWithSummary(event)).thenReturn(
+            new WebhookDispatchService.DispatchSummary(0, 0, 1), new WebhookDispatchService.DispatchSummary(1, 0, 0));
+
+        eventService.recoverFundingDispatch();
+        verify(eventRepository, never()).completeFundingDispatch("fund");
+        eventService.recoverFundingDispatch();
+        eventService.recoverFundingDispatch();
+        verify(eventRepository).completeFundingDispatch("fund");
+        verify(webhookDispatchService, times(2)).dispatchWithSummary(event);
+        verify(eventRepository, never()).save(any());
+    }
+
+    @Test
+    void failedDispatchClaimLeavesEventPending() {
+        when(eventRepository.claimFundingDispatch("fund")).thenThrow(new IllegalStateException("temporary outage"));
+        eventService.dispatchFundingEvent("fund");
+        verify(eventRepository, never()).completeFundingDispatch(anyString());
+    }
+
+    @Test
     void emit_savesEventAndDispatches() {
         Event event = Event.builder()
             .eventType(EventType.BUDGET_CREATED)

@@ -14,13 +14,13 @@ public class WebhookCreateRequest {
     @Size(max = 256) @JsonProperty("name") private String name;
     @Size(max = 1024) @JsonProperty("description") private String description;
     @NotNull @Size(max = 2048) @JsonProperty("url") private String url;
-    @NotEmpty @JsonProperty("event_types") private List<EventType> eventTypes;
-    @JsonProperty("event_categories") private List<EventCategory> eventCategories;
+    @NotEmpty @JsonProperty("event_types") private List<@NotNull EventType> eventTypes;
+    @JsonProperty("event_categories") private List<@NotNull EventCategory> eventCategories;
     @JsonProperty("scope_filter") private String scopeFilter;
     @Valid @JsonProperty("thresholds") private WebhookThresholdConfig thresholds;
     @JsonProperty("signing_secret") private String signingSecret;
     @JsonProperty("headers") private Map<String, String> headers;
     @Valid @JsonProperty("retry_policy") private WebhookRetryPolicy retryPolicy;
-    @JsonProperty("disable_after_failures") private Integer disableAfterFailures;
+    @Min(1) @JsonProperty("disable_after_failures") private Integer disableAfterFailures;
     @JsonProperty("metadata") private Map<String, Object> metadata;
 }

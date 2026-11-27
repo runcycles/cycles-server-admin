@@ -65,6 +65,22 @@ class WebhookAdminControllerTest {
     }
 
     @Test
+    void createAndPatchRejectInvalidRetryBoundsAndNullSelectors() throws Exception {
+        for (String invalid : List.of("\"disable_after_failures\":0", "\"event_categories\":[null]",
+                "\"event_types\":[null]")) {
+            String createFields = invalid.startsWith("\"event_types\"") ? invalid
+                : "\"event_types\":[\"budget.created\"]," + invalid;
+            mockMvc.perform(post("/v1/admin/webhooks").header("X-Admin-API-Key", ADMIN_KEY)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"url\":\"https://example.com/hook\"," + createFields + "}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+            mockMvc.perform(patch("/v1/admin/webhooks/whsub_test").header("X-Admin-API-Key", ADMIN_KEY)
+                    .contentType(MediaType.APPLICATION_JSON).content("{" + invalid + "}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+        }
+    }
+
+    @Test
     void createWebhook_returns201() throws Exception {
         WebhookSubscription sub = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
@@ -142,8 +158,8 @@ class WebhookAdminControllerTest {
             .subscriptionId("whsub_1").tenantId("tenant-1").name("Updated")
             .url("https://example.com/wh").status(WebhookStatus.ACTIVE)
             .createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(prior);
-        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq(prior), any())).thenReturn(updated);
 
         mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -239,7 +255,7 @@ class WebhookAdminControllerTest {
         WebhookSubscription prior = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(prior);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(prior);
 
         mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -248,7 +264,7 @@ class WebhookAdminControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
 
-        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).update(any(WebhookSubscription.class), any());
     }
 
     @Test
@@ -261,8 +277,8 @@ class WebhookAdminControllerTest {
             .subscriptionId("whsub_sys").tenantId("__system__").url("https://example.com/wh")
             .eventCategories(List.of(EventCategory.SYSTEM)).status(WebhookStatus.ACTIVE)
             .createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_sys")).thenReturn(prior);
-        when(webhookService.update(eq("whsub_sys"), any())).thenReturn(updated);
+        when(webhookService.getForUpdate("whsub_sys")).thenReturn(prior);
+        when(webhookService.update(eq(prior), any())).thenReturn(updated);
 
         mockMvc.perform(patch("/v1/admin/webhooks/whsub_sys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -270,7 +286,7 @@ class WebhookAdminControllerTest {
                         .content("{\"event_categories\":[\"system\"]}"))
                 .andExpect(status().isOk());
 
-        verify(webhookService).update(eq("whsub_sys"), any());
+        verify(webhookService).update(eq(prior), any());
     }
 
     @Test
@@ -278,8 +294,8 @@ class WebhookAdminControllerTest {
         WebhookSubscription prior = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(prior);
-        when(webhookService.update(eq("whsub_1"), any())).thenReturn(prior);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq(prior), any())).thenReturn(prior);
 
         mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -287,7 +303,7 @@ class WebhookAdminControllerTest {
                         .content("{\"event_categories\":[\"budget\"]}"))
                 .andExpect(status().isOk());
 
-        verify(webhookService).update(eq("whsub_1"), any());
+        verify(webhookService).update(eq(prior), any());
     }
 
     // #209 finding 2: a status-only PATCH (null selector arrays) must validate
@@ -300,7 +316,7 @@ class WebhookAdminControllerTest {
             .eventTypes(List.of(EventType.BUDGET_CREATED))
             .eventCategories(List.of(EventCategory.API_KEY)) // stored admin-only category
             .status(WebhookStatus.DISABLED).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_off")).thenReturn(prior);
+        when(webhookService.getForUpdate("whsub_off")).thenReturn(prior);
 
         mockMvc.perform(patch("/v1/admin/webhooks/whsub_off")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -309,7 +325,7 @@ class WebhookAdminControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
 
-        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).update(any(WebhookSubscription.class), any());
     }
 
     @Test
@@ -319,8 +335,8 @@ class WebhookAdminControllerTest {
             .subscriptionId("whsub_sys").tenantId("__system__").url("https://example.com/wh")
             .eventCategories(List.of(EventCategory.API_KEY))
             .status(WebhookStatus.DISABLED).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_sys")).thenReturn(prior);
-        when(webhookService.update(eq("whsub_sys"), any())).thenReturn(prior);
+        when(webhookService.getForUpdate("whsub_sys")).thenReturn(prior);
+        when(webhookService.update(eq(prior), any())).thenReturn(prior);
 
         mockMvc.perform(patch("/v1/admin/webhooks/whsub_sys")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -328,7 +344,7 @@ class WebhookAdminControllerTest {
                         .content("{\"status\":\"ACTIVE\"}"))
                 .andExpect(status().isOk());
 
-        verify(webhookService).update(eq("whsub_sys"), any());
+        verify(webhookService).update(eq(prior), any());
     }
 
     // #209 finding 5: a blank (whitespace-only) tenant_id is NOT system-exempt —
@@ -601,7 +617,7 @@ class WebhookAdminControllerTest {
                 .thenReturn(List.of(webhookRow("w1", WebhookStatus.ACTIVE), webhookRow("w2", WebhookStatus.ACTIVE)));
         when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.ACTIVE));
         when(webhookRepository.findById("w2")).thenReturn(webhookRow("w2", WebhookStatus.ACTIVE));
-        when(webhookService.update(anyString(), any())).thenReturn(webhookRow("w1", WebhookStatus.PAUSED));
+        when(webhookService.update(any(WebhookSubscription.class), any())).thenReturn(webhookRow("w1", WebhookStatus.PAUSED));
 
         mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -615,7 +631,7 @@ class WebhookAdminControllerTest {
                 .andExpect(jsonPath("$.skipped.length()").value(0))
                 .andExpect(jsonPath("$.idempotency_key").value("k1"));
 
-        verify(webhookService, times(2)).update(anyString(), any());
+        verify(webhookService, times(2)).update(any(WebhookSubscription.class), any());
         verify(idempotencyStore).complete(eq(claim), any(WebhookBulkActionResponse.class));
         verify(idempotencyStore, never()).store(anyString(), anyString(), any());
     }
@@ -662,7 +678,7 @@ class WebhookAdminControllerTest {
                 .andExpect(jsonPath("$.error").value("COUNT_MISMATCH"))
                 .andExpect(jsonPath("$.details.total_matched").value(2));
 
-        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).update(any(WebhookSubscription.class), any());
         verify(webhookService, never()).delete(anyString());
         verify(idempotencyStore).abandon(any());
     }
@@ -684,7 +700,7 @@ class WebhookAdminControllerTest {
                 .andExpect(jsonPath("$.error").value("LIMIT_EXCEEDED"))
                 .andExpect(jsonPath("$.details.total_matched").value(915));
 
-        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).update(any(WebhookSubscription.class), any());
         verify(webhookService, never()).delete(anyString());
         verify(webhookRepository).countForBulk(any(), any(), any(), any());
         verify(idempotencyStore).abandon(any());
@@ -712,7 +728,7 @@ class WebhookAdminControllerTest {
                 .andExpect(jsonPath("$.total_matched").value(3));
 
         verify(webhookRepository, never()).matchForBulk(any(), any(), any(), any(), anyInt());
-        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).update(any(WebhookSubscription.class), any());
         verify(idempotencyStore, never()).store(anyString(), anyString(), any());
     }
 
@@ -733,7 +749,7 @@ class WebhookAdminControllerTest {
                 .andExpect(jsonPath("$.failed[0].id").value("w1"))
                 .andExpect(jsonPath("$.failed[0].error_code").value("INVALID_TRANSITION"));
 
-        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).update(any(WebhookSubscription.class), any());
     }
 
     @Test
@@ -754,7 +770,7 @@ class WebhookAdminControllerTest {
                 .andExpect(jsonPath("$.skipped[0].reason").value("ALREADY_IN_TARGET_STATE"))
                 .andExpect(jsonPath("$.succeeded.length()").value(0));
 
-        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).update(any(WebhookSubscription.class), any());
     }
 
     @Test
@@ -784,7 +800,7 @@ class WebhookAdminControllerTest {
                 .andExpect(jsonPath("$.failed[0].error_code").value("INVALID_TRANSITION"))
                 .andExpect(jsonPath("$.succeeded.length()").value(0));
 
-        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).update(any(WebhookSubscription.class), any());
     }
 
     @Test
@@ -802,7 +818,7 @@ class WebhookAdminControllerTest {
         when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
                 .thenReturn(List.of(clean));
         when(webhookRepository.findById("w1")).thenReturn(clean);
-        when(webhookService.update(anyString(), any())).thenReturn(clean);
+        when(webhookService.update(any(WebhookSubscription.class), any())).thenReturn(clean);
 
         mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -812,7 +828,7 @@ class WebhookAdminControllerTest {
                 .andExpect(jsonPath("$.succeeded.length()").value(1))
                 .andExpect(jsonPath("$.failed.length()").value(0));
 
-        verify(webhookService).update(eq("w1"), any());
+        verify(webhookService).update(argThat((WebhookSubscription sub) -> "w1".equals(sub.getSubscriptionId())), any());
     }
 
     @Test
@@ -895,7 +911,7 @@ class WebhookAdminControllerTest {
                 .andExpect(jsonPath("$.succeeded[0].id").value("whsub_1"));
 
         ArgumentCaptor<WebhookUpdateRequest> captor = ArgumentCaptor.forClass(WebhookUpdateRequest.class);
-        verify(webhookService).update(eq("whsub_1"), captor.capture());
+        verify(webhookService).update(argThat((WebhookSubscription sub) -> "whsub_1".equals(sub.getSubscriptionId())), captor.capture());
         assert captor.getValue().getStatus() == WebhookStatus.ACTIVE;
     }
 
@@ -916,7 +932,7 @@ class WebhookAdminControllerTest {
                 .andExpect(jsonPath("$.skipped[0].id").value("whsub_1"))
                 .andExpect(jsonPath("$.skipped[0].reason").value("ALREADY_IN_TARGET_STATE"));
 
-        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).update(any(WebhookSubscription.class), any());
     }
 
     @Test
@@ -940,7 +956,7 @@ class WebhookAdminControllerTest {
                 .andExpect(jsonPath("$.skipped[0].id").value("whsub_1"))
                 .andExpect(jsonPath("$.skipped[0].reason").value("ALREADY_DELETED"));
 
-        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).update(any(WebhookSubscription.class), any());
     }
 
     @Test
@@ -975,7 +991,7 @@ class WebhookAdminControllerTest {
         when(webhookRepository.matchForBulk(isNull(), eq(WebhookStatus.ACTIVE), isNull(), isNull(), eq(500)))
                 .thenReturn(List.of(webhookRow("whsub_1", WebhookStatus.ACTIVE)));
         when(webhookRepository.findById("whsub_1")).thenReturn(webhookRow("whsub_1", WebhookStatus.ACTIVE));
-        when(webhookService.update(anyString(), any())).thenReturn(webhookRow("whsub_1", WebhookStatus.PAUSED));
+        when(webhookService.update(any(WebhookSubscription.class), any())).thenReturn(webhookRow("whsub_1", WebhookStatus.PAUSED));
 
         mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -1018,7 +1034,7 @@ class WebhookAdminControllerTest {
                 .andExpect(jsonPath("$.failed[0].error_code").value("TENANT_CLOSED"))
                 .andExpect(jsonPath("$.succeeded.length()").value(0));
 
-        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).update(any(WebhookSubscription.class), any());
         verify(webhookService, never()).delete(anyString());
     }
 
@@ -1036,7 +1052,7 @@ class WebhookAdminControllerTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error").value("TENANT_CLOSED"));
 
-        verify(webhookService, never()).update(anyString(), any());
+        verify(webhookService, never()).update(any(WebhookSubscription.class), any());
     }
 
     // --- Webhook lifecycle event-emission contract (spec v0.1.25.33) ---
@@ -1081,8 +1097,8 @@ class WebhookAdminControllerTest {
         WebhookSubscription updated = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.PAUSED).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(prior);
-        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq(prior), any())).thenReturn(updated);
 
         mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -1112,8 +1128,8 @@ class WebhookAdminControllerTest {
         WebhookSubscription updated = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(prior);
-        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq(prior), any())).thenReturn(updated);
 
         mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -1136,8 +1152,8 @@ class WebhookAdminControllerTest {
         WebhookSubscription updated = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.PAUSED).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(prior);
-        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq(prior), any())).thenReturn(updated);
 
         mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -1163,8 +1179,8 @@ class WebhookAdminControllerTest {
         WebhookSubscription updated = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/new-wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(prior);
-        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq(prior), any())).thenReturn(updated);
 
         mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -1190,8 +1206,8 @@ class WebhookAdminControllerTest {
         WebhookSubscription prior = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(prior);
-        when(webhookService.update(eq("whsub_1"), any())).thenReturn(prior);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq(prior), any())).thenReturn(prior);
 
         mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -1214,8 +1230,8 @@ class WebhookAdminControllerTest {
         WebhookSubscription updated = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(prior);
-        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq(prior), any())).thenReturn(updated);
 
         mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -1267,7 +1283,7 @@ class WebhookAdminControllerTest {
                 .thenReturn(List.of(webhookRow("w1", WebhookStatus.ACTIVE), webhookRow("w2", WebhookStatus.ACTIVE)));
         when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.ACTIVE));
         when(webhookRepository.findById("w2")).thenReturn(webhookRow("w2", WebhookStatus.ACTIVE));
-        when(webhookService.update(anyString(), any())).thenReturn(webhookRow("w1", WebhookStatus.PAUSED));
+        when(webhookService.update(any(WebhookSubscription.class), any())).thenReturn(webhookRow("w1", WebhookStatus.PAUSED));
 
         mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -1301,7 +1317,7 @@ class WebhookAdminControllerTest {
         when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500)))
                 .thenReturn(List.of(webhookRow("w1", WebhookStatus.PAUSED)));
         when(webhookRepository.findById("w1")).thenReturn(webhookRow("w1", WebhookStatus.PAUSED));
-        when(webhookService.update(anyString(), any())).thenReturn(webhookRow("w1", WebhookStatus.ACTIVE));
+        when(webhookService.update(any(WebhookSubscription.class), any())).thenReturn(webhookRow("w1", WebhookStatus.ACTIVE));
 
         mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -1438,7 +1454,7 @@ class WebhookAdminControllerTest {
         when(webhookRepository.findById("whsub_1"))
                 .thenReturn(webhookRow("whsub_1", WebhookStatus.ACTIVE));
         doThrow(new RuntimeException("redis-down"))
-                .when(webhookService).update(eq("whsub_1"), any());
+                .when(webhookService).update(argThat((WebhookSubscription sub) -> "whsub_1".equals(sub.getSubscriptionId())), any());
 
         mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -1460,8 +1476,8 @@ class WebhookAdminControllerTest {
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/wh")
             .name("new-name")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(prior);
-        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq(prior), any())).thenReturn(updated);
 
         mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
                         .header("X-Admin-API-Key", ADMIN_KEY)
@@ -1496,8 +1512,8 @@ class WebhookAdminControllerTest {
             .headers(Map.of("X-Test", "same")).retryPolicy(retry)
             .disableAfterFailures(5).metadata(Map.of("owner", "ops"))
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(prior);
-        when(webhookService.update(eq("whsub_1"), any())).thenReturn(prior);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq(prior), any())).thenReturn(prior);
         WebhookUpdateRequest request = WebhookUpdateRequest.builder()
             .url("https://example.com/wh").name("fixed").description("same description")
             .eventTypes(List.of(EventType.BUDGET_CREATED))
@@ -1562,8 +1578,8 @@ class WebhookAdminControllerTest {
             .headers(Map.of("X-Test", "new")).retryPolicy(newRetry)
             .disableAfterFailures(9).metadata(Map.of("owner", "new"))
             .status(WebhookStatus.PAUSED).createdAt(prior.getCreatedAt()).build();
-        when(webhookService.get("whsub_all")).thenReturn(prior);
-        when(webhookService.update(eq("whsub_all"), any())).thenReturn(updated);
+        when(webhookService.getForUpdate("whsub_all")).thenReturn(prior);
+        when(webhookService.update(eq(prior), any())).thenReturn(updated);
         WebhookUpdateRequest request = WebhookUpdateRequest.builder()
             .url(updated.getUrl()).name(updated.getName()).description(updated.getDescription())
             .eventTypes(updated.getEventTypes()).eventCategories(updated.getEventCategories())
@@ -1601,12 +1617,31 @@ class WebhookAdminControllerTest {
     }
 
     @Test
+    void bulkPauseReturnsTheConflictForTheAffectedSubscription() throws Exception {
+        WebhookSubscription live = webhookRow("w1", WebhookStatus.ACTIVE);
+        when(webhookRepository.matchForBulk(any(), any(), any(), any(), eq(500))).thenReturn(List.of(live));
+        when(webhookRepository.findById("w1")).thenReturn(live);
+        when(webhookService.update(eq(live), any())).thenThrow(
+            new GovernanceException(ErrorCode.CONCURRENT_MODIFICATION, "Subscription changed", 409));
+
+        mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
+                .header("X-Admin-API-Key", ADMIN_KEY).contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"filter":{"status":"ACTIVE"},"action":"PAUSE","idempotency_key":"stale"}
+                    """))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.failed[0].id").value("w1"))
+            .andExpect(jsonPath("$.failed[0].error_code").value("CONCURRENT_MODIFICATION"))
+            .andExpect(jsonPath("$.succeeded.length()").value(0));
+    }
+
+    @Test
     void bulkPauseNullStatusDefaultsActiveAndEqualCountProceeds() throws Exception {
         WebhookSubscription snapshot = webhookRow("wh-null", WebhookStatus.ACTIVE);
         when(webhookRepository.matchForBulk(isNull(), eq(WebhookStatus.ACTIVE), isNull(), isNull(), eq(500)))
             .thenReturn(List.of(snapshot));
         when(webhookRepository.findById("wh-null")).thenReturn(webhookRow("wh-null", null));
-        when(webhookService.update(eq("wh-null"), any())).thenReturn(webhookRow("wh-null", WebhookStatus.PAUSED));
+        when(webhookService.update(argThat((WebhookSubscription sub) -> "wh-null".equals(sub.getSubscriptionId())), any())).thenReturn(webhookRow("wh-null", WebhookStatus.PAUSED));
 
         mockMvc.perform(post("/v1/admin/webhooks/bulk-action")
                 .header("X-Admin-API-Key", ADMIN_KEY).contentType(MediaType.APPLICATION_JSON)
@@ -1683,8 +1718,8 @@ class WebhookAdminControllerTest {
         WebhookSubscription updated = WebhookSubscription.builder()
             .subscriptionId("whsub_1").tenantId("tenant-1").url("https://example.com/new")
             .status(WebhookStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(webhookService.get("whsub_1")).thenReturn(prior);
-        when(webhookService.update(eq("whsub_1"), any())).thenReturn(updated);
+        when(webhookService.getForUpdate("whsub_1")).thenReturn(prior);
+        when(webhookService.update(eq(prior), any())).thenReturn(updated);
 
         mockMvc.perform(patch("/v1/admin/webhooks/whsub_1")
                         .header("X-Admin-API-Key", ADMIN_KEY)

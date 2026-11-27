@@ -13,6 +13,7 @@ import io.runcycles.admin.model.shared.SortSpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.context.request.RequestAttributes;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
@@ -40,6 +41,27 @@ public class EventService {
         this.eventRepository = eventRepository;
         this.webhookDispatchService = webhookDispatchService;
         this.meterRegistry = meterRegistry;
+    }
+
+    @Scheduled(fixedDelayString = "${funding.dispatch.retry-ms:5000}")
+    public void recoverFundingDispatch() {
+        for (String id : eventRepository.dueFundingEvents()) {
+            dispatchFundingEvent(id);
+        }
+    }
+
+    /** Funding already published the event. Retry only the idempotent delivery enqueue. */
+    public void dispatchFundingEvent(String id) {
+        try {
+            Event event = eventRepository.claimFundingDispatch(id);
+            if (event == null) return;
+            validatePayloadShape(event);
+            var dispatch = webhookDispatchService.dispatchWithSummary(event);
+            if (!dispatch.hasFailures()) eventRepository.completeFundingDispatch(id);
+            recordEmitted(event.getEventType(), dispatch.hasFailures() ? "failure" : "success");
+        } catch (RuntimeException failure) {
+            LOG.warn("Funding webhook dispatch will retry: event_id={}", safe(id), failure);
+        }
     }
 
     /**
@@ -195,6 +217,18 @@ public class EventService {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         List<Event> events = eventRepository.list(tenantId, eventType, category, scope,
             correlationId, from, to, cursor, effectiveLimit + 1, sortSpec, search, traceId, requestId);
+        return eventPage(events, effectiveLimit);
+    }
+
+    public EventListResponse listTenantVisible(String tenantId, String eventType, String category,
+                                               String scope, String correlationId, Instant from, Instant to,
+                                               String cursor, int limit) {
+        int effectiveLimit = Math.max(1, Math.min(limit, 100));
+        return eventPage(eventRepository.listTenantVisible(tenantId, eventType, category, scope,
+            correlationId, from, to, cursor, effectiveLimit + 1), effectiveLimit);
+    }
+
+    private EventListResponse eventPage(List<Event> events, int effectiveLimit) {
         var page = PageSlice.from(events, effectiveLimit);
         events = page.items();
         return EventListResponse.builder()

@@ -41,8 +41,9 @@ public class BalanceController {
             attr(httpRequest, TraceContextFilter.TRACE_ID_ATTRIBUTE));
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         var page = PageSlice.from(
-            repository.list(effectiveTenantId, scope_prefix, unit, BudgetStatus.ACTIVE,
-                cursor, effectiveLimit + 1),
+            repository.list(effectiveTenantId, new io.runcycles.admin.data.repository.BudgetListFilters(
+                scope_prefix, unit, BudgetStatus.ACTIVE, null, null, null, null, null,
+                ScopeFilterUtil.allowedScopes(httpRequest)), cursor, effectiveLimit + 1),
             effectiveLimit);
         var ledgers = page.items();
         boolean hasMore = page.hasMore();

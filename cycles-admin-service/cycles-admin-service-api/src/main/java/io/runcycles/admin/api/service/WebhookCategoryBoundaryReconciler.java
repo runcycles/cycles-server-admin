@@ -144,9 +144,10 @@ public class WebhookCategoryBoundaryReconciler implements ApplicationRunner {
                 long disabledEmptyBoth = result.repaired().stream().filter(o -> o.action() == CategoryBoundaryAction.DISABLED_EMPTY_BOTH).count();
                 long normalized = result.repaired().stream().filter(o -> o.action() == CategoryBoundaryAction.NORMALIZED_NULL_OWNER).count();
                 long indexed = result.repaired().stream().filter(o -> o.action() == CategoryBoundaryAction.INDEXED_SYSTEM_MEMBER).count();
-                LOG.warn("Webhook category-boundary reconcile: {} {} row(s) (#209 hygiene), failures={} — stripped={} stripped_and_disabled={} disabled_empty_both={} normalized_null_owner={} indexed_system_member={}",
+                long encrypted = result.repaired().stream().filter(o -> o.action() == CategoryBoundaryAction.ENCRYPTED_LEGACY_HEADERS).count();
+                LOG.warn("Webhook category-boundary reconcile: {} {} row(s) (#209 hygiene), failures={} — stripped={} stripped_and_disabled={} disabled_empty_both={} normalized_null_owner={} indexed_system_member={} encrypted_legacy_headers={}",
                     dryRun ? "REPORTED (dry-run, no rows changed):" : "repaired",
-                    result.repaired().size(), result.failures(), stripped, strippedDisabled, disabledEmptyBoth, normalized, indexed);
+                    result.repaired().size(), result.failures(), stripped, strippedDisabled, disabledEmptyBoth, normalized, indexed, encrypted);
             }
             return result;
         } catch (Exception e) {

@@ -177,7 +177,8 @@ public class BudgetController {
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
         String searchNorm = parseSearch(search);
         BudgetListFilters filters = new BudgetListFilters(
-            scope_prefix, unit, status, over_limit, has_debt, utilization_min, utilization_max, searchNorm);
+            scope_prefix, unit, status, over_limit, has_debt, utilization_min, utilization_max, searchNorm,
+            ScopeFilterUtil.allowedScopes(httpRequest));
         List<BudgetLedger> ledgers;
         boolean crossTenant;
         if (authTenantId != null) {
@@ -242,6 +243,8 @@ public class BudgetController {
             HttpServletRequest httpRequest) {
         ScopeFilterUtil.enforceScopeFilter(httpRequest, scope);
         BudgetLedger ledger = repository.getByExactScope(scope, unit);
+        String tenant = (String) httpRequest.getAttribute("authenticated_tenant_id");
+        if (tenant != null && !tenant.equals(ledger.getTenantId())) throw GovernanceException.budgetNotFound(scope);
         return ResponseEntity.ok(ledger);
     }
     @PatchMapping @Operation(operationId = "updateBudget")
@@ -321,7 +324,10 @@ public class BudgetController {
             tenantId = tenant_id;
         }
         mutationGuard.assertTenantOpen(tenantId);
-        BudgetFundingResponse response = repository.fund(tenantId, scope, unit, request);
+        Event event = fundingEvent(tenantId, scope, unit, request, httpRequest, null,
+            attr(httpRequest, RequestIdFilter.REQUEST_ID_ATTRIBUTE));
+        BudgetFundingResponse response = repository.fund(tenantId, scope, unit, request, event);
+        if (response != null && response.isReplayed()) return ResponseEntity.ok(response);
         auditRepository.log(buildAuditEntry(httpRequest)
             .tenantId(tenantId)
             .keyId((String) httpRequest.getAttribute("authenticated_key_id"))
@@ -330,47 +336,7 @@ public class BudgetController {
             .status(200)
             .metadata(buildFundMetadata(scope, unit, request, response))
             .build());
-        EventType fundEventType = fundEventType(request.getOperation());
-        try {
-            ActorType actorType = httpRequest.getAttribute("authenticated_tenant_id") != null ? ActorType.API_KEY : ActorType.ADMIN;
-
-            // Pre/post state snapshots. For RESET_SPENT we populate the new spent
-            // and reserved fields so event consumers can see the transition cleanly.
-            // For other operations we populate what we have; unchanged fields appear
-            // equal on both sides.
-            EventDataBudgetLifecycle.BudgetState previousState = EventDataBudgetLifecycle.BudgetState.builder()
-                .allocated(response.getPreviousAllocated() != null ? response.getPreviousAllocated().getAmount() : null)
-                .remaining(response.getPreviousRemaining() != null ? response.getPreviousRemaining().getAmount() : null)
-                .debt(response.getPreviousDebt() != null ? response.getPreviousDebt().getAmount() : null)
-                .spent(response.getPreviousSpent() != null ? response.getPreviousSpent().getAmount() : null)
-                .build();
-            EventDataBudgetLifecycle.BudgetState newState = EventDataBudgetLifecycle.BudgetState.builder()
-                .allocated(response.getNewAllocated() != null ? response.getNewAllocated().getAmount() : null)
-                .remaining(response.getNewRemaining() != null ? response.getNewRemaining().getAmount() : null)
-                .debt(response.getNewDebt() != null ? response.getNewDebt().getAmount() : null)
-                .spent(response.getNewSpent() != null ? response.getNewSpent().getAmount() : null)
-                .build();
-
-            EventDataBudgetLifecycle.EventDataBudgetLifecycleBuilder payloadBuilder =
-                EventDataBudgetLifecycle.builder()
-                    .scope(scope).unit(unit)
-                    .operation(BudgetOperation.valueOf(request.getOperation().name()))
-                    .previousState(previousState)
-                    .newState(newState)
-                    .reason(request.getReason());
-            if (request.getOperation() == FundingOperation.RESET_SPENT) {
-                payloadBuilder.spentOverrideProvided(request.getSpent() != null);
-            }
-
-            eventService.emit(fundEventType, tenantId, scope, "cycles-admin",
-                Actor.builder().type(actorType)
-                    .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
-                objectMapper.convertValue(payloadBuilder.build(), Map.class),
-                null, httpRequest.getAttribute("requestId") != null ? httpRequest.getAttribute("requestId").toString() : null);
-        } catch (Exception e) {
-            logEventEmissionFailure(fundEventType, tenantId, scope + ":" + unit.name(),
-                scope, unit, null, httpRequest, e);
-        }
+        eventService.dispatchFundingEvent(event.getEventId());
         return ResponseEntity.ok(response);
     }
 
@@ -637,11 +603,17 @@ public class BudgetController {
         fundingRequest.setIdempotencyKey(bulk.getIdempotencyKey()
             + ":" + ledger.getScope() + ":" + ledger.getUnit().name());
         try {
+            Event event = fundingEvent(ledger.getTenantId(), ledger.getScope(), ledger.getUnit(), fundingRequest,
+                httpRequest, correlationId, requestId);
+            event.getData().put("ledger_id", ledger.getLedgerId());
             BudgetFundingResponse fundResponse = repository.fund(
-                ledger.getTenantId(), ledger.getScope(), ledger.getUnit(), fundingRequest);
+                ledger.getTenantId(), ledger.getScope(), ledger.getUnit(), fundingRequest, event);
+            if (fundResponse != null && fundResponse.isReplayed()) {
+                skipped.add(BulkActionRowOutcome.builder().id(id).reason("ALREADY_IN_TARGET_STATE").build());
+                return;
+            }
             succeeded.add(BulkActionRowOutcome.builder().id(id).build());
-            emitBulkFundEvent(ledger, bulk, fundResponse, httpRequest,
-                correlationId, requestId);
+            eventService.dispatchFundingEvent(event.getEventId());
         } catch (GovernanceException e) {
             failed.add(BulkActionRowOutcome.builder()
                 .id(id)
@@ -657,61 +629,12 @@ public class BudgetController {
         }
     }
 
-    /**
-     * Per-row Event emission for bulk-action budgets (spec v0.1.25.32). Mirrors
-     * the single-op fund event at {@link #fund}: maps FundingOperation to the
-     * matching {@link EventType}, builds the pre/post {@link EventDataBudgetLifecycle}
-     * snapshot from the repository response, and stamps the envelope-scoped
-     * {@code budget_bulk_action:<action>:<request_id>} correlation_id so
-     * operators can query {@code listEvents?correlation_id=...} to see every
-     * row this invocation touched. Skipped and failed rows never reach this
-     * method. Event emission failure is caught and logged — it must not
-     * abort the bulk op (matching single-fund discipline).
-     */
-    private void emitBulkFundEvent(BudgetLedger ledger, BudgetBulkActionRequest bulk,
-                                    BudgetFundingResponse response,
-                                    HttpServletRequest httpRequest,
-                                    String correlationId, String requestId) {
-        if (response == null) return;
-        EventType eventType = fundEventType(bulk.getAction());
-        try {
-            EventDataBudgetLifecycle.BudgetState previousState = EventDataBudgetLifecycle.BudgetState.builder()
-                .allocated(response.getPreviousAllocated() != null ? response.getPreviousAllocated().getAmount() : null)
-                .remaining(response.getPreviousRemaining() != null ? response.getPreviousRemaining().getAmount() : null)
-                .debt(response.getPreviousDebt() != null ? response.getPreviousDebt().getAmount() : null)
-                .spent(response.getPreviousSpent() != null ? response.getPreviousSpent().getAmount() : null)
-                .build();
-            EventDataBudgetLifecycle.BudgetState newState = EventDataBudgetLifecycle.BudgetState.builder()
-                .allocated(response.getNewAllocated() != null ? response.getNewAllocated().getAmount() : null)
-                .remaining(response.getNewRemaining() != null ? response.getNewRemaining().getAmount() : null)
-                .debt(response.getNewDebt() != null ? response.getNewDebt().getAmount() : null)
-                .spent(response.getNewSpent() != null ? response.getNewSpent().getAmount() : null)
-                .build();
-            EventDataBudgetLifecycle.EventDataBudgetLifecycleBuilder payloadBuilder =
-                EventDataBudgetLifecycle.builder()
-                    .scope(ledger.getScope()).unit(ledger.getUnit())
-                    .operation(BudgetOperation.valueOf(bulk.getAction().name()))
-                    .previousState(previousState)
-                    .newState(newState)
-                    .reason(bulk.getReason());
-            if (bulk.getAction() == FundingOperation.RESET_SPENT) {
-                payloadBuilder.spentOverrideProvided(bulk.getSpent() != null);
-            }
-            // Actor-type parity with single-op fund path (line ~337): resolves to API_KEY
-            // when a tenant key authenticated the call, ADMIN otherwise. Today bulk is
-            // AdminKeyAuth-gated so this always yields ADMIN, but mirroring the single-op
-            // conditional prevents silent mis-attribution if bulk auth is ever broadened.
-            ActorType actorType = httpRequest.getAttribute("authenticated_tenant_id") != null ? ActorType.API_KEY : ActorType.ADMIN;
-            eventService.emit(eventType, ledger.getTenantId(), ledger.getScope(),
-                "cycles-admin",
-                Actor.builder().type(actorType)
-                    .keyId((String) httpRequest.getAttribute("authenticated_key_id")).build(),
-                objectMapper.convertValue(payloadBuilder.build(), Map.class),
-                correlationId, requestId);
-        } catch (Exception e) {
-            logEventEmissionFailure(eventType, ledger.getTenantId(), ledger.getLedgerId(),
-                ledger.getScope(), ledger.getUnit(), correlationId, httpRequest, e);
-        }
+    private static Event fundingEvent(String tenant, String scope, UnitEnum unit, BudgetFundingRequest request,
+                                      HttpServletRequest http, String correlationId, String requestId) {
+        ActorType type = http.getAttribute("authenticated_tenant_id") == null ? ActorType.ADMIN : ActorType.API_KEY;
+        Actor actor = Actor.builder().type(type).keyId(attr(http, "authenticated_key_id")).build();
+        return BudgetRepository.fundingEvent(tenant, scope, unit, request, actor, correlationId, requestId,
+            attr(http, TraceContextFilter.TRACE_ID_ATTRIBUTE));
     }
 
     /**
@@ -742,16 +665,6 @@ public class BudgetController {
             default:
                 return "INTERNAL_ERROR";
         }
-    }
-
-    private static EventType fundEventType(FundingOperation operation) {
-        return switch (operation) {
-            case CREDIT -> EventType.BUDGET_FUNDED;
-            case DEBIT -> EventType.BUDGET_DEBITED;
-            case RESET -> EventType.BUDGET_RESET;
-            case RESET_SPENT -> EventType.BUDGET_RESET_SPENT;
-            case REPAY_DEBT -> EventType.BUDGET_DEBT_REPAID;
-        };
     }
 
     private void logEventEmissionFailure(EventType eventType, String tenantId, String budgetId,

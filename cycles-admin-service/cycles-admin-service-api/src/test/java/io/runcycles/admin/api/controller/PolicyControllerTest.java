@@ -104,7 +104,7 @@ class PolicyControllerTest {
         Policy policy = Policy.builder()
                 .policyId("pol_1").scopePattern("tenant:tenant-1/*").name("P1")
                 .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), anyInt())).thenReturn(List.of(policy));
+        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), anyInt(), any())).thenReturn(List.of(policy));
 
         mockMvc.perform(get("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key"))
@@ -116,7 +116,7 @@ class PolicyControllerTest {
     @Test
     void listPolicies_withFilters() throws Exception {
         setupApiKeyAuth();
-        when(policyRepository.list(eq("tenant-1"), eq("tenant:tenant-1/*"), eq(PolicyStatus.ACTIVE), any(), anyInt()))
+        when(policyRepository.list(eq("tenant-1"), eq("tenant:tenant-1/*"), eq(PolicyStatus.ACTIVE), any(), anyInt(), any()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/policies")
@@ -151,19 +151,19 @@ class PolicyControllerTest {
     @Test
     void listPolicies_usesAuthenticatedTenantId() throws Exception {
         setupApiKeyAuth();
-        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), anyInt())).thenReturn(List.of());
+        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), anyInt(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key"))
                 .andExpect(status().isOk());
 
-        verify(policyRepository).list(eq("tenant-1"), any(), any(), any(), anyInt());
+        verify(policyRepository).list(eq("tenant-1"), any(), any(), any(), anyInt(), any());
     }
 
     @Test
     void listPolicies_emptyResult_hasMoreFalseAndNoCursor() throws Exception {
         setupApiKeyAuth();
-        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), anyInt())).thenReturn(List.of());
+        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), anyInt(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key"))
@@ -176,27 +176,27 @@ class PolicyControllerTest {
     @Test
     void listPolicies_limitClampedToMax100() throws Exception {
         setupApiKeyAuth();
-        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), eq(101))).thenReturn(List.of());
+        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), eq(101), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .param("limit", "500"))
                 .andExpect(status().isOk());
 
-        verify(policyRepository).list(eq("tenant-1"), any(), any(), any(), eq(101));
+        verify(policyRepository).list(eq("tenant-1"), any(), any(), any(), eq(101), any());
     }
 
     @Test
     void listPolicies_limitClampedToMin1() throws Exception {
         setupApiKeyAuth();
-        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), eq(2))).thenReturn(List.of());
+        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), eq(2), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .param("limit", "0"))
                 .andExpect(status().isOk());
 
-        verify(policyRepository).list(eq("tenant-1"), any(), any(), any(), eq(2));
+        verify(policyRepository).list(eq("tenant-1"), any(), any(), any(), eq(2), any());
     }
 
     @Test
@@ -269,7 +269,7 @@ class PolicyControllerTest {
         Policy p3 = Policy.builder()
                 .policyId("pol_3").scopePattern("tenant:tenant-1/toolset:*").name("P3")
                 .status(PolicyStatus.ACTIVE).createdAt(Instant.now()).build();
-        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), eq(3)))
+        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), eq(3), any()))
                 .thenReturn(List.of(p1, p2, p3));
 
         mockMvc.perform(get("/v1/admin/policies")
@@ -283,14 +283,14 @@ class PolicyControllerTest {
     @Test
     void listPolicies_withCursorParam_passesToRepository() throws Exception {
         setupApiKeyAuth();
-        when(policyRepository.list(eq("tenant-1"), any(), any(), eq("pol_abc"), anyInt())).thenReturn(List.of());
+        when(policyRepository.list(eq("tenant-1"), any(), any(), eq("pol_abc"), anyInt(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key")
                         .param("cursor", "pol_abc"))
                 .andExpect(status().isOk());
 
-        verify(policyRepository).list(eq("tenant-1"), any(), any(), eq("pol_abc"), anyInt());
+        verify(policyRepository).list(eq("tenant-1"), any(), any(), eq("pol_abc"), anyInt(), any());
     }
 
     @Test
@@ -387,7 +387,7 @@ class PolicyControllerTest {
     @Test
     void listPolicies_withActionQuotaParams_acceptedAndIgnored() throws Exception {
         setupApiKeyAuth();
-        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), anyInt())).thenReturn(List.of());
+        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), anyInt(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key")
@@ -397,14 +397,14 @@ class PolicyControllerTest {
                 .andExpect(jsonPath("$.policies").isArray());
 
         // Repository call unchanged — these params are not passed through on v0.1.25.x
-        verify(policyRepository).list(eq("tenant-1"), any(), any(), any(), anyInt());
+        verify(policyRepository).list(eq("tenant-1"), any(), any(), any(), anyInt(), any());
     }
 
     // v0.1.25.8: spec says "MUST ignore without error" — malformed values must not 400
     @Test
     void listPolicies_withMalformedHasActionQuotas_stillReturns200() throws Exception {
         setupApiKeyAuth();
-        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), anyInt())).thenReturn(List.of());
+        when(policyRepository.list(eq("tenant-1"), any(), any(), any(), anyInt(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/v1/admin/policies")
                         .header("X-Cycles-API-Key", "valid-api-key")

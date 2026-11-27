@@ -40,6 +40,42 @@ public class EventRepository {
         "end\n" +
         "return 1\n";
 
+    private static final String FUNDING_DISPATCH = "funding:dispatch:due";
+    private static final String CLAIM_FUNDING_DISPATCH = """
+        local due = redis.call('ZSCORE', KEYS[1], ARGV[1])
+        if not due or tonumber(due) > tonumber(ARGV[2]) then return nil end
+        local row = redis.call('GET', KEYS[2])
+        if row then
+            redis.call('ZADD', KEYS[1], ARGV[3], ARGV[1])
+        else
+            redis.call('ZREM', KEYS[1], ARGV[1])
+        end
+        return row
+        """;
+
+    public List<String> dueFundingEvents() {
+        try (Jedis jedis = jedisPool.getResource()) {
+            return jedis.zrangeByScore(FUNDING_DISPATCH, 0, System.currentTimeMillis(), 0, 100);
+        }
+    }
+
+    public Event claimFundingDispatch(String eventId) {
+        long now = System.currentTimeMillis();
+        try (Jedis jedis = jedisPool.getResource()) {
+            String json = (String) jedis.eval(CLAIM_FUNDING_DISPATCH, List.of(FUNDING_DISPATCH, "event:" + eventId),
+                List.of(eventId, Long.toString(now), Long.toString(now + 30_000L)));
+            return json == null ? null : objectMapper.readValue(json, Event.class);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new IllegalStateException("Invalid stored funding event", e);
+        }
+    }
+
+    public void completeFundingDispatch(String eventId) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.zrem(FUNDING_DISPATCH, eventId);
+        }
+    }
+
     public void save(Event event) {
         try (Jedis jedis = jedisPool.getResource()) {
             if (event.getEventId() == null) {
@@ -141,16 +177,34 @@ public class EventRepository {
             if (correlationId != null && !correlationId.isBlank()) {
                 List<Event> byCorrelation = listByCorrelation(
                     jedis, correlationId, tenantId, eventType, category, scope, cursor, limit,
-                    sortSpec, search, traceId, requestId);
+                    sortSpec, search, traceId, requestId, from, to, false);
                 return byCorrelation;
             }
             if (sortSpec == null || isTimestampSort(sortSpec)) {
                 return listByTimestamp(jedis, tenantId, eventType, category, scope,
-                    from, to, cursor, limit, sortSpec, search, traceId, requestId);
+                    from, to, cursor, limit, sortSpec, search, traceId, requestId, false);
             }
             return listSortedNonTimestamp(jedis, tenantId, eventType, category, scope,
                 from, to, cursor, limit, sortSpec, search, traceId, requestId);
         }
+    }
+
+    public List<Event> listTenantVisible(String tenantId, String eventType, String category, String scope,
+                                         String correlationId, Instant from, Instant to, String cursor, int limit) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        try (Jedis jedis = jedisPool.getResource()) {
+            if (correlationId != null && !correlationId.isBlank()) {
+                return listByCorrelation(jedis, correlationId, tenantId, eventType, category, scope, cursor,
+                    limit, null, null, null, null, from, to, true);
+            }
+            return listByTimestamp(jedis, tenantId, eventType, category, scope, from, to, cursor,
+                limit, null, null, null, null, true);
+        }
+    }
+
+    private static boolean tenantVisible(Event event) {
+        return event.getEventType() != null && event.getEventType().isTenantAccessible()
+            && event.getCategory() != null && event.getCategory().isTenantAccessible();
     }
 
     private static boolean isTimestampSort(SortSpec sortSpec) {
@@ -221,7 +275,7 @@ public class EventRepository {
     private List<Event> listByTimestamp(Jedis jedis, String tenantId, String eventType,
                                         String category, String scope, Instant from, Instant to,
                                         String cursor, int limit, SortSpec sortSpec, String search,
-                                        String traceId, String requestId) {
+                                        String traceId, String requestId, boolean tenantOnly) {
         double minScore = (from != null) ? from.toEpochMilli() : Double.NEGATIVE_INFINITY;
         double maxScore = (to != null) ? to.toEpochMilli() : Double.POSITIVE_INFINITY;
         String indexKey = (tenantId != null) ? "events:" + tenantId : "events:_all";
@@ -237,6 +291,7 @@ public class EventRepository {
                     return null;
                 }
                 Event event = objectMapper.readValue(data, Event.class);
+                if (tenantOnly && (!tenantId.equals(event.getTenantId()) || !tenantVisible(event))) return null;
                 if (!matchesFilters(event, eventType, category, scope, traceId, requestId)) return null;
                 if (!matchesSearch(event, search)) return null;
                 return event;
@@ -357,7 +412,7 @@ public class EventRepository {
                                           String eventType, String category, String scope,
                                           String cursor, int limit,
                                           SortSpec sortSpec, String search,
-                                          String traceId, String requestId) {
+                                          String traceId, String requestId, Instant from, Instant to, boolean tenantOnly) {
         Set<String> ids = jedis.smembers("events:correlation:" + correlationId);
         if (ids == null || ids.isEmpty()) return new ArrayList<>();
         SortedQueryGuard.requireScannable(ids.size(), "correlation event");
@@ -369,6 +424,9 @@ public class EventRepository {
                 if (data == null) continue;
                 Event event = objectMapper.readValue(data, Event.class);
                 if (tenantId != null && !tenantId.equals(event.getTenantId())) continue;
+                if (tenantOnly && !tenantVisible(event)) continue;
+                if (from != null && (event.getTimestamp() == null || event.getTimestamp().isBefore(from))) continue;
+                if (to != null && (event.getTimestamp() == null || event.getTimestamp().isAfter(to))) continue;
                 if (!matchesFilters(event, eventType, category, scope, traceId, requestId)) continue;
                 if (!matchesSearch(event, search)) continue;
                 events.add(event);

@@ -34,7 +34,7 @@ services:
       WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
       WEBHOOK_SECRET_ALLOW_PLAINTEXT: ${WEBHOOK_SECRET_ALLOW_PLAINTEXT:-true}
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7979/actuator/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7979/actuator/health/readiness"]
       interval: 10s
       timeout: 5s
       retries: 3

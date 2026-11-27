@@ -102,7 +102,7 @@ class BudgetControllerTest {
     void lookupBudget_returns200() throws Exception {
         setupApiKeyAuth();
         BudgetLedger ledger = BudgetLedger.builder()
-                .ledgerId("led-1").scope("tenant:tenant-1/workspace:team1").unit(UnitEnum.USD_MICROCENTS)
+                .tenantId("tenant-1").ledgerId("led-1").scope("tenant:tenant-1/workspace:team1").unit(UnitEnum.USD_MICROCENTS)
                 .allocated(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .remaining(new Amount(UnitEnum.USD_MICROCENTS, 800L))
                 .status(BudgetStatus.ACTIVE).createdAt(Instant.now()).build();
@@ -115,6 +115,22 @@ class BudgetControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.ledger_id").value("led-1"))
                 .andExpect(jsonPath("$.scope").value("tenant:tenant-1/workspace:team1"));
+    }
+
+    @Test
+    void exactLookupUsesThePersistedOwnerAndAllowsAnAdminLookup() throws Exception {
+        setupApiKeyAuth();
+        String scope = "tenant:owner/workspace:team";
+        BudgetLedger ledger = BudgetLedger.builder().tenantId("owner").scope(scope)
+            .unit(UnitEnum.USD_MICROCENTS).ledgerId("other-ledger").status(BudgetStatus.ACTIVE)
+            .allocated(new Amount(UnitEnum.USD_MICROCENTS, 10L)).remaining(new Amount(UnitEnum.USD_MICROCENTS, 10L))
+            .createdAt(Instant.now()).build();
+        when(budgetRepository.getByExactScope(scope, UnitEnum.USD_MICROCENTS)).thenReturn(ledger);
+        mockMvc.perform(get("/v1/admin/budgets/lookup").param("scope", scope).param("unit", "USD_MICROCENTS")
+                .header("X-Cycles-API-Key", "valid-api-key")).andExpect(status().isNotFound());
+        mockMvc.perform(get("/v1/admin/budgets/lookup").param("scope", scope).param("unit", "USD_MICROCENTS")
+                .header("X-Admin-API-Key", "test-admin-key")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.ledger_id").value("other-ledger"));
     }
 
     @Test
@@ -185,7 +201,7 @@ class BudgetControllerTest {
                 .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
                 .timestamp(Instant.now()).build();
-        when(budgetRepository.fund(eq("tenant-1"), eq("org_team1"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+        when(budgetRepository.fund(eq("tenant-1"), eq("org_team1"), eq(UnitEnum.USD_MICROCENTS), any(), any())).thenReturn(funding);
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
                         .param("scope", "org_team1")
@@ -201,7 +217,7 @@ class BudgetControllerTest {
     @Test
     void fundBudget_frozen_returns409() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any()))
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any(), any()))
                 .thenThrow(GovernanceException.budgetFrozen("scope"));
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
@@ -217,7 +233,7 @@ class BudgetControllerTest {
     @Test
     void fundBudget_insufficientFunds_returns409() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any()))
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any(), any()))
                 .thenThrow(GovernanceException.insufficientFunds("scope"));
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
@@ -262,7 +278,7 @@ class BudgetControllerTest {
                 .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
                 .timestamp(Instant.now()).build();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any(), any())).thenReturn(funding);
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
                         .param("scope", "tenant:tenant-1/workspace:tscope")
@@ -332,7 +348,7 @@ class BudgetControllerTest {
     @Test
     void fundBudget_notFound_returns404() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:missing"), eq(UnitEnum.USD_MICROCENTS), any()))
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:missing"), eq(UnitEnum.USD_MICROCENTS), any(), any()))
                 .thenThrow(GovernanceException.budgetNotFound("missing"));
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
@@ -407,7 +423,7 @@ class BudgetControllerTest {
                 .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
                 .timestamp(Instant.now()).build();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any(), any())).thenReturn(funding);
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
                         .param("scope", "tenant:tenant-1/workspace:tscope")
@@ -433,7 +449,7 @@ class BudgetControllerTest {
                 .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
                 .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .timestamp(Instant.now()).build();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any(), any())).thenReturn(funding);
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
                         .param("scope", "tenant:tenant-1/workspace:tscope")
@@ -455,7 +471,7 @@ class BudgetControllerTest {
                 .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1500L))
                 .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 5000L))
                 .timestamp(Instant.now()).build();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any(), any())).thenReturn(funding);
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
                         .param("scope", "tenant:tenant-1/workspace:tscope")
@@ -480,7 +496,7 @@ class BudgetControllerTest {
                 .previousSpent(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .newSpent(new Amount(UnitEnum.USD_MICROCENTS, 0L))
                 .timestamp(Instant.now()).build();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any(), any())).thenReturn(funding);
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
                         .param("scope", "tenant:tenant-1/workspace:tscope")
@@ -507,7 +523,7 @@ class BudgetControllerTest {
                 .previousSpent(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .newSpent(new Amount(UnitEnum.USD_MICROCENTS, 400L))
                 .timestamp(Instant.now()).build();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any(), any())).thenReturn(funding);
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
                         .param("scope", "tenant:tenant-1/workspace:tscope")
@@ -580,7 +596,7 @@ class BudgetControllerTest {
                 .previousSpent(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .newSpent(new Amount(UnitEnum.USD_MICROCENTS, 400L))
                 .timestamp(Instant.now()).build();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any(), any())).thenReturn(funding);
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
                         .param("scope", "tenant:tenant-1/workspace:tscope")
@@ -619,7 +635,7 @@ class BudgetControllerTest {
                 .previousSpent(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .newSpent(new Amount(UnitEnum.USD_MICROCENTS, 0L))
                 .timestamp(Instant.now()).build();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any(), any())).thenReturn(funding);
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
                         .param("scope", "tenant:tenant-1/workspace:tscope")
@@ -645,7 +661,7 @@ class BudgetControllerTest {
                 .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, -200L))
                 .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 300L))
                 .timestamp(Instant.now()).build();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any(), any())).thenReturn(funding);
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
                         .param("scope", "tenant:tenant-1/workspace:tscope")
@@ -723,7 +739,7 @@ class BudgetControllerTest {
     @Test
     void fundBudget_budgetClosed_returns409() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any()))
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any(), any()))
                 .thenThrow(GovernanceException.budgetClosed("tenant:tenant-1/workspace:tscope"));
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
@@ -746,7 +762,7 @@ class BudgetControllerTest {
                 .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 0L))
                 .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 500000L))
                 .timestamp(Instant.now()).build();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-acme/workspace:prod"), eq(UnitEnum.USD_MICROCENTS), any()))
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-acme/workspace:prod"), eq(UnitEnum.USD_MICROCENTS), any(), any()))
                 .thenReturn(funding);
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
@@ -759,7 +775,7 @@ class BudgetControllerTest {
                 .andExpect(jsonPath("$.operation").value("CREDIT"))
                 .andExpect(jsonPath("$.new_allocated.amount").value(500000));
 
-        verify(budgetRepository).fund(eq("tenant-1"), eq("tenant:tenant-acme/workspace:prod"), eq(UnitEnum.USD_MICROCENTS), any());
+        verify(budgetRepository).fund(eq("tenant-1"), eq("tenant:tenant-acme/workspace:prod"), eq(UnitEnum.USD_MICROCENTS), any(), any());
     }
 
     // ========== PATCH /v1/admin/budgets ==========
@@ -954,6 +970,24 @@ class BudgetControllerTest {
     }
 
     @Test
+    void fundingReplayReturnsTheOriginalResponseWithoutNewMutationEvents() throws Exception {
+        setupApiKeyAuth();
+        Instant original = Instant.parse("2026-01-01T00:00:00Z");
+        BudgetFundingResponse replay = BudgetFundingResponse.builder().operation(FundingOperation.CREDIT)
+            .previousAllocated(new Amount(UnitEnum.CREDITS, 0L)).newAllocated(new Amount(UnitEnum.CREDITS, 1L))
+            .previousRemaining(new Amount(UnitEnum.CREDITS, 0L)).newRemaining(new Amount(UnitEnum.CREDITS, 1L))
+            .timestamp(original).replayed(true).build();
+        when(budgetRepository.fund(eq("tenant-1"), anyString(), eq(UnitEnum.CREDITS), any(), any())).thenReturn(replay);
+        mockMvc.perform(post("/v1/admin/budgets/fund")
+                .param("scope", "tenant:tenant-1/workspace:one").param("unit", "CREDITS")
+                .header("X-Cycles-API-Key", "valid-api-key").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"CREDITS\",\"amount\":1},\"idempotency_key\":\"retry\"}"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.replayed").doesNotExist());
+        verifyNoInteractions(eventService);
+        verify(auditRepository, never()).log(any());
+    }
+
+    @Test
     void fundBudget_emitsCreditEvent() throws Exception {
         setupApiKeyAuth();
         BudgetFundingResponse funding = BudgetFundingResponse.builder()
@@ -963,7 +997,7 @@ class BudgetControllerTest {
                 .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
                 .timestamp(Instant.now()).build();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any(), any())).thenReturn(funding);
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
                         .param("scope", "tenant:tenant-1/workspace:tscope")
@@ -973,7 +1007,7 @@ class BudgetControllerTest {
                         .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1000}}"))
                 .andExpect(status().isOk());
 
-        verify(eventService).emit(eq(EventType.BUDGET_FUNDED), eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), any(), any(), any(), any(), any());
+        verify(eventService).dispatchFundingEvent(anyString());
     }
 
     // ========== INSUFFICIENT_PERMISSIONS ==========
@@ -1031,7 +1065,7 @@ class BudgetControllerTest {
     @Test
     void fundBudget_idempotencyMismatch_returns409() throws Exception {
         setupApiKeyAuth();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any()))
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any(), any()))
                 .thenThrow(new GovernanceException(
                         io.runcycles.admin.model.shared.ErrorCode.IDEMPOTENCY_MISMATCH,
                         "Idempotency key already used with different payload", 409));
@@ -1270,7 +1304,7 @@ class BudgetControllerTest {
                 .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
                 .timestamp(Instant.now()).build();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any(), any())).thenReturn(funding);
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
                         .param("tenant_id", "tenant-1")
@@ -1304,7 +1338,7 @@ class BudgetControllerTest {
                 .previousRemaining(new Amount(UnitEnum.USD_MICROCENTS, 1000L))
                 .newRemaining(new Amount(UnitEnum.USD_MICROCENTS, 2000L))
                 .timestamp(Instant.now()).build();
-        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+        when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1/workspace:tscope"), eq(UnitEnum.USD_MICROCENTS), any(), any())).thenReturn(funding);
 
         mockMvc.perform(post("/v1/admin/budgets/fund")
                         .param("tenant_id", "tenant-1")
@@ -1740,7 +1774,7 @@ class BudgetControllerTest {
         setupApiKeyAuth();
         BudgetFundingResponse funding = BudgetFundingResponse.builder().operation(FundingOperation.CREDIT).build();
         when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1"),
-            eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(funding);
+            eq(UnitEnum.USD_MICROCENTS), any(), any())).thenReturn(funding);
 
         mockMvc.perform(post("/v1/admin/budgets/fund").header("X-Cycles-API-Key", "valid-api-key")
                 .param("scope", "tenant:tenant-1").param("unit", "USD_MICROCENTS")
@@ -1748,14 +1782,14 @@ class BudgetControllerTest {
                 .content("{\"operation\":\"CREDIT\",\"amount\":{\"unit\":\"USD_MICROCENTS\",\"amount\":1}}"))
             .andExpect(status().isOk());
 
-        verify(eventService).emit(eq(EventType.BUDGET_FUNDED), eq("tenant-1"), any(), any(), any(), any(), any(), any());
+        verify(eventService).dispatchFundingEvent(anyString());
     }
 
     @Test
     void fundBudgetNullRepositoryResponseDoesNotBreakAuditPath() throws Exception {
         setupApiKeyAuth();
         when(budgetRepository.fund(eq("tenant-1"), eq("tenant:tenant-1"),
-            eq(UnitEnum.USD_MICROCENTS), any())).thenReturn(null);
+            eq(UnitEnum.USD_MICROCENTS), any(), any())).thenReturn(null);
 
         mockMvc.perform(post("/v1/admin/budgets/fund").header("X-Cycles-API-Key", "valid-api-key")
                 .param("scope", "tenant:tenant-1").param("unit", "USD_MICROCENTS")
@@ -1817,14 +1851,13 @@ class BudgetControllerTest {
             .previousSpent(new Amount(UnitEnum.USD_MICROCENTS, 10L))
             .newSpent(new Amount(UnitEnum.USD_MICROCENTS, 10L))
             .build();
-        when(budgetRepository.fund("tenant-direct", "tenant:tenant-direct",
-            UnitEnum.USD_MICROCENTS, fundingRequest)).thenReturn(response);
+        when(budgetRepository.fund(eq("tenant-direct"), eq("tenant:tenant-direct"),
+            eq(UnitEnum.USD_MICROCENTS), eq(fundingRequest), any())).thenReturn(response);
 
         assertThat(budgetController.fund(null, "tenant:tenant-direct", UnitEnum.USD_MICROCENTS,
             fundingRequest, request).getBody()).isSameAs(response);
 
-        verify(eventService).emit(eq(EventType.BUDGET_FUNDED), eq("tenant-direct"), any(), any(),
-            any(), any(), isNull(), isNull());
+        verify(eventService).dispatchFundingEvent(anyString());
         verify(auditRepository).log(argThat(entry ->
             "manual adjustment".equals(entry.getMetadata().get("reason"))
                 && "idem-direct".equals(entry.getMetadata().get("idempotency_key"))
